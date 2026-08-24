@@ -793,6 +793,8 @@ unsafe extern "system" fn settings_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // SAFETY: settings window is main-thread owned; state via WindowState cell.
+    unsafe {
     if msg == WM_NCCREATE {
         let cs = &*(lparam.0 as *const CREATESTRUCTW);
         let ui = Box::from_raw(cs.lpCreateParams as *mut SettingsUi);
@@ -1019,7 +1021,7 @@ unsafe extern "system" fn settings_wndproc(
         WM_CHAR => LRESULT(0),
         _ => win::def_proc(hwnd, msg, wparam, lparam),
     }
-}
+} }
 
 fn client_size_dip(hwnd: HWND, dpi: u32) -> (f32, f32) {
     let mut rect = RECT::default();
@@ -1140,5 +1142,6 @@ fn modifier_for_vk(vk: u16) -> Option<ModifierMask> {
 }
 
 unsafe fn key_down(vk: i32) -> bool {
-    (windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(vk) as u16 & 0x8000) != 0
+    // SAFETY: GetKeyState is thread-affine read-only state.
+    unsafe { (windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(vk) as u16 & 0x8000) != 0 }
 }

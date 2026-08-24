@@ -200,7 +200,8 @@ fn draw_glyphs(
 }
 
 unsafe fn create_solid(rt: &ID2D1RenderTarget, c: D2D1_COLOR_F) -> ID2D1SolidColorBrush {
-    rt.CreateSolidColorBrush(std::ptr::from_ref(&c), None).expect("solid brush")
+    // SAFETY: COM call on a live render target created above.
+    unsafe { rt.CreateSolidColorBrush(std::ptr::from_ref(&c), None).expect("solid brush") }
 }
 
 /// Closed polyline figure.
@@ -209,7 +210,11 @@ unsafe fn line_figure(
     pts: &[Vector2],
     begin: D2D1_FIGURE_BEGIN,
 ) -> Result<ID2D1PathGeometry1> {
-    let geom = factory.CreatePathGeometry().map_err(|e| Error::win("CreatePathGeometry", &e))?;
+    // SAFETY: all calls operate on COM objects created within this function.
+unsafe {
+
+    // SAFETY: factory is alive for the duration of rendering.
+    let geom = unsafe { factory.CreatePathGeometry().map_err(|e| Error::win("CreatePathGeometry", &e))? };
     let sink = geom.Open().map_err(|e| Error::win("GeometrySink Open", &e))?;
     sink.SetFillMode(D2D1_FILL_MODE_WINDING);
     sink.BeginFigure(pts[0], begin);
@@ -219,10 +224,13 @@ unsafe fn line_figure(
     sink.EndFigure(D2D1_FIGURE_END_CLOSED);
     sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
     Ok(geom)
-}
+} }
 
 /// Open two-point figure.
 unsafe fn open_figure(factory: &ID2D1Factory1, pts: &[Vector2]) -> Result<ID2D1PathGeometry1> {
+    // SAFETY: all calls operate on COM objects created within this function.
+unsafe {
+
     let geom = factory.CreatePathGeometry().map_err(|e| Error::win("CreatePathGeometry", &e))?;
     let sink = geom.Open().map_err(|e| Error::win("GeometrySink Open", &e))?;
     sink.BeginFigure(pts[0], D2D1_FIGURE_BEGIN_HOLLOW);
@@ -232,10 +240,13 @@ unsafe fn open_figure(factory: &ID2D1Factory1, pts: &[Vector2]) -> Result<ID2D1P
     sink.EndFigure(D2D1_FIGURE_END_OPEN);
     sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
     Ok(geom)
-}
+} }
 
 /// Right-facing sound-wave arc (-45° to +45°) around (cx,cy).
 unsafe fn arc_wave(factory: &ID2D1Factory1, cx: f32, cy: f32, radius: f32) -> Result<ID2D1PathGeometry1> {
+    // SAFETY: all calls operate on COM objects created within this function.
+unsafe {
+
     let k = 0.7071f32;
     let start = pt(cx + radius * k, cy - radius * k);
     let end = pt(cx + radius * k, cy + radius * k);
@@ -252,7 +263,7 @@ unsafe fn arc_wave(factory: &ID2D1Factory1, cx: f32, cy: f32, radius: f32) -> Re
     sink.EndFigure(D2D1_FIGURE_END_OPEN);
     sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
     Ok(geom)
-}
+} }
 
 fn rgba(r: u8, g: u8, b: u8, a: u8) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: a as f32 / 255.0 }

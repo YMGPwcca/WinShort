@@ -276,19 +276,25 @@ impl InternalBackend {
 }
 
 unsafe fn desktop_array(manager: &IVirtualDesktopManagerInternal) -> Result<IObjectArray> {
+    // SAFETY: manager proxy is valid on this STA thread (worker-owned).
     let mut desktops = None;
-    manager
-        .get_desktops(&mut desktops)
-        .ok()
-        .map_err(|e| Error::win("IVirtualDesktopManagerInternal::GetDesktops", &e))?;
+    unsafe {
+        manager
+            .get_desktops(&mut desktops)
+            .ok()
+            .map_err(|e| Error::win("IVirtualDesktopManagerInternal::GetDesktops", &e))?;
+    }
     desktops.ok_or_else(|| Error::desktop("GetDesktops returned null"))
 }
 
 unsafe fn desktop_id(desktop: &IVirtualDesktop) -> Result<GUID> {
+    // SAFETY: desktop proxy obtained from the Shell array on this thread.
     let mut id = GUID::zeroed();
-    desktop
-        .get_id(&mut id)
-        .ok()
-        .map_err(|e| Error::win("IVirtualDesktop::GetId", &e))?;
+    unsafe {
+        desktop
+            .get_id(&mut id)
+            .ok()
+            .map_err(|e| Error::win("IVirtualDesktop::GetId", &e))?;
+    }
     Ok(id)
 }

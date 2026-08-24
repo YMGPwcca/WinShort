@@ -54,6 +54,8 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
         ..Default::default()
     };
 
+    // SAFETY: `wc` outlives the call and the class name owner keeps the
+    // wide string alive for its duration.
     let atom = unsafe { RegisterClassExW(&wc) };
     if atom == 0 {
         return Err(crate::error::Error::os("RegisterClassExW", unsafe {
@@ -72,11 +74,15 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
 /// a `Box<WindowState<T>>`. The returned reference must not outlive the call;
 /// take ownership with [`take_state`] on `WM_NCDESTROY`.
 pub unsafe fn state_cell<'a, T>(hwnd: HWND) -> Option<&'a std::cell::RefCell<T>> {
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const std::cell::RefCell<T>;
-    if ptr.is_null() {
-        None
-    } else {
-        Some(&*ptr)
+    // SAFETY: caller guarantees the slot holds a valid Box<WindowState<T>>;
+    // the raw deref only reads the pointer.
+    unsafe {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const std::cell::RefCell<T>;
+        if ptr.is_null() {
+            None
+        } else {
+            Some(&*ptr)
+        }
     }
 }
 
@@ -87,12 +93,16 @@ pub unsafe fn state_cell<'a, T>(hwnd: HWND) -> Option<&'a std::cell::RefCell<T>>
 /// # Safety
 /// Same contract as [`state_cell`]; call exactly once, from `WM_NCDESTROY`.
 pub unsafe fn take_state<T>(hwnd: HWND) -> Option<Box<WindowState<T>>> {
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState<T>;
-    if ptr.is_null() {
-        None
-    } else {
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        Some(Box::from_raw(ptr))
+    // SAFETY: caller guarantees exactly-once invocation from WM_NCDESTROY;
+    // the slot is cleared before reconstructing the Box.
+    unsafe {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState<T>;
+        if ptr.is_null() {
+            None
+        } else {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            Some(Box::from_raw(ptr))
+        }
     }
 }
 

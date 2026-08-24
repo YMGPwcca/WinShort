@@ -116,7 +116,8 @@ pub unsafe fn post_event(hwnd: windows::Win32::Foundation::HWND, ev: AppEvent) -
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
     events().push(ev);
-    PostMessageW(Some(hwnd), WM_APP_EVENT, WPARAM(0), LPARAM(0)).is_ok()
+    // SAFETY: hwnd contract documented above; wake-only message.
+    unsafe { PostMessageW(Some(hwnd), WM_APP_EVENT, WPARAM(0), LPARAM(0)).is_ok() }
 }
 
 #[cfg(test)]

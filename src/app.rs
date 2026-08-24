@@ -503,7 +503,7 @@ unsafe extern "system" fn main_wndproc(
 
     match msg {
         event::WM_APP_TRAY => {
-            handle_tray(wparam, lparam);
+            unsafe { handle_tray(wparam, lparam); }
             LRESULT(0)
         }
 
@@ -570,10 +570,10 @@ unsafe extern "system" fn main_wndproc(
                     windows::Win32::System::RemoteDesktop::WTSUnRegisterSessionNotification(hwnd);
             }
             crate::platform::message_loop::quit(0);
-            LRESULT(DefWindowProcW(hwnd, msg, wparam, lparam).0)
+            unsafe { LRESULT(DefWindowProcW(hwnd, msg, wparam, lparam).0) }
         }
 
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => win::def_proc(hwnd, msg, wparam, lparam),
     }
 }
 

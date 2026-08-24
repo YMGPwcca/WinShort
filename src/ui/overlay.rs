@@ -641,6 +641,8 @@ unsafe fn make_format(
     size: f32,
     weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
 ) -> Result<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat> {
+    // SAFETY: DWrite factory/text-format COM calls on objects created by the caller.
+    unsafe {
     let family = HSTRING::from("Segoe UI Variable Text");
     let locale = HSTRING::from("en-US");
     let format = dwrite
@@ -658,7 +660,7 @@ unsafe fn make_format(
     format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
     format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
     Ok(format)
-}
+} }
 
 unsafe fn draw_text(
     target: &ID2D1RenderTarget,
@@ -667,6 +669,8 @@ unsafe fn draw_text(
     rect: D2D_RECT_F,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
 ) {
+    // SAFETY: Direct2D DrawText on a live render target; buffers sized locally.
+    unsafe {
     let wide: Vec<u16> = value.encode_utf16().collect();
     target.DrawText(
         &wide,
@@ -676,7 +680,7 @@ unsafe fn draw_text(
         windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
         DWRITE_MEASURING_MODE_NATURAL,
     );
-}
+} }
 
 unsafe fn draw_icon(
     target: &ID2D1RenderTarget,
@@ -686,6 +690,8 @@ unsafe fn draw_icon(
     scale: f32,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
 ) {
+    // SAFETY: Direct2D geometry drawing on a live render target created above.
+    unsafe {
     let w = 1.8 * scale;
     match icon {
         OverlayIcon::Microphone => {
@@ -810,7 +816,7 @@ unsafe fn draw_icon(
             );
         }
     }
-}
+} }
 
 fn color(color: Color) -> D2D1_COLOR_F {
     color.d2d()
@@ -859,6 +865,8 @@ unsafe extern "system" fn overlay_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // SAFETY: window handle is thread-valid; state access via WindowState cell.
+    unsafe {
     if msg == WM_NCCREATE {
         let create = &*(lparam.0 as *const CREATESTRUCTW);
         let state = Box::from_raw(create.lpCreateParams as *mut OverlayState);
@@ -883,4 +891,4 @@ unsafe extern "system" fn overlay_wndproc(
         WM_DPICHANGED => LRESULT(0),
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-}
+} }

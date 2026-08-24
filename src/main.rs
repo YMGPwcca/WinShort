@@ -6,6 +6,9 @@
 // GUI subsystem in release: no console window (spec §67.2). Debug keeps the
 // console for `cargo run` diagnostics.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Unsafe hygiene (#25): inside `unsafe fn` bodies every operation must be
+// explicitly re-wrapped and justified — no implicit blanket unsafety.
+#![deny(unsafe_op_in_unsafe_fn)]
 #[macro_use]
 mod diagnostics;
 
@@ -43,9 +46,12 @@ unsafe fn tz_bias_minutes() -> i32 {
     use windows::Win32::System::Time::{
         GetDynamicTimeZoneInformation, DYNAMIC_TIME_ZONE_INFORMATION,
     };
-    let mut tz = DYNAMIC_TIME_ZONE_INFORMATION::default();
-    GetDynamicTimeZoneInformation(&mut tz);
-    tz.Bias
+    // SAFETY: plain out-parameter query with no side effects.
+    unsafe {
+        let mut tz = DYNAMIC_TIME_ZONE_INFORMATION::default();
+        GetDynamicTimeZoneInformation(&mut tz);
+        tz.Bias
+    }
 }
 
 fn main() {
@@ -82,7 +88,7 @@ fn main() {
         error_!("CoInitializeEx failed on the UI thread; COM-backed subsystems cannot start");
     }
 
-    let run_result = app::App::create_main_window().and_then(|()| run(role, com));
+    let run_result = run(role, com);
     if let Err(e) = run_result {
         error_!("fatal: {e}");
         fatal_message_box(&e.to_string());

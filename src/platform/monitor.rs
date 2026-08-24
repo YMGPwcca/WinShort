@@ -70,7 +70,8 @@ unsafe extern "system" fn enum_proc(
     _rect: *mut RECT,
     lparam: LPARAM,
 ) -> windows::core::BOOL {
-    let list = &mut *(lparam.0 as *mut Vec<MonitorGeometry>);
+    // SAFETY: lparam carries the caller-owned Vec reference for this callback.
+    let list = unsafe { &mut *(lparam.0 as *mut Vec<MonitorGeometry>) };
     if let Some(g) = info_for(hmon) {
         list.push(g);
     }

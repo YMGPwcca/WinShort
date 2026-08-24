@@ -253,21 +253,29 @@ unsafe extern "system" fn low_level_keyboard_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if code < 0 {
-        return CallNextHookEx(None, code, wparam, lparam);
+        // SAFETY: required pass-through per LowLevelKeyboardProc contract.
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 
     let ptr = HOOK_STATE.load(Ordering::Acquire);
     if ptr.is_null() {
-        return CallNextHookEx(None, code, wparam, lparam);
+        // SAFETY: no state installed; plain pass-through.
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
-    let state = &mut *ptr;
+    // SAFETY: HOOK_STATE is owned by this hook thread and only nulled after
+    // the thread exits its message loop.
+    let state = unsafe { &mut *ptr };
 
     let down = match wparam.0 as u32 {
         WM_KEYDOWN | WM_SYSKEYDOWN => true,
         WM_KEYUP | WM_SYSKEYUP => false,
-        _ => return CallNextHookEx(None, code, wparam, lparam),
+        _ => {
+            // SAFETY: required pass-through.
+            return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+        }
     };
-    let data = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+    // SAFETY: KBDLLHOOKSTRUCT is owned by the OS for this callback.
+    let data = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
     let injected = data.flags.contains(LLKHF_INJECTED)
         || data.flags.contains(LLKHF_LOWER_IL_INJECTED);
     let event = RawKeyEvent {
@@ -283,7 +291,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
         return if capture_event(state, event) {
             LRESULT(1)
         } else {
-            CallNextHookEx(None, code, wparam, lparam)
+            // SAFETY: pass-through when the event cannot be classified.
+            unsafe { CallNextHookEx(None, code, wparam, lparam) }
         };
     }
     // Lock-free snapshot read (#10): the table is rebuilt by ConfigHandle on
@@ -296,16 +305,20 @@ unsafe extern "system" fn low_level_keyboard_proc(
     };
 
     match state.engine.on_event(event, table) {
-        EngineOutcome::Pass => CallNextHookEx(None, code, wparam, lparam),
+        // SAFETY: standard hook chain pass-through.
+        EngineOutcome::Pass => unsafe { CallNextHookEx(None, code, wparam, lparam) },
         EngineOutcome::Swallow => LRESULT(1),
         EngineOutcome::Dispatch { action, dirty_win_chord } => {
             let hwnd = HWND(state.main_hwnd_raw as *mut _);
-            let _ = PostMessageW(
-                Some(hwnd),
-                WM_APP_ACTION,
-                WPARAM(action.pack()),
-                LPARAM(if dirty_win_chord { 1 } else { 0 }),
-            );
+            // SAFETY: hwnd was valid at thread start and outlives the hook.
+            let _ = unsafe {
+                PostMessageW(
+                    Some(hwnd),
+                    WM_APP_ACTION,
+                    WPARAM(action.pack()),
+                    LPARAM(if dirty_win_chord { 1 } else { 0 }),
+                )
+            };
             LRESULT(1)
         }
     }
