@@ -12,8 +12,7 @@ use std::collections::HashMap;
 
 fn opaque_id_strategy() -> impl Strategy<Value = String> {
     // Realistic opaque endpoint-ID alphabet (no NUL; TOML/Win32 reject it).
-    r"[{0-9a-fA-F.\-_ }{1,120}]"
-        .prop_filter("non-empty", |s| !s.trim().is_empty())
+    r"[{0-9a-fA-F.\-_ }{1,120}]".prop_filter("non-empty", |s| !s.trim().is_empty())
 }
 
 proptest! {
