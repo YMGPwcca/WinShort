@@ -52,6 +52,9 @@ pub struct BackendStatus {
     pub fallback: BackendAvailability,
     pub active: BackendKind,
     pub desktop_count: Option<usize>,
+    /// Backend that actually completed the most recent switch, including via
+    /// fallback (#21). `None` until the first successful switch.
+    pub last_served: Option<BackendKind>,
 }
 
 /// Typed desktop operation failures (#20). The error CLASS decides policy:

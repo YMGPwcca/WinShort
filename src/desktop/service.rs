@@ -72,6 +72,8 @@ struct DesktopController {
     native: Option<InternalBackend>,
     native_availability: BackendAvailability,
     fallback: KeyboardFallback,
+    /// Backend that actually completed the last switch (#21).
+    last_served: Option<BackendKind>,
 }
 
 impl DesktopController {
@@ -99,6 +101,7 @@ impl DesktopController {
             native,
             native_availability,
             fallback: KeyboardFallback::new(),
+            last_served: None,
         };
         controller.publish_status();
         Ok(controller)
@@ -107,17 +110,25 @@ impl DesktopController {
     fn switch_to(&mut self, index: usize) {
         match self.try_native(index) {
             // Served or refused: no synthetic input.
-            NativeOutcome::Served | NativeOutcome::Refused(_) => {
+            NativeOutcome::Served => {
+                self.last_served = Some(BackendKind::NativeShell);
+                self.publish_status();
+                return;
+            }
+            NativeOutcome::Refused(_) => {
                 self.publish_status();
                 return;
             }
             NativeOutcome::MayFallback => {}
         }
         match self.fallback.switch_to(index) {
-            Ok(()) => crate::info!(
-                "switched toward virtual desktop {} via keyboard fallback (best effort)",
-                index + 1
-            ),
+            Ok(()) => {
+                crate::info!(
+                    "switched toward virtual desktop {} via keyboard fallback (best effort)",
+                    index + 1
+                );
+                self.last_served = Some(BackendKind::KeyboardFallback);
+            }
             Err(e) => crate::error_!("keyboard desktop fallback failed: {e}"),
         }
         self.publish_status();
@@ -149,6 +160,7 @@ impl DesktopController {
         match native.switch_to(index) {
             Ok(()) => {
                 crate::info!("switched to virtual desktop {} via Native Shell", index + 1);
+                self.last_served = Some(BackendKind::NativeShell);
                 return NativeOutcome::Served;
             }
             Err(e) if e.permits_fallback() => {
@@ -171,6 +183,7 @@ impl DesktopController {
                             "switched to desktop {} after Shell proxy rebuild",
                             index + 1
                         );
+                        self.last_served = Some(BackendKind::NativeShell);
                         return NativeOutcome::Served;
                     }
                     Err(e) if !e.permits_fallback() => {
@@ -202,6 +215,7 @@ impl DesktopController {
                 BackendKind::KeyboardFallback
             },
             desktop_count: count,
+            last_served: self.last_served,
         }
     }
 

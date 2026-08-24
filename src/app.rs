@@ -144,6 +144,7 @@ impl App {
                 fallback: crate::desktop::BackendAvailability::Available,
                 active: crate::desktop::BackendKind::KeyboardFallback,
                 desktop_count: None,
+                last_served: None,
             },
             microphone_state: crate::audio::AudioState::Unavailable {
                 reason: "Starting audio…".into(),

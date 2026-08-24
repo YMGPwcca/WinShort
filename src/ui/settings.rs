@@ -325,11 +325,16 @@ impl SettingsUi {
                         .desktop_count
                         .map(|count| format!(" • {count} desktops"))
                         .unwrap_or_default();
+                    let last = status
+                        .last_served
+                        .map(|kind| kind.label())
+                        .unwrap_or("none yet");
                     format!(
-                        "{}{} • {}",
+                        "{}{} • {} • last served {}",
                         status.active.label(),
                         count,
-                        status.native.label()
+                        status.native.label(),
+                        last
                     )
                 })
                 .unwrap_or_else(|| "Detecting virtual desktop backend…".into());
