@@ -108,19 +108,29 @@ fn run(role: PrimaryRole, _com: crate::platform::com::ComApartment) -> Result<()
         .cloned()
         .ok_or_else(|| error::Error::internal("config handle missing"))?;
 
-    // Install subsystems inside one main-thread borrow.
-    match app::with_app(|app| -> Result<()> {
-        app.install_tray()?;
-        app.install_overlay()?;
-        app.install_foreground_tracker()?;
-        app.install_audio(config.clone())?;
-        app.install_keyboard(config)?;
-        app.install_desktop()?;
-        Ok(())
-    }) {
-        Some(Ok(())) => {}
-        Some(Err(e)) => return Err(e),
-        None => return Err(error::Error::internal("app singleton missing")),
+    // Degraded startup (#27): each subsystem failure is recorded and logged;
+    // only the main window itself is fatal. Settings/tray still come up.
+    let install_errors = app::with_app(|app| -> Vec<String> {
+        let mut failures = Vec::new();
+        macro_rules! step {
+            ($name:literal, $expr:expr) => {
+                if let Err(e) = $expr {
+                    app.degrade($name, &e);
+                    failures.push(format!("{}: {}", $name, e));
+                }
+            };
+        }
+        step!("tray", app.install_tray());
+        step!("overlay", app.install_overlay());
+        step!("foreground", app.install_foreground_tracker());
+        step!("audio", app.install_audio(config.clone()));
+        step!("keyboard", app.install_keyboard(config));
+        step!("desktop", app.install_desktop());
+        failures
+    })
+    .unwrap_or_default();
+    for f in &install_errors {
+        error_!("degraded startup: {f}");
     }
 
     // Owned watcher runtime (#24): joined after the loop exits; begin_shutdown

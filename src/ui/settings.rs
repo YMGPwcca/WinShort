@@ -329,13 +329,22 @@ impl SettingsUi {
                         .last_served
                         .map(|kind| kind.label())
                         .unwrap_or("none yet");
-                    format!(
+                    let mut text = format!(
                         "{}{} • {} • last served {}",
                         status.active.label(),
                         count,
                         status.native.label(),
                         last
-                    )
+                    );
+                    if let Some(degraded) =
+                        crate::app::with_app(|app| app.degraded_summary())
+                    {
+                        if degraded != "all subsystems ok" {
+                            text.push_str(" • degraded: ");
+                            text.push_str(&degraded);
+                        }
+                    }
+                    text
                 })
                 .unwrap_or_else(|| "Detecting virtual desktop backend…".into());
                 ControlValue::Text(Cow::Owned(text))

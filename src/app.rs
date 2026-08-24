@@ -61,6 +61,9 @@ pub struct App {
     pending_overlay: Option<PendingOverlay>,
     suspended: bool,
     shutting_down: bool,
+    /// Per-subsystem startup failures (degraded startup, #27): the app stays
+    /// up with tray/Settings and surfaces why a subsystem is dark.
+    degraded: Vec<(&'static str, String)>,
 }
 
 thread_local! {
@@ -158,6 +161,7 @@ impl App {
             pending_overlay: None,
             suspended: false,
             shutting_down: false,
+            degraded: Vec::new(),
         });
         Ok(())
     }
@@ -225,6 +229,31 @@ impl App {
             .as_ref()
             .map(crate::audio::AudioService::devices)
             .unwrap_or_default()
+    }
+
+    /// Record a subsystem startup failure and keep going (#27).
+    pub fn degrade(&mut self, name: &'static str, error: &crate::error::Error) {
+        crate::warn_!("subsystem {name} unavailable: {error}");
+        self.degraded.push((name, error.to_string()));
+    }
+
+    pub fn degraded_reason(&self, name: &str) -> Option<String> {
+        self.degraded
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, r)| r.clone())
+    }
+
+    pub fn degraded_summary(&self) -> String {
+        if self.degraded.is_empty() {
+            "all subsystems ok".into()
+        } else {
+            self.degraded
+                .iter()
+                .map(|(name, reason)| format!("{name}: {reason}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        }
     }
 
     /// Clear keyboard chord state (lock/unlock, sleep/resume, suspend
@@ -300,15 +329,30 @@ impl App {
         }
         match action {
             HotkeyAction::ToggleMicrophone => {
-                self.pending_overlay = Some(PendingOverlay::Microphone);
                 if let Some(audio) = &self.audio {
+                    self.pending_overlay = Some(PendingOverlay::Microphone);
                     audio.send(crate::audio::AudioCommand::ToggleMicrophone);
+                } else {
+                    // Degraded startup (#27): tell the user why nothing happened.
+                    let reason = self
+                        .degraded_reason("audio")
+                        .unwrap_or_else(|| "audio subsystem unavailable".into());
+                    self.route_event(AppEvent::MicrophoneStateChanged(
+                        crate::audio::AudioState::Unavailable { reason },
+                    ));
                 }
             }
             HotkeyAction::ToggleOutput => {
-                self.pending_overlay = Some(PendingOverlay::Output);
                 if let Some(audio) = &self.audio {
+                    self.pending_overlay = Some(PendingOverlay::Output);
                     audio.send(crate::audio::AudioCommand::ToggleOutput);
+                } else {
+                    let reason = self
+                        .degraded_reason("audio")
+                        .unwrap_or_else(|| "audio subsystem unavailable".into());
+                    self.route_event(AppEvent::OutputStateChanged(
+                        crate::audio::OutputState::Unavailable { reason },
+                    ));
                 }
             }
             HotkeyAction::ToggleForegroundAppAudio => {
