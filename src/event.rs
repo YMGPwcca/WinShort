@@ -224,5 +224,4 @@ mod tests {
             assert!(q.drain().is_empty());
         }
     }
-
 }

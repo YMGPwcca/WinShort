@@ -194,7 +194,9 @@ impl VirtualKey {
                     }
                     return None;
                 }
-                let c = upper.chars().next().unwrap();
+                let Some(c) = upper.chars().next() else {
+                    return None; // empty token (#58)
+                };
                 if c.is_ascii_digit() {
                     return Some(Self(0x30 + (c as u16 - b'0' as u16)));
                 }

@@ -14,8 +14,20 @@ use proptest::prelude::*;
 
 const MODS: [u16; 8] = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
 const KEYS: [u16; 14] = [
-    b'M' as u16, b'O' as u16, b'K' as u16, b'1' as u16, b'5' as u16, b'9' as u16,
-    0x60, 0x63, 0x14, 0xBA, 0xBB, 0xBD, 0xBE, 0xBF,
+    b'M' as u16,
+    b'O' as u16,
+    b'K' as u16,
+    b'1' as u16,
+    b'5' as u16,
+    b'9' as u16,
+    0x60,
+    0x63,
+    0x14,
+    0xBA,
+    0xBB,
+    0xBD,
+    0xBE,
+    0xBF,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +59,10 @@ fn table() -> BindingTable {
     let mut t = BindingTable::default();
     for d in 1u16..=9 {
         t.insert(
-            Hotkey { modifiers: ModifierMask::WIN, key: VirtualKey(0x30 + d) },
+            Hotkey {
+                modifiers: ModifierMask::WIN,
+                key: VirtualKey(0x30 + d),
+            },
             HotkeyAction::SwitchDesktop((d - 1) as u8),
         );
     }
@@ -210,5 +225,3 @@ fn debug_two_win_overlap_trace() {
     eprintln!("up rwin: {o5:?}");
     eprintln!("neutral: {}", e.is_neutral());
 }
-
-

@@ -166,8 +166,7 @@ impl KeyboardEngine {
                 let held: Vec<u16> = self.state.pressed_nonmods().collect();
                 for key in held {
                     if let Some(action) = table.lookup(mask, VirtualKey(key)) {
-                        self.win_ups_to_swallow |=
-                            if vk == vks::VK_LWIN { 1 } else { 2 };
+                        self.win_ups_to_swallow |= if vk == vks::VK_LWIN { 1 } else { 2 };
                         self.passthrough_while_win = false;
                         return EngineOutcome::Dispatch {
                             action,

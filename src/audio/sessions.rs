@@ -574,8 +574,8 @@ mod tests {
 #[cfg(test)]
 mod fallback_group_props {
     use super::*;
-    use std::collections::HashMap;
     use proptest::prelude::*;
+    use std::collections::HashMap;
 
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(128))]
