@@ -190,7 +190,7 @@ fn digit_first_then_win_completes_and_hides_win_cycle() {
     assert_eq!(out[0], EngineOutcome::Pass);
     expect_dispatch(out[1], HotkeyAction::SwitchDesktop(3), false);
     assert_eq!(out[2], EngineOutcome::Swallow);
-    assert_eq!(out[3], EngineOutcome::Swallow); // digit up suppressed (bound at completion)
+    assert_eq!(out[3], EngineOutcome::Pass); // #5: down passed, so up passes too
 }
 
 #[test]
@@ -364,4 +364,47 @@ fn mixed_order_modifier_releases_converge_empty() {
         ],
     );
     assert_eq!(e.current_modifiers(), ModifierMask::NONE);
+}
+
+#[test]
+fn digit_first_win_up_then_digit_up_passes_digit_up() {
+    // Regression for #5: 1↓ (passed), Win↓ completes → dispatch, Win↑
+    // swallowed, then 1↑ must PASS — the shell saw the down.
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(b'1' as u16),
+            RawKeyEvent::down(VK_LWIN),
+            RawKeyEvent::up(VK_LWIN),
+            RawKeyEvent::up(b'1' as u16),
+        ],
+    );
+    assert_eq!(out[0], EngineOutcome::Pass);
+    expect_dispatch(out[1], HotkeyAction::SwitchDesktop(0), false);
+    assert_eq!(out[2], EngineOutcome::Swallow); // hide the Win cycle
+    assert_eq!(out[3], EngineOutcome::Pass);
+}
+
+#[test]
+fn digit_first_digit_up_before_win_up_still_symmetric() {
+    // 1↓ Win↓ 1↑ Win↑: digit up passes, Win up swallowed.
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(b'1' as u16),
+            RawKeyEvent::down(VK_RWIN),
+            RawKeyEvent::up(b'1' as u16),
+            RawKeyEvent::up(VK_RWIN),
+        ],
+    );
+    assert_eq!(out[0], EngineOutcome::Pass);
+    expect_dispatch(out[1], HotkeyAction::SwitchDesktop(0), false);
+    assert_eq!(out[2], EngineOutcome::Pass);
+    assert_eq!(out[3], EngineOutcome::Swallow);
 }

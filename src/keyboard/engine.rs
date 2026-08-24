@@ -127,15 +127,17 @@ impl KeyboardEngine {
 
             // Digit-first completion: a non-modifier is already held and this
             // Win press completes a binding. That earlier key-down already
-            // passed through, so we complete the action here and swallow the
+            // PASSED THROUGH, so we complete the action here and swallow the
             // ENTIRE Win press cycle from the shell (no Start, no latch).
+            //
+            // Invariant (#5): a key-down we passed must have its key-up
+            // passed too. Do NOT add this key to suppressed_ups.
             if KeyState::is_win_key(vk) && self.state.any_win() {
                 let mask = self.state.modifiers();
                 let held: Vec<u16> = self.state.pressed_nonmods().collect();
                 for key in held {
                     if let Some(action) = table.lookup(mask, VirtualKey(key)) {
                         self.win_down_swallowed = true;
-                        self.suppressed_ups.insert(key);
                         self.passthrough_while_win = false;
                         return EngineOutcome::Dispatch { action, dirty_win_chord: false };
                     }
