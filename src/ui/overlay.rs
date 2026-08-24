@@ -289,10 +289,13 @@ impl OverlayState {
             return Ok(());
         }
         let monitor = select_monitor(config.monitor.clone());
-        // PMv2: the window's own DPI is authoritative once created; take the
-        // larger of monitor estimate and window DPI to avoid undershoot.
-        let win_dpi = crate::platform::dpi::dpi_for_window(hwnd);
-        self.dpi = monitor.as_ref().map_or(96, |m| m.dpi).max(win_dpi).max(96);
+        // PMv2 (#49): the TARGET monitor's effective DPI is the sole source of
+        // truth. The HWND still lives on the previous monitor here, so its
+        // window DPI is stale — never max() it (monotonic DPI breaks
+        // high->low transitions).
+        self.dpi = crate::platform::dpi::effective_render_dpi(
+            monitor.as_ref().map(|m| m.dpi),
+        );
         self.model = model;
         self.config = config.clone();
         self.surface = Some(
@@ -1039,6 +1042,10 @@ unsafe extern "system" fn overlay_wndproc(
             WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_ERASEBKGND => LRESULT(1),
+            // PMv2 (#49): deliberately ignored. UpdateLayeredWindow owns the
+            // window size/position and every show() re-renders at the target
+            // monitor's DPI before repositioning; applying the suggested rect
+            // here would fight that ownership.
             WM_DPICHANGED => LRESULT(0),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
