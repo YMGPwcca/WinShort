@@ -205,10 +205,6 @@ proptest! {
     }
 }
 
-fn got_swallowed_of(out: EngineOutcome) -> bool {
-    !matches!(out, EngineOutcome::Pass)
-}
-
 #[test]
 fn debug_two_win_overlap_trace() {
     let mut e = KeyboardEngine::new();

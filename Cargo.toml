@@ -5,11 +5,11 @@ edition = "2021"
 description = "Native Windows tray utility: audio hotkeys, status overlay, virtual desktop switching."
 license = "MIT"
 
+rust-version = "1.85"
+
 [[bin]]
 name = "winshort"
 path = "src/main.rs"
-
-rust-version = "1.85"
 
 [dependencies]
 windows = { version = "0.62", features = [

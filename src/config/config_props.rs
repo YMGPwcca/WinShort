@@ -5,10 +5,9 @@
 
 use crate::config::load::load;
 use crate::config::model::*;
-use crate::config::{clear_config_readonly, config_readonly, latch_guard};
-use crate::keyboard::binding::{Hotkey, VirtualKey};
+use crate::config::{clear_config_readonly, config_readonly};
+use crate::keyboard::binding::VirtualKey;
 use proptest::prelude::*;
-use std::collections::HashMap;
 
 fn opaque_id_strategy() -> impl Strategy<Value = String> {
     // Realistic opaque endpoint-ID alphabet (no NUL; TOML/Win32 reject it).
@@ -55,7 +54,7 @@ proptest! {
     /// stays functional afterwards; future schemas never enable writes.
     #[test]
     fn toml_fuzz_never_enables_writes(doc in "[^\\x00]{0,2000}") {
-        let _guard = latch_guard();
+        let _guard = crate::config::latch_guard();
         clear_config_readonly();
         let dir = std::env::temp_dir().join(format!(
             "ws_fuzz_{}_{:x}",

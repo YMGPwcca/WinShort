@@ -104,6 +104,7 @@ pub fn data_dir() -> std::path::PathBuf {
     }
 }
 
+#[cfg(test)]
 pub(crate) static LATCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static CONFIG_READONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -119,6 +120,7 @@ pub fn config_readonly() -> bool {
 
 /// Test-only: the read-only latch is process-global; tests that trip it must
 /// clear it afterwards so unrelated tests are not poisoned.
+#[cfg(test)]
 pub(crate) fn latch_guard() -> std::sync::MutexGuard<'static, ()> {
     match LATCH_LOCK.lock() {
         Ok(g) => g,

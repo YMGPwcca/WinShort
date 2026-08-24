@@ -573,7 +573,6 @@ mod tests {
 
 #[cfg(test)]
 mod fallback_group_props {
-    use super::*;
     use proptest::prelude::*;
     use std::collections::HashMap;
 
@@ -620,7 +619,7 @@ mod fallback_group_props {
                         "selected pids span multiple installations: {distinct_paths:?}"
                     );
                 }
-                other => {}
+                _other => {}
             }
         }
     }
