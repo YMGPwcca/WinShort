@@ -376,7 +376,7 @@ impl App {
             return;
         }
         if let Some(overlay) = &self.overlay {
-            if let Err(e) = overlay.show(model, config.overlay) {
+            if let Err(e) = overlay.show(model, config.overlay.clone()) {
                 error_!("overlay show failed: {e}");
             }
         }

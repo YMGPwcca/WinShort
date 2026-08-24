@@ -23,7 +23,7 @@ pub struct GeneralCfg {
     pub start_hotkeys_enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OverlayCfg {
     pub enabled: bool,
     pub duration_ms: u32,
@@ -114,20 +114,22 @@ impl OverlayPosition {
     ];
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitorChoice {
     /// Monitor containing the foreground window.
     Foreground,
     Primary,
-    Index(u32),
+    /// Stable device identity, e.g. "\\\\.\\DISPLAY1" (#26). Enumeration
+    /// indices change with topology; device names survive reboots.
+    Device(String),
 }
 
 impl MonitorChoice {
-    pub fn label(self) -> String {
+    pub fn label(&self) -> String {
         match self {
             MonitorChoice::Foreground => "Foreground window's monitor".into(),
             MonitorChoice::Primary => "Primary monitor".into(),
-            MonitorChoice::Index(n) => format!("Monitor {}", n + 1),
+            MonitorChoice::Device(name) => format!("Monitor {name}"),
         }
     }
 
@@ -136,17 +138,26 @@ impl MonitorChoice {
             "foreground" => MonitorChoice::Foreground,
             "primary" => MonitorChoice::Primary,
             other => {
-                let n = other.strip_prefix("index:")?.parse().ok()?;
-                MonitorChoice::Index(n)
+                // Legacy `index:N` migrates to Primary (best effort, #26):
+                // enumeration indices are not stable across topology changes.
+                if other.starts_with("index:") {
+                    return Some(MonitorChoice::Primary);
+                }
+                let name = other.strip_prefix("device:")?;
+                if name.is_empty() {
+                    return None;
+                }
+                MonitorChoice::Device(name.to_string())
             }
         })
     }
 
-    pub fn as_str(self) -> String {
+    pub fn as_str(&self) -> String {
         match self {
             MonitorChoice::Foreground => "foreground".into(),
             MonitorChoice::Primary => "primary".into(),
-            MonitorChoice::Index(n) => format!("index:{n}"),
+            // Legacy `index:N` configs migrate to Primary on load (#26).
+            MonitorChoice::Device(name) => format!("device:{name}"),
         }
     }
 }

@@ -15,6 +15,15 @@ use crate::error::{Error, Result};
 
 static OWN_PID: AtomicU32 = AtomicU32::new(0);
 static LAST_EXTERNAL_PID: AtomicU32 = AtomicU32::new(0);
+static LAST_EXTERNAL_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Last non-WinShort top-level window seen in the foreground (#26): lets the
+/// overlay target "Foreground monitor" from a tray click, where the true
+/// foreground is WinShort itself.
+pub fn last_external_hwnd() -> Option<windows::Win32::Foundation::HWND> {
+    let raw = LAST_EXTERNAL_HWND.load(std::sync::atomic::Ordering::Acquire);
+    (raw != 0).then(|| windows::Win32::Foundation::HWND(raw as *mut _))
+}
 
 pub struct ForegroundTracker {
     hook: HWINEVENTHOOK,
@@ -82,6 +91,13 @@ fn remember_if_external(hwnd: HWND) {
     let pid = pid_for_window(hwnd);
     if pid != 0 && pid != OWN_PID.load(Ordering::Acquire) {
         LAST_EXTERNAL_PID.store(pid, Ordering::Release);
+        // #26: remember the window itself for monitor targeting.
+        if !hwnd.0.is_null() {
+            LAST_EXTERNAL_HWND.store(
+                hwnd.0 as usize,
+                std::sync::atomic::Ordering::Release,
+            );
+        }
     }
 }
 

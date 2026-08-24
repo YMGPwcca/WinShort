@@ -276,10 +276,10 @@ impl OverlayState {
         if model.rows.is_empty() || !config.enabled {
             return Ok(());
         }
-        let monitor = select_monitor(config.monitor);
+        let monitor = select_monitor(config.monitor.clone());
         self.dpi = monitor.as_ref().map_or(96, |m| m.dpi).max(96);
         self.model = model;
-        self.config = config;
+        self.config = config.clone();
         self.surface = Some(self.graphics.render(
             &self.model,
             self.dpi,
@@ -289,7 +289,7 @@ impl OverlayState {
         self.base_position = position_for(
             monitor.as_ref().map(|m| m.work).unwrap_or(RECT_FALLBACK),
             size,
-            config.position,
+            config.position.clone(),
             self.dpi,
         );
         let now = Instant::now();
@@ -825,10 +825,25 @@ fn color(color: Color) -> D2D1_COLOR_F {
 fn select_monitor(choice: MonitorChoice) -> Option<crate::platform::monitor::MonitorGeometry> {
     match choice {
         MonitorChoice::Primary => crate::platform::monitor::primary(),
-        MonitorChoice::Index(index) => crate::platform::monitor::all().into_iter().nth(index as usize),
+        // Stable identity (#26): device names survive topology changes;
+        // fall back to primary with a warning when absent.
+        MonitorChoice::Device(name) => {
+            let found = crate::platform::monitor::all()
+                .into_iter()
+                .find(|m| m.device_name == name);
+            if found.is_none() {
+                crate::warn_!("overlay monitor {name} not present; using primary");
+            }
+            found.or_else(crate::platform::monitor::primary)
+        }
+        // Tray-triggered overlays must target the LAST external window's
+        // monitor — the true foreground is WinShort itself (#26).
         MonitorChoice::Foreground => {
-            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
-            crate::platform::monitor::info_for(crate::platform::monitor::from_window(foreground))
+            let target = crate::platform::foreground::last_external_hwnd()
+                .unwrap_or_else(|| unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                });
+            crate::platform::monitor::info_for(crate::platform::monitor::from_window(target))
                 .or_else(crate::platform::monitor::primary)
         }
     }
@@ -856,6 +871,10 @@ fn position_for(
         OverlayPosition::BottomCenter => (center_x, bottom),
         OverlayPosition::BottomRight => (right, bottom),
     };
+    // Clamp into the work area; if the overlay cannot fit (absurd sizes),
+    // re-center on the axis that overflows (#26).
+    let x = x.clamp(work.left, (work.right - size.cx).max(work.left));
+    let y = y.clamp(work.top, (work.bottom - size.cy).max(work.top));
     POINT { x, y }
 }
 

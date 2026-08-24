@@ -514,10 +514,30 @@ impl SettingsUi {
                 self.draft.overlay.position = next_position(self.draft.overlay.position);
             }
             ElementId::OverlayMonitor => {
-                self.draft.overlay.monitor = match self.draft.overlay.monitor {
+                // Cycle Foreground -> Primary -> each connected device (#26).
+                let next = match &self.draft.overlay.monitor {
                     MonitorChoice::Foreground => MonitorChoice::Primary,
-                    MonitorChoice::Primary | MonitorChoice::Index(_) => MonitorChoice::Foreground,
+                    MonitorChoice::Primary => {
+                        // First connected device, if any; otherwise stay.
+                        let first = crate::platform::monitor::all()
+                            .into_iter()
+                            .map(|m| MonitorChoice::Device(m.device_name))
+                            .next();
+                        first.unwrap_or(MonitorChoice::Primary)
+                    }
+                    current @ MonitorChoice::Device(_) => {
+                        let devices: Vec<_> = crate::platform::monitor::all()
+                            .into_iter()
+                            .map(|m| MonitorChoice::Device(m.device_name))
+                            .collect();
+                        devices
+                            .iter()
+                            .position(|d| d == current)
+                            .and_then(|idx| devices.get(idx + 1).cloned())
+                            .unwrap_or(MonitorChoice::Foreground)
+                    }
                 };
+                self.draft.overlay.monitor = next;
             }
             ElementId::OverlayPreview => post_main(crate::event::AppEvent::ShowStatusOverlay),
             ElementId::OpenConfigFolder => open_config_folder(),

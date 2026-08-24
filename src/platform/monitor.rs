@@ -10,6 +10,8 @@ use windows::Win32::Graphics::Gdi::{
 #[derive(Debug, Clone)]
 pub struct MonitorGeometry {
     pub handle: HMONITOR,
+    /// Stable identity from MONITORINFOEXW.szDevice, e.g. "\\\\.\\DISPLAY1" (#26).
+    pub device_name: String,
     /// Full monitor rect in virtual screen coordinates.
     pub rect: RECT,
     /// Work area (excludes taskbar), virtual screen coordinates.
@@ -40,6 +42,10 @@ pub fn info_for(hmon: HMONITOR) -> Option<MonitorGeometry> {
     if ok.as_bool() {
         Some(MonitorGeometry {
             handle: hmon,
+            // SAFETY-adjacent: szDevice is NUL-terminated by the OS.
+            device_name: String::from_utf16_lossy(
+                &info.szDevice[..info.szDevice.iter().position(|&c| c == 0).unwrap_or(0)],
+            ),
             rect: info.monitorInfo.rcMonitor,
             work: info.monitorInfo.rcWork,
             dpi: crate::platform::dpi::monitor_dpi(hmon),
