@@ -104,31 +104,40 @@ impl Drop for WatcherRuntime {
 /// should post ShowSettings to the main window). Exits when shutdown is
 /// signalled. Runs on a dedicated plain thread with no COM.
 pub fn spawn_watcher(
-    _activate_event: HANDLE,
+    activate_event: HANDLE,
     on_activate: impl Fn() + Send + 'static,
 ) -> WatcherRuntime {
     let Some(&shutdown) = SHUTDOWN_EVENT.get() else {
         return WatcherRuntime { join: None };
     };
+    let activate = SendHandle(activate_event);
     let join = std::thread::Builder::new()
         .name("winshort-watcher".into())
-        .spawn(move || watch(shutdown, on_activate))
+        .spawn(move || watch(activate, shutdown, on_activate))
         .expect("spawn watcher thread");
     WatcherRuntime { join: Some(join) }
 }
 
 fn watch(
+    activate: SendHandle,
     shutdown: SendHandle,
     on_activate: impl Fn() + Send + 'static,
 ) {
+    use windows::Win32::Foundation::WAIT_FAILED;
+    use windows::Win32::System::Threading::INFINITE;
     loop {
-        // SAFETY: both handles valid for process lifetime (PrimaryRole owns
-        // the activation event; the shutdown handle lives in SHUTDOWN_EVENT).
-        const SHUTDOWN_INDEX: u32 = 1; // WAIT_OBJECT_0 + 1
-        let result = unsafe { WaitForMultipleObjects(&[shutdown.0], false, 100_000) };
+        // SAFETY: both handles are process-owned for the watcher lifetime;
+        // waiting does not mutate them.
+        let result =
+            unsafe { WaitForMultipleObjects(&[activate.0, shutdown.0], false, INFINITE) };
+        // WAIT_OBJECT_0 + 0 => activation; + 1 => shutdown.
+        const ACTIVATE: u32 = WAIT_OBJECT_0.0;
+        const SHUTDOWN: u32 = WAIT_OBJECT_0.0 + 1;
+        const FAILED: u32 = 0xFFFF_FFFF; // WAIT_FAILED
         match result.0 {
-            0 => on_activate(),          // WAIT_OBJECT_0 + 0: activate
-            SHUTDOWN_INDEX => return,    // WAIT_OBJECT_0 + 1: shutdown
+            ACTIVATE => on_activate(),
+            SHUTDOWN => return,
+            FAILED => return,
             _ => continue,
         }
     }
