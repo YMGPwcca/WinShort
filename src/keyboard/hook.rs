@@ -22,6 +22,7 @@ use crate::error::{Error, Result};
 use crate::event::{HotkeyAction, WM_APP_ACTION};
 use crate::keyboard::binding::{BindingTable, Hotkey, ModifierMask, VirtualKey};
 use crate::keyboard::engine::{EngineOutcome, KeyboardEngine, RawKeyEvent};
+use crate::keyboard::keystate::{normalize_vk, KeyState};
 
 struct HookState {
     main_hwnd_raw: isize,
@@ -33,6 +34,76 @@ struct HookState {
 }
 
 static HOOK_STATE: AtomicPtr<HookState> = AtomicPtr::new(std::ptr::null_mut());
+
+/// One recorded shortcut delivered to the Settings hotkey recorder (#14).
+/// `key: None` means cancelled (Esc).
+#[derive(Debug, Clone, Copy)]
+pub struct CapturedChord {
+    pub modifiers: ModifierMask,
+    pub key: Option<VirtualKey>,
+}
+
+static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static CAPTURE_TX: std::sync::Mutex<Option<mpsc::Sender<CapturedChord>>> =
+    std::sync::Mutex::new(None);
+
+/// Start global capture: the hook swallows all keyboard input and forwards
+/// the first completed chord (or Esc cancellation) through the returned
+/// receiver. Ends automatically when a chord is delivered or [`end_capture`].
+pub fn begin_capture() -> mpsc::Receiver<CapturedChord> {
+    let (tx, rx) = mpsc::channel();
+    match CAPTURE_TX.lock() {
+        Ok(mut slot) => *slot = Some(tx),
+        Err(poisoned) => *poisoned.into_inner() = Some(tx),
+    }
+    CAPTURE_ACTIVE.store(true, Ordering::Release);
+    rx
+}
+
+/// Stop capturing and drop any pending sender.
+pub fn end_capture() {
+    CAPTURE_ACTIVE.store(false, Ordering::Release);
+    match CAPTURE_TX.lock() {
+        Ok(mut slot) => *slot = None,
+        Err(poisoned) => *poisoned.into_inner() = None,
+    }
+}
+
+/// Handle one raw event while capture is active. Always swallows the event:
+/// recorded keys must neither reach other apps nor trigger actions.
+fn capture_event(state: &mut HookState, ev: RawKeyEvent) -> bool {
+    let vk = normalize_vk(ev.vk, ev.extended);
+    if vk >= 256 {
+        return false;
+    }
+    // Track modifier state in the engine so the mask matches real physics.
+    let _ = state.engine.on_event(ev, &state.suspended_bindings);
+    if !ev.down || KeyState::is_modifier(vk) {
+        return true;
+    }
+
+    let tx_slot = match CAPTURE_TX.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let Some(tx) = tx_slot.as_ref() else {
+        return true;
+    };
+    let chord = if vk == 0x1B {
+        CapturedChord { modifiers: ModifierMask::NONE, key: None } // Esc cancels
+    } else {
+        CapturedChord {
+            modifiers: state.engine.current_modifiers(),
+            key: Some(VirtualKey(vk)),
+        }
+    };
+    let _ = tx.send(chord);
+    drop(tx_slot);
+    // First chord completes the capture session.
+    end_capture();
+    state.engine.reset();
+    true
+}
 
 /// Thread message asking the hook thread to clear engine state (#13).
 const WM_APP_RESET_STATE: u32 = 0x8003; // WM_APP + 3
@@ -206,6 +277,15 @@ unsafe extern "system" fn low_level_keyboard_proc(
         injected,
     };
 
+
+    if CAPTURE_ACTIVE.load(Ordering::Acquire) {
+        // Recorder capture mode (#14): swallow everything, deliver chords.
+        return if capture_event(state, event) {
+            LRESULT(1)
+        } else {
+            CallNextHookEx(None, code, wparam, lparam)
+        };
+    }
     // Lock-free snapshot read (#10): the table is rebuilt by ConfigHandle on
     // Save; the callback only loads it. No RwLock, no HashMap rebuild here.
     let table_guard = state.config.bindings();
@@ -277,6 +357,65 @@ mod tests {
             table.lookup(ModifierMask::WIN, VirtualKey(b'9' as u16)),
             Some(HotkeyAction::SwitchDesktop(8))
         );
+    }
+
+    fn test_hook_state() -> HookState {
+        HookState {
+            main_hwnd_raw: 0,
+            engine: KeyboardEngine::new(),
+            suspended_bindings: Arc::new(BindingTable::default()),
+            config: Arc::new(ConfigHandle::new(crate::config::Config::default())),
+            suspended: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn capture_delivers_chord_then_deactivates() {
+        // #14: recording an already-bound hotkey must deliver the chord to
+        // the recorder instead of dispatching its action.
+        let mut st = test_hook_state();
+        let rx = begin_capture();
+        assert!(CAPTURE_ACTIVE.load(Ordering::Acquire));
+
+        // Modifier downs are swallowed and tracked, not delivered yet.
+        assert!(capture_event(&mut st, RawKeyEvent::down(0xA2)));
+        assert!(capture_event(&mut st, RawKeyEvent::down(0xA4)));
+        assert!(rx.try_recv().is_err(), "modifiers alone must not complete");
+
+        let done = capture_event(&mut st, RawKeyEvent::down(b'M' as u16));
+        assert!(done, "chord key-down is swallowed");
+        assert!(!CAPTURE_ACTIVE.load(Ordering::Acquire), "first chord ends capture");
+
+        let chord = rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("chord delivered");
+        assert_eq!(chord.modifiers, ModifierMask::CTRL.union(ModifierMask::ALT));
+        assert_eq!(chord.key, Some(VirtualKey(b'M' as u16)));
+    }
+
+    #[test]
+    fn capture_esc_cancels_without_key() {
+        let mut st = test_hook_state();
+        let rx = begin_capture();
+        assert!(capture_event(&mut st, RawKeyEvent::down(0x1B)));
+        let chord = rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("cancel marker delivered");
+        assert_eq!(chord.key, None);
+        assert!(!CAPTURE_ACTIVE.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn capture_swallows_key_ups_and_ends_cleanly() {
+        let mut st = test_hook_state();
+        let rx = begin_capture();
+        assert!(capture_event(&mut st, RawKeyEvent::down(0xA0)));
+        assert!(capture_event(&mut st, RawKeyEvent::down(b'K' as u16)));
+        assert!(capture_event(&mut st, RawKeyEvent::up(0xA0)));
+        // Chord was K with SHIFT only (released shift after doesn't change it).
+        let chord = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        assert_eq!(chord.modifiers, ModifierMask::SHIFT);
+        assert_eq!(chord.key, Some(VirtualKey(b'K' as u16)));
     }
 
     #[test]

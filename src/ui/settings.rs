@@ -63,6 +63,7 @@ pub struct SettingsUi {
     recording_modifiers: ModifierMask,
     focused: Option<ElementId>,
     recording: Option<ElementId>,
+    capture_rx: Option<std::sync::mpsc::Receiver<crate::keyboard::hook::CapturedChord>>,
     scroll: f32,
     motion: Motion,
     applied_until: Option<Instant>,
@@ -83,6 +84,7 @@ impl SettingsUi {
             focused: None,
             recording_modifiers: ModifierMask::NONE,
             recording: None,
+            capture_rx: None,
             scroll: 0.0,
             motion: Motion::default(),
             applied_until: None,
@@ -445,6 +447,12 @@ impl SettingsUi {
                 self.recording = Some(id);
                 self.recording_modifiers = ModifierMask::NONE;
                 self.validation.clear();
+                // Capture mode (#14): the global hook forwards the chord here
+                // instead of dispatching it, so re-recording an active hotkey
+                // no longer triggers its action. Without a hook (keyboard
+                // subsystem down) the local WM_KEY* fallback still records.
+                self.capture_rx = Some(crate::keyboard::hook::begin_capture());
+                start_timer(hwnd);
             }
             ElementId::InputDevice => {
                 let devices = crate::app::with_app(|app| app.audio_devices().inputs)
@@ -491,11 +499,15 @@ impl SettingsUi {
             ElementId::ResetSettings => {
                 self.draft = Config::default();
                 self.validation.clear();
+                crate::keyboard::hook::end_capture();
+                self.capture_rx = None;
                 self.recording = None;
             }
             ElementId::Cancel => {
                 self.draft = (*crate::app::config()).clone();
                 self.validation.clear();
+                crate::keyboard::hook::end_capture();
+                self.capture_rx = None;
                 self.recording = None;
             }
             ElementId::Save => self.save(hwnd),
@@ -599,6 +611,33 @@ impl SettingsUi {
         self.validation = crate::config::validate(&self.draft);
         invalidate(hwnd);
         true
+    }
+
+    /// Apply a chord delivered by hook capture mode (#14).
+    fn finish_recording(&mut self, chord: crate::keyboard::hook::CapturedChord) {
+        self.recording_modifiers = ModifierMask::NONE;
+        match chord.key {
+            None => {
+                // Esc: cancel recording.
+                self.recording = None;
+                self.validation.clear();
+            }
+            Some(key) => {
+                if let Some(id) = self.recording {
+                    let hotkey = Hotkey { modifiers: chord.modifiers, key };
+                    match id {
+                        ElementId::MicHotkey => self.draft.hotkeys.toggle_microphone = Some(hotkey),
+                        ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
+                        ElementId::ForegroundHotkey => {
+                            self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
+                        }
+                        _ => {}
+                    }
+                }
+                self.recording = None;
+                self.validation = crate::config::validate(&self.draft);
+            }
+        }
     }
 
     fn focus_next(&mut self, reverse: bool) {
@@ -771,7 +810,12 @@ unsafe extern "system" fn settings_wndproc(
 
     match msg {
         WM_CLOSE => {
-            cell.borrow_mut().recording = None;
+            let mut ui = cell.borrow_mut();
+            if ui.recording.is_some() || ui.capture_rx.is_some() {
+                crate::keyboard::hook::end_capture();
+            }
+            ui.capture_rx = None;
+            ui.recording = None;
             let _ = ShowWindow(hwnd, SW_HIDE);
             LRESULT(0)
         }
@@ -935,10 +979,27 @@ unsafe extern "system" fn settings_wndproc(
         }
         WM_TIMER if wparam.0 == UI_TIMER => {
             let mut ui = cell.borrow_mut();
+            // Drain the hotkey-capture channel while recording (#14): the
+            // global hook swallows the physical keys, so chords arrive here
+            // instead of via WM_KEYDOWN.
+            if let Some(rx) = ui.capture_rx.take() {
+                let mut received = Vec::new();
+                while let Ok(chord) = rx.try_recv() {
+                    received.push(chord);
+                }
+                for chord in received {
+                    ui.finish_recording(chord);
+                }
+                if ui.recording.is_some() {
+                    ui.capture_rx = Some(rx);
+                } else {
+                    crate::keyboard::hook::end_capture();
+                }
+            }
             let active = ui.motion.tick();
             let applied = ui.applied_until.is_some_and(|until| Instant::now() < until);
             invalidate(hwnd);
-            if !active && !applied {
+            if !active && !applied && ui.recording.is_none() {
                 let _ = KillTimer(Some(hwnd), UI_TIMER);
             }
             LRESULT(0)
