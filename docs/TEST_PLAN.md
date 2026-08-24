@@ -73,3 +73,69 @@ alignment, hover/focus/disabled/error states captured programmatically where pos
 release exe launches silently (no console) · tray icon present · double-click opens one settings
 window · close keeps process alive · Exit removes icon and process ends · second launch activates
 first instance and exits · idle CPU ≈ 0 (measured via typeperf over 30 s idle).
+
+---
+
+# Test classification (#37)
+
+Every behavior in this plan is classified as one of:
+
+- **AUTOMATED IN CI** — deterministic `cargo test` coverage running on every push/PR.
+- **PROPERTY TEST** — proptest-generated coverage over an invariant domain (runs in CI).
+- **FUZZ TARGET** — robustness strategy expressed as bounded arbitrary-input tests inside
+  `cargo test` (see Fuzzing note below); no separate libFuzzer job.
+- **MANUAL / HARDWARE-DEPENDENT** — requires a real desktop session, physical devices,
+  or shell state; must be verified by hand per release.
+
+## Fuzzing note (platform reality)
+
+`cargo-fuzz`/libFuzzer targets require nightly + a sanitizer runtime and are not
+supported for `windows-msvc` targets in this repository's setup. The practical
+equivalent implemented here: **bounded arbitrary-input strategies via proptest**
+against the hotkey parser and config TOML parser (no panic, bounded time), executed
+as normal `#[test]`s in CI. These run on every push; no continuous fuzz campaign is
+claimed.
+
+## Manual regression matrix
+
+### Keyboard
+- Win+E / Win+R / Win+D / Win+L / Win+Shift+S
+- Win+1..9 desktop switching
+- Digit-first Win+number (digit held before Win)
+- AltGr typing on a real AltGr layout (e.g. German)
+- Hotkey recorder capture of an already-bound hotkey
+- Rapid recorder cancel → re-arm → keypress (#47/#48 race window)
+- Overlapping LWin/RWin over a held digit (#57)
+
+### Lifecycle
+- Second instance while running (activation)
+- Second instance launched during shutdown
+- Repeated start/exit cycles
+- Lock/unlock (engine reset)
+- Sleep/resume
+
+### Tray
+- Menu open/close ×20 (GDI/handle stability)
+- Explorer restart → tray recreation
+
+### Audio
+- Input/output mute toggles
+- Default output device change
+- Device unplug/replug
+- Windows Audio service restart
+- Multi-session foreground app (browser with media)
+- Same-basename different installations (#46 ambiguous case)
+- Same-full-path independent instances (accepted limitation)
+
+### Virtual desktop
+- Win+1..9 target changes (registry CurrentVirtualDesktop verification)
+- Target beyond desktop count (must NOT inject fallback keys)
+- External desktop add/remove/reorder
+- Elevated foreground app / UIPI fallback refusal log
+
+### DPI / overlay
+- 100% → 150% monitor move (scale up)
+- 150% → 100% monitor move (scale down — #49 regression)
+- Alternating overlay targets between monitors
+- Negative virtual-screen coordinates
+- Monitor unplug/replug during overlay
