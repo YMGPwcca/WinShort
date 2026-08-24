@@ -460,11 +460,10 @@ unsafe extern "system" fn main_wndproc(
         }
 
         WM_APP_EVENT => {
-            let boxed = event::take_event(lparam.0 as usize);
-            if let Some(app) = App::get() {
-                app.route_event(*boxed);
-            } else {
-                drop(boxed);
+            for ev in event::EVENTS.get_or_init(event::EventQueue::new).drain() {
+                if let Some(app) = App::get() {
+                    app.route_event(ev);
+                }
             }
             LRESULT(0)
         }
