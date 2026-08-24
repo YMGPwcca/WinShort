@@ -129,7 +129,9 @@ impl DesktopController {
                 );
                 self.last_served = Some(BackendKind::KeyboardFallback);
             }
-            Err(e) => crate::error_!("keyboard desktop fallback failed: {e}"),
+            Err(e) => crate::error_!(
+                "keyboard desktop fallback failed: {e} — target not verified (possible UIPI block)"
+            ),
         }
         self.publish_status();
     }

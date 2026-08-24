@@ -92,12 +92,18 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 
 ## Fallback backend guarantees
 
-The SendInput fallback synthesizes `Ctrl+Win+Left/Right` repeatedly from the current desktop to
-reach the target index. It requires knowing the current index, which it tracks from observed
-switch results — it is **best effort**: if another app or the user moves desktops without our
-knowledge, relative tracking can drift until corrected by a successful native-backend read or a
-user-visible correction. The settings Advanced page shows which backend is active and why
-(spec §21 wording).
+The SendInput fallback synthesizes `Ctrl+Win+Left` **32 times** to saturate at desktop 1, then
+`Ctrl+Win+Right` *index* times. It does NOT track the current index — the saturate-left walk
+makes tracking unnecessary and self-correcting every invocation. It is **best effort**: another
+app or user moving desktops during the walk can shift the landing point. A partial `SendInput`
+aborts the remaining chords immediately (keys are released best effort) and diagnostics report
+"target not verified". An elevated foreground window blocks synthesized input entirely (UIPI);
+the log names this possibility. The settings Advanced page shows which backend is active,
+the reason, and the last-served backend (#21/#22).
+
+**Whitelist scope:** membership is decided by build family only (`26100`,
+`26200..=26299`). The registry UBR (revision) value shown in diagnostics is informational and
+plays no part in allow/deny decisions.
 
 ## Tested results (this machine)
 

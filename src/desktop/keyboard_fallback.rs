@@ -14,6 +14,14 @@ impl KeyboardFallback {
     pub const fn new() -> Self {
         Self
     }
+
+    /// Wrap a mid-walk failure with the UIPI caveat (#22).
+    fn incomplete(e: DesktopError) -> DesktopError {
+        crate::warn_!(
+            "fallback incomplete — target not verified (possible UIPI block when an elevated window is foreground)"
+        );
+        e
+    }
 }
 
 impl VirtualDesktopBackend for KeyboardFallback {
@@ -38,12 +46,21 @@ impl VirtualDesktopBackend for KeyboardFallback {
             return Err(DesktopError::TargetOutOfRange { requested: index, count: 32 });
         }
         // 32 left chords saturate at Desktop 1 for the supported UX (1–9).
-        for _ in 0..32 {
-            send_chord(Arrow::Left)?;
+        // Abort on the first failed chord (#22): continuing past a partial
+        // injection leaves the walk unanchored and may dump keys into an
+        // elevated window (UIPI).
+        let mut sent_left = 0usize;
+        while sent_left < 32 {
+            if let Err(e) = send_chord(Arrow::Left) {
+                return Err(Self::incomplete(e));
+            }
+            sent_left += 1;
             std::thread::sleep(std::time::Duration::from_millis(18));
         }
         for _ in 0..index {
-            send_chord(Arrow::Right)?;
+            if let Err(e) = send_chord(Arrow::Right) {
+                return Err(Self::incomplete(e));
+            }
             std::thread::sleep(std::time::Duration::from_millis(28));
         }
         Ok(())
