@@ -78,16 +78,20 @@ jobs:
           rm cert.pfx
 
       - name: Package ZIP
+        shell: pwsh
         run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | python -c "import sys,json;print(json.load(sys.stdin)['packages'][0]['version'])")
-          ARCH=${{ matrix.target }}
-          case "$ARCH" in x86_64*) SHORT=x86_64;; i686*) SHORT=i686;; *) SHORT="$ARCH";; esac
-          NAME="WinShort-v${VERSION}-windows-${SHORT}"
-          mkdir -p "dist/$NAME"
-          cp "target/${{ matrix.target }}/release/winshort.exe" "dist/$NAME/"
-          cp README.md LICENSE "dist/$NAME/" 2>/dev/null || true
-          cd "dist"
-          zip -r "${NAME}.zip" "$NAME"
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $target = "${{ matrix.target }}"
+          if ($target -like 'x86_64*') { $short = 'x86_64' }
+          elseif ($target -like 'i686*') { $short = 'i686' }
+          else { $short = $target }
+          $name = "WinShort-v$version-windows-$short"
+          New-Item -ItemType Directory -Path "dist/$name" -Force | Out-Null
+          Copy-Item "target/$target/release/winshort.exe" "dist/$name/"
+          foreach ($f in @('README.md', 'LICENSE')) {
+            if (Test-Path $f) { Copy-Item $f "dist/$name/" }
+          }
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
 
       - uses: actions/upload-artifact@v4
         with:
