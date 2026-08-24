@@ -123,7 +123,6 @@ fn watch(
     shutdown: SendHandle,
     on_activate: impl Fn() + Send + 'static,
 ) {
-    use windows::Win32::Foundation::WAIT_FAILED;
     use windows::Win32::System::Threading::INFINITE;
     loop {
         // SAFETY: both handles are process-owned for the watcher lifetime;

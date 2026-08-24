@@ -8,6 +8,13 @@ use crate::config::load::config_path;
 use crate::error::{Error, Result};
 
 pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
+    // Read-only guard (#15b): a config from a newer WinShort must never be
+    // silently overwritten.
+    if crate::config::config_readonly() {
+        return Err(Error::config(
+            "config written by a newer WinShort; not overwriting",
+        ));
+    }
     let path = config_path(data_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -18,12 +25,19 @@ pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
     let text = toml::to_string_pretty(&toml)
         .map_err(|e| Error::config(format!("serialize: {e}")))?;
 
+    // Durable atomic commit (#15d): create -> write -> flush -> sync on the
+    // SAME handle, then rename over the target.
     let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, &text).map_err(|e| Error::config(format!("write temp: {e}")))?;
-
-    // Best-effort durability; rename is the atomic commit.
-    if let Ok(f) = std::fs::File::open(&tmp) {
-        let _ = f.sync_all();
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)
+            .map_err(|e| Error::config(format!("create temp: {e}")))?;
+        file.write_all(text.as_bytes())
+            .map_err(|e| Error::config(format!("write temp: {e}")))?;
+        file.flush()
+            .map_err(|e| Error::config(format!("flush temp: {e}")))?;
+        file.sync_all()
+            .map_err(|e| Error::config(format!("sync temp: {e}")))?;
     }
     std::fs::rename(&tmp, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);

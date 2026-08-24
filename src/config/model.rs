@@ -467,3 +467,57 @@ impl Config {
     }
 }
 
+/// Known TOML sections/keys for unknown-field warnings (#15c).
+/// Known TOML sections/keys for unknown-field warnings (#15c).
+pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
+    match section {
+        "general" => Some(&["start_hotkeys_enabled", "start_with_windows"]),
+        "overlay" => Some(&[
+            "enabled",
+            "position",
+            "monitor",
+            "duration_ms",
+            "opacity",
+            "scale",
+        ]),
+        "audio" => Some(&["input_device", "output_device", "input_role", "output_role"]),
+        "hotkeys" => Some(&[
+            "toggle_microphone",
+            "toggle_output",
+            "toggle_foreground_audio",
+        ]),
+        "virtual_desktops" => Some(&["enabled", "win_number_switching"]),
+        _ => None,
+    }
+}
+
+impl Config {
+    /// Field-level repair for validation violations (#15a): clamp numeric
+    /// ranges, drop conflicting hotkeys. Only violated fields are touched.
+    pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
+        use crate::config::validate::Violation;
+        let mut drop_hotkeys: Vec<String> = Vec::new();
+        for v in violations {
+            match v.field.as_str() {
+                "overlay.duration_ms" => self.overlay.duration_ms = 2000,
+                "overlay.scale" => self.overlay.scale = 1.0,
+                "overlay.opacity" => self.overlay.opacity = 0.85,
+                f if f.starts_with("hotkeys.toggle_") || f.starts_with("hotkeys.") => {
+                    // Conflict-class violations: drop the offending binding.
+                    if v.message.contains("conflicts") {
+                        drop_hotkeys.push(v.field.trim_start_matches("hotkeys.").to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        for field in drop_hotkeys {
+            match field.as_str() {
+                "toggle_microphone" => self.hotkeys.toggle_microphone = None,
+                "toggle_output" => self.hotkeys.toggle_output = None,
+                "toggle_foreground_audio" => self.hotkeys.toggle_foreground_audio = None,
+                _ => {}
+            }
+        }
+    }
+}

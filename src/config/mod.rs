@@ -84,8 +84,57 @@ mod tests {
     }
 }
 
-/// Process data root: `%LOCALAPPDATA%\WinShort`.
+/// Authoritative process data root via the Known Folder API (#15e): no "."
+/// fallback — callers decide whether failure is fatal.
+pub fn try_data_dir() -> crate::error::Result<std::path::PathBuf> {
+    use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_LocalAppData};
+    let path = unsafe {
+        SHGetKnownFolderPath(
+            &FOLDERID_LocalAppData,
+            windows::Win32::UI::Shell::KNOWN_FOLDER_FLAG(0),
+            None,
+        )
+        .map_err(|e| crate::error::Error::win("SHGetKnownFolderPath(LocalAppData)", &e))?
+    };
+    // SAFETY: PWSTR::display is unsafe (validity contract); we own the
+    // allocation returned by SHGetKnownFolderPath here.
+    let display = unsafe { path.display().to_string() };
+    let mut root = std::path::PathBuf::from(display);
+    windows_cow_free(path);
+    root.push("WinShort");
+    Ok(root)
+}
+
+// Free the CoTaskMem-allocated PWSTR returned by SHGetKnownFolderPath.
+fn windows_cow_free(p: windows_core::PWSTR) {
+    unsafe {
+        windows::Win32::System::Com::CoTaskMemFree(Some(p.as_ptr().cast()));
+    }
+}
+
+/// Convenience wrapper: Known Folder first, `%LOCALAPPDATA%` second; never
+/// returns "." (a silent wrong-directory is worse than a loud temp dir).
 pub fn data_dir() -> std::path::PathBuf {
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(local).join("WinShort")
+    if let Ok(dir) = try_data_dir() {
+        return dir;
+    }
+    match std::env::var("LOCALAPPDATA") {
+        Ok(local) => std::path::PathBuf::from(local).join("WinShort"),
+        Err(_) => {
+            crate::warn_!("config data_dir falling back to temp; LocalAppData unavailable");
+            std::env::temp_dir().join("WinShort")
+        }
+    }
+}
+
+static CONFIG_READONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set when a newer schema version was detected on load (#15b).
+pub fn set_config_readonly(reason: &str) {
+    CONFIG_READONLY.store(true, std::sync::atomic::Ordering::Release);
+    crate::warn_!("config marked read-only: {reason}");
+}
+
+pub fn config_readonly() -> bool {
+    CONFIG_READONLY.load(std::sync::atomic::Ordering::Acquire)
 }

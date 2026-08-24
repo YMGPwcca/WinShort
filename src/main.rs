@@ -29,17 +29,17 @@ use crate::error::Result;
 use crate::platform::single_instance::{InstanceRole, PrimaryRole};
 
 /// Process data root: %LOCALAPPDATA%\WinShort.
-fn app_data_dir() -> PathBuf {
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(local).join("WinShort")
+fn app_data_dir() -> Result<PathBuf> {
+    crate::config::try_data_dir().map_err(|e| e)
 }
 
-fn init_logging() {
-    let dir = app_data_dir().join("logs");
+fn init_logging() -> Result<()> {
+    let dir = app_data_dir()?.join("logs");
     diagnostics::logging::init(&dir, diagnostics::logging::Level::Debug);
     // Bias is minutes WEST of UTC (documented sign); we need seconds east.
     let bias = unsafe { tz_bias_minutes() };
     diagnostics::logging::set_local_offset(-(bias as i64) * 60);
+    Ok(())
 }
 
 unsafe fn tz_bias_minutes() -> i32 {
@@ -54,27 +54,41 @@ unsafe fn tz_bias_minutes() -> i32 {
     }
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     // ---- Single instance (spec §7) -------------------------------------
     let role = match platform::single_instance::acquire() {
         Ok(InstanceRole::Secondary) => {
             info!("another instance running; activation requested");
-            return;
+            return std::process::ExitCode::SUCCESS;
         }
         Ok(InstanceRole::Primary(primary)) => primary,
         Err(e) => {
             eprintln!("winshort: single-instance check failed: {e}");
-            return;
+            return std::process::ExitCode::FAILURE;
         }
     };
 
     // ---- DPI awareness before any window -------------------------------
     platform::dpi::set_process_awareness();
-    init_logging();
+    if let Err(e) = init_logging() {
+        // Logging is best effort, but a missing data dir means config cannot
+        // be persisted either — treat as fatal with a visible reason (#15e).
+        error_!("fatal: {e}");
+        fatal_message_box(&e.to_string());
+        return std::process::ExitCode::FAILURE;
+    }
     info!("WinShort starting");
 
     // ---- Configuration (spec §46: load/validate before UI) ---------------
-    let (cfg, warnings) = config::load::load(&app_data_dir());
+    let data_dir = match app_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            error_!("fatal: {e}");
+            fatal_message_box(&e.to_string());
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let (cfg, warnings) = config::load::load(&data_dir);
     for w in &warnings {
         warn_!("config warning: {w}");
     }
@@ -92,9 +106,11 @@ fn main() {
     if let Err(e) = run_result {
         error_!("fatal: {e}");
         fatal_message_box(&e.to_string());
+        return std::process::ExitCode::FAILURE;
     }
 
     info!("exit");
+    std::process::ExitCode::SUCCESS
 }
 
 fn run(role: PrimaryRole, _com: crate::platform::com::ComApartment) -> Result<()> {
