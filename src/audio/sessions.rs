@@ -76,6 +76,7 @@ pub fn toggle_foreground(
             app_name,
             aggregate: Aggregate::NoSession,
             sessions: 0,
+            error: None,
         });
     }
 
@@ -83,21 +84,48 @@ pub fn toggle_foreground(
     let all_active = sessions.iter().all(|(_, muted)| !*muted);
     // Active -> mute all; Mixed -> mute all; all muted -> unmute all.
     let target_muted = !all_muted;
-    let mut changed = 0usize;
+    let mut failures = Vec::new();
     for (volume, _) in &sessions {
-        if unsafe { volume.SetMute(target_muted, &SESSION_EVENT_CONTEXT) }.is_ok() {
-            changed += 1;
+        if let Err(e) = unsafe { volume.SetMute(target_muted, &SESSION_EVENT_CONTEXT) } {
+            failures.push(e);
         }
     }
-    if changed == 0 {
+    if failures.len() == sessions.len() && !sessions.is_empty() {
         return Err(Error::audio("matching sessions disappeared before mute applied"));
     }
 
-    let aggregate = if target_muted {
+    // Re-read actual mute states instead of assuming the write succeeded
+    // everywhere (#17c) — a partial failure is Mixed truth, never full success.
+    let mut muted_now = 0usize;
+    for (volume, _) in &sessions {
+        match unsafe { volume.GetMute() } {
+            Ok(muted) => {
+                if muted.as_bool() {
+                    muted_now += 1;
+                }
+            }
+            Err(e) => failures.push(e),
+        }
+    }
+    let aggregate = if !failures.is_empty() || muted_now != sessions.len() {
+        crate::log_debug!(
+            "foreground audio partial apply pid={pid}: muted_now={muted_now}/{} failures={}",
+            sessions.len(),
+            failures.len()
+        );
+        if muted_now == 0 && sessions.iter().all(|(_, m)| !*m) {
+            Aggregate::AllActive
+        } else {
+            Aggregate::Mixed
+        }
+    } else if target_muted {
         Aggregate::AllMuted
     } else {
         Aggregate::AllActive
     };
+    for e in &failures {
+        crate::warn_!("foreground audio SetMute/GetMute failed: {e}");
+    }
     crate::log_debug!(
         "foreground audio pid={pid} sessions={} before={} after={:?}",
         sessions.len(),
@@ -113,7 +141,8 @@ pub fn toggle_foreground(
     Ok(AppAudioState {
         app_name,
         aggregate,
-        sessions: changed,
+        sessions: sessions.len(),
+        error: None,
     })
 }
 

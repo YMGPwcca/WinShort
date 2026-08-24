@@ -58,6 +58,9 @@ pub enum AppEvent {
     // State published by workers / callbacks.
     MicrophoneStateChanged(AudioState),
     OutputStateChanged(OutputState),
+    /// Transient "default output changed" presentation (#17b): the overlay
+    /// shows a one-shot card; persistent state stays OutputState::Current.
+    DefaultOutputChanged(crate::audio::state::DeviceId),
     ForegroundAudioChanged(AppAudioState),
     OverlayDismissed,
 

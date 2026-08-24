@@ -393,6 +393,10 @@ impl App {
                     self.show_output_overlay();
                 }
             }
+            AppEvent::DefaultOutputChanged(device) => {
+                let row = crate::ui::overlay::output_changed_row(&device);
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
+            }
             AppEvent::DevicesChanged => {
                 if let Some(settings) = &self.settings {
                     settings.refresh();

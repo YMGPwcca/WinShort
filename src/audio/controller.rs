@@ -137,6 +137,20 @@ impl AudioController {
     }
 
     fn handle(&mut self, command: AudioCommand) -> bool {
+        match command {
+            // ConfigChanged carries the revision bump with it — rebuild here
+            // and consume the revision so one Save triggers exactly ONE
+            // rebuild (#17a).
+            AudioCommand::ConfigChanged => {
+                self.config_revision = self.config.revision();
+                self.rebuild_all(false);
+            }
+            other => return self.handle_other(other),
+        }
+        true
+    }
+
+    fn handle_other(&mut self, command: AudioCommand) -> bool {
         self.refresh_config_if_needed();
         match command {
             AudioCommand::ToggleMicrophone => self.toggle(EndpointFlow::Capture),
@@ -150,8 +164,9 @@ impl AudioController {
                 )
                 .unwrap_or_else(|e| crate::audio::AppAudioState {
                     app_name: None,
-                    aggregate: crate::audio::Aggregate::NoSession,
+                    aggregate: crate::audio::Aggregate::Error,
                     sessions: 0,
+                    error: Some(e.to_string()),
                 });
                 self.post(AppEvent::ForegroundAudioChanged(state));
             }
@@ -159,7 +174,10 @@ impl AudioController {
                 crate::log_debug!("audio {:?} endpoint notification", flow);
                 self.publish(flow);
             }
-            AudioCommand::RefreshAll | AudioCommand::ConfigChanged => self.rebuild_all(false),
+            // ConfigChanged is consumed by handle() above; refresh_config_if_needed
+            // covers any residual revision drift.
+            AudioCommand::RefreshAll => self.rebuild_all(false),
+            AudioCommand::ConfigChanged => {}
             AudioCommand::Shutdown => return false,
         }
         true
@@ -191,7 +209,7 @@ impl AudioController {
         if !startup {
             if let (Some(old), Some(new)) = (old_render, self.render.as_ref().map(|e| e.identity.clone())) {
                 if old.endpoint != new.endpoint {
-                    self.post(AppEvent::OutputStateChanged(OutputState::Changed { new }));
+                    self.post(AppEvent::DefaultOutputChanged(new));
                 }
             }
             self.post(AppEvent::DevicesChanged);

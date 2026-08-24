@@ -131,16 +131,10 @@ pub fn output_row(state: &crate::audio::OutputState) -> OverlayRow {
                 format!("{volume_pct}% volume")
             },
         },
-        OutputState::Changed { new } => OverlayRow {
-            icon: OverlayIcon::Output,
-            tone: OverlayTone::Changed,
-            title: "Output changed".into(),
-            detail: new.name.clone(),
-        },
         OutputState::Unavailable { reason } => OverlayRow {
             icon: OverlayIcon::Output,
             tone: OverlayTone::Unavailable,
-            title: "Output unavailable".into(),
+            title: "Output".into(),
             detail: concise(reason),
         },
     }
@@ -153,6 +147,14 @@ pub fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow {
         Aggregate::AllActive => (OverlayTone::Active, "Active".to_string()),
         Aggregate::Mixed => (OverlayTone::Changed, "Mixed sessions".to_string()),
         Aggregate::NoSession => (OverlayTone::Unavailable, "No audio session".to_string()),
+        Aggregate::Error => (
+            OverlayTone::Unavailable,
+            state
+                .error
+                .clone()
+                .map(|reason| format!("Audio error: {reason}"))
+                .unwrap_or_else(|| "Audio error".into()),
+        ),
         Aggregate::NoExternalApp => (
             OverlayTone::Unavailable,
             "No external application selected".to_string(),
@@ -163,6 +165,16 @@ pub fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow {
         tone,
         title: state.app_name.clone().unwrap_or_else(|| "Current app".into()),
         detail,
+    }
+}
+
+/// Transient "output changed" card (#17b).
+pub fn output_changed_row(device: &crate::audio::state::DeviceId) -> OverlayRow {
+    OverlayRow {
+        icon: OverlayIcon::Output,
+        tone: OverlayTone::Changed,
+        title: "Output changed".into(),
+        detail: concise(&device.name),
     }
 }
 

@@ -38,14 +38,13 @@ impl AudioState {
     }
 }
 
-/// Output / render state: current truth plus transient change info (spec §24).
+/// Output / render state. Transient "output changed" presentation is carried
+/// by the dedicated [`crate::event::AppEvent::DefaultOutputChanged`] event
+/// instead of a persistent-state variant (#17b).
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputState {
     Unavailable { reason: String },
     Current { device: DeviceId, muted: bool, volume_pct: u8 },
-    /// The default output device changed; overlay shows "Output changed" +
-    /// the new device name. `previous` is best-effort.
-    Changed { new: DeviceId },
 }
 
 /// Aggregate mute state across all sessions of one process.
@@ -61,6 +60,9 @@ pub enum Aggregate {
     Mixed,
     /// No external foreground application tracked.
     NoExternalApp,
+    /// Operational failure (query/toggle error) — never reported as
+    /// NoSession (#17d).
+    Error,
 }
 
 /// Foreground application audio result for the overlay.
@@ -70,15 +72,17 @@ pub struct AppAudioState {
     pub aggregate: Aggregate,
     /// Session count that was toggled (for diagnostics display).
     pub sessions: usize,
+    /// Reason when [`Aggregate::Error`] (#17d).
+    pub error: Option<String>,
 }
 
 impl AppAudioState {
     pub fn no_session() -> Self {
-        Self { app_name: None, aggregate: Aggregate::NoSession, sessions: 0 }
+        Self { app_name: None, aggregate: Aggregate::NoSession, sessions: 0, error: None }
     }
 
     pub fn no_external() -> Self {
-        Self { app_name: None, aggregate: Aggregate::NoExternalApp, sessions: 0 }
+        Self { app_name: None, aggregate: Aggregate::NoExternalApp, sessions: 0, error: None }
     }
 
     pub fn status_label(&self) -> &'static str {
@@ -88,6 +92,7 @@ impl AppAudioState {
             Aggregate::AllActive => "Active",
             Aggregate::Mixed => "Mixed",
             Aggregate::NoExternalApp => "No external application selected",
+            Aggregate::Error => "Error",
         }
     }
 }
