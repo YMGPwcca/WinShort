@@ -67,7 +67,7 @@ pub fn set_enabled(enable: bool) -> Result<()> {
         } else {
             let del = RegDeleteKeyValueW(hkey, None, PCWSTR(HSTRING::from(VALUE_NAME).as_ptr()));
             // Missing value already means disabled: not an error.
-            if del == windows::Win32::Foundation::WIN32_ERROR(2) { ERROR_SUCCESS } else { del }
+            if del == windows::Win32::Foundation::ERROR_FILE_NOT_FOUND { ERROR_SUCCESS } else { del }
         };
         let _ = RegCloseKey(hkey);
         if result == ERROR_SUCCESS {

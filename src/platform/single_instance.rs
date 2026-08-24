@@ -34,7 +34,7 @@ pub fn acquire() -> Result<InstanceRole, crate::error::Error> {
     unsafe {
         let mutex = CreateMutexW(None, false, PCWSTR(HSTRING::from(MUTEX_NAME).as_ptr()))
             .map_err(|e| crate::error::Error::win("CreateMutexW", &e))?;
-        if GetLastError() == windows::Win32::Foundation::WIN32_ERROR(183) {
+        if GetLastError() == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
             // ERROR_ALREADY_EXISTS: signal the primary, then leave.
             let ev = CreateEventW(None, false, false, PCWSTR(HSTRING::from(ACTIVATE_EVENT).as_ptr()))
                 .unwrap_or_default();

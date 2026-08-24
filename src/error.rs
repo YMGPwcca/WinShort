@@ -55,20 +55,64 @@ impl Error {
         Error::Internal(what.into())
     }
 
-    /// Best-effort symbolic name for well-known audio HRESULTs, else hex.
+    /// Best-effort symbolic name for well-known HRESULTs, else hex.
+    ///
+    /// Values cross-checked against the `windows` crate definitions
+    /// (Win32::Foundation and Win32::Media::Audio, windows-0.62.2).
     pub fn code_name(code: u32) -> String {
-        let h = code as i32;
-        let named = match h {
-            -2_004_287_168 => "AUDCLNT_E_DEVICE_INVALIDATED",
-            -2_004_287_167 => "AUDCLNT_E_ENDPOINT_CREATE_FAILED",
-            -2_144_672_157 => "AUDCLNT_E_SERVICE_NOT_RUNNING",
-            -2_147_014_883 => "E_ACCESSDENIED", // 0x80070005
-            -2_147_467_259 => "E_FAIL",         // 0x80004005
-            -2_147_467_263 => "E_NOTIMPL",      // 0x80004001
-            -2_147_481_650 => "E_OUTOFMEMORY",  // 0x8007000E
+        const AUDCLNT_E_DEVICE_INVALIDATED: u32 = 0x88890004; // Win32::Media::Audio
+        const AUDCLNT_E_ENDPOINT_CREATE_FAILED: u32 = 0x8889000F;
+        const AUDCLNT_E_SERVICE_NOT_RUNNING: u32 = 0x88890010;
+        const E_ACCESSDENIED: u32 = 0x80070005; // Win32::Foundation
+        const E_OUTOFMEMORY: u32 = 0x8007000E;
+        const E_FAIL: u32 = 0x80004005;
+        const E_NOTIMPL: u32 = 0x80004001;
+        let named = match code {
+            AUDCLNT_E_DEVICE_INVALIDATED => "AUDCLNT_E_DEVICE_INVALIDATED",
+            AUDCLNT_E_ENDPOINT_CREATE_FAILED => "AUDCLNT_E_ENDPOINT_CREATE_FAILED",
+            AUDCLNT_E_SERVICE_NOT_RUNNING => "AUDCLNT_E_SERVICE_NOT_RUNNING",
+            E_ACCESSDENIED => "E_ACCESSDENIED",
+            E_OUTOFMEMORY => "E_OUTOFMEMORY",
+            E_FAIL => "E_FAIL",
+            E_NOTIMPL => "E_NOTIMPL",
             _ => return format!("0x{code:08X}"),
         };
         format!("{named} (0x{code:08X})")
+    }
+
+    /// True when the code is an endpoint/audio-stack invalidation that a
+    /// rebuild can recover from (used by the audio controller retry logic).
+    pub fn is_audio_invalidation(&self) -> bool {
+        matches!(self, Error::Os { code, .. } if matches!(
+            *code,
+            0x88890004 | // AUDCLNT_E_DEVICE_INVALIDATED
+            0x8889000F | // AUDCLNT_E_ENDPOINT_CREATE_FAILED
+            0x88890010   // AUDCLNT_E_SERVICE_NOT_RUNNING
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn hresult_names_match_sdk_constants() {
+        // Regression for #9: the decimal literals previously mapped the WRONG
+        // values (e.g. E_ACCESSDENIED was bound to 0x8898... not 0x80070005).
+        let cases: [(u32, &str); 7] = [
+            (0x88890004, "AUDCLNT_E_DEVICE_INVALIDATED"),
+            (0x8889000F, "AUDCLNT_E_ENDPOINT_CREATE_FAILED"),
+            (0x88890010, "AUDCLNT_E_SERVICE_NOT_RUNNING"),
+            (0x80070005, "E_ACCESSDENIED"),
+            (0x8007000E, "E_OUTOFMEMORY"),
+            (0x80004005, "E_FAIL"),
+            (0x80004001, "E_NOTIMPL"),
+        ];
+        for (code, name) in cases {
+            assert!(Error::code_name(code).starts_with(name), "{name}: {:#010X} -> {}", code, Error::code_name(code));
+        }
+        assert_eq!(Error::code_name(0x12345678), "0x12345678");
     }
 }
 
