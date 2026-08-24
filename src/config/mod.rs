@@ -116,6 +116,13 @@ pub fn config_readonly() -> bool {
     CONFIG_READONLY.load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// Test-only: the read-only latch is process-global; tests that trip it must
+/// clear it afterwards so unrelated tests are not poisoned.
+#[cfg(test)]
+pub fn clear_config_readonly() {
+    CONFIG_READONLY.store(false, std::sync::atomic::Ordering::Release);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

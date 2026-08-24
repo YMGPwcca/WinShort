@@ -104,15 +104,18 @@ jobs:
         run: cargo check --target aarch64-pc-windows-msvc
 
   msrv:
-    name: msrv (1.82)
+    name: msrv (1.85)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.82.0
+      - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: msrv
-      - name: cargo check at MSRV
+      # NOTE: declared MSRV is 1.85 — above the windows-crate floor of 1.82 —
+      # because transitive `indexmap` 2.x resolves to an edition2024 manifest
+      # that requires cargo >= 1.85.
+      - name: cargo check at MSRV (1.85)
         run: cargo check --all-features
 
   dependency-security:

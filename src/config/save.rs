@@ -55,6 +55,9 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_config() {
+        // The read-only latch is process-global (#15); another test may have
+        // tripped it in parallel.
+        crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("winshort-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = Config::default();
