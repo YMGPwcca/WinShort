@@ -74,13 +74,23 @@ before drops and joining the thread before main teardown (see WIN32_LIFETIME.md)
 
 ## Foreground resolver (#18)
 
-The foreground toggle resolves sessions in a ladder: exact PID on the configured
-endpoint, then exact PID across **all** active render endpoints, then
-per-process-image-name match across all endpoints (covers multi-process apps
-whose audio session lives under a child). Endpoint invalidation HRESULTs
-(AUDCLNT_E_DEVICE_INVALIDATED / ENDPOINT_CREATE_FAILED / SERVICE_NOT_RUNNING)
-trigger exactly one rebuild-and-retry. Show Status issues a live
-`QueryForeground` instead of rendering the last cached state.
+The foreground toggle resolves sessions in a ladder (#46):
+
+1. **Exact PID** on the configured endpoint.
+2. **Exact PID** across all active render endpoints.
+3. **Name fallback, fail-closed**: collect every process owning at least one
+   render session; keep those whose image stem matches the foreground stem;
+   group them by FULL executable path. One group => serve all its sessions
+   (covers Chrome/Electron-style multi-process apps that share one binary).
+   More than one group => `Ambiguous`: nothing is muted and the overlay shows
+   an explicit error naming the collision. Candidates whose path cannot be
+   discovered each form their own group, so they never merge with an
+   unrelated installation.
+
+Endpoint invalidation HRESULTs (AUDCLNT_E_DEVICE_INVALIDATED /
+ENDPOINT_CREATE_FAILED / SERVICE_NOT_RUNNING) trigger exactly one
+rebuild-and-retry. Show Status issues a live `QueryForeground` instead of
+rendering the last cached state.
 
 **Known limitation:** Windows does not expose package (WASAPI2/AppContainer
 loopback-routed) sessions through `IAudioSessionEnumerator`; audio from such
