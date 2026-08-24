@@ -216,15 +216,25 @@ pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
     if let Some(hotkey) = config.hotkeys.toggle_foreground_audio {
         table.insert(hotkey, HotkeyAction::ToggleForegroundAppAudio);
     }
+    // Reserved Win+1..9 desktop shortcuts: insert only into vacant slots.
+    // A user hotkey occupying the same (mods, key) keeps priority; validate()
+    // rejects that combination when win_number_switching is on, so this is
+    // defense in depth — never silently overwrite (#12).
     if config.virtual_desktops.enabled && config.virtual_desktops.win_number_switching {
         for number in 1u16..=9 {
-            table.insert(
-                Hotkey {
-                    modifiers: ModifierMask::WIN,
-                    key: VirtualKey(0x30 + number),
-                },
-                HotkeyAction::SwitchDesktop((number - 1) as u8),
-            );
+            let reserved = Hotkey {
+                modifiers: ModifierMask::WIN,
+                key: VirtualKey(0x30 + number),
+            };
+            if table.conflicts(&reserved).is_none() {
+                table.insert(reserved, HotkeyAction::SwitchDesktop((number - 1) as u8));
+            } else {
+                // User binding keeps the slot; validate() flags this config.
+                crate::warn_!(concat!(
+                    "user hotkey occupies a reserved Win+digit slot; ",
+                    "desktop shortcut disabled for it"
+                ));
+            }
         }
     }
     table
@@ -233,7 +243,6 @@ pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn config_builds_all_default_bindings() {
         let table = build_bindings(&crate::config::Config::default());
@@ -242,5 +251,22 @@ mod tests {
             table.lookup(ModifierMask::WIN, VirtualKey(b'9' as u16)),
             Some(HotkeyAction::SwitchDesktop(8))
         );
+    }
+
+    #[test]
+    fn reserved_slots_never_overwrite_user_bindings() {
+        let mut cfg = crate::config::Config::default();
+        cfg.hotkeys.toggle_microphone = Some(Hotkey {
+            modifiers: ModifierMask::WIN,
+            key: VirtualKey(b'5' as u16),
+        });
+        let table = build_bindings(&cfg);
+        // User binding keeps priority over the reserved Win+5 slot.
+        assert_eq!(
+            table.lookup(ModifierMask::WIN, VirtualKey(b'5' as u16)),
+            Some(HotkeyAction::ToggleMicrophone)
+        );
+        // Other digits still get their desktop shortcuts (8 = 3 audio + 8 of 9 digits).
+        assert_eq!(table.len(), 11);
     }
 }

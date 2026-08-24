@@ -52,6 +52,35 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
         }
     }
 
+    // Reserved virtual-desktop shortcuts (#12): when Win-number switching is
+    // on, a user hotkey equal to Win+1..9 would be overwritten by the table
+    // build. Reject the collision instead of silently shadowing it.
+    if cfg.virtual_desktops.enabled && cfg.virtual_desktops.win_number_switching {
+        for (name, hk) in [
+            ("toggle_microphone", &cfg.hotkeys.toggle_microphone),
+            ("toggle_output", &cfg.hotkeys.toggle_output),
+            (
+                "toggle_foreground_audio",
+                &cfg.hotkeys.toggle_foreground_audio,
+            ),
+        ] {
+            if let Some(hk) = hk {
+                if hk.modifiers == crate::keyboard::binding::ModifierMask::WIN {
+                    let vk = hk.key.code();
+                    if (0x31..=0x39).contains(&vk) {
+                        v.push(Violation::new(
+                            &format!("hotkeys.{name}"),
+                            format!(
+                                "conflicts with reserved virtual-desktop shortcut Win+{}",
+                                vk - 0x30
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // Endpoint IDs are opaque; only emptiness is malformed (parse already
     // routes empty to Default, so this is defense in depth) (#7).
     for (field, dev) in [
@@ -126,6 +155,38 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
             !validate(&cfg).iter().any(|x| x.field.contains("device")),
             "opaque id must validate"
         );
+    }
+
+    #[test]
+    fn win_digit_hotkeys_rejected_when_reserved() {
+        // #12: with win_number_switching on, Win+5 collides with the
+        // reserved desktop shortcut.
+        let mut c = Config::default();
+        c.hotkeys.toggle_output = Some(Hotkey {
+            modifiers: crate::keyboard::binding::ModifierMask::WIN,
+            key: crate::keyboard::binding::VirtualKey(b'5' as u16),
+        });
+        let v = validate(&c);
+        assert!(
+            v.iter().any(|x| x.field == "hotkeys.toggle_output"
+                && x.message.contains("reserved virtual-desktop shortcut Win+5")),
+            "got {v:?}"
+        );
+
+        // Same hotkey is fine when the reserved block is off.
+        c.virtual_desktops.win_number_switching = false;
+        assert!(validate(&c).is_empty());
+    }
+
+    #[test]
+    fn ctrl_alt_digit_is_not_reserved() {
+        let mut c = Config::default();
+        c.hotkeys.toggle_output = Some(Hotkey {
+            modifiers: crate::keyboard::binding::ModifierMask::CTRL
+                .union(crate::keyboard::binding::ModifierMask::ALT),
+            key: crate::keyboard::binding::VirtualKey(b'5' as u16),
+        });
+        assert!(validate(&c).is_empty());
     }
 
 }
