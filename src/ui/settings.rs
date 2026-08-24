@@ -685,7 +685,8 @@ impl SettingsWindow {
     }
 
     pub fn show(&mut self) -> Result<()> {
-        if let Some(ui) = unsafe { win::userdata::<SettingsUi>(self.hwnd) } {
+        if let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(self.hwnd) }) {
+            let mut ui = cell.borrow_mut();
             if !ui.dirty() {
                 ui.draft = (*crate::app::config()).clone();
             }
@@ -754,25 +755,30 @@ unsafe extern "system" fn settings_wndproc(
         windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
             hwnd,
             GWLP_USERDATA,
-            Box::into_raw(ui) as isize,
+            Box::into_raw(win::WindowState::new(*ui)) as isize,
         );
         return win::def_proc(hwnd, msg, wparam, lparam);
     }
 
-    let Some(ui) = win::userdata::<SettingsUi>(hwnd) else {
+    let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(hwnd) }) else {
         return win::def_proc(hwnd, msg, wparam, lparam);
     };
 
+    if msg == WM_NCDESTROY {
+        drop(unsafe { win::take_state::<SettingsUi>(hwnd) });
+        return win::def_proc(hwnd, msg, wparam, lparam);
+    }
+
     match msg {
         WM_CLOSE => {
-            ui.recording = None;
+            cell.borrow_mut().recording = None;
             let _ = ShowWindow(hwnd, SW_HIDE);
             LRESULT(0)
         }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let _ = BeginPaint(hwnd, &mut ps);
-            if let Err(e) = ui.paint(hwnd) {
+            if let Err(e) = cell.borrow_mut().paint(hwnd) {
                 crate::error_!("settings paint failed: {e}");
             }
             let _ = EndPaint(hwnd, &ps);
@@ -780,6 +786,7 @@ unsafe extern "system" fn settings_wndproc(
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_SIZE => {
+            let mut ui = cell.borrow_mut();
             if let Some(renderer) = ui.renderer.as_mut() {
                 let _ = renderer.resize();
             }
@@ -788,10 +795,15 @@ unsafe extern "system" fn settings_wndproc(
             LRESULT(0)
         }
         WM_DPICHANGED => {
+            // SetWindowPos below re-enters this proc with WM_SIZE; never hold
+            // the state borrow across it.
             let new_dpi = ((wparam.0 >> 16) as u32).max(96);
-            ui.dpi = new_dpi;
-            if let Some(renderer) = ui.renderer.as_mut() {
-                let _ = renderer.set_dpi(new_dpi);
+            {
+                let mut ui = cell.borrow_mut();
+                ui.dpi = new_dpi;
+                if let Some(renderer) = ui.renderer.as_mut() {
+                    let _ = renderer.set_dpi(new_dpi);
+                }
             }
             let suggested = &*(lparam.0 as *const RECT);
             let _ = SetWindowPos(
@@ -803,12 +815,14 @@ unsafe extern "system" fn settings_wndproc(
                 suggested.bottom - suggested.top,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
+            let mut ui = cell.borrow_mut();
             ui.rebuild_layout(hwnd);
             invalidate(hwnd);
             LRESULT(0)
         }
         WM_SETTINGCHANGE => {
             let theme = Theme::current();
+            let mut ui = cell.borrow_mut();
             if let Some(renderer) = ui.renderer.as_mut() {
                 let _ = renderer.set_theme(theme);
             }
@@ -817,6 +831,7 @@ unsafe extern "system" fn settings_wndproc(
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
+            let mut ui = cell.borrow_mut();
             let (x, y) = mouse_point(lparam, ui.dpi);
             if !ui.mouse_tracking {
                 let mut track = TRACKMOUSEEVENT {
@@ -836,6 +851,7 @@ unsafe extern "system" fn settings_wndproc(
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
+            let mut ui = cell.borrow_mut();
             ui.mouse_tracking = false;
             if let Some(old) = ui.hovered.take() {
                 ui.motion.animate_to(old, 0.0, 140);
@@ -845,6 +861,7 @@ unsafe extern "system" fn settings_wndproc(
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
+            let mut ui = cell.borrow_mut();
             let (x, y) = mouse_point(lparam, ui.dpi);
             ui.rebuild_layout(hwnd);
             if let Some(id) = ui.layout.hit_test(x, y) {
@@ -861,6 +878,7 @@ unsafe extern "system" fn settings_wndproc(
             LRESULT(0)
         }
         WM_LBUTTONUP => {
+            let mut ui = cell.borrow_mut();
             let (x, y) = mouse_point(lparam, ui.dpi);
             let pressed = ui.pressed.take();
             let _ = ReleaseCapture();
@@ -873,6 +891,7 @@ unsafe extern "system" fn settings_wndproc(
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
+            let mut ui = cell.borrow_mut();
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
             ui.scroll = (ui.scroll - delta / 120.0 * 64.0).clamp(0.0, ui.layout.max_scroll);
             ui.rebuild_layout(hwnd);
@@ -881,18 +900,22 @@ unsafe extern "system" fn settings_wndproc(
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let vk = wparam.0 as u16;
-            if ui.record_key(hwnd, vk, true) {
-                return LRESULT(0);
+            {
+                let mut ui = cell.borrow_mut();
+                if ui.record_key(hwnd, vk, true) {
+                    return LRESULT(0);
+                }
             }
             match vk {
                 0x09 => {
-                    ui.focus_next(key_down(0x10));
+                    cell.borrow_mut().focus_next(key_down(0x10));
                     invalidate(hwnd);
                     LRESULT(0)
                 }
                 0x0D | 0x20 => {
-                    if let Some(id) = ui.focused {
-                        ui.activate(hwnd, id);
+                    let focused = cell.borrow_mut().focused;
+                    if let Some(id) = focused {
+                        cell.borrow_mut().activate(hwnd, id);
                     }
                     LRESULT(0)
                 }
@@ -904,12 +927,14 @@ unsafe extern "system" fn settings_wndproc(
             }
         }
         WM_KEYUP | WM_SYSKEYUP => {
+            let mut ui = cell.borrow_mut();
             if ui.record_key(hwnd, wparam.0 as u16, false) {
                 return LRESULT(0);
             }
             win::def_proc(hwnd, msg, wparam, lparam)
         }
         WM_TIMER if wparam.0 == UI_TIMER => {
+            let mut ui = cell.borrow_mut();
             let active = ui.motion.tick();
             let applied = ui.applied_until.is_some_and(|until| Instant::now() < until);
             invalidate(hwnd);
@@ -920,16 +945,10 @@ unsafe extern "system" fn settings_wndproc(
         }
         WM_GETMINMAXINFO => {
             let info = &mut *(lparam.0 as *mut windows::Win32::UI::WindowsAndMessaging::MINMAXINFO);
-            let scale = ui.dpi as f32 / 96.0;
+            let scale = cell.borrow_mut().dpi as f32 / 96.0;
             info.ptMinTrackSize.x = (520.0 * scale) as i32;
             info.ptMinTrackSize.y = (500.0 * scale) as i32;
             LRESULT(0)
-        }
-        WM_NCDESTROY => {
-            let ptr = ui as *mut SettingsUi;
-            windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            drop(Box::from_raw(ptr));
-            win::def_proc(hwnd, msg, wparam, lparam)
         }
         WM_CHAR => LRESULT(0),
         _ => win::def_proc(hwnd, msg, wparam, lparam),

@@ -1,24 +1,33 @@
-//! Window class registration and creation helpers.
+//! Window class registration helpers and the per-window state slot.
 //!
-//! All windows in WinShort go through here so WndProc plumbing is uniform:
-//! a class gets a `wndproc`, and instance state is recovered from the
-//! `GWLP_USERDATA` slot set at creation.
-
-use std::ffi::c_void;
+//! All windows in WinShort go through [`register_class`] so WndProc plumbing
+//! is uniform: instance state lives in `GWLP_USERDATA` wrapped in
+//! [`WindowState`], whose interior mutability makes reentrant Win32 dispatch
+//! panic loudly instead of aliasing mutable state.
 
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, RegisterClassExW, SetWindowLongPtrW,
-    CW_USEDEFAULT, WINDOW_EX_STYLE, WM_NCCREATE, WNDCLASSEXW, WNDPROC,
-    CS_HREDRAW, CS_VREDRAW,
+    DefWindowProcW, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW, GWLP_USERDATA,
+    WNDCLASSEXW, WNDPROC, WM_NCCREATE, CS_HREDRAW, CS_VREDRAW,
 };
-use windows::Win32::Graphics::Gdi::COLOR_WINDOW;
 
-/// Extra data passed through `WM_NCCREATE` into `GWLP_USERDATA`.
-pub struct WindowParams<T> {
-    pub state: T,
+/// Interior-mutable per-window state stored (boxed) in `GWLP_USERDATA`.
+///
+/// The WndProc recovers the cell with [`state_cell`] and scopes a
+/// `borrow_mut()` per message arm. A second borrow while one is live means
+/// reentrant dispatch into the same WndProc — that panics by design.
+pub struct WindowState<T> {
+    pub cell: std::cell::RefCell<T>,
+}
+
+impl<T> WindowState<T> {
+    pub fn new(state: T) -> Box<Self> {
+        Box::new(Self {
+            cell: std::cell::RefCell::new(state),
+        })
+    }
 }
 
 /// Register a window class. Returns the class atom. Idempotent per name is
@@ -51,63 +60,39 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
     Ok(atom)
 }
 
-/// Create a window of a registered class, storing `state: T` in GWLP_USERDATA.
-///
-/// # Safety contract
-/// The window must never outlive `T`; the owner drops `T` on `WM_NCDESTROY`.
-pub fn create_window<T>(
-    class: &str,
-    title: &str,
-    style: windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE,
-    ex_style: WINDOW_EX_STYLE,
-    size: (i32, i32),
-    state: Box<T>,
-) -> Result<HWND, crate::error::Error> {
-    let hinstance = unsafe { GetModuleHandleW(None) }
-        .map_err(|e| crate::error::Error::win("GetModuleHandleW", &e))?;
 
-    let class_pc = PCWSTR(HSTRING::from(class).as_ptr());
-    let title_pc = PCWSTR(HSTRING::from(title).as_ptr());
-
-    let hwnd = unsafe {
-        CreateWindowExW(
-            ex_style,
-            class_pc,
-            title_pc,
-            style,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            size.0,
-            size.1,
-            None,
-            None,
-            Some(hinstance.into()),
-            Some(Box::into_raw(state) as *mut c_void),
-        )
-    };
-    hwnd.map_err(|e| crate::error::Error::win("CreateWindowExW", &e))
-}
-
-#[allow(dead_code)]
-fn unused_last_error() -> u32 {
-    unsafe { windows::Win32::Foundation::GetLastError().0 }
-}
-
-/// Recover `T` from a window's user data slot.
+/// Recover the state cell from a window created with a [`WindowState`] in
+/// `GWLP_USERDATA` (stashed at `WM_NCCREATE`).
 ///
 /// # Safety
-/// Only call inside that window's own WndProc for a window created via
-/// [`create_window`] with the same `T`.
-pub unsafe fn userdata<T>(hwnd: HWND) -> Option<&'static mut T> {
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut T;
+/// Only call inside that window's own WndProc for a window whose slot holds
+/// a `Box<WindowState<T>>`. The returned reference must not outlive the call;
+/// take ownership with [`take_state`] on `WM_NCDESTROY`.
+pub unsafe fn state_cell<'a, T>(hwnd: HWND) -> Option<&'a std::cell::RefCell<T>> {
+    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const std::cell::RefCell<T>;
     if ptr.is_null() {
         None
     } else {
-        Some(&mut *ptr)
+        Some(&*ptr)
     }
 }
 
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWLP_USERDATA};
+/// Take ownership of a window's state during teardown. Clears
+/// `GWLP_USERDATA` before dropping, so the drop runs exactly once even if
+/// the WndProc sees further messages during destruction.
+///
+/// # Safety
+/// Same contract as [`state_cell`]; call exactly once, from `WM_NCDESTROY`.
+pub unsafe fn take_state<T>(hwnd: HWND) -> Option<Box<WindowState<T>>> {
+    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState<T>;
+    if ptr.is_null() {
+        None
+    } else {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        Some(Box::from_raw(ptr))
+    }
+}
+
 
 /// Standard default handling.
 pub fn def_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

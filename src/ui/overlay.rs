@@ -210,10 +210,10 @@ impl OverlayWindow {
     }
 
     pub fn show(&self, model: OverlayModel, config: OverlayCfg) -> Result<()> {
-        let Some(state) = (unsafe { win::userdata::<OverlayState>(self.hwnd) }) else {
+        let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
             return Err(Error::internal("overlay state missing"));
         };
-        state.show(self.hwnd, model, config)
+        cell.borrow_mut().show(self.hwnd, model, config)
     }
 
     pub fn hide(&self) {
@@ -850,29 +850,25 @@ unsafe extern "system" fn overlay_wndproc(
     if msg == WM_NCCREATE {
         let create = &*(lparam.0 as *const CREATESTRUCTW);
         let state = Box::from_raw(create.lpCreateParams as *mut OverlayState);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(win::WindowState::new(*state)) as isize);
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
-    let state = win::userdata::<OverlayState>(hwnd);
+    if msg == WM_NCDESTROY {
+        drop(unsafe { win::take_state::<OverlayState>(hwnd) });
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    let Some(cell) = (unsafe { win::state_cell::<OverlayState>(hwnd) }) else {
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    };
     match msg {
         WM_TIMER if wparam.0 == TIMER_ID => {
-            if let Some(state) = state {
-                state.tick(hwnd);
-            }
+            cell.borrow_mut().tick(hwnd);
             LRESULT(0)
         }
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_ERASEBKGND => LRESULT(1),
         WM_DPICHANGED => LRESULT(0),
-        WM_NCDESTROY => {
-            if let Some(state) = state {
-                let ptr = state as *mut OverlayState;
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                drop(Box::from_raw(ptr));
-            }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
