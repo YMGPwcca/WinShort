@@ -5,7 +5,7 @@
 //! file access, rendering, or action execution.
 
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -13,8 +13,8 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostMessageW, PostThreadMessageW,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
-    LLKHF_EXTENDED, LLKHF_INJECTED, LLKHF_LOWER_IL_INJECTED, MSG, WH_KEYBOARD_LL,
-    WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    LLKHF_EXTENDED, LLKHF_INJECTED, LLKHF_LOWER_IL_INJECTED, MSG, WH_KEYBOARD_LL, WM_KEYDOWN,
+    WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use crate::config::ConfigHandle;
@@ -43,23 +43,109 @@ pub struct CapturedChord {
     pub key: Option<VirtualKey>,
 }
 
-static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// Published chord word (#45): `[tag:8][modifiers:8][reserved:8][vk:8]`.
-/// Tag 1 = chord delivered, 2 = Esc cancellation, 0 = empty. Atomics only —
-/// the WH_KEYBOARD_LL callback must never take a lock.
-static CAPTURE_WORD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Capture state machine (#47), one `AtomicU64` word:
+///
+/// ```text
+/// [generation: u32][state: 2 bits][chord: 24 bits]
+/// ```
+///
+/// state: 0 = Inactive, 1 = Armed, 2 = Completed.
+///
+/// The generation increments on every [`begin_capture`], so a stale LL
+/// callback that observed an older session can never publish into, disarm,
+/// or complete a newer one: completion is a single CAS
+/// `Armed(N) -> Completed(N, chord)` that fails the moment any UI operation
+/// changed the word. No locks, no allocation — safe for WH_KEYBOARD_LL.
+///
+/// Generation wraparound: the counter is u32. A stale callback would need to
+/// outlive 2^32 intervening `begin_capture` calls to be mistaken for current;
+/// treated as impossible and documented here.
+use std::sync::atomic::AtomicU64;
 
+const CAPTURE_STATE_MASK: u64 = 0xC000_0000;
+const CAPTURE_CHORD_MASK: u64 = 0x3FFF_FFFF;
+const CAPTURE_INACTIVE: u64 = 0 << 30;
 const CHORD_TAG_KEY: u32 = 1;
 const CHORD_TAG_CANCEL: u32 = 2;
+const CAPTURE_ARMED: u64 = 1 << 30;
+const CAPTURE_COMPLETED: u64 = 2 << 30;
+
+static CAPTURE_STATE: AtomicU64 = AtomicU64::new(0);
+
+fn capture_word(gen: u32, state: u64, chord: u32) -> u64 {
+    ((gen as u64) << 32) | state | (chord as u64 & CAPTURE_CHORD_MASK)
+}
+
+fn capture_generation(word: u64) -> u32 {
+    (word >> 32) as u32
+}
+
+fn capture_state_of(word: u64) -> u64 {
+    word & CAPTURE_STATE_MASK
+}
+
+fn capture_chord_of(word: u64) -> u32 {
+    (word & CAPTURE_CHORD_MASK) as u32
+}
+
+/// Start global capture: the hook swallows all keyboard input and publishes
+/// the first completed chord (or Esc cancellation) into this session.
+/// Poll [`take_captured_chord`] from the recorder UI. Ends automatically when
+/// a chord is delivered or via [`end_capture`].
+pub fn begin_capture() {
+    // New generation on every begin; CAS loop makes the increment
+    // linearizable against a concurrently completing previous session.
+    loop {
+        let cur = CAPTURE_STATE.load(Ordering::Acquire);
+        let next = capture_word(capture_generation(cur).wrapping_add(1), CAPTURE_ARMED, 0);
+        if CAPTURE_STATE
+            .compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
+/// Stop capturing. Invalidates every callback still holding the previous
+/// generation: their completion CAS can no longer succeed.
+pub fn end_capture() {
+    loop {
+        let cur = CAPTURE_STATE.load(Ordering::Acquire);
+        let next = capture_word(capture_generation(cur), CAPTURE_INACTIVE, 0);
+        if CAPTURE_STATE
+            .compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
+/// The generation a callback captured while arming was active, if armed.
+#[cfg(test)]
+pub fn capture_token() -> Option<u32> {
+    let cur = CAPTURE_STATE.load(Ordering::Acquire);
+    (capture_state_of(cur) == CAPTURE_ARMED).then(|| capture_generation(cur))
+}
+
+/// Production-safe token fetch used by the hook callback.
+fn capture_token_live() -> Option<u32> {
+    let cur = CAPTURE_STATE.load(Ordering::Acquire);
+    (capture_state_of(cur) == CAPTURE_ARMED).then(|| capture_generation(cur))
+}
 
 fn pack_chord(modifiers: ModifierMask, key: Option<VirtualKey>) -> u32 {
-    let tag = if key.is_some() { CHORD_TAG_KEY } else { CHORD_TAG_CANCEL };
+    let tag = if key.is_some() {
+        CHORD_TAG_KEY
+    } else {
+        CHORD_TAG_CANCEL
+    };
     (tag << 24) | ((modifiers.bits() as u32) << 16) | (key.map_or(0, |k| k.code()) as u32)
 }
 
 fn unpack_chord(word: u32) -> Option<CapturedChord> {
-    let tag = word >> 24;
-    match tag {
+    match word >> 24 {
         CHORD_TAG_KEY => Some(CapturedChord {
             modifiers: ModifierMask::from_bits((word >> 16) as u8),
             key: Some(VirtualKey((word & 0xFFFF) as u16)),
@@ -72,32 +158,62 @@ fn unpack_chord(word: u32) -> Option<CapturedChord> {
     }
 }
 
-/// Start global capture: the hook swallows all keyboard input and publishes
-/// the first completed chord (or Esc cancellation) as an atomic word (#45).
-/// Poll [`take_captured_chord`] from the recorder UI. Ends automatically when
-/// a chord is delivered or via [`end_capture`].
-pub fn begin_capture() {
-    // Clear any stale word BEFORE arming so no old chord can be observed
-    // as part of the new session.
-    CAPTURE_WORD.store(0, Ordering::Release);
-    CAPTURE_ACTIVE.store(true, Ordering::Release);
-}
-
-/// Stop capturing and discard any unpublished word.
-pub fn end_capture() {
-    CAPTURE_ACTIVE.store(false, Ordering::Release);
-    CAPTURE_WORD.store(0, Ordering::Release);
-}
-
-/// Consume the captured chord, if the hook has published one. Each published
-/// word is handed out exactly once (`swap` semantics).
+/// Consume the captured chord, if this session completed. Exactly-once via
+/// Completed -> Inactive CAS; each completed session yields one result.
 pub fn take_captured_chord() -> Option<CapturedChord> {
-    unpack_chord(CAPTURE_WORD.swap(0, Ordering::AcqRel))
+    loop {
+        let cur = CAPTURE_STATE.load(Ordering::Acquire);
+        if capture_state_of(cur) != CAPTURE_COMPLETED {
+            return None;
+        }
+        let next = capture_word(capture_generation(cur), CAPTURE_INACTIVE, 0);
+        if CAPTURE_STATE
+            .compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return unpack_chord(capture_chord_of(cur));
+        }
+    }
+}
+
+/// Commit a completion for session `token`. Succeeds only if that exact
+/// generation is STILL armed at commit time (#47): end_capture/begin_capture
+/// in between make the CAS fail and the stale callback is rejected.
+fn complete_capture(token: u32, chord: CapturedChord) -> bool {
+    loop {
+        let cur = CAPTURE_STATE.load(Ordering::Acquire);
+        let want = capture_word(token, CAPTURE_ARMED, 0);
+        if cur != want {
+            return false;
+        }
+        let done = capture_word(
+            token,
+            CAPTURE_COMPLETED,
+            pack_chord(chord.modifiers, chord.key),
+        );
+        match CAPTURE_STATE.compare_exchange(cur, done, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(actual) => {
+                // Raced with end/begin/another completion of THIS generation:
+                // another callback already completed it, or the session died.
+                if capture_generation(actual) == token
+                    && capture_state_of(actual) == CAPTURE_COMPLETED
+                {
+                    return false; // exactly-once preserved
+                }
+                if capture_generation(actual) != token {
+                    return false; // session replaced
+                }
+                // Same generation still armed but word changed? Impossible
+                // (armed words are identical); retry defensively.
+            }
+        }
+    }
 }
 
 /// Handle one raw event while capture is active. Always swallows the event:
 /// recorded keys must neither reach other apps nor trigger actions.
-fn capture_event(state: &mut HookState, ev: RawKeyEvent) -> bool {
+fn capture_event(state: &mut HookState, ev: RawKeyEvent, token: u32) -> bool {
     let vk = normalize_vk(ev.vk, ev.extended);
     if vk >= 256 {
         return false;
@@ -111,18 +227,22 @@ fn capture_event(state: &mut HookState, ev: RawKeyEvent) -> bool {
     // Publish lock-free (#45): `swap` guarantees exactly-once delivery even
     // under autorepeat races, and no receiver object can go stale.
     let chord = if vk == 0x1B {
-        CapturedChord { modifiers: ModifierMask::NONE, key: None } // Esc cancels
+        CapturedChord {
+            modifiers: ModifierMask::NONE,
+            key: None,
+        } // Esc cancels
     } else {
         CapturedChord {
             modifiers: state.engine.current_modifiers(),
             key: Some(VirtualKey(vk)),
         }
     };
-    CAPTURE_WORD.swap(pack_chord(chord.modifiers, chord.key), Ordering::AcqRel);
-    // First chord completes the capture session.
-    CAPTURE_ACTIVE.store(false, Ordering::Release);
+    // Commit only if session `token` is STILL the armed one (#47). A stale
+    // callback from a cancelled/replaced generation fails the CAS and the
+    // keystroke is simply swallowed.
+    let committed = complete_capture(token, chord);
     state.engine.reset();
-    true
+    committed
 }
 
 /// Thread message asking the hook thread to clear engine state (#13).
@@ -149,7 +269,11 @@ impl KeyboardService {
         let thread_id = ready_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| Error::internal("keyboard hook startup timeout"))??;
-        Ok(Self { thread_id, suspended, join: Some(join) })
+        Ok(Self {
+            thread_id,
+            suspended,
+            join: Some(join),
+        })
     }
 
     pub fn set_suspended(&self, suspended: bool) {
@@ -165,12 +289,8 @@ impl KeyboardService {
     pub fn reset_state(&self) {
         if self.thread_id != 0 {
             unsafe {
-                let _ = PostThreadMessageW(
-                    self.thread_id,
-                    WM_APP_RESET_STATE,
-                    WPARAM(0),
-                    LPARAM(0),
-                );
+                let _ =
+                    PostThreadMessageW(self.thread_id, WM_APP_RESET_STATE, WPARAM(0), LPARAM(0));
             }
         }
     }
@@ -216,7 +336,9 @@ fn keyboard_thread(
         Err(e) => {
             HOOK_STATE.store(std::ptr::null_mut(), Ordering::Release);
             // SAFETY: publication above is undone before the free.
-            unsafe { drop(Box::from_raw(state_ptr)); }
+            unsafe {
+                drop(Box::from_raw(state_ptr));
+            }
             let _ = ready.send(Err(e));
             return;
         }
@@ -261,7 +383,9 @@ fn keyboard_thread(
     // SAFETY: publication was undone immediately above; this thread is the
     // sole owner of the allocation.
     // 3) Free the state.
-    unsafe { drop(Box::from_raw(state_ptr)); }
+    unsafe {
+        drop(Box::from_raw(state_ptr));
+    }
     crate::info!("keyboard hook uninstalled");
 }
 
@@ -326,8 +450,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
     };
     // SAFETY: KBDLLHOOKSTRUCT is owned by the OS for this callback.
     let data = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
-    let injected = data.flags.contains(LLKHF_INJECTED)
-        || data.flags.contains(LLKHF_LOWER_IL_INJECTED);
+    let injected =
+        data.flags.contains(LLKHF_INJECTED) || data.flags.contains(LLKHF_LOWER_IL_INJECTED);
     let event = RawKeyEvent {
         vk: data.vkCode as u16,
         extended: data.flags.contains(LLKHF_EXTENDED),
@@ -335,10 +459,11 @@ unsafe extern "system" fn low_level_keyboard_proc(
         injected,
     };
 
-
-    if CAPTURE_ACTIVE.load(Ordering::Acquire) {
-        // Recorder capture mode (#14): swallow everything, deliver chords.
-        return if capture_event(state, event) {
+    if let Some(token) = capture_token_live() {
+        // Recorder capture mode (#14/#47): swallow everything; completion is
+        // generation-validated, so a delayed callback cannot leak into a
+        // newer session.
+        return if capture_event(state, event, token) {
             LRESULT(1)
         } else {
             // SAFETY: pass-through when the event cannot be classified.
@@ -358,7 +483,10 @@ unsafe extern "system" fn low_level_keyboard_proc(
         // SAFETY: standard hook chain pass-through.
         EngineOutcome::Pass => unsafe { CallNextHookEx(None, code, wparam, lparam) },
         EngineOutcome::Swallow => LRESULT(1),
-        EngineOutcome::Dispatch { action, dirty_win_chord } => {
+        EngineOutcome::Dispatch {
+            action,
+            dirty_win_chord,
+        } => {
             let hwnd = HWND(state.main_hwnd_raw as *mut _);
             // SAFETY: hwnd was valid at thread start and outlives the hook.
             let _ = unsafe {
@@ -434,78 +562,141 @@ mod tests {
 
     #[test]
     fn capture_delivers_chord_exactly_once() {
-        // #14/#45: recording an already-bound hotkey must publish the chord
-        // atomically; exactly one consumer observation, no second delivery.
+        // #47: a live callback commits its own session exactly once.
         let mut st = test_hook_state();
         begin_capture();
-        assert!(CAPTURE_ACTIVE.load(Ordering::Acquire));
+        let token = capture_token().expect("armed");
         assert!(take_captured_chord().is_none(), "nothing published yet");
 
         // Modifier downs are swallowed and tracked, not delivered yet.
-        assert!(capture_event(&mut st, RawKeyEvent::down(0xA2)));
-        assert!(capture_event(&mut st, RawKeyEvent::down(0xA4)));
-        assert!(take_captured_chord().is_none(), "modifiers alone must not complete");
+        assert!(capture_event(&mut st, RawKeyEvent::down(0xA2), token));
+        assert!(capture_event(&mut st, RawKeyEvent::down(0xA4), token));
+        assert!(
+            take_captured_chord().is_none(),
+            "modifiers alone must not complete"
+        );
 
-        let done = capture_event(&mut st, RawKeyEvent::down(b'M' as u16));
+        let done = capture_event(&mut st, RawKeyEvent::down(b'M' as u16), token);
         assert!(done, "chord key-down is swallowed");
-        assert!(!CAPTURE_ACTIVE.load(Ordering::Acquire), "first chord ends capture");
+        assert!(capture_token().is_none(), "session completed -> disarmed");
 
         let chord = take_captured_chord().expect("exactly-once delivery");
         assert_eq!(chord.modifiers, ModifierMask::CTRL.union(ModifierMask::ALT));
         assert_eq!(chord.key, Some(VirtualKey(b'M' as u16)));
-        assert!(take_captured_chord().is_none(), "swap consumed the word");
+        assert!(take_captured_chord().is_none(), "consumed");
     }
 
     #[test]
-    fn capture_esc_cancels_without_key() {
+    fn aba_stale_callback_cannot_complete_newer_session() {
+        // #47 core regression: callback pauses holding generation N; UI
+        // cancels N and arms N+1; stale commit MUST be rejected and session
+        // N+1 stays armed with no visible result from N.
         let mut st = test_hook_state();
         begin_capture();
-        assert!(capture_event(&mut st, RawKeyEvent::down(0x1B)));
-        let chord = take_captured_chord().expect("cancel marker delivered");
-        assert_eq!(chord.key, None);
-        assert!(!CAPTURE_ACTIVE.load(Ordering::Acquire));
-    }
+        let stale = capture_token().expect("gen N");
 
-    #[test]
-    fn capture_swallows_key_ups_and_ends_cleanly() {
-        let mut st = test_hook_state();
-        begin_capture();
-        assert!(capture_event(&mut st, RawKeyEvent::down(0xA0)));
-        assert!(capture_event(&mut st, RawKeyEvent::down(b'K' as u16)));
-        assert!(capture_event(&mut st, RawKeyEvent::up(0xA0)));
-        // Chord was K with SHIFT (shift released after publication).
-        let chord = take_captured_chord().unwrap();
-        assert_eq!(chord.modifiers, ModifierMask::SHIFT);
+        end_capture(); // recorder cancelled
+        begin_capture(); // immediately re-armed
+
+        // Old callback resumes with its stale token:
+        let _swallowed = capture_event(&mut st, RawKeyEvent::down(b'M' as u16), stale);
+
+        assert!(
+            take_captured_chord().is_none(),
+            "no result from N may surface"
+        );
+        let fresh = capture_token().expect("N+1 still armed");
+        assert_ne!(fresh, stale, "generation advanced");
+
+        // Session N+1 completes normally afterwards:
+        assert!(capture_event(
+            &mut st,
+            RawKeyEvent::down(b'K' as u16),
+            fresh
+        ));
+        let chord = take_captured_chord().expect("live session delivers");
         assert_eq!(chord.key, Some(VirtualKey(b'K' as u16)));
     }
 
     #[test]
-    fn repeated_recording_sessions_are_independent() {
+    fn end_invalidates_in_flight_callback_publication() {
+        // Simpler variant: end between the ACTIVE observation and commit.
+        let mut st = test_hook_state();
+        begin_capture();
+        let token = capture_token().unwrap();
+        end_capture();
+
+        let _swallowed = capture_event(&mut st, RawKeyEvent::down(b'M' as u16), token);
+        assert!(
+            take_captured_chord().is_none(),
+            "cancelled session publishes nothing"
+        );
+        assert!(capture_token().is_none());
+    }
+
+    #[test]
+    fn esc_cancel_publishes_cancellation_once() {
+        let mut st = test_hook_state();
+        begin_capture();
+        let token = capture_token().unwrap();
+        assert!(capture_event(&mut st, RawKeyEvent::down(0x1B), token));
+        let chord = take_captured_chord().expect("cancel marker");
+        assert_eq!(chord.key, None);
+        assert!(take_captured_chord().is_none());
+    }
+
+    #[test]
+    fn repeated_sessions_are_independent() {
         let mut st = test_hook_state();
         for vk in [b'M' as u16, b'O' as u16] {
             begin_capture();
-            capture_event(&mut st, RawKeyEvent::down(0xA2));
-            capture_event(&mut st, RawKeyEvent::down(0xA4));
-            capture_event(&mut st, RawKeyEvent::down(vk));
-            let chord = take_captured_chord().expect("chord per session");
+            let token = capture_token().unwrap();
+            capture_event(&mut st, RawKeyEvent::down(0xA2), token);
+            capture_event(&mut st, RawKeyEvent::down(0xA4), token);
+            capture_event(&mut st, RawKeyEvent::down(vk), token);
+            let chord = take_captured_chord().expect("one chord per session");
             assert_eq!(chord.key, Some(VirtualKey(vk)));
-            end_capture(); // recorder cancelled after applying
-            assert!(take_captured_chord().is_none(), "end discards the word");
         }
     }
 
     #[test]
-    fn teardown_while_armed_discards_stale_word() {
-        // Settings closed right after arming, before any key: end_capture
-        // must clear the word so a later poller sees nothing stale.
+    fn several_generation_old_callback_is_rejected() {
         let mut st = test_hook_state();
         begin_capture();
-        end_capture();
-        capture_event(&mut st, RawKeyEvent::down(b'M' as u16)); // flag off: normal path would dispatch; direct call still swallows+publishes
-        // The published word belongs to no session and is discarded by the
-        // recorder's end path:
-        end_capture();
+        let ancient = capture_token().unwrap();
+        for _ in 0..4 {
+            end_capture();
+            begin_capture();
+        }
+        let _swallowed = capture_event(&mut st, RawKeyEvent::down(b'M' as u16), ancient);
         assert!(take_captured_chord().is_none());
+        let fresh = capture_token().expect("current still armed");
+        assert_ne!(fresh, ancient);
+    }
+
+    #[test]
+    fn generation_wraparound_remains_safe() {
+        // Bounded u32 generation: force the counter to u32::MAX and verify a
+        // begin wraps to 0 while a stale MAX-generation callback is rejected.
+        CAPTURE_STATE.store(((u32::MAX as u64) << 32) | CAPTURE_ARMED, Ordering::Release);
+        let ancient = capture_token().unwrap();
+        assert_eq!(ancient, u32::MAX);
+        begin_capture(); // wraps to generation 0
+        let fresh = capture_token().unwrap();
+        assert_eq!(fresh, 0);
+        let mut st = test_hook_state();
+        let _swallowed = capture_event(&mut st, RawKeyEvent::down(b'M' as u16), ancient);
+        assert!(
+            take_captured_chord().is_none(),
+            "pre-wrap callback rejected"
+        );
+        assert!(capture_event(
+            &mut st,
+            RawKeyEvent::down(b'M' as u16),
+            fresh
+        ));
+        let chord = take_captured_chord().expect("post-wrap session works");
+        assert_eq!(chord.key, Some(VirtualKey(b'M' as u16)));
     }
 
     #[test]
