@@ -121,3 +121,16 @@ when diagnostic level is enabled. No network access, no telemetry.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Support matrix
+
+| Architecture | Compile / CI | Release artifact |
+|--------------|--------------|------------------|
+| x86_64       | yes          | yes              |
+| i686         | yes          | yes              |
+| aarch64      | compile-check only | no         |
+
+Windows requirements: Windows 10 (24H2-era virtual desktop ABI) and Windows 11.
+The virtual-desktop integration is pinned to specific build families — see
+`docs/VIRTUAL_DESKTOP_COMPAT.md`. MSRV: Rust 1.82 (driven by the `windows`
+crate).

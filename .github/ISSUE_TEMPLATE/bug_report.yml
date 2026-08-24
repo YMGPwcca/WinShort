@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in WinShort misbehaves
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: WinShort version
+      placeholder: e.g. v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version / build (+ UBR if known)
+      placeholder: e.g. Windows 11 24H2 build 26100.2314
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options: [x86_64, i686, other]
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem involved
+      options:
+        - Keyboard hotkeys / hook
+        - Audio (mic/output/session mute)
+        - Virtual desktop switching
+        - Tray / Settings UI
+        - Overlay display
+        - Other / unknown
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: Exact sequence, including which monitor/DPI if display-related
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output (%LOCALAPPDATA%\WinShort\logs)
+      description: Paste sanitized excerpts only. Do NOT include raw keystroke history or personal data.
