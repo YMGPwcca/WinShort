@@ -324,6 +324,11 @@ impl App {
 
     /// Route a hotkey action recognized by the keyboard engine.
     pub fn dispatch_action(&mut self, action: HotkeyAction) {
+        // Fail-closed during teardown (#43): workers may still emit stragglers
+        // while they wind down; none may resurrect user-facing state.
+        if self.shutting_down {
+            return;
+        }
         if self.suspended {
             return;
         }
@@ -410,6 +415,12 @@ impl App {
     }
     /// Route an event posted from any thread.
     pub fn route_event(&mut self, ev: AppEvent) {
+        // Fail-closed during teardown (#43): late ShowSettings/overlay/config
+        // events must not create or resurrect user-facing state.
+        if self.shutting_down {
+            crate::log_debug!("dropping {:?} during shutdown", std::mem::discriminant(&ev));
+            return;
+        }
         match ev {
             AppEvent::ShowSettings => self.show_settings(),
             AppEvent::ShowStatusOverlay => self.show_status_overlay(),
@@ -514,6 +525,68 @@ impl App {
         }
     }
 
+}
+
+#[cfg(test)]
+mod shutdown_gate_tests {
+    use super::*;
+    use windows::Win32::Foundation::HWND;
+
+    fn test_app() -> App {
+        App {
+            hwnd: HWND(std::ptr::null_mut()),
+            tray: None,
+            settings: None,
+            overlay: None,
+            foreground: None,
+            keyboard: None,
+            audio: None,
+            desktop: None,
+            desktop_status: crate::desktop::BackendStatus {
+                native: crate::desktop::BackendAvailability::Failed {
+                    reason: "test".into(),
+                },
+                fallback: crate::desktop::BackendAvailability::Available,
+                active: crate::desktop::BackendKind::KeyboardFallback,
+                desktop_count: None,
+                last_served: None,
+            },
+            microphone_state: crate::audio::AudioState::Unavailable {
+                reason: "test".into(),
+            },
+            output_state: crate::audio::OutputState::Unavailable {
+                reason: "test".into(),
+            },
+            foreground_state: crate::audio::AppAudioState::no_external(),
+            microphone_seen: false,
+            output_seen: false,
+            pending_overlay: None,
+            suspended: false,
+            shutting_down: false,
+            degraded: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn gated_route_event_creates_nothing_after_shutdown_begins() {
+        // #43: once shutdown begins, user-facing events must not create state.
+        let mut app = test_app();
+        app.shutting_down = true;
+        app.route_event(AppEvent::ShowSettings);
+        assert!(app.settings.is_none(), "settings must not be created");
+        app.route_event(AppEvent::ShowStatusOverlay);
+        assert!(app.overlay.is_none(), "overlay must not be created");
+    }
+
+    #[test]
+    fn gated_dispatch_is_a_no_op_after_shutdown_begins() {
+        let mut app = test_app();
+        app.shutting_down = true;
+        // Must not panic or enqueue anything (no audio subsystem present).
+        app.dispatch_action(HotkeyAction::ToggleMicrophone);
+        app.dispatch_action(HotkeyAction::SwitchDesktop(0));
+        assert!(app.pending_overlay.is_none());
+    }
 }
 
 /// State snapshot for tray menu checkmarks.
