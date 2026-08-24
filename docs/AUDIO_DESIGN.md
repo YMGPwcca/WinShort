@@ -71,3 +71,17 @@ per-app state); the overlay shows post-toggle aggregate truthfully because it re
 Commands in: `mpsc::Sender<AudioCommand>` from main thread. Events out: boxed `AppEvent`
 via `PostMessageW`. No interface leaves the thread. Callback-after-free prevented by unregistering
 before drops and joining the thread before main teardown (see WIN32_LIFETIME.md).
+
+## Foreground resolver (#18)
+
+The foreground toggle resolves sessions in a ladder: exact PID on the configured
+endpoint, then exact PID across **all** active render endpoints, then
+per-process-image-name match across all endpoints (covers multi-process apps
+whose audio session lives under a child). Endpoint invalidation HRESULTs
+(AUDCLNT_E_DEVICE_INVALIDATED / ENDPOINT_CREATE_FAILED / SERVICE_NOT_RUNNING)
+trigger exactly one rebuild-and-retry. Show Status issues a live
+`QueryForeground` instead of rendering the last cached state.
+
+**Known limitation:** Windows does not expose package (WASAPI2/AppContainer
+loopback-routed) sessions through `IAudioSessionEnumerator`; audio from such
+sessions may be undiscoverable and is reported as `NoSession`.

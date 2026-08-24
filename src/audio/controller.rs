@@ -28,6 +28,8 @@ pub enum AudioCommand {
     RefreshEndpoint(EndpointFlow),
     RefreshAll,
     ConfigChanged,
+    /// Live read-only foreground resolver for Show Status (#18).
+    QueryForeground(Option<u32>),
     Shutdown,
 }
 
@@ -176,6 +178,18 @@ impl AudioController {
             }
             // ConfigChanged is consumed by handle() above; refresh_config_if_needed
             // covers any residual revision drift.
+            AudioCommand::QueryForeground(pid) => {
+                let config = self.config.get();
+                let state =
+                    crate::audio::sessions::query_foreground(&self.enumerator, &config, pid)
+                        .unwrap_or_else(|e| crate::audio::AppAudioState {
+                            app_name: None,
+                            aggregate: crate::audio::Aggregate::Error,
+                            sessions: 0,
+                            error: Some(e.to_string()),
+                        });
+                self.post(AppEvent::ForegroundAudioChanged(state));
+            }
             AudioCommand::RefreshAll => self.rebuild_all(false),
             AudioCommand::ConfigChanged => {}
             AudioCommand::Shutdown => return false,

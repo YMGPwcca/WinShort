@@ -79,6 +79,17 @@ impl Error {
         };
         format!("{named} (0x{code:08X})")
     }
+
+    /// True when the code is an endpoint/audio-stack invalidation that a
+    /// rebuild can recover from (#18).
+    pub fn is_audio_invalidation(&self) -> bool {
+        matches!(self, Error::Os { code, .. } if matches!(
+            *code,
+            0x88890004 | // AUDCLNT_E_DEVICE_INVALIDATED
+            0x8889000F | // AUDCLNT_E_ENDPOINT_CREATE_FAILED
+            0x88890010   // AUDCLNT_E_SERVICE_NOT_RUNNING
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -102,6 +113,17 @@ mod tests {
             assert!(Error::code_name(code).starts_with(name), "{name}: {:#010X} -> {}", code, Error::code_name(code));
         }
         assert_eq!(Error::code_name(0x12345678), "0x12345678");
+    }
+
+    #[test]
+    fn audio_invalidation_codes_detected() {
+        // #18: exactly these codes permit one rebuild-and-retry.
+        for code in [0x88890004u32, 0x8889000F, 0x88890010] {
+            let e = Error::os("test", code);
+            assert!(e.is_audio_invalidation(), "{code:#010X}");
+        }
+        let e = Error::os("test", 0x80070005); // E_ACCESSDENIED is not invalidation
+        assert!(!e.is_audio_invalidation());
     }
 }
 

@@ -352,8 +352,14 @@ impl App {
             crate::ui::overlay::microphone_row(&self.microphone_state),
             crate::ui::overlay::output_row(&self.output_state),
         ];
+        // Cached row shows immediately; the live query below replaces it when
+        // the answer arrives (stale-status fix, #18).
         if self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp {
             rows.push(crate::ui::overlay::application_row(&self.foreground_state));
+        }
+        let pid = self.foreground.as_ref().and_then(|tracker| tracker.target_pid());
+        if let Some(audio) = &self.audio {
+            audio.send(crate::audio::AudioCommand::QueryForeground(pid));
         }
         self.show_overlay_model(crate::ui::overlay::OverlayModel { rows });
     }
