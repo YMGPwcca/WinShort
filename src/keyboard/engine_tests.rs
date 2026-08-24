@@ -294,3 +294,74 @@ fn reset_clears_stuck_state() {
     let out = feed(&mut e, &t, &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::up(VK_LWIN)]);
     assert!(out.iter().all(|o| *o == EngineOutcome::Pass));
 }
+
+#[test]
+fn modifier_release_clears_state_for_every_side() {
+    // Regression for issue #4: non-Win modifier key-ups never cleared the
+    // engine's down-state, so a released Ctrl/Alt/Shift stayed "held" forever
+    // and later chords matched the wrong (or no) binding.
+    let sides = [
+        ("LCTRL", 0xA2u16),
+        ("RCTRL", 0xA3),
+        ("LALT", 0xA4),
+        ("RALT", 0xA5),
+        ("LSHIFT", 0xA0),
+        ("RSHIFT", 0xA1),
+        ("LWIN", 0x5B),
+        ("RWIN", 0x5C),
+    ];
+    for (name, vk) in sides {
+        let mut e = KeyboardEngine::new();
+        let t = table_with_win_digits();
+        feed(&mut e, &t, &[RawKeyEvent::down(vk), RawKeyEvent::up(vk)]);
+        assert_eq!(e.current_modifiers(), ModifierMask::NONE, "{name} stuck down");
+    }
+}
+
+#[test]
+fn modifier_autorepeat_then_single_release_clears() {
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::up(0xA2),
+        ],
+    );
+    assert_eq!(e.current_modifiers(), ModifierMask::NONE);
+}
+
+#[test]
+fn mixed_order_modifier_releases_converge_empty() {
+    // Ctrl down, Shift down, Shift up, Ctrl up — and the mirror order.
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA0),
+            RawKeyEvent::up(0xA0),
+            RawKeyEvent::up(0xA2),
+        ],
+    );
+    assert_eq!(e.current_modifiers(), ModifierMask::NONE);
+
+    let mut e = KeyboardEngine::new();
+    feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA0),
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::up(0xA2),
+            RawKeyEvent::up(0xA0),
+        ],
+    );
+    assert_eq!(e.current_modifiers(), ModifierMask::NONE);
+}

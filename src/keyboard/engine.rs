@@ -174,8 +174,8 @@ impl KeyboardEngine {
 
     fn on_key_up(&mut self, vk: u16) -> EngineOutcome {
         if KeyState::is_modifier(vk) {
+            self.state.set_down(vk, false);
             if KeyState::is_win_key(vk) {
-                self.state.set_down(vk, false);
                 if self.state.any_win() {
                     return EngineOutcome::Pass; // other side still held
                 }
@@ -186,7 +186,6 @@ impl KeyboardEngine {
                     return EngineOutcome::Swallow;
                 }
                 self.passthrough_while_win = false;
-                return EngineOutcome::Pass;
             }
             return EngineOutcome::Pass;
         }
