@@ -293,9 +293,7 @@ impl OverlayState {
         // truth. The HWND still lives on the previous monitor here, so its
         // window DPI is stale — never max() it (monotonic DPI breaks
         // high->low transitions).
-        self.dpi = crate::platform::dpi::effective_render_dpi(
-            monitor.as_ref().map(|m| m.dpi),
-        );
+        self.dpi = crate::platform::dpi::effective_render_dpi(monitor.as_ref().map(|m| m.dpi));
         self.model = model;
         self.config = config.clone();
         self.surface = Some(
