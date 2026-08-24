@@ -107,14 +107,40 @@ fn send_chord(arrow: Arrow) -> Result<()> {
     }
     inputs.push(key(VK_CONTROL, KEYEVENTF_KEYUP));
 
-    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    let sent = send_inputs(&inputs);
     if sent == inputs.len() as u32 {
         Ok(())
     } else {
+        // Partial injection (#35/#22): release every distinct key the
+        // sequence may have pressed so the user isn't left with stuck
+        // Ctrl/Win/arrow. Best effort — errors here are logged upstream.
+        let mut pressed: Vec<u16> = Vec::new();
+        for input in inputs.iter().take(sent as usize) {
+            // SAFETY: inputs were built as INPUT_KEYBOARD above.
+            let ki = unsafe { &input.Anonymous.ki };
+            let is_up = (ki.dwFlags & KEYEVENTF_KEYUP) == KEYEVENTF_KEYUP;
+            if !is_up && !pressed.contains(&ki.wVk.0) {
+                pressed.push(ki.wVk.0);
+            }
+        }
+        let mut ups: Vec<INPUT> = Vec::new();
+        for vk in pressed {
+            ups.push(key(vk, KEYEVENTF_KEYUP));
+        }
+        if !ups.is_empty() {
+            send_inputs(&ups);
+        }
         Err(Error::os_ctx(
             "SendInput(Ctrl+Win+Arrow)",
             unsafe { windows::Win32::Foundation::GetLastError().0 },
-            format!("sent {sent}/{} events", inputs.len()),
+            format!("sent {sent}/{} events; key-up cleanup sent", inputs.len()),
         ))
     }
 }
+
+/// Indirection over SendInput (test seam for batch sizes).
+fn send_inputs(inputs: &[INPUT]) -> u32 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
+    unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) }
+}
+use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, KEYEVENTF_KEYUP};

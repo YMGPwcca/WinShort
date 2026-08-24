@@ -51,7 +51,10 @@ struct Config { schema_version: u8, general: GeneralCfg, overlay: OverlayCfg,
 ```
 
 `Hotkey` display string canonicalization: `Ctrl+Alt+Shift+Win+<Key>` in fixed order;
-parse accepts any order and side-insensitive modifier names; digits/letters/F1-24/media keys
+parse accepts any order and side-insensitive modifier names; digits/letters/F1-24/media keys.
+**At least one modifier (Ctrl/Alt/Shift/Win) is required — bare keys like `F5` are
+rejected** (#35). Numpad keys (`Numpad0`–`Numpad9`, `NumpadAdd`, …) are distinct from
+their top-row siblings.
 accepted. `VirtualKey` is an enum over the supported range with `TryFrom<u16>`.
 
 ## Validation (`config/validate.rs`)

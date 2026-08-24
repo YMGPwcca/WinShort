@@ -256,7 +256,14 @@ impl Hotkey {
             }
         }
         match key {
-            Some(key) => Ok(Hotkey { modifiers: mask, key }),
+            Some(key) => {
+                if mask.is_empty() {
+                    return Err(format!(
+                        "`{s}` has no modifier: global hotkeys require at least one of Ctrl/Alt/Shift/Win"
+                    ));
+                }
+                Ok(Hotkey { modifiers: mask, key })
+            }
             None => Err(format!("no key in `{s}` (modifiers alone cannot be bound)")),
         }
     }
@@ -306,7 +313,8 @@ mod tests {
 
     #[test]
     fn parse_display_round_trip() {
-        for s in ["Ctrl+Alt+M", "Ctrl+Shift+M", "Win+7", "Ctrl+Alt+P", "F5", "Space"] {
+        // #35(c): bare keys like "F5" are rejected; modifiers are required.
+        for s in ["Ctrl+Alt+M", "Ctrl+Shift+M", "Win+7", "Ctrl+Alt+P", "Ctrl+F5", "Ctrl+Space"] {
             let hk = Hotkey::parse(s).unwrap_or_else(|e| panic!("{s}: {e}"));
             assert_eq!(hk.to_string(), s, "round trip failed");
         }
@@ -326,6 +334,14 @@ mod tests {
         assert!(Hotkey::parse("Ctrl+Alt").is_err());
         assert!(Hotkey::parse("Ctrl+Ctrl+M").is_err());
         assert!(Hotkey::parse("").is_err());
+    }
+
+    #[test]
+    fn modifierless_binding_rejected() {
+        // #35(c): global hotkeys require at least one modifier.
+        let err = Hotkey::parse("M").unwrap_err();
+        assert!(err.contains("no modifier"), "{err}");
+        assert!(Hotkey::parse("F5").is_err());
     }
 
     #[test]

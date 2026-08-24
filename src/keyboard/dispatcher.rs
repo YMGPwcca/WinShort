@@ -32,12 +32,18 @@ pub fn dirty_win_chord() -> Result<()> {
     let inputs = [down, up];
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent == inputs.len() as u32 {
-        Ok(())
-    } else {
-        Err(Error::os_ctx(
-            "SendInput(chord dirtier)",
-            unsafe { windows::Win32::Foundation::GetLastError().0 },
-            format!("sent {sent}/{} events", inputs.len()),
-        ))
+        return Ok(());
     }
+    // Partial send (#35): if the Ctrl DOWN went out but the UP did not, the
+    // user's Ctrl is synthetically stuck — release it best effort.
+    if sent >= 1 {
+        unsafe {
+            let _ = SendInput(&[up], std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+    Err(Error::os_ctx(
+        "SendInput(chord dirtier)",
+        unsafe { windows::Win32::Foundation::GetLastError().0 },
+        format!("sent {sent}/{} events", inputs.len()),
+    ))
 }

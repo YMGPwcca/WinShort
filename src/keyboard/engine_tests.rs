@@ -383,6 +383,47 @@ fn mixed_order_modifier_releases_converge_empty() {
 }
 
 #[test]
+fn altgr_signature_skips_binding_lookup() {
+    // #35(a): LCtrl held + RAlt pressed is the AltGr signature; a letter
+    // typed through it must PASS even if it matches a binding.
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits(); // includes Ctrl+Alt+M mic binding
+    feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),            // LCtrl down
+            RawKeyEvent::down(0xA5),            // RAlt down -> AltGr signature
+            RawKeyEvent::down(b'M' as u16),     // would be ToggleMicrophone otherwise
+        ],
+    );
+    // The M key-down must NOT dispatch; feed returns outcomes — re-run to inspect.
+    let mut e = KeyboardEngine::new();
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA5),
+            RawKeyEvent::down(b'M' as u16),
+            RawKeyEvent::up(b'M' as u16),
+        ],
+    );
+    assert_eq!(out[2], EngineOutcome::Pass, "AltGr letter must pass through");
+}
+
+#[test]
+fn normalize_maps_extended_generics_to_right_sides() {
+    // #35(b): generic VK + extended flag must become the right-side VK.
+    assert_eq!(super::keystate::normalize_vk(0x10, true), 0xA1); // RShift
+    assert_eq!(super::keystate::normalize_vk(0x11, true), 0xA3); // RControl
+    assert_eq!(super::keystate::normalize_vk(0x12, true), 0xA5); // RMenu
+    assert_eq!(super::keystate::normalize_vk(0x10, false), 0xA0); // LShift
+    assert_eq!(super::keystate::normalize_vk(0x11, false), 0xA2); // LControl
+    assert_eq!(super::keystate::normalize_vk(0x12, false), 0xA4); // LMenu
+}
+
+#[test]
 fn lifecycle_reset_after_partial_chord_emits_no_actions() {
     // #13: Win down + bound digit (dispatched + suppressed up), then a
     // lifecycle reset, then the physical releases. Nothing may dispatch and

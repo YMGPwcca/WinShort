@@ -92,6 +92,9 @@ pub struct KeyboardEngine {
     /// We swallowed a Win DOWN because a digit-first chord completed; its UP
     /// must be swallowed too so the shell never sees this Win cycle.
     win_down_swallowed: bool,
+    /// AltGr signature seen (Right Alt pressed while Left Ctrl held): skip
+    /// binding lookups so layout characters never fire hotkeys (#35).
+    altgr_active: bool,
     suppressed_ups: SuppressionSet,
 }
 
@@ -124,6 +127,9 @@ impl KeyboardEngine {
     fn on_key_down(&mut self, vk: u16, table: &BindingTable) -> EngineOutcome {
         if KeyState::is_modifier(vk) {
             self.state.set_down(vk, true);
+            if vk == vks::VK_RMENU && self.state.is_down(vks::VK_LCONTROL) {
+                self.altgr_active = true;
+            }
 
             // Digit-first completion: a non-modifier is already held and this
             // Win press completes a binding. That earlier key-down already
@@ -150,7 +156,13 @@ impl KeyboardEngine {
         let autorepeat = self.state.is_down(vk);
         let win_held = self.state.any_win();
 
-        match table.lookup(self.state.modifiers(), VirtualKey(vk)) {
+        let lookup = if self.altgr_active {
+            // AltGr character input: never match bindings (#35).
+            None
+        } else {
+            table.lookup(self.state.modifiers(), VirtualKey(vk))
+        };
+        match lookup {
             Some(action) => {
                 self.state.set_down(vk, true);
                 self.state.track_nonmod(vk, true);
@@ -177,6 +189,12 @@ impl KeyboardEngine {
     fn on_key_up(&mut self, vk: u16) -> EngineOutcome {
         if KeyState::is_modifier(vk) {
             self.state.set_down(vk, false);
+            if self.altgr_active
+                && !self.state.is_down(vks::VK_RMENU)
+                && !self.state.is_down(vks::VK_LCONTROL)
+            {
+                self.altgr_active = false;
+            }
             if KeyState::is_win_key(vk) {
                 if self.state.any_win() {
                     return EngineOutcome::Pass; // other side still held
@@ -213,6 +231,7 @@ impl KeyboardEngine {
         self.state.clear_all();
         self.passthrough_while_win = false;
         self.win_down_swallowed = false;
+        self.altgr_active = false;
         self.suppressed_ups.clear();
     }
 }
