@@ -6,13 +6,21 @@ use std::sync::mpsc::{self, Sender};
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 
 use crate::desktop::backend::{
-    BackendAvailability, BackendKind, BackendStatus, VirtualDesktopBackend,
+    BackendAvailability, BackendKind, BackendStatus, DesktopError, VirtualDesktopBackend,
 };
 use crate::desktop::detect::{detect, OsBuild};
 use crate::desktop::internal_api::InternalBackend;
 use crate::desktop::keyboard_fallback::KeyboardFallback;
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
+
+/// Result of attempting the native backend for one switch (#20).
+enum NativeOutcome {
+    Served,
+    /// Semantic refusal: log and never inject.
+    Refused(DesktopError),
+    MayFallback,
+}
 
 #[derive(Debug)]
 pub enum DesktopCommand {
@@ -97,36 +105,14 @@ impl DesktopController {
     }
 
     fn switch_to(&mut self, index: usize) {
-        if let Some(native) = &self.native {
-            match native.switch_to(index) {
-                Ok(()) => {
-                    crate::info!("switched to virtual desktop {} via Native Shell", index + 1);
-                    self.publish_status();
-                    return;
-                }
-                Err(e) => {
-                    crate::warn_!("native desktop switch failed: {e}; rebuilding Shell proxy");
-                }
+        match self.try_native(index) {
+            // Served or refused: no synthetic input.
+            NativeOutcome::Served | NativeOutcome::Refused(_) => {
+                self.publish_status();
+                return;
             }
-            // Explorer may have restarted; rebuild the STA proxy once.
-            match InternalBackend::create(self.build) {
-                Ok(rebuilt) => {
-                    self.native = Some(rebuilt);
-                    if self.native.as_ref().is_some_and(|n| n.switch_to(index).is_ok()) {
-                        crate::info!("switched to desktop {} after Shell proxy rebuild", index + 1);
-                        self.publish_status();
-                        return;
-                    }
-                }
-                Err(e) => {
-                    self.native_availability = BackendAvailability::Failed {
-                        reason: e.to_string(),
-                    };
-                    self.native = None;
-                }
-            }
+            NativeOutcome::MayFallback => {}
         }
-
         match self.fallback.switch_to(index) {
             Ok(()) => crate::info!(
                 "switched toward virtual desktop {} via keyboard fallback (best effort)",
@@ -135,6 +121,71 @@ impl DesktopController {
             Err(e) => crate::error_!("keyboard desktop fallback failed: {e}"),
         }
         self.publish_status();
+    }
+
+    /// Attempt the native backend. Only RPC-class failures return
+    /// [`NativeOutcome::MayFallback`] — and only after one proxy rebuild
+    /// (#20/#21).
+    fn try_native(&mut self, index: usize) -> NativeOutcome {
+        if self.native.is_none() && self.build.native_shell_supported() {
+            // One bounded create attempt per action (#21): a transient startup
+            // failure must not permanently disable the native backend.
+            match InternalBackend::create(self.build) {
+                Ok(backend) => {
+                    self.native = Some(backend);
+                    self.native_availability = BackendAvailability::Available;
+                    crate::info!("native desktop backend recovered on demand");
+                }
+                Err(e) => {
+                    self.native_availability =
+                        BackendAvailability::Failed { reason: e.to_string() };
+                    return NativeOutcome::MayFallback;
+                }
+            }
+        }
+        let Some(native) = &self.native else {
+            return NativeOutcome::MayFallback;
+        };
+        match native.switch_to(index) {
+            Ok(()) => {
+                crate::info!("switched to virtual desktop {} via Native Shell", index + 1);
+                return NativeOutcome::Served;
+            }
+            Err(e) if e.permits_fallback() => {
+                crate::warn_!("native desktop switch failed: {e}; rebuilding Shell proxy");
+            }
+            Err(e) => {
+                // Semantic/ABI refusal (#20): never inject keystrokes for a
+                // target that does not exist or a build we cannot serve.
+                crate::error_!("native desktop switch refused: {e}");
+                return NativeOutcome::Refused(e);
+            }
+        }
+        // Explorer may have restarted; rebuild the STA proxy once.
+        match InternalBackend::create(self.build) {
+            Ok(rebuilt) => {
+                self.native = Some(rebuilt);
+                match self.native.as_ref().expect("just set").switch_to(index) {
+                    Ok(()) => {
+                        crate::info!(
+                            "switched to desktop {} after Shell proxy rebuild",
+                            index + 1
+                        );
+                        return NativeOutcome::Served;
+                    }
+                    Err(e) if !e.permits_fallback() => {
+                        crate::error_!("native desktop switch refused after rebuild: {e}");
+                        return NativeOutcome::Refused(e);
+                    }
+                    Err(_) => {} // still unavailable: fallback permitted
+                }
+            }
+            Err(e) => {
+                self.native_availability = BackendAvailability::Failed { reason: e.to_string() };
+                self.native = None;
+            }
+        }
+        NativeOutcome::MayFallback
     }
 
     fn status(&self) -> BackendStatus {
@@ -206,4 +257,70 @@ fn desktop_thread(
     drop(controller);
     unsafe { CoUninitialize(); }
     crate::info!("virtual desktop controller stopped");
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::desktop::backend::{BackendAvailability, DesktopError};
+    use std::cell::RefCell;
+
+    struct ScriptedBackend {
+        availability: BackendAvailability,
+        errors: RefCell<Vec<DesktopError>>,
+        fallback_used: RefCell<bool>,
+    }
+    impl VirtualDesktopBackend for ScriptedBackend {
+        fn availability(&self) -> BackendAvailability {
+            self.availability.clone()
+        }
+        fn desktop_count(&self) -> std::result::Result<usize, DesktopError> {
+            Err(DesktopError::BackendUnavailable("scripted".into()))
+        }
+        fn current_desktop(&self) -> std::result::Result<usize, DesktopError> {
+            Ok(0)
+        }
+        fn switch_to(&self, _index: usize) -> std::result::Result<(), DesktopError> {
+            match self.errors.borrow_mut().pop() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+        fn kind(&self) -> BackendKind {
+            BackendKind::NativeShell
+        }
+    }
+
+    #[test]
+    fn target_out_of_range_never_permits_fallback() {
+        // #20 acceptance: desktop 9 requested with count 3 must NOT inject
+        // keyboard chords.
+        let err = DesktopError::TargetOutOfRange { requested: 8, count: 3 };
+        assert!(!err.permits_fallback());
+        assert!(matches!(err, DesktopError::TargetOutOfRange { .. }));
+    }
+
+    #[test]
+    fn rpc_class_permits_fallback_but_semantic_does_not() {
+        assert!(DesktopError::RpcDisconnected.permits_fallback());
+        assert!(DesktopError::BackendUnavailable("x".into()).permits_fallback());
+        assert!(!DesktopError::SwitchFailed(-2_147_024_846).permits_fallback());
+        assert!(!DesktopError::UnsupportedBuild(19041).permits_fallback());
+        assert!(!DesktopError::AbiMismatch("slot".into()).permits_fallback());
+    }
+
+    #[test]
+    fn scripted_backend_surfaces_typed_error() {
+        let backend = ScriptedBackend {
+            availability: BackendAvailability::Available,
+            errors: RefCell::new(vec![DesktopError::TargetOutOfRange { requested: 8, count: 3 }]),
+            fallback_used: RefCell::new(false),
+        };
+        let out = VirtualDesktopBackend::switch_to(&backend, 8);
+        assert_eq!(
+            out,
+            Err(DesktopError::TargetOutOfRange { requested: 8, count: 3 })
+        );
+        assert!(!*backend.fallback_used.borrow());
+    }
 }

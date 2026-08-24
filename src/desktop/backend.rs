@@ -1,8 +1,6 @@
 //! The virtual desktop backend abstraction (spec §18). The keyboard subsystem
 //! and UI never touch COM GUIDs — they see this trait and status types only.
 
-use crate::error::Result;
-
 /// Which backend implementation is serving switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
@@ -56,14 +54,65 @@ pub struct BackendStatus {
     pub desktop_count: Option<usize>,
 }
 
+/// Typed desktop operation failures (#20). The error CLASS decides policy:
+/// only Shell/RPC unavailability may trigger the keyboard fallback; semantic
+/// refusals (target out of range, unsupported build, ABI mismatch, switch
+/// rejection) never inject synthetic keystrokes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopError {
+    /// Requested desktop does not exist. Never falls back.
+    TargetOutOfRange { requested: usize, count: usize },
+    /// Backend cannot operate right now (not activated, safety limit).
+    BackendUnavailable(String),
+    /// Build not whitelisted — fail closed (spec §20).
+    UnsupportedBuild(u32),
+    /// Shell RPC dropped (Explorer restart): proxy rebuild + fallback allowed.
+    RpcDisconnected,
+    /// Interface layout mismatch against the pinned build contract.
+    AbiMismatch(String),
+    /// Shell rejected the switch with this HRESULT.
+    SwitchFailed(i32),
+}
+
+impl DesktopError {
+    /// Only Shell/RPC-level unavailability permits the keyboard fallback
+    /// (after one proxy rebuild). Everything else refuses without input (#20).
+    pub fn permits_fallback(&self) -> bool {
+        matches!(
+            self,
+            DesktopError::RpcDisconnected | DesktopError::BackendUnavailable(_)
+        )
+    }
+}
+
+impl std::fmt::Display for DesktopError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DesktopError::TargetOutOfRange { requested, count } => write!(
+                f,
+                "desktop {} does not exist (count {count})",
+                requested + 1
+            ),
+            DesktopError::BackendUnavailable(reason) => write!(f, "backend unavailable: {reason}"),
+            DesktopError::UnsupportedBuild(build) => write!(f, "unsupported build {build}"),
+            DesktopError::RpcDisconnected => write!(f, "Shell RPC disconnected"),
+            DesktopError::AbiMismatch(reason) => write!(f, "ABI mismatch: {reason}"),
+            DesktopError::SwitchFailed(hr) => write!(f, "SwitchDesktop failed 0x{hr:08X}"),
+        }
+    }
+}
+
+impl std::error::Error for DesktopError {}
+
 /// Backend contract. Implementations must be safe to call from the desktop
 /// worker thread only; they serialize internally.
 pub trait VirtualDesktopBackend {
     fn availability(&self) -> BackendAvailability;
-    fn desktop_count(&self) -> Result<usize>;
+    fn desktop_count(&self) -> std::result::Result<usize, DesktopError>;
     /// 0-based index of the current desktop.
-    fn current_desktop(&self) -> Result<usize>;
-    /// Switch to 0-based `index`. Returns Err when the target doesn't exist.
-    fn switch_to(&self, index: usize) -> Result<()>;
+    fn current_desktop(&self) -> std::result::Result<usize, DesktopError>;
+    /// Switch to 0-based `index`. Returns Err(TargetOutOfRange) when the
+    /// target doesn't exist.
+    fn switch_to(&self, index: usize) -> std::result::Result<(), DesktopError>;
     fn kind(&self) -> BackendKind;
 }

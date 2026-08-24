@@ -4,8 +4,9 @@
 //! reach N best-effort, walk left past any realistic desktop count, then right
 //! N times. Diagnostics explicitly report that count/current are unavailable.
 
-use crate::desktop::backend::{BackendAvailability, BackendKind, VirtualDesktopBackend};
-use crate::error::{Error, Result};
+use crate::desktop::backend::{
+    BackendAvailability, BackendKind, DesktopError, VirtualDesktopBackend,
+};
 
 pub struct KeyboardFallback;
 
@@ -20,24 +21,21 @@ impl VirtualDesktopBackend for KeyboardFallback {
         BackendAvailability::Available
     }
 
-    fn desktop_count(&self) -> Result<usize> {
-        Err(Error::desktop(
-            "keyboard fallback cannot enumerate virtual desktops",
+    fn desktop_count(&self) -> std::result::Result<usize, DesktopError> {
+        Err(DesktopError::BackendUnavailable(
+            "keyboard fallback cannot enumerate virtual desktops".into(),
         ))
     }
 
-    fn current_desktop(&self) -> Result<usize> {
-        Err(Error::desktop(
-            "keyboard fallback cannot identify the current desktop",
+    fn current_desktop(&self) -> std::result::Result<usize, DesktopError> {
+        Err(DesktopError::BackendUnavailable(
+            "keyboard fallback cannot identify the current desktop".into(),
         ))
     }
 
-    fn switch_to(&self, index: usize) -> Result<()> {
+    fn switch_to(&self, index: usize) -> std::result::Result<(), DesktopError> {
         if index > 31 {
-            return Err(Error::desktop(format!(
-                "fallback target {} exceeds safety limit",
-                index + 1
-            )));
+            return Err(DesktopError::TargetOutOfRange { requested: index, count: 32 });
         }
         // 32 left chords saturate at Desktop 1 for the supported UX (1–9).
         for _ in 0..32 {
@@ -62,7 +60,7 @@ enum Arrow {
     Right,
 }
 
-fn send_chord(arrow: Arrow) -> Result<()> {
+fn send_chord(arrow: Arrow) -> std::result::Result<(), DesktopError> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
         KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY,
@@ -130,11 +128,10 @@ fn send_chord(arrow: Arrow) -> Result<()> {
         if !ups.is_empty() {
             send_inputs(&ups);
         }
-        Err(Error::os_ctx(
-            "SendInput(Ctrl+Win+Arrow)",
-            unsafe { windows::Win32::Foundation::GetLastError().0 },
-            format!("sent {sent}/{} events; key-up cleanup sent", inputs.len()),
-        ))
+        Err(DesktopError::BackendUnavailable(format!(
+            "SendInput(Ctrl+Win+Arrow) sent {sent}/{} events; key-up cleanup sent",
+            inputs.len()
+        )))
     }
 }
 

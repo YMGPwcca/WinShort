@@ -11,7 +11,9 @@ use windows_core::{GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, Interface};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::Common::IObjectArray;
 
-use crate::desktop::backend::{BackendAvailability, BackendKind, VirtualDesktopBackend};
+use crate::desktop::backend::{
+    BackendAvailability, BackendKind, DesktopError, VirtualDesktopBackend,
+};
 use crate::desktop::detect::OsBuild;
 use crate::error::{Error, Result};
 
@@ -99,6 +101,27 @@ pub unsafe trait IVirtualDesktopManagerInternal: IUnknown {
     ) -> HRESULT;
 }
 
+/// Classify a Win32/HRESULT failure into the typed desktop error (#20).
+fn classify(e: &crate::error::Error) -> DesktopError {
+    match e {
+        crate::error::Error::Os { code, .. } => match *code {
+            0x8001_0108 | 0x8007_06BA | 0x8007_06BE => DesktopError::RpcDisconnected,
+            other => DesktopError::SwitchFailed(other as i32),
+        },
+        other => DesktopError::BackendUnavailable(other.to_string()),
+    }
+}
+
+trait BackendError<T> {
+    fn classify(self) -> std::result::Result<T, DesktopError>;
+}
+
+impl<T> BackendError<T> for crate::error::Result<T> {
+    fn classify(self) -> std::result::Result<T, DesktopError> {
+        self.map_err(|e| classify(&e))
+    }
+}
+
 pub struct InternalBackend {
     manager: IVirtualDesktopManagerInternal,
     build: OsBuild,
@@ -159,56 +182,85 @@ impl VirtualDesktopBackend for InternalBackend {
         BackendAvailability::Available
     }
 
-    fn desktop_count(&self) -> Result<usize> {
-        unsafe {
-            desktop_array(&self.manager)?
-                .GetCount()
+    fn desktop_count(&self) -> std::result::Result<usize, DesktopError> {
+        let inner: crate::error::Result<usize> = (|| {
+            let array = unsafe { desktop_array(&self.manager)? };
+            unsafe { array.GetCount() }
                 .map(|count| count as usize)
                 .map_err(|e| Error::win("IObjectArray::GetCount", &e))
-        }
+        })();
+        inner.classify()
     }
 
-    fn current_desktop(&self) -> Result<usize> {
-        let current = self.current_id()?;
-        unsafe {
-            let array = desktop_array(&self.manager)?;
-            let count = array
-                .GetCount()
-                .map_err(|e| Error::win("IObjectArray::GetCount", &e))?;
-            for index in 0..count {
-                let desktop: IVirtualDesktop = array
-                    .GetAt(index)
-                    .map_err(|e| Error::win("IObjectArray::GetAt", &e))?;
-                if desktop_id(&desktop)? == current {
-                    return Ok(index as usize);
+    fn current_desktop(&self) -> std::result::Result<usize, DesktopError> {
+        let inner: crate::error::Result<usize> = (|| -> crate::error::Result<usize> {
+            let current = self.current_id()?;
+            unsafe {
+                let array = desktop_array(&self.manager)?;
+                let count = array
+                    .GetCount()
+                    .map_err(|e| Error::win("IObjectArray::GetCount", &e))?;
+                for index in 0..count {
+                    let desktop: IVirtualDesktop = array
+                        .GetAt(index)
+                        .map_err(|e| Error::win("IObjectArray::GetAt", &e))?;
+                    if desktop_id(&desktop)? == current {
+                        return Ok(index as usize);
+                    }
                 }
             }
-        }
-        Err(Error::desktop("current desktop not found in Shell ordering"))
+            Err(Error::desktop("current desktop not found in Shell ordering"))
+        })();
+        inner.classify()
     }
 
-    fn switch_to(&self, index: usize) -> Result<()> {
-        unsafe {
-            let array = desktop_array(&self.manager)?;
-            let count = array
+    fn switch_to(&self, index: usize) -> std::result::Result<(), DesktopError> {
+        let inner: crate::error::Result<()> =
+            (|| -> crate::error::Result<()> {
+                unsafe {
+                    let array = desktop_array(&self.manager)?;
+                    let count = array
                 .GetCount()
                 .map_err(|e| Error::win("IObjectArray::GetCount", &e))? as usize;
             if index >= count {
-                return Err(Error::desktop(format!(
+                // Semantic refusal — must NEVER trigger input injection (#20).
+                return Err(crate::error::Error::desktop(format!(
                     "desktop {} does not exist (count {count})",
                     index + 1
                 )));
             }
-            if self.current_desktop()? == index {
-                return Ok(());
+            // current_desktop is already typed; surface its class directly.
+            match self.current_desktop() {
+                Ok(current) if current == index => return Ok(()),
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(crate::error::Error::desktop(format!(
+                        "current desktop unresolved: {e}"
+                    )))
+                }
             }
             let desktop: IVirtualDesktop = array
                 .GetAt(index as u32)
                 .map_err(|e| Error::win("IObjectArray::GetAt(target)", &e))?;
-            self.manager
-                .switch_desktop(ComIn::new(&desktop))
-                .ok()
-                .map_err(|e| Error::win("IVirtualDesktopManagerInternal::SwitchDesktop", &e))
+                    self.manager
+                        .switch_desktop(ComIn::new(&desktop))
+                        .ok()
+                        .map_err(|e| Error::win("IVirtualDesktopManagerInternal::SwitchDesktop", &e))
+                }
+            })();
+        match inner {
+            Ok(()) => Ok(()),
+            Err(e) => match &e {
+                crate::error::Error::Desktop(message)
+                    if message.contains("does not exist") =>
+                {
+                    Err(DesktopError::TargetOutOfRange {
+                        requested: index,
+                        count: self.desktop_count().unwrap_or(0),
+                    })
+                }
+                other => Err(classify(other)),
+            },
         }
     }
 
