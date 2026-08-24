@@ -42,9 +42,16 @@ impl DesktopService {
             .name("winshort-desktop".into())
             .spawn(move || desktop_thread(hwnd_raw, receiver, ready_tx))
             .map_err(|e| Error::internal(format!("spawn desktop thread: {e}")))?;
-        ready_rx
+        if ready_rx
             .recv_timeout(std::time::Duration::from_secs(8))
-            .map_err(|_| Error::desktop("desktop startup timed out"))??;
+            .map_err(|_| Error::desktop("desktop startup timed out"))
+            .and_then(|r| r)
+            .is_err()
+        {
+            let _ = sender.send(DesktopCommand::Shutdown);
+            let _ = join.join();
+            return Err(Error::desktop("desktop startup timed out"));
+        }
         Ok(Self { sender, join: Some(join) })
     }
 
@@ -234,9 +241,10 @@ fn desktop_thread(
     receiver: mpsc::Receiver<DesktopCommand>,
     ready: mpsc::SyncSender<std::result::Result<(), Error>>,
 ) {
-    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    if hr.0 < 0 {
-        let _ = ready.send(Err(Error::os("CoInitializeEx(desktop)", hr.0 as u32)));
+    let com = crate::platform::com::ComApartment::init_sta();
+    if !com.ok() {
+        let code = unsafe { windows::Win32::Foundation::GetLastError().0 };
+        let _ = ready.send(Err(Error::os("CoInitializeEx(desktop)", code)));
         return;
     }
     let mut controller = match DesktopController::create(hwnd_raw) {

@@ -1,5 +1,6 @@
 //! Platform integration: Win32 windowing, message loop, DPI, single instance.
 
+pub mod com;
 pub mod dpi;
 pub mod foreground;
 pub mod message_loop;

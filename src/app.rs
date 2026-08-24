@@ -427,6 +427,10 @@ impl App {
         }
         self.shutting_down = true;
 
+        // Wake-and-stop the second-instance watcher before any window goes
+        // away (#24 ordering).
+        crate::platform::single_instance::signal_shutdown();
+
         // Stop dispatch before any worker or window it targets disappears.
         if let Some(mut keyboard) = self.keyboard.take() {
             keyboard.set_suspended(true);

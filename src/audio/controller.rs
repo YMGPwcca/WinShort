@@ -65,9 +65,17 @@ impl AudioService {
                 )
             })
             .map_err(|e| Error::internal(format!("spawn audio thread: {e}")))?;
-        ready_rx
+        if ready_rx
             .recv_timeout(std::time::Duration::from_secs(8))
-            .map_err(|_| Error::audio("audio startup timed out"))??;
+            .map_err(|_| Error::audio("audio startup timed out"))
+            .and_then(|r| r)
+            .is_err()
+        {
+            // No orphan worker (#24): tell it to stop, then join.
+            let _ = sender.send(AudioCommand::Shutdown);
+            let _ = join.join();
+            return Err(Error::audio("audio startup timed out"));
+        }
         Ok(Self { sender, devices, join: Some(join) })
     }
 
@@ -333,9 +341,11 @@ fn audio_thread(
     receiver: Receiver<AudioCommand>,
     ready: mpsc::SyncSender<std::result::Result<(), Error>>,
 ) {
-    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    if hr.0 < 0 {
-        let _ = ready.send(Err(Error::os("CoInitializeEx(audio)", hr.0 as u32)));
+    // COM apartment owned by a guard (#24): CoUninitialize runs on every exit.
+    let com = crate::platform::com::ComApartment::init_mta();
+    if !com.ok() {
+        let code = unsafe { windows::Win32::Foundation::GetLastError().0 };
+        let _ = ready.send(Err(Error::os("CoInitializeEx(audio)", code)));
         return;
     }
 
@@ -343,7 +353,6 @@ fn audio_thread(
         Ok(controller) => controller,
         Err(e) => {
             let _ = ready.send(Err(e));
-            unsafe { CoUninitialize(); }
             return;
         }
     };
@@ -383,7 +392,7 @@ fn audio_thread(
         }
     }
     controller.shutdown();
-    unsafe { CoUninitialize(); }
+    drop(com);
     crate::info!("audio controller stopped");
 }
 

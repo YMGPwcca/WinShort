@@ -21,8 +21,6 @@ mod tray;
 mod ui;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
 
 use crate::error::Result;
 use crate::platform::single_instance::{InstanceRole, PrimaryRole};
@@ -48,13 +46,6 @@ unsafe fn tz_bias_minutes() -> i32 {
     let mut tz = DYNAMIC_TIME_ZONE_INFORMATION::default();
     GetDynamicTimeZoneInformation(&mut tz);
     tz.Bias
-}
-
-static STOP_WATCHER: LazyLock<Arc<AtomicBool>> =
-    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
-
-fn stop_flag() -> Arc<AtomicBool> {
-    Arc::clone(&STOP_WATCHER)
 }
 
 fn main() {
@@ -85,27 +76,22 @@ fn main() {
     let _ = app::CONFIG.set(handle);
     info!("config loaded");
 
-    // ---- COM for the UI thread (WIC, shell) ------------------------------
-    unsafe {
-        let hr = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-        );
-        if hr.0 < 0 {
-            warn_!("CoInitializeEx on main: 0x{:08X} (continuing)", hr.0 as u32);
-        }
+    // ---- COM for the UI thread (WIC, shell): required, not optional (#24).
+    let com = platform::com::ComApartment::init_sta();
+    if !com.ok() {
+        error_!("CoInitializeEx failed on the UI thread; COM-backed subsystems cannot start");
     }
 
-    if let Err(e) = run(role) {
+    let run_result = app::App::create_main_window().and_then(|()| run(role, com));
+    if let Err(e) = run_result {
         error_!("fatal: {e}");
         fatal_message_box(&e.to_string());
     }
 
-    STOP_WATCHER.store(true, Ordering::Relaxed);
     info!("exit");
 }
 
-fn run(role: PrimaryRole) -> Result<()> {
+fn run(role: PrimaryRole, _com: crate::platform::com::ComApartment) -> Result<()> {
     // Hidden message-only main window + App singleton.
     app::App::create_main_window()?;
     let hwnd_raw = app::main_hwnd()
@@ -131,14 +117,20 @@ fn run(role: PrimaryRole) -> Result<()> {
         None => return Err(error::Error::internal("app singleton missing")),
     }
 
-    platform::single_instance::spawn_watcher(role.activate_event, stop_flag(), move || unsafe {
-        let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
-        unsafe { event::post_event(hwnd, event::AppEvent::ShowSettings); }
-    });
+    // Owned watcher runtime (#24): joined after the loop exits; begin_shutdown
+    // signals its shutdown event BEFORE destroying any window.
+    let mut watcher =
+        platform::single_instance::spawn_watcher(role.activate_event, move || unsafe {
+            let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
+            unsafe {
+                event::post_event(hwnd, event::AppEvent::ShowSettings);
+            }
+        });
 
     info!("startup complete; entering message loop");
     let code = platform::message_loop::run();
     info!("message loop exited (code {code})");
+    watcher.join();
     Ok(())
 }
 

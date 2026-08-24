@@ -12,11 +12,13 @@ pub fn run() -> i32 {
         // SAFETY: msg is a valid out param; no filter window = all messages.
         let res = unsafe { GetMessageW(&mut msg, None, 0, 0) };
         if res.0 == -1 {
-            // GetMessage failed: log and continue rather than spin forever.
-            crate::error_!("GetMessageW failed: {}", unsafe {
-                windows::Win32::Foundation::GetLastError().0
-            });
-            continue;
+            // GetMessageW failing repeatedly means the thread's queue is dead:
+            // terminate with a nonzero exit code instead of spinning (#24).
+            crate::error_!(
+                "GetMessageW failed: {}; terminating message loop",
+                unsafe { windows::Win32::Foundation::GetLastError().0 }
+            );
+            return 1;
         }
         if res.0 == 0 {
             return msg.wParam.0 as i32; // WM_QUIT carries the exit code

@@ -1,14 +1,20 @@
 //! Single-instance enforcement via a named mutex plus an activation event
 //! (spec §7). A secondary instance signals the primary to open Settings and exits.
+//! The primary's watcher waits on BOTH the activation event and a shutdown
+//! event via WaitForMultipleObjects — no polling (#24).
 
-use windows::Win32::Foundation::{HANDLE, GetLastError, WAIT_TIMEOUT, WAIT_OBJECT_0};
+use std::sync::OnceLock;
+
+use windows::Win32::Foundation::{HANDLE, GetLastError, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject,
+    CreateEventW, CreateMutexW, SetEvent, WaitForMultipleObjects,
 };
 use windows::core::{HSTRING, PCWSTR};
 
 const MUTEX_NAME: &str = r"Local\WinShort.SingleInstance.Mutex";
 const ACTIVATE_EVENT: &str = r"Local\WinShort.SingleInstance.Activate";
+
+static SHUTDOWN_EVENT: OnceLock<SendHandle> = OnceLock::new();
 
 /// Which role this process took after [`acquire`].
 pub enum InstanceRole {
@@ -26,16 +32,12 @@ pub struct PrimaryRole {
 }
 
 /// Try to become the single running instance.
-///
-/// The primary creates both objects; a secondary opens the activation event
-/// (creating it if racing), signals it, and reports `Secondary`.
 pub fn acquire() -> Result<InstanceRole, crate::error::Error> {
     // SAFETY: named kernel objects; handles kept alive in PrimaryRole.
     unsafe {
         let mutex = CreateMutexW(None, false, PCWSTR(HSTRING::from(MUTEX_NAME).as_ptr()))
             .map_err(|e| crate::error::Error::win("CreateMutexW", &e))?;
         if GetLastError() == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
-            // ERROR_ALREADY_EXISTS: signal the primary, then leave.
             let ev = CreateEventW(None, false, false, PCWSTR(HSTRING::from(ACTIVATE_EVENT).as_ptr()))
                 .unwrap_or_default();
             if !ev.is_invalid() {
@@ -45,45 +47,88 @@ pub fn acquire() -> Result<InstanceRole, crate::error::Error> {
         }
         let activate_event =
             CreateEventW(None, false, false, PCWSTR(HSTRING::from(ACTIVATE_EVENT).as_ptr()))
-                .map_err(|e| crate::error::Error::win("CreateEventW", &e))?;
+                .map_err(|e| crate::error::Error::win("CreateEventW(activate)", &e))?;
+        // Manual-reset shutdown event for the watcher (#24).
+        let shutdown_event =
+            CreateEventW(None, true, false, PCWSTR::null())
+                .map_err(|e| crate::error::Error::win("CreateEventW(shutdown)", &e))?;
+        let _ = SHUTDOWN_EVENT.set(SendHandle(shutdown_event));
         Ok(InstanceRole::Primary(PrimaryRole { mutex, activate_event }))
     }
 }
 
-/// Kernel handle transferable to the watcher thread. Only ever waited on.
-struct SendHandle(HANDLE);
-// SAFETY: HANDLE is a raw kernel object reference; the watcher thread is the
-// sole user after transfer and the process owns the object for its lifetime.
-unsafe impl Send for SendHandle {}
+/// Signal the watcher to exit. Safe to call from any thread, before window
+/// destruction begins (#24 ordering requirement).
+pub fn signal_shutdown() {
+    if let Some(handle) = SHUTDOWN_EVENT.get() {
+        unsafe {
+            let _ = SetEvent(handle.0);
+        }
+    }
+}
 
-/// Watch the activation event; on each signal invoke `on_activate` (which should
-/// post ShowSettings to the main window). Exits when `stop` flips true.
-///
-/// Runs on a dedicated plain thread with no COM.
+/// Kernel handle transferable to the watcher thread. Only ever waited on.
+#[derive(Clone, Copy)]
+struct SendHandle(HANDLE);
+// SAFETY: HANDLE is a raw kernel object reference. The event object is
+// process-owned for its entire lifetime; all users only SetEvent/wait on it,
+// never close or mutate through the pointer.
+unsafe impl Send for SendHandle {}
+unsafe impl Sync for SendHandle {}
+
+/// Owned watcher thread; [`Self::join`] signals shutdown first and blocks
+/// until the thread exits — no orphan on any teardown path.
+pub struct WatcherRuntime {
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl WatcherRuntime {
+    pub fn join(mut self) {
+        signal_shutdown();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+impl Drop for WatcherRuntime {
+    fn drop(&mut self) {
+        signal_shutdown();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+/// Watch the activation event; on each signal invoke `on_activate` (which
+/// should post ShowSettings to the main window). Exits when shutdown is
+/// signalled. Runs on a dedicated plain thread with no COM.
 pub fn spawn_watcher(
-    event: HANDLE,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _activate_event: HANDLE,
     on_activate: impl Fn() + Send + 'static,
-) -> std::thread::JoinHandle<()> {
-    let event = SendHandle(event);
-    // Plain function body: avoids edition-2021 field-wise capture of the raw
-    // HANDLE inside the closure (the wrapper exists precisely to be opaque).
-    std::thread::spawn(move || watch(event, stop, on_activate))
+) -> WatcherRuntime {
+    let Some(&shutdown) = SHUTDOWN_EVENT.get() else {
+        return WatcherRuntime { join: None };
+    };
+    let join = std::thread::Builder::new()
+        .name("winshort-watcher".into())
+        .spawn(move || watch(shutdown, on_activate))
+        .expect("spawn watcher thread");
+    WatcherRuntime { join: Some(join) }
 }
 
 fn watch(
-    event: SendHandle,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    shutdown: SendHandle,
     on_activate: impl Fn() + Send + 'static,
 ) {
     loop {
-        if stop.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
-        // SAFETY: handle valid for process lifetime (PrimaryRole).
-        match unsafe { WaitForSingleObject(event.0, 250) } {
-            WAIT_TIMEOUT => continue,
-            WAIT_OBJECT_0 => on_activate(),
+        // SAFETY: both handles valid for process lifetime (PrimaryRole owns
+        // the activation event; the shutdown handle lives in SHUTDOWN_EVENT).
+        const SHUTDOWN_INDEX: u32 = 1; // WAIT_OBJECT_0 + 1
+        let result = unsafe { WaitForMultipleObjects(&[shutdown.0], false, 100_000) };
+        match result.0 {
+            0 => on_activate(),          // WAIT_OBJECT_0 + 0: activate
+            SHUTDOWN_INDEX => return,    // WAIT_OBJECT_0 + 1: shutdown
             _ => continue,
         }
     }
