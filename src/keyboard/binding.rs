@@ -23,6 +23,11 @@ impl ModifierMask {
         self.0
     }
 
+    /// Rebuild a mask from its [`bits`](Self::bits) representation (#45).
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }

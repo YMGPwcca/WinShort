@@ -44,29 +44,55 @@ pub struct CapturedChord {
 }
 
 static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
-static CAPTURE_TX: std::sync::Mutex<Option<mpsc::Sender<CapturedChord>>> =
-    std::sync::Mutex::new(None);
+/// Published chord word (#45): `[tag:8][modifiers:8][reserved:8][vk:8]`.
+/// Tag 1 = chord delivered, 2 = Esc cancellation, 0 = empty. Atomics only —
+/// the WH_KEYBOARD_LL callback must never take a lock.
+static CAPTURE_WORD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Start global capture: the hook swallows all keyboard input and forwards
-/// the first completed chord (or Esc cancellation) through the returned
-/// receiver. Ends automatically when a chord is delivered or [`end_capture`].
-pub fn begin_capture() -> mpsc::Receiver<CapturedChord> {
-    let (tx, rx) = mpsc::channel();
-    match CAPTURE_TX.lock() {
-        Ok(mut slot) => *slot = Some(tx),
-        Err(poisoned) => *poisoned.into_inner() = Some(tx),
-    }
-    CAPTURE_ACTIVE.store(true, Ordering::Release);
-    rx
+const CHORD_TAG_KEY: u32 = 1;
+const CHORD_TAG_CANCEL: u32 = 2;
+
+fn pack_chord(modifiers: ModifierMask, key: Option<VirtualKey>) -> u32 {
+    let tag = if key.is_some() { CHORD_TAG_KEY } else { CHORD_TAG_CANCEL };
+    (tag << 24) | ((modifiers.bits() as u32) << 16) | (key.map_or(0, |k| k.code()) as u32)
 }
 
-/// Stop capturing and drop any pending sender.
+fn unpack_chord(word: u32) -> Option<CapturedChord> {
+    let tag = word >> 24;
+    match tag {
+        CHORD_TAG_KEY => Some(CapturedChord {
+            modifiers: ModifierMask::from_bits((word >> 16) as u8),
+            key: Some(VirtualKey((word & 0xFFFF) as u16)),
+        }),
+        CHORD_TAG_CANCEL => Some(CapturedChord {
+            modifiers: ModifierMask::NONE,
+            key: None,
+        }),
+        _ => None,
+    }
+}
+
+/// Start global capture: the hook swallows all keyboard input and publishes
+/// the first completed chord (or Esc cancellation) as an atomic word (#45).
+/// Poll [`take_captured_chord`] from the recorder UI. Ends automatically when
+/// a chord is delivered or via [`end_capture`].
+pub fn begin_capture() {
+    // Clear any stale word BEFORE arming so no old chord can be observed
+    // as part of the new session.
+    CAPTURE_WORD.store(0, Ordering::Release);
+    CAPTURE_ACTIVE.store(true, Ordering::Release);
+}
+
+/// Stop capturing and discard any unpublished word.
 pub fn end_capture() {
     CAPTURE_ACTIVE.store(false, Ordering::Release);
-    match CAPTURE_TX.lock() {
-        Ok(mut slot) => *slot = None,
-        Err(poisoned) => *poisoned.into_inner() = None,
-    }
+    CAPTURE_WORD.store(0, Ordering::Release);
+}
+
+/// Consume the captured chord, if the hook has published one. Each published
+/// word is handed out exactly once (`swap` semantics).
+pub fn take_captured_chord() -> Option<CapturedChord> {
+    unpack_chord(CAPTURE_WORD.swap(0, Ordering::AcqRel))
 }
 
 /// Handle one raw event while capture is active. Always swallows the event:
@@ -82,13 +108,8 @@ fn capture_event(state: &mut HookState, ev: RawKeyEvent) -> bool {
         return true;
     }
 
-    let tx_slot = match CAPTURE_TX.lock() {
-        Ok(slot) => slot,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let Some(tx) = tx_slot.as_ref() else {
-        return true;
-    };
+    // Publish lock-free (#45): `swap` guarantees exactly-once delivery even
+    // under autorepeat races, and no receiver object can go stale.
     let chord = if vk == 0x1B {
         CapturedChord { modifiers: ModifierMask::NONE, key: None } // Esc cancels
     } else {
@@ -97,10 +118,9 @@ fn capture_event(state: &mut HookState, ev: RawKeyEvent) -> bool {
             key: Some(VirtualKey(vk)),
         }
     };
-    let _ = tx.send(chord);
-    drop(tx_slot);
+    CAPTURE_WORD.swap(pack_chord(chord.modifiers, chord.key), Ordering::AcqRel);
     // First chord completes the capture session.
-    end_capture();
+    CAPTURE_ACTIVE.store(false, Ordering::Release);
     state.engine.reset();
     true
 }
@@ -413,37 +433,35 @@ mod tests {
     }
 
     #[test]
-    fn capture_delivers_chord_then_deactivates() {
-        // #14: recording an already-bound hotkey must deliver the chord to
-        // the recorder instead of dispatching its action.
+    fn capture_delivers_chord_exactly_once() {
+        // #14/#45: recording an already-bound hotkey must publish the chord
+        // atomically; exactly one consumer observation, no second delivery.
         let mut st = test_hook_state();
-        let rx = begin_capture();
+        begin_capture();
         assert!(CAPTURE_ACTIVE.load(Ordering::Acquire));
+        assert!(take_captured_chord().is_none(), "nothing published yet");
 
         // Modifier downs are swallowed and tracked, not delivered yet.
         assert!(capture_event(&mut st, RawKeyEvent::down(0xA2)));
         assert!(capture_event(&mut st, RawKeyEvent::down(0xA4)));
-        assert!(rx.try_recv().is_err(), "modifiers alone must not complete");
+        assert!(take_captured_chord().is_none(), "modifiers alone must not complete");
 
         let done = capture_event(&mut st, RawKeyEvent::down(b'M' as u16));
         assert!(done, "chord key-down is swallowed");
         assert!(!CAPTURE_ACTIVE.load(Ordering::Acquire), "first chord ends capture");
 
-        let chord = rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("chord delivered");
+        let chord = take_captured_chord().expect("exactly-once delivery");
         assert_eq!(chord.modifiers, ModifierMask::CTRL.union(ModifierMask::ALT));
         assert_eq!(chord.key, Some(VirtualKey(b'M' as u16)));
+        assert!(take_captured_chord().is_none(), "swap consumed the word");
     }
 
     #[test]
     fn capture_esc_cancels_without_key() {
         let mut st = test_hook_state();
-        let rx = begin_capture();
+        begin_capture();
         assert!(capture_event(&mut st, RawKeyEvent::down(0x1B)));
-        let chord = rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("cancel marker delivered");
+        let chord = take_captured_chord().expect("cancel marker delivered");
         assert_eq!(chord.key, None);
         assert!(!CAPTURE_ACTIVE.load(Ordering::Acquire));
     }
@@ -451,14 +469,43 @@ mod tests {
     #[test]
     fn capture_swallows_key_ups_and_ends_cleanly() {
         let mut st = test_hook_state();
-        let rx = begin_capture();
+        begin_capture();
         assert!(capture_event(&mut st, RawKeyEvent::down(0xA0)));
         assert!(capture_event(&mut st, RawKeyEvent::down(b'K' as u16)));
         assert!(capture_event(&mut st, RawKeyEvent::up(0xA0)));
-        // Chord was K with SHIFT only (released shift after doesn't change it).
-        let chord = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        // Chord was K with SHIFT (shift released after publication).
+        let chord = take_captured_chord().unwrap();
         assert_eq!(chord.modifiers, ModifierMask::SHIFT);
         assert_eq!(chord.key, Some(VirtualKey(b'K' as u16)));
+    }
+
+    #[test]
+    fn repeated_recording_sessions_are_independent() {
+        let mut st = test_hook_state();
+        for vk in [b'M' as u16, b'O' as u16] {
+            begin_capture();
+            capture_event(&mut st, RawKeyEvent::down(0xA2));
+            capture_event(&mut st, RawKeyEvent::down(0xA4));
+            capture_event(&mut st, RawKeyEvent::down(vk));
+            let chord = take_captured_chord().expect("chord per session");
+            assert_eq!(chord.key, Some(VirtualKey(vk)));
+            end_capture(); // recorder cancelled after applying
+            assert!(take_captured_chord().is_none(), "end discards the word");
+        }
+    }
+
+    #[test]
+    fn teardown_while_armed_discards_stale_word() {
+        // Settings closed right after arming, before any key: end_capture
+        // must clear the word so a later poller sees nothing stale.
+        let mut st = test_hook_state();
+        begin_capture();
+        end_capture();
+        capture_event(&mut st, RawKeyEvent::down(b'M' as u16)); // flag off: normal path would dispatch; direct call still swallows+publishes
+        // The published word belongs to no session and is discarded by the
+        // recorder's end path:
+        end_capture();
+        assert!(take_captured_chord().is_none());
     }
 
     #[test]
