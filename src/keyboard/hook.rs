@@ -211,17 +211,35 @@ fn complete_capture(token: u32, chord: CapturedChord) -> bool {
     }
 }
 
-/// Handle one raw event while capture is active. Always swallows the event:
-/// recorded keys must neither reach other apps nor trigger actions.
-fn capture_event(state: &mut HookState, ev: RawKeyEvent, token: u32) -> bool {
+/// Hook disposition for an event that arrived while a capture session was
+/// armed (#48). Completion success and hook disposition are independent: a
+/// STALE callback (session replaced/cancelled mid-flight) must still swallow
+/// the physical key even though its completion was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureDisposition {
+    /// Suppress the event from all other applications.
+    Swallow,
+    /// Event outside the supported VK domain; forward normally.
+    Pass,
+}
+
+/// Handle one raw event while capture is active. Disposition is SWALLOW for
+/// everything in the supported VK domain — including stale-token events whose
+/// completion was rejected by #47's generation check — so a capture-owned key
+/// can never leak into the foreground application.
+fn capture_event(state: &mut HookState, ev: RawKeyEvent, token: u32) -> CaptureDisposition {
     let vk = normalize_vk(ev.vk, ev.extended);
     if vk >= 256 {
-        return false;
+        // Unclassifiable VK: intentionally forwarded (pre-#48 behavior).
+        return CaptureDisposition::Pass;
     }
     // Track modifier state in the engine so the mask matches real physics.
+    // SAFE across stale tokens: LL callbacks are serialized on this thread and
+    // engine state models PHYSICAL keys/modifiers that persist across a
+    // cancel/re-arm boundary; only publication is generation-guarded (CAS).
     let _ = state.engine.on_event(ev, &state.suspended_bindings);
     if !ev.down || KeyState::is_modifier(vk) {
-        return true;
+        return CaptureDisposition::Swallow;
     }
 
     // Publish lock-free (#45): `swap` guarantees exactly-once delivery even
@@ -238,11 +256,11 @@ fn capture_event(state: &mut HookState, ev: RawKeyEvent, token: u32) -> bool {
         }
     };
     // Commit only if session `token` is STILL the armed one (#47). A stale
-    // callback from a cancelled/replaced generation fails the CAS and the
-    // keystroke is simply swallowed.
-    let committed = complete_capture(token, chord);
+    // callback from a cancelled/replaced generation fails the CAS — but the
+    // disposition remains SWALLOW so the key never reaches the foreground app.
+    let _committed = complete_capture(token, chord);
     state.engine.reset();
-    committed
+    CaptureDisposition::Swallow
 }
 
 /// Thread message asking the hook thread to clear engine state (#13).
@@ -459,11 +477,11 @@ unsafe extern "system" fn low_level_keyboard_proc(
         // Recorder capture mode (#14/#47): swallow everything; completion is
         // generation-validated, so a delayed callback cannot leak into a
         // newer session.
-        return if capture_event(state, event, token) {
-            LRESULT(1)
-        } else {
-            // SAFETY: pass-through when the event cannot be classified.
-            unsafe { CallNextHookEx(None, code, wparam, lparam) }
+        // #48: supported events are always swallowed; a stale completion is
+        // rejected by the generation check without changing the disposition.
+        return match capture_event(state, event, token) {
+            CaptureDisposition::Swallow => LRESULT(1),
+            CaptureDisposition::Pass => unsafe { CallNextHookEx(None, code, wparam, lparam) },
         };
     }
     // Lock-free snapshot read (#10): the table is rebuilt by ConfigHandle on
@@ -565,15 +583,25 @@ mod tests {
         assert!(take_captured_chord().is_none(), "nothing published yet");
 
         // Modifier downs are swallowed and tracked, not delivered yet.
-        assert!(capture_event(&mut st, RawKeyEvent::down(0xA2), token));
-        assert!(capture_event(&mut st, RawKeyEvent::down(0xA4), token));
+        assert_eq!(
+            capture_event(&mut st, RawKeyEvent::down(0xA2), token),
+            CaptureDisposition::Swallow
+        );
+        assert_eq!(
+            capture_event(&mut st, RawKeyEvent::down(0xA4), token),
+            CaptureDisposition::Swallow
+        );
         assert!(
             take_captured_chord().is_none(),
             "modifiers alone must not complete"
         );
 
         let done = capture_event(&mut st, RawKeyEvent::down(b'M' as u16), token);
-        assert!(done, "chord key-down is swallowed");
+        assert_eq!(
+            done,
+            CaptureDisposition::Swallow,
+            "chord key-down is swallowed"
+        );
         assert!(capture_token().is_none(), "session completed -> disarmed");
 
         let chord = take_captured_chord().expect("exactly-once delivery");
@@ -605,11 +633,10 @@ mod tests {
         assert_ne!(fresh, stale, "generation advanced");
 
         // Session N+1 completes normally afterwards:
-        assert!(capture_event(
-            &mut st,
-            RawKeyEvent::down(b'K' as u16),
-            fresh
-        ));
+        assert_eq!(
+            capture_event(&mut st, RawKeyEvent::down(b'K' as u16), fresh),
+            CaptureDisposition::Swallow
+        );
         let chord = take_captured_chord().expect("live session delivers");
         assert_eq!(chord.key, Some(VirtualKey(b'K' as u16)));
     }
@@ -635,7 +662,10 @@ mod tests {
         let mut st = test_hook_state();
         begin_capture();
         let token = capture_token().unwrap();
-        assert!(capture_event(&mut st, RawKeyEvent::down(0x1B), token));
+        assert_eq!(
+            capture_event(&mut st, RawKeyEvent::down(0x1B), token),
+            CaptureDisposition::Swallow
+        );
         let chord = take_captured_chord().expect("cancel marker");
         assert_eq!(chord.key, None);
         assert!(take_captured_chord().is_none());
@@ -686,13 +716,124 @@ mod tests {
             take_captured_chord().is_none(),
             "pre-wrap callback rejected"
         );
-        assert!(capture_event(
-            &mut st,
-            RawKeyEvent::down(b'M' as u16),
-            fresh
-        ));
+        assert_eq!(
+            capture_event(&mut st, RawKeyEvent::down(b'M' as u16), fresh),
+            CaptureDisposition::Swallow
+        );
         let chord = take_captured_chord().expect("post-wrap session works");
         assert_eq!(chord.key, Some(VirtualKey(b'M' as u16)));
+    }
+
+    #[test]
+    fn stale_non_modifier_event_is_swallowed_not_passed() {
+        // #48 core: arm N -> token N -> cancel N -> arm N+1 -> stale event.
+        // Completion must be rejected AND the hook disposition must be
+        // SWALLOW — the key may not leak into the foreground application.
+        let mut st = test_hook_state();
+        begin_capture();
+        let stale = capture_token().expect("gen N");
+        end_capture(); // cancel N
+        begin_capture(); // arm N+1
+
+        let disp = capture_event(&mut st, RawKeyEvent::down(b'M' as u16), stale);
+        assert_eq!(
+            disp,
+            CaptureDisposition::Swallow,
+            "stale key must be swallowed"
+        );
+
+        // No observable result from N; N+1 remains armed and uncorrupted.
+        assert!(take_captured_chord().is_none());
+        let fresh = capture_token().expect("N+1 still armed");
+        assert_ne!(fresh, stale);
+
+        // A live N+1 event still completes exactly once.
+        assert_eq!(
+            capture_event(&mut st, RawKeyEvent::down(b'K' as u16), fresh),
+            CaptureDisposition::Swallow
+        );
+        let chord = take_captured_chord().expect("N+1 delivers its own chord");
+        assert_eq!(chord.key, Some(VirtualKey(b'K' as u16)));
+    }
+
+    #[test]
+    fn stale_esc_event_is_swallowed_and_cancels_nothing() {
+        let mut st = test_hook_state();
+        begin_capture();
+        let stale = capture_token().unwrap();
+        end_capture();
+        begin_capture();
+
+        let disp = capture_event(&mut st, RawKeyEvent::down(0x1B), stale);
+        assert_eq!(disp, CaptureDisposition::Swallow);
+        // Stale Esc must NOT cancel session N+1:
+        assert!(capture_token().is_some(), "N+1 still armed after stale Esc");
+        assert!(take_captured_chord().is_none());
+
+        // Live Esc in N+1 still cancels properly:
+        let fresh = capture_token().unwrap();
+        assert_eq!(
+            capture_event(&mut st, RawKeyEvent::down(0x1B), fresh),
+            CaptureDisposition::Swallow
+        );
+        assert!(take_captured_chord().unwrap().key.is_none());
+    }
+
+    #[test]
+    fn stale_event_after_plain_end_capture_is_swallowed_without_rearm() {
+        // end_capture alone (no immediate re-arm): a paused callback must not
+        // resurrect a completed session or publish anything.
+        let mut st = test_hook_state();
+        begin_capture();
+        let stale = capture_token().unwrap();
+        end_capture();
+
+        let disp = capture_event(&mut st, RawKeyEvent::down(b'X' as u16), stale);
+        assert_eq!(disp, CaptureDisposition::Swallow);
+        assert!(take_captured_chord().is_none());
+        assert!(capture_token().is_none(), "still disarmed");
+    }
+
+    #[test]
+    fn unsupported_vk_still_passes_during_capture() {
+        // Pre-existing intentional policy preserved (#48): events outside the
+        // supported VK domain are forwarded even in capture mode.
+        let mut st = test_hook_state();
+        begin_capture();
+        let token = capture_token().unwrap();
+        // 0x100+ is outside the supported VK domain (normalize leaves it
+        // untouched), which is the intended pass-through class.
+        assert_eq!(
+            capture_event(
+                &mut st,
+                RawKeyEvent {
+                    vk: 0x100,
+                    extended: false,
+                    down: true,
+                    injected: false
+                },
+                token
+            ),
+            CaptureDisposition::Pass
+        );
+        end_capture();
+    }
+
+    #[test]
+    fn modifier_state_sane_after_stale_token_scenario() {
+        let mut st = test_hook_state();
+        begin_capture();
+        let stale = capture_token().unwrap();
+        end_capture();
+        begin_capture();
+
+        // Physical modifiers pressed during the stale window are tracked.
+        capture_event(&mut st, RawKeyEvent::down(0xA2), stale); // LCtrl, swallowed
+        assert_eq!(st.engine.current_modifiers(), ModifierMask::CTRL);
+
+        // Release clears them (LL callbacks serialized; no cross-session bleed).
+        capture_event(&mut st, RawKeyEvent::up(0xA2), stale);
+        assert_eq!(st.engine.current_modifiers(), ModifierMask::NONE);
     }
 
     #[test]
