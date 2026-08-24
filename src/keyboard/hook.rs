@@ -554,6 +554,17 @@ pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// All capture-state tests mutate process-global CAPTURE_* atomics and
+    /// cargo runs tests in parallel threads — serialize them so interleaved
+    /// sessions cannot flake (observed on hosted CI).
+    static CAPTURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn capture_guard() -> std::sync::MutexGuard<'static, ()> {
+        match CAPTURE_TEST_LOCK.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
     #[test]
     fn config_builds_all_default_bindings() {
         let table = build_bindings(&crate::config::Config::default());
@@ -576,6 +587,7 @@ mod tests {
 
     #[test]
     fn capture_delivers_chord_exactly_once() {
+        let _guard = capture_guard();
         // #47: a live callback commits its own session exactly once.
         let mut st = test_hook_state();
         begin_capture();
@@ -612,6 +624,7 @@ mod tests {
 
     #[test]
     fn aba_stale_callback_cannot_complete_newer_session() {
+        let _guard = capture_guard();
         // #47 core regression: callback pauses holding generation N; UI
         // cancels N and arms N+1; stale commit MUST be rejected and session
         // N+1 stays armed with no visible result from N.
@@ -643,6 +656,7 @@ mod tests {
 
     #[test]
     fn end_invalidates_in_flight_callback_publication() {
+        let _guard = capture_guard();
         // Simpler variant: end between the ACTIVE observation and commit.
         let mut st = test_hook_state();
         begin_capture();
@@ -659,6 +673,7 @@ mod tests {
 
     #[test]
     fn esc_cancel_publishes_cancellation_once() {
+        let _guard = capture_guard();
         let mut st = test_hook_state();
         begin_capture();
         let token = capture_token().unwrap();
@@ -673,6 +688,7 @@ mod tests {
 
     #[test]
     fn repeated_sessions_are_independent() {
+        let _guard = capture_guard();
         let mut st = test_hook_state();
         for vk in [b'M' as u16, b'O' as u16] {
             begin_capture();
@@ -687,6 +703,7 @@ mod tests {
 
     #[test]
     fn several_generation_old_callback_is_rejected() {
+        let _guard = capture_guard();
         let mut st = test_hook_state();
         begin_capture();
         let ancient = capture_token().unwrap();
@@ -702,6 +719,7 @@ mod tests {
 
     #[test]
     fn generation_wraparound_remains_safe() {
+        let _guard = capture_guard();
         // Bounded u32 generation: force the counter to u32::MAX and verify a
         // begin wraps to 0 while a stale MAX-generation callback is rejected.
         CAPTURE_STATE.store(((u32::MAX as u64) << 32) | CAPTURE_ARMED, Ordering::Release);
@@ -726,6 +744,7 @@ mod tests {
 
     #[test]
     fn stale_non_modifier_event_is_swallowed_not_passed() {
+        let _guard = capture_guard();
         // #48 core: arm N -> token N -> cancel N -> arm N+1 -> stale event.
         // Completion must be rejected AND the hook disposition must be
         // SWALLOW — the key may not leak into the foreground application.
@@ -758,6 +777,7 @@ mod tests {
 
     #[test]
     fn stale_esc_event_is_swallowed_and_cancels_nothing() {
+        let _guard = capture_guard();
         let mut st = test_hook_state();
         begin_capture();
         let stale = capture_token().unwrap();
@@ -781,6 +801,7 @@ mod tests {
 
     #[test]
     fn stale_event_after_plain_end_capture_is_swallowed_without_rearm() {
+        let _guard = capture_guard();
         // end_capture alone (no immediate re-arm): a paused callback must not
         // resurrect a completed session or publish anything.
         let mut st = test_hook_state();
@@ -796,6 +817,7 @@ mod tests {
 
     #[test]
     fn unsupported_vk_still_passes_during_capture() {
+        let _guard = capture_guard();
         // Pre-existing intentional policy preserved (#48): events outside the
         // supported VK domain are forwarded even in capture mode.
         let mut st = test_hook_state();
@@ -821,6 +843,7 @@ mod tests {
 
     #[test]
     fn modifier_state_sane_after_stale_token_scenario() {
+        let _guard = capture_guard();
         let mut st = test_hook_state();
         begin_capture();
         let stale = capture_token().unwrap();
