@@ -717,11 +717,17 @@ mod tests {
     }
 
     #[test]
-    fn hook_guard_round_trip_releases_the_hook() {
-        // #42: HookGuard must unhook on drop so a fresh install immediately
-        // afterwards succeeds and the system is not left with a stale hook.
-        // (User-mode code cannot observe the global hook count directly;
-        // success here exercises install -> guard-drop -> reinstall.)
+    fn hook_guard_plumbing_round_trip() {
+        // #42: exercises install -> guard-drop -> reinstall plumbing.
+        //
+        // LIMITATION: a successful second SetWindowsHookExW does NOT prove
+        // the first hook was removed — Windows allows multiple hooks of the
+        // same type in a chain, so user-mode tests cannot observe the global
+        // hook count. Actual unhook-on-drop is verified by the Drop impl
+        // (single UnhookWindowsHookEx call) plus manual/live verification:
+        // after KeyboardService::shutdown, keystrokes must no longer route
+        // through low_level_keyboard_proc (log the callback or check with a
+        // system hook enumerator).
         let first = install_hook().expect("first install");
         drop(HookGuard(first));
         let second = install_hook().expect("reinstall after guard drop");

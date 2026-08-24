@@ -83,7 +83,13 @@ The foreground toggle resolves sessions in a ladder (#46):
    group them by FULL executable path. One group => serve all its sessions
    (covers Chrome/Electron-style multi-process apps that share one binary).
    More than one group => `Ambiguous`: nothing is muted and the overlay shows
-   an explicit error naming the collision. Candidates whose path cannot be
+   an explicit error naming the collision.
+
+   Accepted limitation: two INDEPENDENT instances launched from the SAME
+   executable path share one group and are treated as one application —
+   muting one foreground instance also mutes the other. Distinguishing them
+   would require window-title/session-identity heuristics outside the
+   current design; the collision is inherent to full-path grouping. Candidates whose path cannot be
    discovered each form their own group, so they never merge with an
    unrelated installation.
 
