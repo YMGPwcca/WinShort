@@ -72,7 +72,9 @@ impl VirtualKey {
         self.0
     }
 
-    /// Human-facing name used in config strings and UI chips.
+    /// Canonical token used in config strings, UI chips, and error messages.
+    /// Invariant (#11): one token per key, no spaces and no `+`, so
+    /// `VirtualKey::parse(&vk.name()) == Some(vk)` for every supported key.
     pub fn name(self) -> String {
         let v = self.0;
         match v {
@@ -80,43 +82,45 @@ impl VirtualKey {
             0x09 => "Tab".into(),
             0x0D => "Enter".into(),
             0x13 => "Pause".into(),
-            0x14 => "Caps Lock".into(),
+            0x14 => "CapsLock".into(),
             0x1B => "Esc".into(),
             0x20 => "Space".into(),
-            0x21 => "Page Up".into(),
-            0x22 => "Page Down".into(),
+            0x21 => "PageUp".into(),
+            0x22 => "PageDown".into(),
             0x23 => "End".into(),
             0x24 => "Home".into(),
             0x25..=0x28 => ["Left", "Up", "Right", "Down"][(v - 0x25) as usize].into(),
             0x2D => "Insert".into(),
             0x2E => "Delete".into(),
-            0x30..=0x39 => char::from(b'0' + (v - 0x30) as u8).to_string(),
+            0x30..=0x39 => char::from(b'0' + (v - 0x30) as u8).to_string(), // top-row digits
             0x41..=0x5A => char::from(b'A' + (v - 0x41) as u8).to_string(),
-            0x60..=0x69 => char::from(b'0' + (v - 0x60) as u8).to_string(), // Numpad0-9
-            0x6A => "Numpad *".into(),
-            0x6B => "Numpad +".into(),
-            0x6D => "Numpad -".into(),
-            0x6E => "Numpad .".into(),
-            0x6F => "Numpad /".into(),
+            0x60..=0x69 => format!("Numpad{}", v - 0x60),
+            0x6A => "NumpadMul".into(),
+            0x6B => "NumpadAdd".into(),
+            0x6D => "NumpadSub".into(),
+            0x6E => "NumpadDec".into(),
+            0x6F => "NumpadDiv".into(),
             0x70..=0x87 => format!("F{}", v - 0x70 + 1),
-            0x90 => "Num Lock".into(),
-            0x91 => "Scroll Lock".into(),
-            0xBA => ";".into(),
-            0xBB => "=".into(),
-            0xBC => ",".into(),
-            0xBD => "-".into(),
-            0xBE => ".".into(),
-            0xBF => "/".into(),
-            0xC0 => "`".into(),
-            0xDB => "[".into(),
-            0xDC => "\\".into(),
-            0xDD => "]".into(),
-            0xDE => "'".into(),
+            0x90 => "NumLock".into(),
+            0x91 => "ScrollLock".into(),
+            0xBA => "OemSemicolon".into(),
+            0xBB => "OemPlus".into(),
+            0xBC => "OemComma".into(),
+            0xBD => "OemMinus".into(),
+            0xBE => "OemPeriod".into(),
+            0xBF => "OemSlash".into(),
+            0xC0 => "OemTilde".into(),
+            0xDB => "OemOpenBrackets".into(),
+            0xDC => "OemPipe".into(),
+            0xDD => "OemCloseBrackets".into(),
+            0xDE => "OemQuotes".into(),
             _ => format!("VK_{v:02X}"),
         }
     }
 
     /// Parse a single key token (case-insensitive). Modifiers are rejected here.
+    /// Accepts the canonical [`name`](Self::name) tokens plus friendly aliases;
+    /// ambiguous aliases containing spaces or `+` are not accepted (#11).
     pub fn parse(token: &str) -> Option<Self> {
         let t = token.trim();
         let upper = t.to_ascii_uppercase();
@@ -128,8 +132,8 @@ impl VirtualKey {
             "CAPSLOCK" | "CAPS" => Self(0x14),
             "ESC" | "ESCAPE" => Self(0x1B),
             "SPACE" => Self(0x20),
-            "PGUP" | "PAGEUP" => Self(0x21),
-            "PGDN" | "PAGEDOWN" => Self(0x22),
+            "PAGEUP" | "PGUP" => Self(0x21),
+            "PAGEDOWN" | "PGDN" => Self(0x22),
             "END" => Self(0x23),
             "HOME" => Self(0x24),
             "LEFT" => Self(0x25),
@@ -138,35 +142,54 @@ impl VirtualKey {
             "DOWN" => Self(0x28),
             "INS" | "INSERT" => Self(0x2D),
             "DEL" | "DELETE" => Self(0x2E),
-            "NUMPAD*" | "NUM*"=> Self(0x6A),
-            "NUMPAD+" | "NUM+" => Self(0x6B),
-            "NUMPAD-" | "NUM-" => Self(0x6D),
-            "NUMPAD." | "NUM." => Self(0x6E),
-            "NUMPAD/" | "NUM/" => Self(0x6F),
+            // Numpad keys are distinct from their top-row siblings.
+            "NUMPAD0" => Self(0x60),
+            "NUMPAD1" => Self(0x61),
+            "NUMPAD2" => Self(0x62),
+            "NUMPAD3" => Self(0x63),
+            "NUMPAD4" => Self(0x64),
+            "NUMPAD5" => Self(0x65),
+            "NUMPAD6" => Self(0x66),
+            "NUMPAD7" => Self(0x67),
+            "NUMPAD8" => Self(0x68),
+            "NUMPAD9" => Self(0x69),
+            "NUMPADADD" | "NUMPADPLUS" => Self(0x6B),
+            "NUMPADSUB" | "NUMPADSUBTRACT" => Self(0x6D),
+            "NUMPADMUL" | "NUMPADMULTIPLY" => Self(0x6A),
+            "NUMPADDIV" | "NUMPADDIVIDE" => Self(0x6F),
+            "NUMPADDEC" | "NUMPADDECIMAL" | "NUMPADPOINT" => Self(0x6E),
             "NUMLOCK" => Self(0x90),
-            "/" => Self(0xBF),
-            "`" | "~" | OEM3 => Self(0xC0),
-            "[" => Self(0xDB),
-            "\\" => Self(0xDC),
-            "]" => Self(0xDD),
-            "'" => Self(0xDE),
+            "SCROLLLOCK" => Self(0x91),
+            ";" | "OEMSEMICOLON" => Self(0xBA),
+            "=" | "OEMPLUS" => Self(0xBB),
+            "," | "OEMCOMMA" => Self(0xBC),
+            "-" | "OEMMINUS" => Self(0xBD),
+            "." | "OEMPERIOD" => Self(0xBE),
+            "/" | "OEMSLASH" => Self(0xBF),
+            "`" | "~" | "OEMTILDE" => Self(0xC0),
+            "[" | "OEMOPENBRACKETS" => Self(0xDB),
+            "\\" | "OEMPIPE" => Self(0xDC),
+            "]" | "OEMCLOSEBRACKETS" => Self(0xDD),
+            "'" | "OEMQUOTES" => Self(0xDE),
             _ => {
-                if let Some(rest) = upper.strip_prefix('F') {
-                    if let Ok(n) = rest.parse::<u16>() {
-                        if (1..=24).contains(&n) {
-                            return Some(Self(0x70 + n - 1));
+                // Multi-character tokens: only Fn keys are recognized here.
+                // (Guard len>1 so the plain letter "F" falls through.)
+                if upper.len() > 1 {
+                    if let Some(rest) = upper.strip_prefix('F') {
+                        if let Ok(n) = rest.parse::<u16>() {
+                            if (1..=24).contains(&n) {
+                                return Some(Self(0x70 + n - 1));
+                            }
                         }
                     }
                     return None;
                 }
-                if upper.len() == 1 {
-                    let c = upper.chars().next().unwrap();
-                    if c.is_ascii_digit() {
-                        return Some(Self(0x30 + (c as u16 - b'0' as u16)));
-                    }
-                    if c.is_ascii_alphabetic() {
-                        return Some(Self(0x41 + (c as u16 - b'A' as u16)));
-                    }
+                let c = upper.chars().next().unwrap();
+                if c.is_ascii_digit() {
+                    return Some(Self(0x30 + (c as u16 - b'0' as u16)));
+                }
+                if c.is_ascii_alphabetic() {
+                    return Some(Self(0x41 + (c as u16 - b'A' as u16)));
                 }
                 return None;
             }
@@ -174,8 +197,6 @@ impl VirtualKey {
     }
 }
 
-const OEM1: &str = "OEM_1";
-const OEM3: &str = "OEM_3";
 
 impl fmt::Display for VirtualKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -312,5 +333,45 @@ mod tests {
         let a = Hotkey::parse("alt+ctrl+m").unwrap();
         let b = Hotkey::parse("Ctrl+Alt+M").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn every_supported_key_round_trips_through_canonical_name() {
+        // #11: parse(display(vk)) == vk for the full supported set.
+        let supported: Vec<u16> = [
+            0x08u16, 0x09, 0x0D, 0x13, 0x14, 0x1B, 0x20,
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E,
+        ]
+        .into_iter()
+        .chain(0x30..=0x39)
+        .chain(0x41..=0x5A)
+        .chain(0x60..=0x69)
+        .chain([0x6Au16, 0x6B, 0x6D, 0x6E, 0x6F])
+        .chain(0x70..=0x87)
+        .chain([0x90u16, 0x91])
+        .chain([
+            0xBAu16, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xDB, 0xDC, 0xDD, 0xDE,
+        ])
+        .collect();
+        for code in supported {
+            let vk = VirtualKey(code);
+            let token = vk.name();
+            assert!(
+                !token.contains(' ') && !token.contains('+'),
+                "{token}: canonical tokens must not contain spaces or '+'"
+            );
+            assert_eq!(
+                VirtualKey::parse(&token),
+                Some(vk),
+                "round trip failed for {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn numpad_and_top_row_tokens_differ() {
+        assert_ne!(VirtualKey::parse("Numpad3"), VirtualKey::parse("3"));
+        assert_eq!(VirtualKey(0x63).name(), "Numpad3");
+        assert_eq!(VirtualKey(0x33).name(), "3");
     }
 }

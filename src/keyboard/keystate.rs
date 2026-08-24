@@ -41,6 +41,12 @@ mod heapless_like {
             }
             false // more than 8 simultaneous non-modifier keys: ignore tracking, matching still works
         }
+        /// Insert only when absent (autorepeat dedupe).
+        pub fn push_unique(&mut self, v: u8) {
+            if !self.contains(v) {
+                self.push(v);
+            }
+        }
         pub fn remove(&mut self, v: u8) {
             for slot in self.0.iter_mut() {
                 if *slot == Some(v) {
@@ -71,10 +77,12 @@ impl KeyState {
         }
     }
 
+    /// Track held non-modifier keys. Autorepeat re-delivers the same DOWN;
+    /// keep one entry per key (#11).
     pub fn track_nonmod(&mut self, vk: u16, down: bool) {
         if vk < 256 {
             if down {
-                self.nonmod_pressed.push(vk as u8);
+                self.nonmod_pressed.push_unique(vk as u8);
             } else {
                 self.nonmod_pressed.remove(vk as u8);
             }
@@ -112,10 +120,12 @@ impl KeyState {
         self.is_down(vks::VK_LWIN) || self.is_down(vks::VK_RWIN)
     }
 
+    /// Caps Lock (0x14) is deliberately NOT a modifier: it is a bindable
+    /// key (#11).
     pub fn is_modifier(vk: u16) -> bool {
         matches!(
             vk,
-            0x10..=0x12 | 0x14 | vks::VK_LSHIFT..=vks::VK_RMENU | vks::VK_LWIN | vks::VK_RWIN
+            0x10..=0x12 | vks::VK_LSHIFT..=vks::VK_RMENU | vks::VK_LWIN | vks::VK_RWIN
         )
     }
 
@@ -125,15 +135,13 @@ impl KeyState {
 }
 
 /// Normalize an LL-hook virtual key: side-generic codes become their explicit
-/// sides using the EXTENDED flag, and numpad digits collapse onto top-row digits
-/// so bindings behave uniformly.
+/// sides using the EXTENDED flag. Numpad keys stay distinct from top-row keys
+/// so bindings can tell them apart (#11).
 pub fn normalize_vk(raw: u16, extended: bool) -> u16 {
     match raw {
         0x10 => if extended { vks::VK_RSHIFT } else { vks::VK_LSHIFT },
         0x11 => if extended { vks::VK_RCONTROL } else { vks::VK_LCONTROL },
         0x12 => if extended { vks::VK_RMENU } else { vks::VK_LMENU },
-        0x61..=0x69 => raw - 0x60 + 0x30, // Numpad1..9 -> '1'..'9'
-        0x60 => 0x30,                     // Numpad0 -> '0'
         _ => raw,
     }
 }

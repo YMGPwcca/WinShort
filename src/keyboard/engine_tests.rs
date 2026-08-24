@@ -272,16 +272,31 @@ fn extra_modifier_prevents_exact_match() {
 }
 
 #[test]
-fn numpad_digits_match_top_row_bindings() {
+fn numpad_digits_are_distinct_from_top_row() {
+    // #11: numpad keys no longer collapse onto top-row digits, so a
+    // Win+Numpad3 chord must NOT fire a Win+3 desktop binding.
     let mut e = KeyboardEngine::new();
     let t = table_with_win_digits();
-    // Right-side path: numpad 3 arrives as VK_NUMPAD3 (0x63).
     let out = feed(
         &mut e,
         &t,
         &[RawKeyEvent::down(VK_LWIN), RawKeyEvent { vk: 0x63, extended: false, down: true, injected: false }],
     );
-    assert_eq!(out[1], EngineOutcome::Dispatch { action: HotkeyAction::SwitchDesktop(2), dirty_win_chord: true });
+    assert_eq!(out[1], EngineOutcome::Pass);
+
+    // ...while an explicit Numpad3 binding matches only the numpad key.
+    let mut t2 = BindingTable::default();
+    t2.insert(
+        Hotkey { modifiers: ModifierMask::WIN, key: VirtualKey(0x63) },
+        HotkeyAction::ToggleMicrophone,
+    );
+    let mut e2 = KeyboardEngine::new();
+    let out2 = feed(
+        &mut e2,
+        &t2,
+        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent { vk: 0x63, extended: false, down: true, injected: false }],
+    );
+    expect_dispatch(out2[1], HotkeyAction::ToggleMicrophone, true);
 }
 
 #[test]
