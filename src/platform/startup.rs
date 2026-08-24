@@ -23,8 +23,11 @@ fn command_line() -> String {
 pub fn is_enabled() -> bool {
     // SAFETY: fixed-size out buffer; read-only query.
     unsafe {
-        let run = PCWSTR(HSTRING::from(RUN_KEY).as_ptr());
-        let name = PCWSTR(HSTRING::from(VALUE_NAME).as_ptr());
+        // SAFETY: `run_h`/`name_h` own the wide strings used by RegGetValueW.
+        let run_h = HSTRING::from(RUN_KEY);
+        let name_h = HSTRING::from(VALUE_NAME);
+        let run = PCWSTR(run_h.as_ptr());
+        let name = PCWSTR(name_h.as_ptr());
         let mut buf = [0u16; 1024];
         let mut size = (buf.len() * 2) as u32;
         let mut kind = REG_VALUE_TYPE(0);
@@ -44,7 +47,9 @@ pub fn set_enabled(enable: bool) -> Result<()> {
     // SAFETY: opened with set+query rights; closed on all paths.
     unsafe {
         let mut hkey = HKEY::default();
-        let run = PCWSTR(HSTRING::from(RUN_KEY).as_ptr());
+        // SAFETY: `run_h` owns the wide string passed to RegOpenKeyExW.
+        let run_h = HSTRING::from(RUN_KEY);
+        let run = PCWSTR(run_h.as_ptr());
         let err = RegOpenKeyExW(HKEY_CURRENT_USER, run, None, KEY_SET_VALUE | KEY_QUERY_VALUE, &mut hkey);
         if err != ERROR_SUCCESS {
             return Err(Error::os_ctx("RegOpenKeyExW(Run)", err.0, "opening Run key"));

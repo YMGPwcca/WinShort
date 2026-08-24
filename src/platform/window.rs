@@ -39,6 +39,9 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
     let hinstance = unsafe { GetModuleHandleW(None) }
         .map_err(|e| crate::error::Error::win("GetModuleHandleW", &e))?;
 
+    // SAFETY: `class` owns the wide string that `wc.lpszClassName` points at;
+    // it must outlive the RegisterClassExW call below.
+    let class = HSTRING::from(name);
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW,
@@ -47,7 +50,7 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
         hCursor: unsafe { windows::Win32::UI::WindowsAndMessaging::LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_ARROW) }
             .map_err(|e| crate::error::Error::win("LoadCursorW", &e))?,
         hbrBackground: Default::default(),
-        lpszClassName: PCWSTR(HSTRING::from(name).as_ptr()),
+        lpszClassName: PCWSTR(class.as_ptr()),
         ..Default::default()
     };
 

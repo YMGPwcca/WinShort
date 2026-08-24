@@ -27,7 +27,9 @@ impl OsBuild {
 
 /// Query the current OS build.
 pub fn detect() -> Result<OsBuild> {
-    let subkey = PCWSTR(HSTRING::from("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion").as_ptr());
+    // SAFETY: `subkey` owns the wide string passed to RegGetValueW below.
+    let subkey = HSTRING::from("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+    let subkey = PCWSTR(subkey.as_ptr());
     let build_str = query_string(subkey, "CurrentBuildNumber")?;
     let build: u32 = build_str
         .trim()
@@ -38,7 +40,9 @@ pub fn detect() -> Result<OsBuild> {
 }
 
 fn query_string(subkey: PCWSTR, value: &str) -> Result<String> {
-    let name = PCWSTR(HSTRING::from(value).as_ptr());
+    // SAFETY: `name_h` owns the wide string used by RegGetValueW below.
+    let name_h = HSTRING::from(value);
+    let name = PCWSTR(name_h.as_ptr());
     let mut buf = [0u16; 256];
     let mut size = (buf.len() * 2) as u32;
     let mut kind = REG_VALUE_TYPE(0);
@@ -67,7 +71,9 @@ fn query_string(subkey: PCWSTR, value: &str) -> Result<String> {
 }
 
 fn query_dword(subkey: PCWSTR, value: &str) -> Result<u32> {
-    let name = PCWSTR(HSTRING::from(value).as_ptr());
+    // SAFETY: `name_h` owns the wide string used by RegGetValueW below.
+    let name_h = HSTRING::from(value);
+    let name = PCWSTR(name_h.as_ptr());
     let mut data = 0u32;
     let mut size = 4u32;
     let mut kind = REG_VALUE_TYPE(0);
