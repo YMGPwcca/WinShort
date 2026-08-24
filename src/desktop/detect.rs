@@ -36,7 +36,10 @@ pub fn detect() -> Result<OsBuild> {
         .parse()
         .map_err(|_| Error::desktop(format!("malformed CurrentBuildNumber `{build_str}`")))?;
     let update_revision = query_dword(subkey, "UBR").unwrap_or(0);
-    Ok(OsBuild { build, update_revision })
+    Ok(OsBuild {
+        build,
+        update_revision,
+    })
 }
 
 fn query_string(subkey: PCWSTR, value: &str) -> Result<String> {
@@ -66,7 +69,10 @@ fn query_string(subkey: PCWSTR, value: &str) -> Result<String> {
         // trim NUL via slice bound below
         break;
     }
-    let end = buf[..len].iter().rposition(|&c| c != 0).map_or(0, |p| p + 1);
+    let end = buf[..len]
+        .iter()
+        .rposition(|&c| c != 0)
+        .map_or(0, |p| p + 1);
     Ok(String::from_utf16_lossy(&buf[..end]))
 }
 
@@ -102,10 +108,21 @@ mod tests {
     #[test]
     fn whitelist_matches_this_machine() {
         // This development machine runs 26200 (25H2).
-        let b = OsBuild { build: 26_200, update_revision: 9168 };
+        let b = OsBuild {
+            build: 26_200,
+            update_revision: 9168,
+        };
         assert!(b.native_shell_supported());
-        assert!(!OsBuild { build: 22_631, update_revision: 0 }.native_shell_supported());
-        assert!(!OsBuild { build: 27_000, update_revision: 0 }.native_shell_supported());
+        assert!(!OsBuild {
+            build: 22_631,
+            update_revision: 0
+        }
+        .native_shell_supported());
+        assert!(!OsBuild {
+            build: 27_000,
+            update_revision: 0
+        }
+        .native_shell_supported());
     }
 
     #[test]

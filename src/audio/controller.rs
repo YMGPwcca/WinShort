@@ -4,8 +4,12 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
-use windows::Win32::Media::Audio::{IMMDeviceEnumerator, IMMNotificationClient, MMDeviceEnumerator};
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
+use windows::Win32::Media::Audio::{
+    IMMDeviceEnumerator, IMMNotificationClient, MMDeviceEnumerator,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+};
 
 use crate::audio::devices::EndpointBinding;
 use crate::audio::notifications::DeviceNotificationClient;
@@ -76,7 +80,11 @@ impl AudioService {
             let _ = join.join();
             return Err(Error::audio("audio startup timed out"));
         }
-        Ok(Self { sender, devices, join: Some(join) })
+        Ok(Self {
+            sender,
+            devices,
+            join: Some(join),
+        })
     }
 
     pub fn send(&self, command: AudioCommand) {
@@ -167,17 +175,14 @@ impl AudioController {
             AudioCommand::ToggleOutput => self.toggle(EndpointFlow::Render),
             AudioCommand::ToggleForeground(pid) => {
                 let config = self.config.get();
-                let state = crate::audio::sessions::toggle_foreground(
-                    &self.enumerator,
-                    &config,
-                    pid,
-                )
-                .unwrap_or_else(|e| crate::audio::AppAudioState {
-                    app_name: None,
-                    aggregate: crate::audio::Aggregate::Error,
-                    sessions: 0,
-                    error: Some(e.to_string()),
-                });
+                let state =
+                    crate::audio::sessions::toggle_foreground(&self.enumerator, &config, pid)
+                        .unwrap_or_else(|e| crate::audio::AppAudioState {
+                            app_name: None,
+                            aggregate: crate::audio::Aggregate::Error,
+                            sessions: 0,
+                            error: Some(e.to_string()),
+                        });
                 self.post(AppEvent::ForegroundAudioChanged(state));
             }
             AudioCommand::RefreshEndpoint(flow) => {
@@ -229,7 +234,9 @@ impl AudioController {
         }
 
         if !startup {
-            if let (Some(old), Some(new)) = (old_render, self.render.as_ref().map(|e| e.identity.clone())) {
+            if let (Some(old), Some(new)) =
+                (old_render, self.render.as_ref().map(|e| e.identity.clone()))
+            {
                 if old.endpoint != new.endpoint {
                     self.post(AppEvent::DefaultOutputChanged(new));
                 }
@@ -252,13 +259,8 @@ impl AudioController {
             EndpointFlow::Capture => (&config.audio.input_device, config.audio.input_role),
             EndpointFlow::Render => (&config.audio.output_device, config.audio.output_role),
         };
-        match EndpointBinding::create(
-            &self.enumerator,
-            flow,
-            selection,
-            role,
-            self.sender.clone(),
-        ) {
+        match EndpointBinding::create(&self.enumerator, flow, selection, role, self.sender.clone())
+        {
             Ok(endpoint) => {
                 crate::info!("audio {:?} endpoint: {}", flow, endpoint.identity.name);
                 *slot = Some(endpoint);
@@ -299,7 +301,9 @@ impl AudioController {
                     .as_ref()
                     .ok_or_else(|| Error::audio("microphone unavailable"))
                     .and_then(EndpointBinding::capture_state)
-                    .unwrap_or_else(|e| AudioState::Unavailable { reason: e.to_string() });
+                    .unwrap_or_else(|e| AudioState::Unavailable {
+                        reason: e.to_string(),
+                    });
                 self.post(AppEvent::MicrophoneStateChanged(state));
             }
             EndpointFlow::Render => {
@@ -308,7 +312,9 @@ impl AudioController {
                     .as_ref()
                     .ok_or_else(|| Error::audio("output unavailable"))
                     .and_then(EndpointBinding::output_state)
-                    .unwrap_or_else(|e| OutputState::Unavailable { reason: e.to_string() });
+                    .unwrap_or_else(|e| OutputState::Unavailable {
+                        reason: e.to_string(),
+                    });
                 self.post(AppEvent::OutputStateChanged(state));
             }
         }

@@ -46,7 +46,12 @@ impl ModifierMask {
 
     /// Canonical display order: Ctrl Alt Shift Win.
     pub fn parts(self) -> [(&'static str, Self); 4] {
-        [("Ctrl", Self::CTRL), ("Alt", Self::ALT), ("Shift", Self::SHIFT), ("Win", Self::WIN)]
+        [
+            ("Ctrl", Self::CTRL),
+            ("Alt", Self::ALT),
+            ("Shift", Self::SHIFT),
+            ("Win", Self::WIN),
+        ]
     }
 }
 
@@ -202,13 +207,11 @@ impl VirtualKey {
     }
 }
 
-
 impl fmt::Display for VirtualKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.name())
     }
 }
-
 
 /// A fully resolved hotkey: exact modifier set + one non-modifier key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -267,7 +270,10 @@ impl Hotkey {
                         "`{s}` has no modifier: global hotkeys require at least one of Ctrl/Alt/Shift/Win"
                     ));
                 }
-                Ok(Hotkey { modifiers: mask, key })
+                Ok(Hotkey {
+                    modifiers: mask,
+                    key,
+                })
             }
             None => Err(format!("no key in `{s}` (modifiers alone cannot be bound)")),
         }
@@ -291,7 +297,15 @@ impl BindingTable {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Hotkey, HotkeyAction)> + '_ {
-        self.map.iter().map(|((m, k), a)| (Hotkey { modifiers: *m, key: *k }, *a))
+        self.map.iter().map(|((m, k), a)| {
+            (
+                Hotkey {
+                    modifiers: *m,
+                    key: *k,
+                },
+                *a,
+            )
+        })
     }
 
     pub fn conflicts(&self, candidate: &Hotkey) -> Option<HotkeyAction> {
@@ -319,7 +333,14 @@ mod tests {
     #[test]
     fn parse_display_round_trip() {
         // #35(c): bare keys like "F5" are rejected; modifiers are required.
-        for s in ["Ctrl+Alt+M", "Ctrl+Shift+M", "Win+7", "Ctrl+Alt+P", "Ctrl+F5", "Ctrl+Space"] {
+        for s in [
+            "Ctrl+Alt+M",
+            "Ctrl+Shift+M",
+            "Win+7",
+            "Ctrl+Alt+P",
+            "Ctrl+F5",
+            "Ctrl+Space",
+        ] {
             let hk = Hotkey::parse(s).unwrap_or_else(|e| panic!("{s}: {e}"));
             assert_eq!(hk.to_string(), s, "round trip failed");
         }
@@ -360,8 +381,8 @@ mod tests {
     fn every_supported_key_round_trips_through_canonical_name() {
         // #11: parse(display(vk)) == vk for the full supported set.
         let supported: Vec<u16> = [
-            0x08u16, 0x09, 0x0D, 0x13, 0x14, 0x1B, 0x20,
-            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E,
+            0x08u16, 0x09, 0x0D, 0x13, 0x14, 0x1B, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+            0x28, 0x2D, 0x2E,
         ]
         .into_iter()
         .chain(0x30..=0x39)

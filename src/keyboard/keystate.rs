@@ -22,7 +22,10 @@ pub struct KeyState {
 
 impl Default for KeyState {
     fn default() -> Self {
-        Self { down: [false; 256], nonmod_pressed: heapless_like::SmallVec::default() }
+        Self {
+            down: [false; 256],
+            nonmod_pressed: heapless_like::SmallVec::default(),
+        }
     }
 }
 
@@ -139,9 +142,27 @@ impl KeyState {
 /// so bindings can tell them apart (#11).
 pub fn normalize_vk(raw: u16, extended: bool) -> u16 {
     match raw {
-        0x10 => if extended { vks::VK_RSHIFT } else { vks::VK_LSHIFT },
-        0x11 => if extended { vks::VK_RCONTROL } else { vks::VK_LCONTROL },
-        0x12 => if extended { vks::VK_RMENU } else { vks::VK_LMENU },
+        0x10 => {
+            if extended {
+                vks::VK_RSHIFT
+            } else {
+                vks::VK_LSHIFT
+            }
+        }
+        0x11 => {
+            if extended {
+                vks::VK_RCONTROL
+            } else {
+                vks::VK_LCONTROL
+            }
+        }
+        0x12 => {
+            if extended {
+                vks::VK_RMENU
+            } else {
+                vks::VK_LMENU
+            }
+        }
         _ => raw,
     }
 }

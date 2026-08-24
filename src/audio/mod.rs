@@ -3,8 +3,8 @@
 pub mod controller;
 pub mod devices;
 pub mod notifications;
-pub mod state;
 pub mod sessions;
+pub mod state;
 
 pub use controller::{AudioCommand, AudioService};
 pub use state::{Aggregate, AppAudioState, AudioState, DeviceId, OutputState};

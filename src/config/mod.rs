@@ -11,7 +11,6 @@ pub use model::{
 };
 pub use validate::validate;
 
-
 /// Lock-free-read snapshot of the live configuration (spec §9, §10, §45).
 ///
 /// Readers clone the current `Arc` cheaply under a short read lock; the only
@@ -40,7 +39,9 @@ impl ConfigHandle {
     }
 
     /// Snapshot of the active hotkey table; lock-free, wait-free read.
-    pub fn bindings(&self) -> arc_swap::Guard<std::sync::Arc<crate::keyboard::binding::BindingTable>> {
+    pub fn bindings(
+        &self,
+    ) -> arc_swap::Guard<std::sync::Arc<crate::keyboard::binding::BindingTable>> {
         self.bindings.load()
     }
 
@@ -53,8 +54,12 @@ impl ConfigHandle {
         let mut w = self.value.write().expect("config lock");
         let old = std::mem::replace(&mut *w, std::sync::Arc::new(cfg));
         let new = &*w;
-        self.bindings.store(std::sync::Arc::new(crate::keyboard::hook::build_bindings(new)));
-        self.revision.fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.bindings
+            .store(std::sync::Arc::new(crate::keyboard::hook::build_bindings(
+                new,
+            )));
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         old
     }
 }
@@ -87,7 +92,7 @@ mod tests {
 /// Authoritative process data root via the Known Folder API (#15e): no "."
 /// fallback — callers decide whether failure is fatal.
 pub fn try_data_dir() -> crate::error::Result<std::path::PathBuf> {
-    use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_LocalAppData};
+    use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
     let path = unsafe {
         SHGetKnownFolderPath(
             &FOLDERID_LocalAppData,

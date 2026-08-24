@@ -5,11 +5,11 @@
 
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{HANDLE, GetLastError, WAIT_OBJECT_0};
+use windows::core::{HSTRING, PCWSTR};
+use windows::Win32::Foundation::{GetLastError, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, SetEvent, WaitForMultipleObjects,
 };
-use windows::core::{HSTRING, PCWSTR};
 
 const MUTEX_NAME: &str = r"Local\WinShort.SingleInstance.Mutex";
 const ACTIVATE_EVENT: &str = r"Local\WinShort.SingleInstance.Activate";
@@ -38,22 +38,33 @@ pub fn acquire() -> Result<InstanceRole, crate::error::Error> {
         let mutex = CreateMutexW(None, false, PCWSTR(HSTRING::from(MUTEX_NAME).as_ptr()))
             .map_err(|e| crate::error::Error::win("CreateMutexW", &e))?;
         if GetLastError() == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
-            let ev = CreateEventW(None, false, false, PCWSTR(HSTRING::from(ACTIVATE_EVENT).as_ptr()))
-                .unwrap_or_default();
+            let ev = CreateEventW(
+                None,
+                false,
+                false,
+                PCWSTR(HSTRING::from(ACTIVATE_EVENT).as_ptr()),
+            )
+            .unwrap_or_default();
             if !ev.is_invalid() {
                 let _ = SetEvent(ev);
             }
             return Ok(InstanceRole::Secondary);
         }
-        let activate_event =
-            CreateEventW(None, false, false, PCWSTR(HSTRING::from(ACTIVATE_EVENT).as_ptr()))
-                .map_err(|e| crate::error::Error::win("CreateEventW(activate)", &e))?;
+        let activate_event = CreateEventW(
+            None,
+            false,
+            false,
+            PCWSTR(HSTRING::from(ACTIVATE_EVENT).as_ptr()),
+        )
+        .map_err(|e| crate::error::Error::win("CreateEventW(activate)", &e))?;
         // Manual-reset shutdown event for the watcher (#24).
-        let shutdown_event =
-            CreateEventW(None, true, false, PCWSTR::null())
-                .map_err(|e| crate::error::Error::win("CreateEventW(shutdown)", &e))?;
+        let shutdown_event = CreateEventW(None, true, false, PCWSTR::null())
+            .map_err(|e| crate::error::Error::win("CreateEventW(shutdown)", &e))?;
         let _ = SHUTDOWN_EVENT.set(SendHandle(shutdown_event));
-        Ok(InstanceRole::Primary(PrimaryRole { mutex, activate_event }))
+        Ok(InstanceRole::Primary(PrimaryRole {
+            mutex,
+            activate_event,
+        }))
     }
 }
 
@@ -118,17 +129,12 @@ pub fn spawn_watcher(
     WatcherRuntime { join: Some(join) }
 }
 
-fn watch(
-    activate: SendHandle,
-    shutdown: SendHandle,
-    on_activate: impl Fn() + Send + 'static,
-) {
+fn watch(activate: SendHandle, shutdown: SendHandle, on_activate: impl Fn() + Send + 'static) {
     use windows::Win32::System::Threading::INFINITE;
     loop {
         // SAFETY: both handles are process-owned for the watcher lifetime;
         // waiting does not mutate them.
-        let result =
-            unsafe { WaitForMultipleObjects(&[activate.0, shutdown.0], false, INFINITE) };
+        let result = unsafe { WaitForMultipleObjects(&[activate.0, shutdown.0], false, INFINITE) };
         // WAIT_OBJECT_0 + 0 => activation; + 1 => shutdown.
         const ACTIVATE: u32 = WAIT_OBJECT_0.0;
         const SHUTDOWN: u32 = WAIT_OBJECT_0.0 + 1;

@@ -18,7 +18,6 @@ fn main() {
         );
         res.set("FileVersion", &version);
         res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
-        res.compile()
-            .expect("embed Windows resources and manifest");
+        res.compile().expect("embed Windows resources and manifest");
     }
 }

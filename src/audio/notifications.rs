@@ -9,8 +9,8 @@ use windows::Win32::Media::Audio::Endpoints::{
     IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
 };
 use windows::Win32::Media::Audio::{
-    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, EDataFlow, ERole, IMMNotificationClient,
-    IMMNotificationClient_Impl,
+    EDataFlow, ERole, IMMNotificationClient, IMMNotificationClient_Impl,
+    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE,
 };
 
 use crate::audio::controller::{AudioCommand, EndpointFlow};

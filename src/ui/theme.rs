@@ -129,9 +129,8 @@ pub fn system_theme_mode() -> ThemeMode {
     };
 
     unsafe {
-        let key = HSTRING::from(
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-        );
+        let key =
+            HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
         let name = HSTRING::from("AppsUseLightTheme");
         let mut value = 0u32;
         let mut size = std::mem::size_of::<u32>() as u32;

@@ -225,7 +225,9 @@ impl DeviceSelection {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            general: GeneralCfg { start_hotkeys_enabled: true },
+            general: GeneralCfg {
+                start_hotkeys_enabled: true,
+            },
             overlay: OverlayCfg {
                 enabled: true,
                 duration_ms: 1300,
@@ -245,7 +247,10 @@ impl Default for Config {
                 toggle_output: Some(Hotkey::parse(DEFAULT_TOGGLE_OUTPUT).unwrap()),
                 toggle_foreground_audio: Some(Hotkey::parse(DEFAULT_TOGGLE_FOREGROUND).unwrap()),
             },
-            virtual_desktops: VdCfg { enabled: true, win_number_switching: true },
+            virtual_desktops: VdCfg {
+                enabled: true,
+                win_number_switching: true,
+            },
         }
     }
 }
@@ -426,7 +431,10 @@ impl Config {
         match OverlayPosition::parse(&t.overlay.position) {
             Some(p) => c.overlay.position = p,
             None if t.overlay.position.is_empty() => {}
-            None => warnings.push(format!("overlay.position: unknown `{}`", t.overlay.position)),
+            None => warnings.push(format!(
+                "overlay.position: unknown `{}`",
+                t.overlay.position
+            )),
         }
         match MonitorChoice::parse(&t.overlay.monitor) {
             Some(m) => c.overlay.monitor = m,
@@ -438,15 +446,29 @@ impl Config {
 
         match EndpointRole::parse(&t.audio.input_role) {
             Some(r) => c.audio.input_role = r,
-            None => warnings.push(format!("audio.input_role: unknown `{}`", t.audio.input_role)),
+            None => warnings.push(format!(
+                "audio.input_role: unknown `{}`",
+                t.audio.input_role
+            )),
         }
         match EndpointRole::parse(&t.audio.output_role) {
             Some(r) => c.audio.output_role = r,
-            None => warnings.push(format!("audio.output_role: unknown `{}`", t.audio.output_role)),
+            None => warnings.push(format!(
+                "audio.output_role: unknown `{}`",
+                t.audio.output_role
+            )),
         }
         for (field, raw, slot) in [
-            ("input_device", &t.audio.input_device, &mut c.audio.input_device),
-            ("output_device", &t.audio.output_device, &mut c.audio.output_device),
+            (
+                "input_device",
+                &t.audio.input_device,
+                &mut c.audio.input_device,
+            ),
+            (
+                "output_device",
+                &t.audio.output_device,
+                &mut c.audio.output_device,
+            ),
         ] {
             // Windows endpoint IDs are opaque strings (typically
             // "{0.0.0.00000000}.{guid}") — accept any non-empty id (#7).
@@ -458,8 +480,16 @@ impl Config {
         }
 
         for (field, raw, slot) in [
-            ("toggle_microphone", &t.hotkeys.toggle_microphone, &mut c.hotkeys.toggle_microphone),
-            ("toggle_output", &t.hotkeys.toggle_output, &mut c.hotkeys.toggle_output),
+            (
+                "toggle_microphone",
+                &t.hotkeys.toggle_microphone,
+                &mut c.hotkeys.toggle_microphone,
+            ),
+            (
+                "toggle_output",
+                &t.hotkeys.toggle_output,
+                &mut c.hotkeys.toggle_output,
+            ),
             (
                 "toggle_foreground_audio",
                 &t.hotkeys.toggle_foreground_audio,

@@ -9,8 +9,8 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW, GWLP_USERDATA,
-    WNDCLASSEXW, WNDPROC, WM_NCCREATE, CS_HREDRAW, CS_VREDRAW,
+    DefWindowProcW, GetWindowLongPtrW, RegisterClassExW, SetWindowLongPtrW, CS_HREDRAW, CS_VREDRAW,
+    GWLP_USERDATA, WM_NCCREATE, WNDCLASSEXW, WNDPROC,
 };
 
 /// Interior-mutable per-window state stored (boxed) in `GWLP_USERDATA`.
@@ -47,8 +47,13 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: wndproc,
         hInstance: hinstance.into(),
-        hCursor: unsafe { windows::Win32::UI::WindowsAndMessaging::LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_ARROW) }
-            .map_err(|e| crate::error::Error::win("LoadCursorW", &e))?,
+        hCursor: unsafe {
+            windows::Win32::UI::WindowsAndMessaging::LoadCursorW(
+                None,
+                windows::Win32::UI::WindowsAndMessaging::IDC_ARROW,
+            )
+        }
+        .map_err(|e| crate::error::Error::win("LoadCursorW", &e))?,
         hbrBackground: Default::default(),
         lpszClassName: PCWSTR(class.as_ptr()),
         ..Default::default()
@@ -64,7 +69,6 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
     }
     Ok(atom)
 }
-
 
 /// Store a boxed [`WindowState`] pointer into GWLP_USERDATA with the right
 /// integer width for the target (#28).
@@ -119,7 +123,6 @@ pub unsafe fn take_state<T>(hwnd: HWND) -> Option<Box<WindowState<T>>> {
         }
     }
 }
-
 
 /// Standard default handling.
 pub fn def_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

@@ -49,7 +49,7 @@ impl Motion {
         for tween in self.tweens.values_mut() {
             let t = (now.duration_since(tween.started).as_secs_f32()
                 / tween.duration.as_secs_f32())
-                .clamp(0.0, 1.0);
+            .clamp(0.0, 1.0);
             // Fluent-style cubic ease out.
             let eased = 1.0 - (1.0 - t).powi(3);
             tween.value = tween.from + (tween.to - tween.from) * eased;

@@ -8,8 +8,8 @@ use std::mem::size_of;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_STATE, NOTIFYICONDATAW,
-    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICON_VERSION_4,
+    Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW,
+    NOTIFYICON_VERSION_4, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_STATE,
 };
 
 use crate::error::{Error, Result};
@@ -67,10 +67,7 @@ pub struct Tray {
 
 impl Tray {
     /// Add the notification area icon (spec §6).
-    pub fn install(
-        hwnd: HWND,
-        icons: (OwnedIcon, OwnedIcon),
-    ) -> Result<Tray> {
+    pub fn install(hwnd: HWND, icons: (OwnedIcon, OwnedIcon)) -> Result<Tray> {
         let mut nid = NOTIFYICONDATAW::default();
         nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
@@ -82,13 +79,17 @@ impl Tray {
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
 
         unsafe {
-            bool_ok(Shell_NotifyIconW(NIM_ADD, &nid), "Shell_NotifyIconW(NIM_ADD)")?;
+            bool_ok(
+                Shell_NotifyIconW(NIM_ADD, &nid),
+                "Shell_NotifyIconW(NIM_ADD)",
+            )?;
             // Ask for version-4 semantics AFTER adding (documented order).
             let mut v = nid;
             v.uFlags = NOTIFY_ICON_DATA_FLAGS::default();
-            if let Err(e) =
-                bool_ok(Shell_NotifyIconW(NIM_SETVERSION, &v), "Shell_NotifyIconW(NIM_SETVERSION)")
-            {
+            if let Err(e) = bool_ok(
+                Shell_NotifyIconW(NIM_SETVERSION, &v),
+                "Shell_NotifyIconW(NIM_SETVERSION)",
+            ) {
                 // Roll back the half-installed icon (#23).
                 let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
                 return Err(e);
@@ -120,7 +121,10 @@ impl Tray {
             TrayState::HotkeysSuspended => self._icon_suspended.handle(),
         };
         unsafe {
-            bool_ok(Shell_NotifyIconW(NIM_MODIFY, &nid), "Shell_NotifyIconW(NIM_MODIFY)")?;
+            bool_ok(
+                Shell_NotifyIconW(NIM_MODIFY, &nid),
+                "Shell_NotifyIconW(NIM_MODIFY)",
+            )?;
         }
         self.state = state;
         Ok(())
@@ -137,12 +141,18 @@ impl Tray {
         unsafe {
             // Ignore "already exists": Explorer may have resurrected us partially.
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-            bool_ok(Shell_NotifyIconW(NIM_ADD, &nid), "Shell_NotifyIconW(re-add)")?;
+            bool_ok(
+                Shell_NotifyIconW(NIM_ADD, &nid),
+                "Shell_NotifyIconW(re-add)",
+            )?;
             let mut v = nid;
             v.uFlags = NOTIFY_ICON_DATA_FLAGS::default();
             v.Anonymous.uVersion = NOTIFYICON_VERSION_4;
 
-            bool_ok(Shell_NotifyIconW(NIM_SETVERSION, &v), "Shell_NotifyIconW(NIM_SETVERSION)")?;
+            bool_ok(
+                Shell_NotifyIconW(NIM_SETVERSION, &v),
+                "Shell_NotifyIconW(NIM_SETVERSION)",
+            )?;
         }
         Ok(())
     }
@@ -175,10 +185,20 @@ fn set_tip(nid: &mut NOTIFYICONDATAW, tip: &str) {
 /// decodes to [`TrayEvent::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
-    DoubleClick { icon_id: u32, x: i32, y: i32 },
-    ContextMenu { icon_id: u32, x: i32, y: i32 },
+    DoubleClick {
+        icon_id: u32,
+        x: i32,
+        y: i32,
+    },
+    ContextMenu {
+        icon_id: u32,
+        x: i32,
+        y: i32,
+    },
     /// Icon activated by mouse select or keyboard (NIN_SELECT / NIN_KEYSELECT).
-    Select { icon_id: u32 },
+    Select {
+        icon_id: u32,
+    },
     Other,
 }
 
@@ -206,7 +226,14 @@ pub fn decode_callback(wparam: WPARAM, lparam: LPARAM) -> TrayEvent {
 /// Show the context menu anchored near `pt` (screen coords), returning the
 /// chosen command id (see [`menu`]) or None.
 pub fn show_menu(hwnd: HWND, pt: POINT) -> Option<u32> {
-    menu::track_tray_menu(hwnd, pt, &menu::MenuState { suspended: false, start_with_windows: false })
+    menu::track_tray_menu(
+        hwnd,
+        pt,
+        &menu::MenuState {
+            suspended: false,
+            start_with_windows: false,
+        },
+    )
 }
 
 // NIF_* constants re-exported locally (bitflag values).
@@ -231,7 +258,11 @@ mod tests {
         let (wp, lp) = pack(WM_CONTEXTMENU, TRAY_UID, 100, 200);
         assert_eq!(
             decode_callback(wp, lp),
-            TrayEvent::ContextMenu { icon_id: TRAY_UID, x: 100, y: 200 }
+            TrayEvent::ContextMenu {
+                icon_id: TRAY_UID,
+                x: 100,
+                y: 200
+            }
         );
         let (wp, lp) = pack(WM_LBUTTONDBLCLK, TRAY_UID, 0, 0);
         assert!(matches!(
@@ -245,7 +276,11 @@ mod tests {
         let (wp, lp) = pack(WM_CONTEXTMENU, TRAY_UID, -1920, 500);
         match decode_callback(wp, lp) {
             TrayEvent::ContextMenu { x, y, .. } => {
-                assert_eq!((x, y), (-1920, 500), "negative multi-monitor coords must survive");
+                assert_eq!(
+                    (x, y),
+                    (-1920, 500),
+                    "negative multi-monitor coords must survive"
+                );
             }
             other => panic!("wrong event {other:?}"),
         }
@@ -254,7 +289,10 @@ mod tests {
     #[test]
     fn v4_decode_keyselect_opens_select_path() {
         let (wp, lp) = pack(NIN_KEYSELECT, TRAY_UID, 5, 6);
-        assert!(matches!(decode_callback(wp, lp), TrayEvent::Select { icon_id: 1 }));
+        assert!(matches!(
+            decode_callback(wp, lp),
+            TrayEvent::Select { icon_id: 1 }
+        ));
         let (wp, lp) = pack(NIN_SELECT, TRAY_UID, 5, 6);
         assert!(matches!(decode_callback(wp, lp), TrayEvent::Select { .. }));
     }

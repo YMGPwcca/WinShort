@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
-use crate::config::model::Config;
 use crate::config::load::config_path;
+use crate::config::model::Config;
 use crate::error::{Error, Result};
 
 pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
@@ -22,16 +22,16 @@ pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
     }
 
     let toml = cfg.to_toml();
-    let text = toml::to_string_pretty(&toml)
-        .map_err(|e| Error::config(format!("serialize: {e}")))?;
+    let text =
+        toml::to_string_pretty(&toml).map_err(|e| Error::config(format!("serialize: {e}")))?;
 
     // Durable atomic commit (#15d): create -> write -> flush -> sync on the
     // SAME handle, then rename over the target.
     let tmp = path.with_extension("toml.tmp");
     {
         use std::io::Write;
-        let mut file = std::fs::File::create(&tmp)
-            .map_err(|e| Error::config(format!("create temp: {e}")))?;
+        let mut file =
+            std::fs::File::create(&tmp).map_err(|e| Error::config(format!("create temp: {e}")))?;
         file.write_all(text.as_bytes())
             .map_err(|e| Error::config(format!("write temp: {e}")))?;
         file.flush()

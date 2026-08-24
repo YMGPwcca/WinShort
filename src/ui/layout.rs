@@ -195,8 +195,18 @@ impl SettingsLayout {
             card_x,
             card_w,
             &[
-                row(ElementId::MicHotkey, ElementKind::Hotkey, "Microphone", "Toggle input mute"),
-                row(ElementId::OutputHotkey, ElementKind::Hotkey, "Output", "Toggle speaker mute"),
+                row(
+                    ElementId::MicHotkey,
+                    ElementKind::Hotkey,
+                    "Microphone",
+                    "Toggle input mute",
+                ),
+                row(
+                    ElementId::OutputHotkey,
+                    ElementKind::Hotkey,
+                    "Output",
+                    "Toggle speaker mute",
+                ),
                 row(
                     ElementId::ForegroundHotkey,
                     ElementKind::Hotkey,
@@ -213,10 +223,30 @@ impl SettingsLayout {
             card_x,
             card_w,
             &[
-                row(ElementId::InputDevice, ElementKind::Value, "Input device", "Follow the default capture endpoint"),
-                row(ElementId::OutputDevice, ElementKind::Value, "Output device", "Follow the default render endpoint"),
-                row(ElementId::InputRole, ElementKind::Value, "Input role", "Endpoint role used for the microphone"),
-                row(ElementId::OutputRole, ElementKind::Value, "Output role", "Endpoint role used for speakers"),
+                row(
+                    ElementId::InputDevice,
+                    ElementKind::Value,
+                    "Input device",
+                    "Follow the default capture endpoint",
+                ),
+                row(
+                    ElementId::OutputDevice,
+                    ElementKind::Value,
+                    "Output device",
+                    "Follow the default render endpoint",
+                ),
+                row(
+                    ElementId::InputRole,
+                    ElementKind::Value,
+                    "Input role",
+                    "Endpoint role used for the microphone",
+                ),
+                row(
+                    ElementId::OutputRole,
+                    ElementKind::Value,
+                    "Output role",
+                    "Endpoint role used for speakers",
+                ),
             ],
         );
 
@@ -227,8 +257,18 @@ impl SettingsLayout {
             card_x,
             card_w,
             &[
-                row(ElementId::DesktopsEnabled, ElementKind::Toggle, "Desktop engine", "Use native Shell COM when compatible"),
-                row(ElementId::WinNumberEnabled, ElementKind::Toggle, "Win + number switching", "Replace taskbar shortcuts with Desktop 1–9"),
+                row(
+                    ElementId::DesktopsEnabled,
+                    ElementKind::Toggle,
+                    "Desktop engine",
+                    "Use native Shell COM when compatible",
+                ),
+                row(
+                    ElementId::WinNumberEnabled,
+                    ElementKind::Toggle,
+                    "Win + number switching",
+                    "Replace taskbar shortcuts with Desktop 1–9",
+                ),
             ],
         );
 
@@ -239,13 +279,48 @@ impl SettingsLayout {
             card_x,
             card_w,
             &[
-                row(ElementId::OverlayEnabled, ElementKind::Toggle, "Show status overlay", "Never steals focus or receives clicks"),
-                row(ElementId::OverlayPosition, ElementKind::Value, "Position", "Respect the active monitor work area"),
-                row(ElementId::OverlayMonitor, ElementKind::Value, "Monitor", "Choose where status appears"),
-                row(ElementId::OverlayDuration, ElementKind::Slider, "Duration", "How long the settled state remains"),
-                row(ElementId::OverlayOpacity, ElementKind::Slider, "Opacity", "HUD surface visibility"),
-                row(ElementId::OverlayScale, ElementKind::Slider, "Scale", "Size independent of monitor DPI"),
-                row(ElementId::OverlayPreview, ElementKind::Action, "Preview overlay", "Show a representative microphone state"),
+                row(
+                    ElementId::OverlayEnabled,
+                    ElementKind::Toggle,
+                    "Show status overlay",
+                    "Never steals focus or receives clicks",
+                ),
+                row(
+                    ElementId::OverlayPosition,
+                    ElementKind::Value,
+                    "Position",
+                    "Respect the active monitor work area",
+                ),
+                row(
+                    ElementId::OverlayMonitor,
+                    ElementKind::Value,
+                    "Monitor",
+                    "Choose where status appears",
+                ),
+                row(
+                    ElementId::OverlayDuration,
+                    ElementKind::Slider,
+                    "Duration",
+                    "How long the settled state remains",
+                ),
+                row(
+                    ElementId::OverlayOpacity,
+                    ElementKind::Slider,
+                    "Opacity",
+                    "HUD surface visibility",
+                ),
+                row(
+                    ElementId::OverlayScale,
+                    ElementKind::Slider,
+                    "Scale",
+                    "Size independent of monitor DPI",
+                ),
+                row(
+                    ElementId::OverlayPreview,
+                    ElementKind::Action,
+                    "Preview overlay",
+                    "Show a representative microphone state",
+                ),
             ],
         );
 
@@ -256,9 +331,24 @@ impl SettingsLayout {
             card_x,
             card_w,
             &[
-                row(ElementId::DiagnosticsStatus, ElementKind::Status, "Virtual desktop engine", "Runtime compatibility and Windows build"),
-                row(ElementId::OpenConfigFolder, ElementKind::Action, "Open config folder", "Configuration and diagnostic logs"),
-                row(ElementId::ResetSettings, ElementKind::Action, "Reset settings", "Restore defaults in the draft; Save to apply"),
+                row(
+                    ElementId::DiagnosticsStatus,
+                    ElementKind::Status,
+                    "Virtual desktop engine",
+                    "Runtime compatibility and Windows build",
+                ),
+                row(
+                    ElementId::OpenConfigFolder,
+                    ElementKind::Action,
+                    "Open config folder",
+                    "Configuration and diagnostic logs",
+                ),
+                row(
+                    ElementId::ResetSettings,
+                    ElementKind::Action,
+                    "Reset settings",
+                    "Restore defaults in the draft; Save to apply",
+                ),
             ],
         );
 
@@ -325,10 +415,7 @@ impl SettingsLayout {
         self.elements
             .iter()
             .rev()
-            .find(|e| {
-                e.rect.contains(x, y)
-                    && (!e.scrolls || self.content_clip.contains(x, y))
-            })
+            .find(|e| e.rect.contains(x, y) && (!e.scrolls || self.content_clip.contains(x, y)))
             .map(|e| e.id)
     }
 
@@ -351,7 +438,12 @@ const fn row(
     label: &'static str,
     description: &'static str,
 ) -> RowSpec {
-    RowSpec { id, kind, label, description }
+    RowSpec {
+        id,
+        kind,
+        label,
+        description,
+    }
 }
 
 fn add_section(sections: &mut Vec<SectionLabel>, y: &mut f32, title: &'static str) {
@@ -360,13 +452,7 @@ fn add_section(sections: &mut Vec<SectionLabel>, y: &mut f32, title: &'static st
     *y += 30.0;
 }
 
-fn add_card_rows(
-    elements: &mut Vec<Element>,
-    y: &mut f32,
-    x: f32,
-    width: f32,
-    rows: &[RowSpec],
-) {
+fn add_card_rows(elements: &mut Vec<Element>, y: &mut f32, x: f32, width: f32, rows: &[RowSpec]) {
     const ROW_H: f32 = 64.0;
     for spec in rows {
         elements.push(Element {

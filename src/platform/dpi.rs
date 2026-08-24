@@ -24,7 +24,9 @@ pub fn dpi_for_window(hwnd: HWND) -> u32 {
 
 /// Effective DPI of the monitor nearest to `hwnd`'s rect.
 pub fn dpi_for_monitor_of(hwnd: HWND) -> u32 {
-    monitor_dpi(unsafe { windows::Win32::Graphics::Gdi::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) })
+    monitor_dpi(unsafe {
+        windows::Win32::Graphics::Gdi::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+    })
 }
 
 pub fn monitor_dpi(hmon: HMONITOR) -> u32 {

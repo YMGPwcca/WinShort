@@ -5,25 +5,20 @@ use std::sync::mpsc::Sender;
 
 use windows::core::{GUID, HSTRING, PCWSTR};
 use windows::Win32::Foundation::PROPERTYKEY;
-use windows::Win32::Media::Audio::Endpoints::{
-    IAudioEndpointVolume, IAudioEndpointVolumeCallback,
-};
+use windows::Win32::Media::Audio::Endpoints::{IAudioEndpointVolume, IAudioEndpointVolumeCallback};
 use windows::Win32::Media::Audio::{
-    eCapture, eConsole, eMultimedia, eCommunications, eRender, EDataFlow, ERole, IMMDevice,
+    eCapture, eCommunications, eConsole, eMultimedia, eRender, EDataFlow, ERole, IMMDevice,
     IMMDeviceEnumerator,
 };
-use windows::Win32::System::Com::StructuredStorage::{
-    PropVariantClear, PropVariantToStringAlloc,
-};
-use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL, STGM_READ};
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToStringAlloc};
+use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL, STGM_READ};
 
 use crate::audio::controller::{AudioCommand, EndpointFlow};
 use crate::audio::notifications::EndpointVolumeClient;
 use crate::audio::state::{AudioState, DeviceId, OutputState};
 use crate::config::model::{DeviceSelection, EndpointRole};
 use crate::error::{Error, Result};
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceLists {
@@ -53,13 +48,14 @@ pub fn enumerate_devices(enumerator: &IMMDeviceEnumerator) -> DeviceLists {
             Vec::new()
         }
     };
-    DeviceLists { inputs, outputs, warnings }
+    DeviceLists {
+        inputs,
+        outputs,
+        warnings,
+    }
 }
 
-fn enumerate_flow(
-    enumerator: &IMMDeviceEnumerator,
-    flow: EndpointFlow,
-) -> Result<Vec<DeviceId>> {
+fn enumerate_flow(enumerator: &IMMDeviceEnumerator, flow: EndpointFlow) -> Result<Vec<DeviceId>> {
     use windows::Win32::Media::Audio::DEVICE_STATE_ACTIVE;
     unsafe {
         let collection = enumerator
@@ -70,7 +66,9 @@ fn enumerate_flow(
             .map_err(|e| Error::win("IMMDeviceCollection::GetCount", &e))?;
         let mut devices = Vec::with_capacity(count as usize);
         for index in 0..count {
-            let Ok(device) = collection.Item(index) else { continue };
+            let Ok(device) = collection.Item(index) else {
+                continue;
+            };
             if let Ok(id) = identity(&device, flow) {
                 devices.push(id);
             }
@@ -87,8 +85,7 @@ const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
 
 /// Event context prevents self-originated volume callbacks from being confused
 /// with external changes in diagnostics.
-pub const AUDIO_EVENT_CONTEXT: GUID =
-    GUID::from_u128(0x7f4f3793_9098_4ad8_9f6e_6a6815af3984);
+pub const AUDIO_EVENT_CONTEXT: GUID = GUID::from_u128(0x7f4f3793_9098_4ad8_9f6e_6a6815af3984);
 
 pub struct EndpointBinding {
     pub flow: EndpointFlow,
@@ -118,7 +115,12 @@ impl EndpointBinding {
                 .RegisterControlChangeNotify(&callback)
                 .map_err(|e| Error::win("RegisterControlChangeNotify", &e))?;
         }
-        Ok(Self { flow, identity, volume, callback })
+        Ok(Self {
+            flow,
+            identity,
+            volume,
+            callback,
+        })
     }
 
     pub fn mute(&self) -> Result<bool> {
@@ -210,7 +212,9 @@ pub fn endpoint_role(role: EndpointRole) -> ERole {
 
 pub(crate) fn identity(device: &IMMDevice, flow: EndpointFlow) -> Result<DeviceId> {
     let endpoint = unsafe {
-        let id = device.GetId().map_err(|e| Error::win("IMMDevice::GetId", &e))?;
+        let id = device
+            .GetId()
+            .map_err(|e| Error::win("IMMDevice::GetId", &e))?;
         let result = id
             .to_string()
             .map_err(|e| Error::audio(format!("endpoint id UTF-16: {e}")));
@@ -257,12 +261,11 @@ fn friendly_name(device: &IMMDevice) -> Result<String> {
 }
 
 impl Drop for EndpointBinding {
-// Registration guard (#36): unregistration is tied to object lifetime so
-// no rebuild/shutdown path can forget it.
-fn drop(&mut self) {
-    unsafe {
-        let _ = self.volume.UnregisterControlChangeNotify(&self.callback);
+    // Registration guard (#36): unregistration is tied to object lifetime so
+    // no rebuild/shutdown path can forget it.
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.volume.UnregisterControlChangeNotify(&self.callback);
+        }
     }
 }
-}
-

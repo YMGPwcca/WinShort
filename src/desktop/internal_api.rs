@@ -7,9 +7,9 @@
 use std::ffi::c_void;
 use std::ops::Deref;
 
-use windows_core::{GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, Interface};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::Common::IObjectArray;
+use windows_core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT, HSTRING};
 
 use crate::desktop::backend::{
     BackendAvailability, BackendKind, DesktopError, VirtualDesktopBackend,
@@ -17,8 +17,7 @@ use crate::desktop::backend::{
 use crate::desktop::detect::OsBuild;
 use crate::error::{Error, Result};
 
-pub const CLSID_IMMERSIVE_SHELL: GUID =
-    GUID::from_u128(0xc2f03a33_21f5_47fa_b4bb_156362a2f239);
+pub const CLSID_IMMERSIVE_SHELL: GUID = GUID::from_u128(0xc2f03a33_21f5_47fa_b4bb_156362a2f239);
 pub const SID_VIRTUAL_DESKTOP_MANAGER_INTERNAL: GUID =
     GUID::from_u128(0xc5e0cdca_7b6e_41b2_9fc4_d93975cc467b);
 
@@ -30,7 +29,10 @@ pub struct ComIn<'a, T: Interface> {
 
 impl<'a, T: Interface> ComIn<'a, T> {
     pub fn new(value: &'a T) -> Self {
-        Self { raw: value.as_raw(), marker: std::marker::PhantomData }
+        Self {
+            raw: value.as_raw(),
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -72,8 +74,7 @@ pub unsafe trait IVirtualDesktopManagerInternal: IUnknown {
         view: *mut c_void,
         desktop: ComIn<IVirtualDesktop>,
     ) -> HRESULT;
-    pub unsafe fn can_view_move_desktops(&self, view: *mut c_void, can_move: *mut i32)
-        -> HRESULT;
+    pub unsafe fn can_view_move_desktops(&self, view: *mut c_void, can_move: *mut i32) -> HRESULT;
     pub unsafe fn get_current_desktop(&self, desktop: *mut Option<IVirtualDesktop>) -> HRESULT;
     pub unsafe fn get_desktops(&self, desktops: *mut Option<IObjectArray>) -> HRESULT;
     pub unsafe fn get_adjacent_desktop(
@@ -133,12 +134,9 @@ impl InternalBackend {
             return Err(Error::desktop(format!("unsupported build {}", build.build)));
         }
         unsafe {
-            let provider: ShellServiceProvider = CoCreateInstance(
-                &CLSID_IMMERSIVE_SHELL,
-                None,
-                CLSCTX_LOCAL_SERVER,
-            )
-            .map_err(|e| Error::win("CoCreateInstance(ImmersiveShell)", &e))?;
+            let provider: ShellServiceProvider =
+                CoCreateInstance(&CLSID_IMMERSIVE_SHELL, None, CLSCTX_LOCAL_SERVER)
+                    .map_err(|e| Error::win("CoCreateInstance(ImmersiveShell)", &e))?;
             let mut raw = std::ptr::null_mut();
             provider
                 .query_service(
@@ -153,9 +151,9 @@ impl InternalBackend {
             }
             let manager = IVirtualDesktopManagerInternal::from_raw(raw);
             // Validate only known, non-mutating slots before exposing backend.
-            let count = desktop_array(&manager)?.GetCount().map_err(|e| {
-                Error::win("IObjectArray::GetCount(compat validation)", &e)
-            })?;
+            let count = desktop_array(&manager)?
+                .GetCount()
+                .map_err(|e| Error::win("IObjectArray::GetCount(compat validation)", &e))?;
             if count == 0 || count > 256 {
                 return Err(Error::desktop(format!(
                     "compat validation returned implausible desktop count {count}"
@@ -209,51 +207,51 @@ impl VirtualDesktopBackend for InternalBackend {
                     }
                 }
             }
-            Err(Error::desktop("current desktop not found in Shell ordering"))
+            Err(Error::desktop(
+                "current desktop not found in Shell ordering",
+            ))
         })();
         inner.classify()
     }
 
     fn switch_to(&self, index: usize) -> std::result::Result<(), DesktopError> {
-        let inner: crate::error::Result<()> =
-            (|| -> crate::error::Result<()> {
-                unsafe {
-                    let array = desktop_array(&self.manager)?;
-                    let count = array
-                .GetCount()
-                .map_err(|e| Error::win("IObjectArray::GetCount", &e))? as usize;
-            if index >= count {
-                // Semantic refusal — must NEVER trigger input injection (#20).
-                return Err(crate::error::Error::desktop(format!(
-                    "desktop {} does not exist (count {count})",
-                    index + 1
-                )));
-            }
-            // current_desktop is already typed; surface its class directly.
-            match self.current_desktop() {
-                Ok(current) if current == index => return Ok(()),
-                Ok(_) => {}
-                Err(e) => {
+        let inner: crate::error::Result<()> = (|| -> crate::error::Result<()> {
+            unsafe {
+                let array = desktop_array(&self.manager)?;
+                let count = array
+                    .GetCount()
+                    .map_err(|e| Error::win("IObjectArray::GetCount", &e))?
+                    as usize;
+                if index >= count {
+                    // Semantic refusal — must NEVER trigger input injection (#20).
                     return Err(crate::error::Error::desktop(format!(
-                        "current desktop unresolved: {e}"
-                    )))
+                        "desktop {} does not exist (count {count})",
+                        index + 1
+                    )));
                 }
+                // current_desktop is already typed; surface its class directly.
+                match self.current_desktop() {
+                    Ok(current) if current == index => return Ok(()),
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Err(crate::error::Error::desktop(format!(
+                            "current desktop unresolved: {e}"
+                        )))
+                    }
+                }
+                let desktop: IVirtualDesktop = array
+                    .GetAt(index as u32)
+                    .map_err(|e| Error::win("IObjectArray::GetAt(target)", &e))?;
+                self.manager
+                    .switch_desktop(ComIn::new(&desktop))
+                    .ok()
+                    .map_err(|e| Error::win("IVirtualDesktopManagerInternal::SwitchDesktop", &e))
             }
-            let desktop: IVirtualDesktop = array
-                .GetAt(index as u32)
-                .map_err(|e| Error::win("IObjectArray::GetAt(target)", &e))?;
-                    self.manager
-                        .switch_desktop(ComIn::new(&desktop))
-                        .ok()
-                        .map_err(|e| Error::win("IVirtualDesktopManagerInternal::SwitchDesktop", &e))
-                }
-            })();
+        })();
         match inner {
             Ok(()) => Ok(()),
             Err(e) => match &e {
-                crate::error::Error::Desktop(message)
-                    if message.contains("does not exist") =>
-                {
+                crate::error::Error::Desktop(message) if message.contains("does not exist") => {
                     Err(DesktopError::TargetOutOfRange {
                         requested: index,
                         count: self.desktop_count().unwrap_or(0),

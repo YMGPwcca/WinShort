@@ -1,20 +1,20 @@
 //! Tray icon rendering: Direct2D vector art into an HICON at the current
 //! small-icon size. No asset files; crisp on every scale factor.
 
-use windows::core::{GUID, Interface};
+use windows::core::{Interface, GUID};
+use windows::Win32::Graphics::Direct2D::Common::D2D1_PIXEL_FORMAT;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_FIGURE_BEGIN, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN,
-    D2D1_FILL_MODE_WINDING, D2D1_COLOR_F, D2D_RECT_F, D2D_SIZE_F,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN, D2D1_FIGURE_BEGIN_FILLED,
+    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_WINDING,
+    D2D_RECT_F, D2D_SIZE_F,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1Geometry, ID2D1PathGeometry1, ID2D1RenderTarget,
     ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SIZE_SMALL,
     D2D1_BRUSH_PROPERTIES, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-    D2D1_ROUNDED_RECT, D2D1_SWEEP_DIRECTION_CLOCKWISE,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
+    D2D1_SWEEP_DIRECTION_CLOCKWISE,
 };
-use windows::Win32::Graphics::Direct2D::Common::D2D1_PIXEL_FORMAT;
 use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory, IWICBitmap, IWICImagingFactory};
 use windows_numerics::Vector2;
 
@@ -67,7 +67,12 @@ fn render_one(
     // SAFETY: COM/GDI calls with valid handles; all GDI objects freed on exit.
     unsafe {
         let bitmap: IWICBitmap = wic
-            .CreateBitmap(size, size, &WIC_FMT_PBGRA, windows::Win32::Graphics::Imaging::WICBitmapCreateCacheOption(1))
+            .CreateBitmap(
+                size,
+                size,
+                &WIC_FMT_PBGRA,
+                windows::Win32::Graphics::Imaging::WICBitmapCreateCacheOption(1),
+            )
             .map_err(|e| Error::win("WIC CreateBitmap", &e))?;
 
         let rt_props = D2D1_RENDER_TARGET_PROPERTIES {
@@ -86,7 +91,8 @@ fn render_one(
 
         rt.BeginDraw();
         draw_glyphs(&factory, &rt, size as f32, state)?;
-        rt.EndDraw(None, None).map_err(|e| Error::win("icon EndDraw", &e))?;
+        rt.EndDraw(None, None)
+            .map_err(|e| Error::win("icon EndDraw", &e))?;
 
         let stride = size * 4;
         let mut pixels = vec![0u8; (stride * size) as usize];
@@ -107,14 +113,26 @@ fn render_one(
             ..Default::default()
         };
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        let hbm_color =
-            gdi::CreateDIBSection(Some(hdc_screen), &bmi, gdi::DIB_RGB_COLORS, &mut bits, None, 0)
-                .map_err(|e| Error::win("CreateDIBSection", &e))?;
+        let hbm_color = gdi::CreateDIBSection(
+            Some(hdc_screen),
+            &bmi,
+            gdi::DIB_RGB_COLORS,
+            &mut bits,
+            None,
+            0,
+        )
+        .map_err(|e| Error::win("CreateDIBSection", &e))?;
         std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
 
         let mask_row = (((size + 15) / 16) * 2) as usize;
         let mask_bits = vec![0u8; mask_row * size as usize];
-        let hbm_mask = gdi::CreateBitmap(size as i32, size as i32, 1, 1, Some(mask_bits.as_ptr().cast()));
+        let hbm_mask = gdi::CreateBitmap(
+            size as i32,
+            size as i32,
+            1,
+            1,
+            Some(mask_bits.as_ptr().cast()),
+        );
 
         let info = ICONINFO {
             fIcon: true.into(),
@@ -158,7 +176,12 @@ fn draw_glyphs(
 
         let bg_brush = create_solid(rt, bg_color);
         let rr = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F { left: s, top: s, right: 23.0 * s, bottom: 23.0 * s },
+            rect: D2D_RECT_F {
+                left: s,
+                top: s,
+                right: 23.0 * s,
+                bottom: 23.0 * s,
+            },
             radiusX: 5.5 * s,
             radiusY: 5.5 * s,
         };
@@ -175,7 +198,9 @@ fn draw_glyphs(
         ];
         let speaker = line_figure(factory, &speaker_pts, D2D1_FIGURE_BEGIN_FILLED)?;
         let fg_brush = create_solid(rt, rgba(255, 255, 255, fg_alpha));
-        let speaker_geom: ID2D1Geometry = speaker.cast().map_err(|e| Error::win("cast geometry", &e))?;
+        let speaker_geom: ID2D1Geometry = speaker
+            .cast()
+            .map_err(|e| Error::win("cast geometry", &e))?;
         rt.FillGeometry(&speaker_geom, &fg_brush, None);
 
         match state {
@@ -188,10 +213,7 @@ fn draw_glyphs(
             }
             TrayState::HotkeysSuspended => {
                 let slash = create_solid(rt, rgba(0xff, 0x8a, 0x6b, 235));
-                let line = open_figure(
-                    factory,
-                    &[pt(5.5 * s, 18.5 * s), pt(18.5 * s, 5.5 * s)],
-                )?;
+                let line = open_figure(factory, &[pt(5.5 * s, 18.5 * s), pt(18.5 * s, 5.5 * s)])?;
                 rt.DrawGeometry(&line, &slash, 2.2 * s, None);
             }
         }
@@ -201,7 +223,10 @@ fn draw_glyphs(
 
 unsafe fn create_solid(rt: &ID2D1RenderTarget, c: D2D1_COLOR_F) -> ID2D1SolidColorBrush {
     // SAFETY: COM call on a live render target created above.
-    unsafe { rt.CreateSolidColorBrush(std::ptr::from_ref(&c), None).expect("solid brush") }
+    unsafe {
+        rt.CreateSolidColorBrush(std::ptr::from_ref(&c), None)
+            .expect("solid brush")
+    }
 }
 
 /// Closed polyline figure.
@@ -211,60 +236,87 @@ unsafe fn line_figure(
     begin: D2D1_FIGURE_BEGIN,
 ) -> Result<ID2D1PathGeometry1> {
     // SAFETY: all calls operate on COM objects created within this function.
-unsafe {
-
-    // SAFETY: factory is alive for the duration of rendering.
-    let geom = unsafe { factory.CreatePathGeometry().map_err(|e| Error::win("CreatePathGeometry", &e))? };
-    let sink = geom.Open().map_err(|e| Error::win("GeometrySink Open", &e))?;
-    sink.SetFillMode(D2D1_FILL_MODE_WINDING);
-    sink.BeginFigure(pts[0], begin);
-    for p in &pts[1..] {
-        sink.AddLine(*p);
+    unsafe {
+        // SAFETY: factory is alive for the duration of rendering.
+        let geom = unsafe {
+            factory
+                .CreatePathGeometry()
+                .map_err(|e| Error::win("CreatePathGeometry", &e))?
+        };
+        let sink = geom
+            .Open()
+            .map_err(|e| Error::win("GeometrySink Open", &e))?;
+        sink.SetFillMode(D2D1_FILL_MODE_WINDING);
+        sink.BeginFigure(pts[0], begin);
+        for p in &pts[1..] {
+            sink.AddLine(*p);
+        }
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
+        Ok(geom)
     }
-    sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-    sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
-    Ok(geom)
-} }
+}
 
 /// Open two-point figure.
 unsafe fn open_figure(factory: &ID2D1Factory1, pts: &[Vector2]) -> Result<ID2D1PathGeometry1> {
     // SAFETY: all calls operate on COM objects created within this function.
-unsafe {
-
-    let geom = factory.CreatePathGeometry().map_err(|e| Error::win("CreatePathGeometry", &e))?;
-    let sink = geom.Open().map_err(|e| Error::win("GeometrySink Open", &e))?;
-    sink.BeginFigure(pts[0], D2D1_FIGURE_BEGIN_HOLLOW);
-    for p in &pts[1..] {
-        sink.AddLine(*p);
+    unsafe {
+        let geom = factory
+            .CreatePathGeometry()
+            .map_err(|e| Error::win("CreatePathGeometry", &e))?;
+        let sink = geom
+            .Open()
+            .map_err(|e| Error::win("GeometrySink Open", &e))?;
+        sink.BeginFigure(pts[0], D2D1_FIGURE_BEGIN_HOLLOW);
+        for p in &pts[1..] {
+            sink.AddLine(*p);
+        }
+        sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
+        Ok(geom)
     }
-    sink.EndFigure(D2D1_FIGURE_END_OPEN);
-    sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
-    Ok(geom)
-} }
+}
 
 /// Right-facing sound-wave arc (-45° to +45°) around (cx,cy).
-unsafe fn arc_wave(factory: &ID2D1Factory1, cx: f32, cy: f32, radius: f32) -> Result<ID2D1PathGeometry1> {
+unsafe fn arc_wave(
+    factory: &ID2D1Factory1,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+) -> Result<ID2D1PathGeometry1> {
     // SAFETY: all calls operate on COM objects created within this function.
-unsafe {
-
-    let k = 0.7071f32;
-    let start = pt(cx + radius * k, cy - radius * k);
-    let end = pt(cx + radius * k, cy + radius * k);
-    let geom = factory.CreatePathGeometry().map_err(|e| Error::win("CreatePathGeometry", &e))?;
-    let sink = geom.Open().map_err(|e| Error::win("GeometrySink Open", &e))?;
-    sink.BeginFigure(start, D2D1_FIGURE_BEGIN_HOLLOW);
-    sink.AddArc(&windows::Win32::Graphics::Direct2D::D2D1_ARC_SEGMENT {
-        point: end,
-        size: D2D_SIZE_F { width: radius, height: radius },
-        rotationAngle: 0.0,
-        sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-        arcSize: D2D1_ARC_SIZE_SMALL,
-    });
-    sink.EndFigure(D2D1_FIGURE_END_OPEN);
-    sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
-    Ok(geom)
-} }
+    unsafe {
+        let k = 0.7071f32;
+        let start = pt(cx + radius * k, cy - radius * k);
+        let end = pt(cx + radius * k, cy + radius * k);
+        let geom = factory
+            .CreatePathGeometry()
+            .map_err(|e| Error::win("CreatePathGeometry", &e))?;
+        let sink = geom
+            .Open()
+            .map_err(|e| Error::win("GeometrySink Open", &e))?;
+        sink.BeginFigure(start, D2D1_FIGURE_BEGIN_HOLLOW);
+        sink.AddArc(&windows::Win32::Graphics::Direct2D::D2D1_ARC_SEGMENT {
+            point: end,
+            size: D2D_SIZE_F {
+                width: radius,
+                height: radius,
+            },
+            rotationAngle: 0.0,
+            sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+            arcSize: D2D1_ARC_SIZE_SMALL,
+        });
+        sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        sink.Close().map_err(|e| Error::win("Sink Close", &e))?;
+        Ok(geom)
+    }
+}
 
 fn rgba(r: u8, g: u8, b: u8, a: u8) -> D2D1_COLOR_F {
-    D2D1_COLOR_F { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: a as f32 / 255.0 }
+    D2D1_COLOR_F {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: a as f32 / 255.0,
+    }
 }

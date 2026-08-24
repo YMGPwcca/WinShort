@@ -3,12 +3,10 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Accessibility::{
-    SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK,
-};
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    GetForegroundWindow, GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::error::{Error, Result};
@@ -93,10 +91,7 @@ fn remember_if_external(hwnd: HWND) {
         LAST_EXTERNAL_PID.store(pid, Ordering::Release);
         // #26: remember the window itself for monitor targeting.
         if !hwnd.0.is_null() {
-            LAST_EXTERNAL_HWND.store(
-                hwnd.0 as usize,
-                std::sync::atomic::Ordering::Release,
-            );
+            LAST_EXTERNAL_HWND.store(hwnd.0 as usize, std::sync::atomic::Ordering::Release);
         }
     }
 }

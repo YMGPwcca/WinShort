@@ -21,7 +21,9 @@ impl ComApartment {
 
     fn init(coinit: COINIT) -> Self {
         let hr = unsafe { CoInitializeEx(None, coinit) };
-        Self { initialized: hr.0 >= 0 }
+        Self {
+            initialized: hr.0 >= 0,
+        }
     }
 
     /// False when the apartment could not be initialized (fatal for callers

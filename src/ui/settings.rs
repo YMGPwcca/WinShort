@@ -23,12 +23,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW,
-    GWLP_USERDATA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_TIMER, WS_OVERLAPPEDWINDOW,
+    CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR,
+    WM_CLOSE, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
+    WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_OVERLAPPEDWINDOW,
 };
 
 use crate::config::model::{Config, DeviceSelection, EndpointRole, MonitorChoice, OverlayPosition};
@@ -132,13 +131,23 @@ impl SettingsUi {
         controls::draw_app_mark(&renderer, UiRect::new(24.0, 22.0 - self.scroll, 34.0, 34.0));
         renderer.text(
             "WinShort",
-            rect(70.0, 16.0 - self.scroll, self.layout.width - 24.0, 44.0 - self.scroll),
+            rect(
+                70.0,
+                16.0 - self.scroll,
+                self.layout.width - 24.0,
+                44.0 - self.scroll,
+            ),
             TextStyle::Title,
             BrushRole::Text,
         );
         renderer.text(
             "Audio controls and desktop shortcuts, ready from the tray",
-            rect(70.0, 42.0 - self.scroll, self.layout.width - 24.0, 64.0 - self.scroll),
+            rect(
+                70.0,
+                42.0 - self.scroll,
+                self.layout.width - 24.0,
+                64.0 - self.scroll,
+            ),
             TextStyle::Subtitle,
             BrushRole::TextSecondary,
         );
@@ -208,8 +217,13 @@ impl SettingsUi {
             );
             renderer.text(
                 "Applied — hotkeys are live",
-                UiRect::new(status_rect.x + 16.0, status_rect.y, status_rect.w - 16.0, status_rect.h)
-                    .d2d(),
+                UiRect::new(
+                    status_rect.x + 16.0,
+                    status_rect.y,
+                    status_rect.w - 16.0,
+                    status_rect.h,
+                )
+                .d2d(),
                 TextStyle::Caption,
                 BrushRole::Success,
             );
@@ -225,8 +239,13 @@ impl SettingsUi {
             );
             renderer.text(
                 "Unsaved changes",
-                UiRect::new(status_rect.x + 16.0, status_rect.y, status_rect.w - 16.0, status_rect.h)
-                    .d2d(),
+                UiRect::new(
+                    status_rect.x + 16.0,
+                    status_rect.y,
+                    status_rect.w - 16.0,
+                    status_rect.h,
+                )
+                .d2d(),
                 TextStyle::Caption,
                 BrushRole::TextSecondary,
             );
@@ -272,16 +291,16 @@ impl SettingsUi {
                 self.hotkey_value(id, self.draft.hotkeys.toggle_foreground_audio)
             }
             ElementId::InputDevice => {
-                let devices = crate::app::with_app(|app| app.audio_devices().inputs)
-                    .unwrap_or_default();
+                let devices =
+                    crate::app::with_app(|app| app.audio_devices().inputs).unwrap_or_default();
                 ControlValue::Text(Cow::Owned(device_label(
                     &self.draft.audio.input_device,
                     &devices,
                 )))
             }
             ElementId::OutputDevice => {
-                let devices = crate::app::with_app(|app| app.audio_devices().outputs)
-                    .unwrap_or_default();
+                let devices =
+                    crate::app::with_app(|app| app.audio_devices().outputs).unwrap_or_default();
                 ControlValue::Text(Cow::Owned(device_label(
                     &self.draft.audio.output_device,
                     &devices,
@@ -293,9 +312,7 @@ impl SettingsUi {
             ElementId::OutputRole => {
                 ControlValue::Text(Cow::Borrowed(self.draft.audio.output_role.label()))
             }
-            ElementId::DesktopsEnabled => {
-                ControlValue::Toggle(self.draft.virtual_desktops.enabled)
-            }
+            ElementId::DesktopsEnabled => ControlValue::Toggle(self.draft.virtual_desktops.enabled),
             ElementId::WinNumberEnabled => {
                 ControlValue::Toggle(self.draft.virtual_desktops.win_number_switching)
             }
@@ -309,11 +326,17 @@ impl SettingsUi {
             ElementId::OverlayDuration => ControlValue::Slider {
                 ratio: (self.draft.overlay.duration_ms.saturating_sub(500) as f32 / 4500.0)
                     .clamp(0.0, 1.0),
-                label: Cow::Owned(format!("{:.1}s", self.draft.overlay.duration_ms as f32 / 1000.0)),
+                label: Cow::Owned(format!(
+                    "{:.1}s",
+                    self.draft.overlay.duration_ms as f32 / 1000.0
+                )),
             },
             ElementId::OverlayOpacity => ControlValue::Slider {
                 ratio: ((self.draft.overlay.opacity - 0.3) / 0.7).clamp(0.0, 1.0),
-                label: Cow::Owned(format!("{}%", (self.draft.overlay.opacity * 100.0).round() as u32)),
+                label: Cow::Owned(format!(
+                    "{}%",
+                    (self.draft.overlay.opacity * 100.0).round() as u32
+                )),
             },
             ElementId::OverlayScale => ControlValue::Slider {
                 ratio: ((self.draft.overlay.scale - 0.7) / 0.9).clamp(0.0, 1.0),
@@ -338,9 +361,7 @@ impl SettingsUi {
                         status.native.label(),
                         last
                     );
-                    if let Some(degraded) =
-                        crate::app::with_app(|app| app.degraded_summary())
-                    {
+                    if let Some(degraded) = crate::app::with_app(|app| app.degraded_summary()) {
                         if degraded != "all subsystems ok" {
                             text.push_str(" • degraded: ");
                             text.push_str(&degraded);
@@ -362,10 +383,7 @@ impl SettingsUi {
             if self.recording_modifiers.is_empty() {
                 ControlValue::Text(Cow::Borrowed("Press a shortcut…"))
             } else {
-                ControlValue::Text(Cow::Owned(format!(
-                    "{}…",
-                    self.recording_modifiers
-                )))
+                ControlValue::Text(Cow::Owned(format!("{}…", self.recording_modifiers)))
             }
         } else {
             ControlValue::Text(Cow::Owned(
@@ -388,7 +406,9 @@ impl SettingsUi {
             pressed: self.pressed == Some(id),
             focused: self.focused == Some(id),
             disabled,
-            hover_t: self.motion.value(id, if self.hovered == Some(id) { 1.0 } else { 0.0 }),
+            hover_t: self
+                .motion
+                .value(id, if self.hovered == Some(id) { 1.0 } else { 0.0 }),
             state_t: self.motion.value(id, if toggle_value { 1.0 } else { 0.0 }),
         }
     }
@@ -424,7 +444,9 @@ impl SettingsUi {
     }
 
     fn set_slider_from_x(&mut self, id: ElementId, x: f32) {
-        let Some(element) = self.layout.element(id) else { return };
+        let Some(element) = self.layout.element(id) else {
+            return;
+        };
         let row = element.rect.inset(1.0);
         let control_x = row.right() - 18.0 - 190.0;
         let track_w = 190.0 - 52.0 - 12.0;
@@ -481,14 +503,14 @@ impl SettingsUi {
                 start_timer(hwnd);
             }
             ElementId::InputDevice => {
-                let devices = crate::app::with_app(|app| app.audio_devices().inputs)
-                    .unwrap_or_default();
+                let devices =
+                    crate::app::with_app(|app| app.audio_devices().inputs).unwrap_or_default();
                 self.draft.audio.input_device =
                     next_device(&self.draft.audio.input_device, &devices);
             }
             ElementId::OutputDevice => {
-                let devices = crate::app::with_app(|app| app.audio_devices().outputs)
-                    .unwrap_or_default();
+                let devices =
+                    crate::app::with_app(|app| app.audio_devices().outputs).unwrap_or_default();
                 self.draft.audio.output_device =
                     next_device(&self.draft.audio.output_device, &devices);
             }
@@ -567,7 +589,8 @@ impl SettingsUi {
     }
 
     fn animate_toggle(&mut self, hwnd: HWND, id: ElementId, value: bool) {
-        self.motion.animate_to(id, if value { 1.0 } else { 0.0 }, 160);
+        self.motion
+            .animate_to(id, if value { 1.0 } else { 0.0 }, 160);
         start_timer(hwnd);
     }
 
@@ -600,7 +623,9 @@ impl SettingsUi {
     }
 
     fn record_key(&mut self, hwnd: HWND, vk: u16, down: bool) -> bool {
-        let Some(id) = self.recording else { return false };
+        let Some(id) = self.recording else {
+            return false;
+        };
         if vk == 0x1B && down {
             self.recording = None;
             self.recording_modifiers = ModifierMask::NONE;
@@ -635,7 +660,9 @@ impl SettingsUi {
         match id {
             ElementId::MicHotkey => self.draft.hotkeys.toggle_microphone = Some(hotkey),
             ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
-            ElementId::ForegroundHotkey => self.draft.hotkeys.toggle_foreground_audio = Some(hotkey),
+            ElementId::ForegroundHotkey => {
+                self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
+            }
             _ => {}
         }
         self.recording = None;
@@ -656,7 +683,10 @@ impl SettingsUi {
             }
             Some(key) => {
                 if let Some(id) = self.recording {
-                    let hotkey = Hotkey { modifiers: chord.modifiers, key };
+                    let hotkey = Hotkey {
+                        modifiers: chord.modifiers,
+                        key,
+                    };
                     match id {
                         ElementId::MicHotkey => self.draft.hotkeys.toggle_microphone = Some(hotkey),
                         ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
@@ -680,7 +710,11 @@ impl SettingsUi {
         let mut index = current.unwrap_or(if reverse { 0 } else { order.len() - 1 });
         for _ in 0..order.len() {
             index = if reverse {
-                if index == 0 { order.len() - 1 } else { index - 1 }
+                if index == 0 {
+                    order.len() - 1
+                } else {
+                    index - 1
+                }
             } else {
                 (index + 1) % order.len()
             };
@@ -693,7 +727,9 @@ impl SettingsUi {
     }
 
     fn scroll_focus_into_view(&mut self, id: ElementId) {
-        let Some(element) = self.layout.element(id) else { return };
+        let Some(element) = self.layout.element(id) else {
+            return;
+        };
         if !element.scrolls {
             return;
         }
@@ -702,8 +738,8 @@ impl SettingsUi {
         if element.rect.y < top {
             self.scroll = (self.scroll - (top - element.rect.y)).clamp(0.0, self.layout.max_scroll);
         } else if element.rect.bottom() > bottom {
-            self.scroll = (self.scroll + (element.rect.bottom() - bottom))
-                .clamp(0.0, self.layout.max_scroll);
+            self.scroll =
+                (self.scroll + (element.rect.bottom() - bottom)).clamp(0.0, self.layout.max_scroll);
         }
     }
 }
@@ -786,7 +822,6 @@ impl SettingsWindow {
     }
 }
 
-
 fn apply_chrome(hwnd: HWND, theme: Theme) {
     unsafe {
         let dark: u32 = if theme.mode == ThemeMode::Dark { 1 } else { 0 };
@@ -822,224 +857,236 @@ unsafe extern "system" fn settings_wndproc(
 ) -> LRESULT {
     // SAFETY: settings window is main-thread owned; state via WindowState cell.
     unsafe {
-    if msg == WM_NCCREATE {
-        let cs = &*(lparam.0 as *const CREATESTRUCTW);
-        let ui = Box::from_raw(cs.lpCreateParams as *mut SettingsUi);
-        win::store_state_ptr(hwnd, win::WindowState::new(*ui));
-        return win::def_proc(hwnd, msg, wparam, lparam);
-    }
-
-    let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(hwnd) }) else {
-        return win::def_proc(hwnd, msg, wparam, lparam);
-    };
-
-    if msg == WM_NCDESTROY {
-        drop(unsafe { win::take_state::<SettingsUi>(hwnd) });
-        return win::def_proc(hwnd, msg, wparam, lparam);
-    }
-
-    match msg {
-        WM_CLOSE => {
-            let mut ui = cell.borrow_mut();
-            if ui.recording.is_some() || ui.capture_armed {
-                crate::keyboard::hook::end_capture();
-            }
-            ui.capture_armed = false;
-            ui.recording = None;
-            let _ = ShowWindow(hwnd, SW_HIDE);
-            LRESULT(0)
+        if msg == WM_NCCREATE {
+            let cs = &*(lparam.0 as *const CREATESTRUCTW);
+            let ui = Box::from_raw(cs.lpCreateParams as *mut SettingsUi);
+            win::store_state_ptr(hwnd, win::WindowState::new(*ui));
+            return win::def_proc(hwnd, msg, wparam, lparam);
         }
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let _ = BeginPaint(hwnd, &mut ps);
-            if let Err(e) = cell.borrow_mut().paint(hwnd) {
-                crate::error_!("settings paint failed: {e}");
-            }
-            let _ = EndPaint(hwnd, &ps);
-            LRESULT(0)
+
+        let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(hwnd) }) else {
+            return win::def_proc(hwnd, msg, wparam, lparam);
+        };
+
+        if msg == WM_NCDESTROY {
+            drop(unsafe { win::take_state::<SettingsUi>(hwnd) });
+            return win::def_proc(hwnd, msg, wparam, lparam);
         }
-        WM_ERASEBKGND => LRESULT(1),
-        WM_SIZE => {
-            let mut ui = cell.borrow_mut();
-            if let Some(renderer) = ui.renderer.as_mut() {
-                let _ = renderer.resize();
-            }
-            ui.rebuild_layout(hwnd);
-            invalidate(hwnd);
-            LRESULT(0)
-        }
-        WM_DPICHANGED => {
-            // SetWindowPos below re-enters this proc with WM_SIZE; never hold
-            // the state borrow across it.
-            let new_dpi = ((wparam.0 >> 16) as u32).max(96);
-            {
+
+        match msg {
+            WM_CLOSE => {
                 let mut ui = cell.borrow_mut();
-                ui.dpi = new_dpi;
-                if let Some(renderer) = ui.renderer.as_mut() {
-                    let _ = renderer.set_dpi(new_dpi);
+                if ui.recording.is_some() || ui.capture_armed {
+                    crate::keyboard::hook::end_capture();
                 }
+                ui.capture_armed = false;
+                ui.recording = None;
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                LRESULT(0)
             }
-            let suggested = &*(lparam.0 as *const RECT);
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                suggested.left,
-                suggested.top,
-                suggested.right - suggested.left,
-                suggested.bottom - suggested.top,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-            let mut ui = cell.borrow_mut();
-            ui.rebuild_layout(hwnd);
-            invalidate(hwnd);
-            LRESULT(0)
-        }
-        WM_SETTINGCHANGE => {
-            let theme = Theme::current();
-            let mut ui = cell.borrow_mut();
-            if let Some(renderer) = ui.renderer.as_mut() {
-                let _ = renderer.set_theme(theme);
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let _ = BeginPaint(hwnd, &mut ps);
+                if let Err(e) = cell.borrow_mut().paint(hwnd) {
+                    crate::error_!("settings paint failed: {e}");
+                }
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
             }
-            apply_chrome(hwnd, theme);
-            invalidate(hwnd);
-            LRESULT(0)
-        }
-        WM_MOUSEMOVE => {
-            let mut ui = cell.borrow_mut();
-            let (x, y) = mouse_point(lparam, ui.dpi);
-            if !ui.mouse_tracking {
-                let mut track = TRACKMOUSEEVENT {
-                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                    dwFlags: TME_LEAVE,
-                    hwndTrack: hwnd,
-                    dwHoverTime: 0,
-                };
-                let _ = TrackMouseEvent(&mut track);
-                ui.mouse_tracking = true;
-            }
-            ui.update_hover(hwnd, x, y);
-            if let Some(id @ (ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale)) = ui.pressed {
-                ui.set_slider_from_x(id, x);
+            WM_ERASEBKGND => LRESULT(1),
+            WM_SIZE => {
+                let mut ui = cell.borrow_mut();
+                if let Some(renderer) = ui.renderer.as_mut() {
+                    let _ = renderer.resize();
+                }
+                ui.rebuild_layout(hwnd);
                 invalidate(hwnd);
+                LRESULT(0)
             }
-            LRESULT(0)
-        }
-        WM_MOUSELEAVE => {
-            let mut ui = cell.borrow_mut();
-            ui.mouse_tracking = false;
-            if let Some(old) = ui.hovered.take() {
-                ui.motion.animate_to(old, 0.0, 140);
-                start_timer(hwnd);
-                invalidate(hwnd);
-            }
-            LRESULT(0)
-        }
-        WM_LBUTTONDOWN => {
-            let mut ui = cell.borrow_mut();
-            let (x, y) = mouse_point(lparam, ui.dpi);
-            ui.rebuild_layout(hwnd);
-            if let Some(id) = ui.layout.hit_test(x, y) {
-                if !ui.is_disabled(id) {
-                    ui.pressed = Some(id);
-                    ui.focused = Some(id);
-                    let _ = SetCapture(hwnd);
-                    if matches!(id, ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale) {
-                        ui.set_slider_from_x(id, x);
+            WM_DPICHANGED => {
+                // SetWindowPos below re-enters this proc with WM_SIZE; never hold
+                // the state borrow across it.
+                let new_dpi = ((wparam.0 >> 16) as u32).max(96);
+                {
+                    let mut ui = cell.borrow_mut();
+                    ui.dpi = new_dpi;
+                    if let Some(renderer) = ui.renderer.as_mut() {
+                        let _ = renderer.set_dpi(new_dpi);
                     }
+                }
+                let suggested = &*(lparam.0 as *const RECT);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                let mut ui = cell.borrow_mut();
+                ui.rebuild_layout(hwnd);
+                invalidate(hwnd);
+                LRESULT(0)
+            }
+            WM_SETTINGCHANGE => {
+                let theme = Theme::current();
+                let mut ui = cell.borrow_mut();
+                if let Some(renderer) = ui.renderer.as_mut() {
+                    let _ = renderer.set_theme(theme);
+                }
+                apply_chrome(hwnd, theme);
+                invalidate(hwnd);
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                let mut ui = cell.borrow_mut();
+                let (x, y) = mouse_point(lparam, ui.dpi);
+                if !ui.mouse_tracking {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    let _ = TrackMouseEvent(&mut track);
+                    ui.mouse_tracking = true;
+                }
+                ui.update_hover(hwnd, x, y);
+                if let Some(
+                    id @ (ElementId::OverlayDuration
+                    | ElementId::OverlayOpacity
+                    | ElementId::OverlayScale),
+                ) = ui.pressed
+                {
+                    ui.set_slider_from_x(id, x);
                     invalidate(hwnd);
                 }
+                LRESULT(0)
             }
-            LRESULT(0)
-        }
-        WM_LBUTTONUP => {
-            let mut ui = cell.borrow_mut();
-            let (x, y) = mouse_point(lparam, ui.dpi);
-            let pressed = ui.pressed.take();
-            let _ = ReleaseCapture();
-            if let Some(id) = pressed {
-                if ui.layout.hit_test(x, y) == Some(id) {
-                    ui.activate(hwnd, id);
+            WM_MOUSELEAVE => {
+                let mut ui = cell.borrow_mut();
+                ui.mouse_tracking = false;
+                if let Some(old) = ui.hovered.take() {
+                    ui.motion.animate_to(old, 0.0, 140);
+                    start_timer(hwnd);
+                    invalidate(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_LBUTTONDOWN => {
+                let mut ui = cell.borrow_mut();
+                let (x, y) = mouse_point(lparam, ui.dpi);
+                ui.rebuild_layout(hwnd);
+                if let Some(id) = ui.layout.hit_test(x, y) {
+                    if !ui.is_disabled(id) {
+                        ui.pressed = Some(id);
+                        ui.focused = Some(id);
+                        let _ = SetCapture(hwnd);
+                        if matches!(
+                            id,
+                            ElementId::OverlayDuration
+                                | ElementId::OverlayOpacity
+                                | ElementId::OverlayScale
+                        ) {
+                            ui.set_slider_from_x(id, x);
+                        }
+                        invalidate(hwnd);
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                let mut ui = cell.borrow_mut();
+                let (x, y) = mouse_point(lparam, ui.dpi);
+                let pressed = ui.pressed.take();
+                let _ = ReleaseCapture();
+                if let Some(id) = pressed {
+                    if ui.layout.hit_test(x, y) == Some(id) {
+                        ui.activate(hwnd, id);
+                    }
+                }
+                invalidate(hwnd);
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                let mut ui = cell.borrow_mut();
+                let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
+                ui.scroll = (ui.scroll - delta / 120.0 * 64.0).clamp(0.0, ui.layout.max_scroll);
+                ui.rebuild_layout(hwnd);
+                invalidate(hwnd);
+                LRESULT(0)
+            }
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                let vk = wparam.0 as u16;
+                {
+                    let mut ui = cell.borrow_mut();
+                    if ui.record_key(hwnd, vk, true) {
+                        return LRESULT(0);
+                    }
+                }
+                match vk {
+                    0x09 => {
+                        cell.borrow_mut().focus_next(key_down(0x10));
+                        invalidate(hwnd);
+                        LRESULT(0)
+                    }
+                    0x0D | 0x20 => {
+                        let focused = cell.borrow_mut().focused;
+                        if let Some(id) = focused {
+                            cell.borrow_mut().activate(hwnd, id);
+                        }
+                        LRESULT(0)
+                    }
+                    0x1B => {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                        LRESULT(0)
+                    }
+                    _ => win::def_proc(hwnd, msg, wparam, lparam),
                 }
             }
-            invalidate(hwnd);
-            LRESULT(0)
-        }
-        WM_MOUSEWHEEL => {
-            let mut ui = cell.borrow_mut();
-            let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
-            ui.scroll = (ui.scroll - delta / 120.0 * 64.0).clamp(0.0, ui.layout.max_scroll);
-            ui.rebuild_layout(hwnd);
-            invalidate(hwnd);
-            LRESULT(0)
-        }
-        WM_KEYDOWN | WM_SYSKEYDOWN => {
-            let vk = wparam.0 as u16;
-            {
+            WM_KEYUP | WM_SYSKEYUP => {
                 let mut ui = cell.borrow_mut();
-                if ui.record_key(hwnd, vk, true) {
+                if ui.record_key(hwnd, wparam.0 as u16, false) {
                     return LRESULT(0);
                 }
+                win::def_proc(hwnd, msg, wparam, lparam)
             }
-            match vk {
-                0x09 => {
-                    cell.borrow_mut().focus_next(key_down(0x10));
-                    invalidate(hwnd);
-                    LRESULT(0)
-                }
-                0x0D | 0x20 => {
-                    let focused = cell.borrow_mut().focused;
-                    if let Some(id) = focused {
-                        cell.borrow_mut().activate(hwnd, id);
+            WM_TIMER if wparam.0 == UI_TIMER => {
+                let mut ui = cell.borrow_mut();
+                // Drain the lock-free capture word while recording (#14/#45):
+                // the global hook publishes atomically, so chords arrive here
+                // instead of via WM_KEYDOWN.
+                if ui.recording.is_some() {
+                    while let Some(chord) = crate::keyboard::hook::take_captured_chord() {
+                        ui.finish_recording(chord);
                     }
-                    LRESULT(0)
+                    if ui.recording.is_none() {
+                        crate::keyboard::hook::end_capture();
+                        ui.capture_armed = false;
+                    }
                 }
-                0x1B => {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                    LRESULT(0)
+                let active = ui.motion.tick();
+                let applied = ui.applied_until.is_some_and(|until| Instant::now() < until);
+                invalidate(hwnd);
+                if !active && !applied && ui.recording.is_none() {
+                    let _ = KillTimer(Some(hwnd), UI_TIMER);
                 }
-                _ => win::def_proc(hwnd, msg, wparam, lparam),
+                LRESULT(0)
             }
-        }
-        WM_KEYUP | WM_SYSKEYUP => {
-            let mut ui = cell.borrow_mut();
-            if ui.record_key(hwnd, wparam.0 as u16, false) {
-                return LRESULT(0);
+            WM_GETMINMAXINFO => {
+                let info =
+                    &mut *(lparam.0 as *mut windows::Win32::UI::WindowsAndMessaging::MINMAXINFO);
+                let scale = cell.borrow_mut().dpi as f32 / 96.0;
+                info.ptMinTrackSize.x = (520.0 * scale) as i32;
+                info.ptMinTrackSize.y = (500.0 * scale) as i32;
+                LRESULT(0)
             }
-            win::def_proc(hwnd, msg, wparam, lparam)
+            WM_CHAR => LRESULT(0),
+            _ => win::def_proc(hwnd, msg, wparam, lparam),
         }
-        WM_TIMER if wparam.0 == UI_TIMER => {
-            let mut ui = cell.borrow_mut();
-            // Drain the lock-free capture word while recording (#14/#45):
-            // the global hook publishes atomically, so chords arrive here
-            // instead of via WM_KEYDOWN.
-            if ui.recording.is_some() {
-                while let Some(chord) = crate::keyboard::hook::take_captured_chord() {
-                    ui.finish_recording(chord);
-                }
-                if ui.recording.is_none() {
-                    crate::keyboard::hook::end_capture();
-                    ui.capture_armed = false;
-                }
-            }
-            let active = ui.motion.tick();
-            let applied = ui.applied_until.is_some_and(|until| Instant::now() < until);
-            invalidate(hwnd);
-            if !active && !applied && ui.recording.is_none() {
-                let _ = KillTimer(Some(hwnd), UI_TIMER);
-            }
-            LRESULT(0)
-        }
-        WM_GETMINMAXINFO => {
-            let info = &mut *(lparam.0 as *mut windows::Win32::UI::WindowsAndMessaging::MINMAXINFO);
-            let scale = cell.borrow_mut().dpi as f32 / 96.0;
-            info.ptMinTrackSize.x = (520.0 * scale) as i32;
-            info.ptMinTrackSize.y = (500.0 * scale) as i32;
-            LRESULT(0)
-        }
-        WM_CHAR => LRESULT(0),
-        _ => win::def_proc(hwnd, msg, wparam, lparam),
     }
-} }
+}
 
 fn client_size_dip(hwnd: HWND, dpi: u32) -> (f32, f32) {
     let mut rect = RECT::default();
@@ -1088,10 +1135,7 @@ fn next_position(position: OverlayPosition) -> OverlayPosition {
     OverlayPosition::ALL[(index + 1) % OverlayPosition::ALL.len()]
 }
 
-fn device_label(
-    selection: &DeviceSelection,
-    devices: &[crate::audio::DeviceId],
-) -> String {
+fn device_label(selection: &DeviceSelection, devices: &[crate::audio::DeviceId]) -> String {
     match selection {
         DeviceSelection::Default => "Default device".into(),
         DeviceSelection::Endpoint(id) => devices
@@ -1102,10 +1146,7 @@ fn device_label(
     }
 }
 
-fn next_device(
-    selection: &DeviceSelection,
-    devices: &[crate::audio::DeviceId],
-) -> DeviceSelection {
+fn next_device(selection: &DeviceSelection, devices: &[crate::audio::DeviceId]) -> DeviceSelection {
     match selection {
         DeviceSelection::Default => devices
             .first()

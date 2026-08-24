@@ -3,8 +3,8 @@
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, TrackPopupMenu,
-    HMENU, MF_CHECKED, MF_ENABLED, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    TPM_LEFTBUTTON, TPM_RETURNCMD, TPM_RIGHTBUTTON, TPMPARAMS,
+    HMENU, MF_CHECKED, MF_ENABLED, MF_SEPARATOR, MF_STRING, TPMPARAMS, TPM_BOTTOMALIGN,
+    TPM_LEFTALIGN, TPM_LEFTBUTTON, TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
 
 use crate::error::{Error, Result};
@@ -49,24 +49,17 @@ pub fn build(state: &MenuState) -> Result<HMENU> {
     }
 }
 
-fn append(
-    menu: HMENU,
-    id: u32,
-    text: &str,
-    checked: bool,
-    toggleable: bool,
-) -> Result<()> {
-    let flags =
-        MF_STRING | if checked { MF_CHECKED } else { MF_ENABLED } | if toggleable { MF_ENABLED } else { MF_ENABLED };
+fn append(menu: HMENU, id: u32, text: &str, checked: bool, toggleable: bool) -> Result<()> {
+    let flags = MF_STRING
+        | if checked { MF_CHECKED } else { MF_ENABLED }
+        | if toggleable { MF_ENABLED } else { MF_ENABLED };
     // SAFETY: valid HMENU from CreatePopupMenu.
     let ok = unsafe {
         windows::Win32::UI::WindowsAndMessaging::AppendMenuW(
             menu,
             flags,
             id as usize,
-            windows::core::PCWSTR(
-                windows::core::HSTRING::from(text).as_ptr(),
-            ),
+            windows::core::PCWSTR(windows::core::HSTRING::from(text).as_ptr()),
         )
     };
     if let Err(e) = ok {

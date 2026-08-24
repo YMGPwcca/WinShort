@@ -1,6 +1,6 @@
 //! Foreground application session enumeration and aggregate mute semantics.
 
-use windows::core::{GUID, Interface};
+use windows::core::{Interface, GUID};
 use windows::Win32::Media::Audio::{
     IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume,
 };
@@ -12,8 +12,7 @@ use crate::audio::state::{Aggregate, AppAudioState};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-const SESSION_EVENT_CONTEXT: GUID =
-    GUID::from_u128(0x78ab818c_7b20_4737_aa73_c92ad4a879bf);
+const SESSION_EVENT_CONTEXT: GUID = GUID::from_u128(0x78ab818c_7b20_4737_aa73_c92ad4a879bf);
 
 /// Toggle every render session owned by the foreground process together
 /// (#18): exact-PID match on the configured endpoint first, then a sweep of
@@ -56,9 +55,7 @@ pub fn query_foreground(
     };
     let app_name = crate::platform::foreground::process_name(pid);
     match resolve_sessions(enumerator, config, pid, &app_name)? {
-        Resolved::Sessions(sessions) => {
-            Ok(state_from_mutes(&sessions, app_name))
-        }
+        Resolved::Sessions(sessions) => Ok(state_from_mutes(&sessions, app_name)),
         Resolved::Ambiguous { processes, .. } => Ok(AppAudioState {
             app_name,
             aggregate: Aggregate::Error,
@@ -79,7 +76,10 @@ fn toggle_once(
 ) -> Result<AppAudioState> {
     let mut sessions = match resolve_sessions(enumerator, config, pid, app_name)? {
         Resolved::Sessions(sessions) => sessions,
-        Resolved::Ambiguous { stem, ref processes } => {
+        Resolved::Ambiguous {
+            stem,
+            ref processes,
+        } => {
             // Fail closed (#46): several installations share this image name;
             // muting all of them could hit unrelated processes.
             crate::warn_!(
@@ -116,7 +116,9 @@ fn toggle_once(
         }
     }
     if failures.len() == sessions.len() {
-        return Err(Error::audio("matching sessions disappeared before mute applied"));
+        return Err(Error::audio(
+            "matching sessions disappeared before mute applied",
+        ));
     }
 
     // Re-read actual mute states instead of assuming the write succeeded
@@ -149,7 +151,11 @@ fn toggle_once(
     crate::log_debug!(
         "foreground audio pid={pid} sessions={} before={} after={:?}",
         sessions.len(),
-        if all_muted { "muted" } else { "active-or-mixed" },
+        if all_muted {
+            "muted"
+        } else {
+            "active-or-mixed"
+        },
         aggregate
     );
     Ok(AppAudioState {
@@ -160,7 +166,10 @@ fn toggle_once(
     })
 }
 
-fn state_from_mutes(sessions: &[(windows::Win32::Media::Audio::ISimpleAudioVolume, bool)], app_name: Option<String>) -> AppAudioState {
+fn state_from_mutes(
+    sessions: &[(windows::Win32::Media::Audio::ISimpleAudioVolume, bool)],
+    app_name: Option<String>,
+) -> AppAudioState {
     if sessions.is_empty() {
         return AppAudioState {
             app_name,
@@ -177,7 +186,12 @@ fn state_from_mutes(sessions: &[(windows::Win32::Media::Audio::ISimpleAudioVolum
     } else {
         Aggregate::Mixed
     };
-    AppAudioState { app_name, aggregate, sessions: sessions.len(), error: None }
+    AppAudioState {
+        app_name,
+        aggregate,
+        sessions: sessions.len(),
+        error: None,
+    }
 }
 
 /// Resolution ladder (#18): configured endpoint + exact PID; then every
@@ -200,7 +214,10 @@ pub enum FallbackSelection {
     /// Distinct process set to operate on (possibly empty = no candidates).
     Pids(Vec<u32>),
     /// More than one distinct installation matches — refuse to choose.
-    Ambiguous { stem: String, processes: Vec<String> },
+    Ambiguous {
+        stem: String,
+        processes: Vec<String>,
+    },
 }
 
 fn path_stem_lower(path: &str) -> String {
@@ -250,7 +267,10 @@ fn select_fallback_pids(stem: &str, candidates: &[FallbackCandidate]) -> Fallbac
 /// Result of session resolution — `Ambiguous` must never be mutated (#46).
 enum Resolved {
     Sessions(Vec<SessionTuple>),
-    Ambiguous { stem: String, processes: Vec<String> },
+    Ambiguous {
+        stem: String,
+        processes: Vec<String>,
+    },
 }
 
 fn resolve_sessions(
@@ -293,12 +313,10 @@ fn resolve_sessions(
         })
         .collect();
     match select_fallback_pids(&stem, &candidates) {
-        FallbackSelection::Pids(pids) if pids.is_empty() => {
-            Ok(Resolved::Sessions(Vec::new()))
-        }
-        FallbackSelection::Pids(pids) => {
-            Ok(Resolved::Sessions(collect_all_render_endpoints(enumerator, &pids)?))
-        }
+        FallbackSelection::Pids(pids) if pids.is_empty() => Ok(Resolved::Sessions(Vec::new())),
+        FallbackSelection::Pids(pids) => Ok(Resolved::Sessions(collect_all_render_endpoints(
+            enumerator, &pids,
+        )?)),
         FallbackSelection::Ambiguous { processes, .. } => {
             crate::warn_!(
                 "foreground audio fallback ambiguous: {} distinct installations match `{stem:?}`; refusing to mute",
@@ -310,9 +328,7 @@ fn resolve_sessions(
 }
 
 /// PIDs owning at least one render session, across all active endpoints.
-fn collect_all_render_pids(
-    enumerator: &IMMDeviceEnumerator,
-) -> Result<Vec<u32>> {
+fn collect_all_render_pids(enumerator: &IMMDeviceEnumerator) -> Result<Vec<u32>> {
     use windows::Win32::Media::Audio::{IAudioSessionManager2, DEVICE_STATE_ACTIVE};
     use windows::Win32::System::Com::CLSCTX_ALL;
     let collection = unsafe {
@@ -336,13 +352,11 @@ fn collect_all_render_pids(
                 .map_err(|e| Error::win("Activate(IAudioSessionManager2)", &e))
         };
         let Ok(manager) = manager else { continue };
-        let Ok(session_enumerator) =
-            (unsafe {
-                manager
-                    .GetSessionEnumerator()
-                    .map_err(|e| Error::win("GetSessionEnumerator", &e))
-            })
-        else {
+        let Ok(session_enumerator) = (unsafe {
+            manager
+                .GetSessionEnumerator()
+                .map_err(|e| Error::win("GetSessionEnumerator", &e))
+        }) else {
             continue;
         };
         let ses_count = unsafe { session_enumerator.GetCount() }.unwrap_or(0);
@@ -440,13 +454,11 @@ fn collect_all_render_endpoints(
                 .map_err(|e| Error::win("Activate(IAudioSessionManager2)", &e))
         };
         let Ok(manager) = manager else { continue };
-        let Ok(session_enumerator) =
-            (unsafe {
-                manager
-                    .GetSessionEnumerator()
-                    .map_err(|e| Error::win("GetSessionEnumerator", &e))
-            })
-        else {
+        let Ok(session_enumerator) = (unsafe {
+            manager
+                .GetSessionEnumerator()
+                .map_err(|e| Error::win("GetSessionEnumerator", &e))
+        }) else {
             continue;
         };
         sessions.extend(collect_from_enumerated(&session_enumerator, pid_filter));
@@ -470,16 +482,17 @@ mod fallback_selection_tests {
     }
 
     fn named(pid: u32, stem: &str) -> FallbackCandidate {
-        FallbackCandidate { pid, stem: stem.into(), image_path: None }
+        FallbackCandidate {
+            pid,
+            stem: stem.into(),
+            image_path: None,
+        }
     }
 
     #[test]
     fn unique_fallback_candidate_is_selected() {
         // D: single candidate sharing the foreground stem.
-        let out = select_fallback_pids(
-            "player",
-            &[cand(101, Some("C:\\PortableA\\player.exe"))],
-        );
+        let out = select_fallback_pids("player", &[cand(101, Some("C:\\PortableA\\player.exe"))]);
         assert_eq!(out, FallbackSelection::Pids(vec![101]));
     }
 
@@ -546,10 +559,7 @@ mod fallback_selection_tests {
 
     #[test]
     fn different_stem_is_never_matched() {
-        let out = select_fallback_pids(
-            "player",
-            &[cand(40, Some("C:\\x\\notplayer.exe"))],
-        );
+        let out = select_fallback_pids("player", &[cand(40, Some("C:\\x\\notplayer.exe"))]);
         assert_eq!(out, FallbackSelection::Pids(Vec::new()));
     }
 }

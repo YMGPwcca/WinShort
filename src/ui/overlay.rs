@@ -27,8 +27,8 @@ use windows::Win32::Graphics::Gdi::{
     HGDIOBJ,
 };
 use windows::Win32::Graphics::Imaging::{
-    GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory, WICBitmapCreateCacheOption,
-    CLSID_WICImagingFactory,
+    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory,
+    WICBitmapCreateCacheOption,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -121,9 +121,17 @@ pub fn microphone_row(state: &crate::audio::AudioState) -> OverlayRow {
 pub fn output_row(state: &crate::audio::OutputState) -> OverlayRow {
     use crate::audio::OutputState;
     match state {
-        OutputState::Current { device, muted, volume_pct } => OverlayRow {
+        OutputState::Current {
+            device,
+            muted,
+            volume_pct,
+        } => OverlayRow {
             icon: OverlayIcon::Output,
-            tone: if *muted { OverlayTone::Muted } else { OverlayTone::Active },
+            tone: if *muted {
+                OverlayTone::Muted
+            } else {
+                OverlayTone::Active
+            },
             title: device.name.clone(),
             detail: if *muted {
                 "Output muted".into()
@@ -163,7 +171,10 @@ pub fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow {
     OverlayRow {
         icon: OverlayIcon::Application,
         tone,
-        title: state.app_name.clone().unwrap_or_else(|| "Current app".into()),
+        title: state
+            .app_name
+            .clone()
+            .unwrap_or_else(|| "Current app".into()),
         detail,
     }
 }
@@ -280,11 +291,10 @@ impl OverlayState {
         self.dpi = monitor.as_ref().map_or(96, |m| m.dpi).max(96);
         self.model = model;
         self.config = config.clone();
-        self.surface = Some(self.graphics.render(
-            &self.model,
-            self.dpi,
-            self.config.scale,
-        )?);
+        self.surface = Some(
+            self.graphics
+                .render(&self.model, self.dpi, self.config.scale)?,
+        );
         let size = self.surface.as_ref().expect("surface").size;
         self.base_position = position_for(
             monitor.as_ref().map(|m| m.work).unwrap_or(RECT_FALLBACK),
@@ -345,8 +355,12 @@ impl OverlayState {
     }
 
     fn render_frame(&self, hwnd: HWND) -> Result<()> {
-        let Some(surface) = &self.surface else { return Ok(()) };
-        let elapsed = Instant::now().duration_since(self.phase_started).as_secs_f32();
+        let Some(surface) = &self.surface else {
+            return Ok(());
+        };
+        let elapsed = Instant::now()
+            .duration_since(self.phase_started)
+            .as_secs_f32();
         let (alpha, slide_dip) = match self.phase {
             Phase::Appearing => {
                 let t = (elapsed / 0.14).clamp(0.0, 1.0);
@@ -436,21 +450,22 @@ impl OverlayGraphics {
             .map_err(|e| Error::win("D2D1CreateFactory(overlay)", &e))?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
                 .map_err(|e| Error::win("DWriteCreateFactory(overlay)", &e))?;
-            let wic: IWICImagingFactory = CoCreateInstance(
-                &CLSID_WICImagingFactory,
-                None,
-                CLSCTX_INPROC_SERVER,
-            )
-            .map_err(|e| Error::win("CoCreateInstance(WIC overlay)", &e))?;
-            Ok(Self { factory, dwrite, wic })
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|e| Error::win("CoCreateInstance(WIC overlay)", &e))?;
+            Ok(Self {
+                factory,
+                dwrite,
+                wic,
+            })
         }
     }
 
     fn render(&self, model: &OverlayModel, dpi: u32, scale: f32) -> Result<LayeredSurface> {
         let scale = scale.clamp(0.7, 1.6);
         let logical_w = BASE_WIDTH * scale;
-        let logical_h = (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale
-            + SHADOW_PAD * 2.0;
+        let logical_h =
+            (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale + SHADOW_PAD * 2.0;
         let px_scale = dpi as f32 / 96.0;
         let width = (logical_w * px_scale).ceil() as u32;
         let height = (logical_h * px_scale).ceil() as u32;
@@ -517,7 +532,10 @@ impl OverlayGraphics {
                 hdc,
                 bitmap,
                 previous,
-                size: SIZE { cx: width as i32, cy: height as i32 },
+                size: SIZE {
+                    cx: width as i32,
+                    cy: height as i32,
+                },
             })
         }
     }
@@ -535,7 +553,12 @@ fn draw_overlay(
         let body_h = (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale;
         let left = SHADOW_PAD;
         let top = SHADOW_PAD;
-        let body = D2D_RECT_F { left, top, right: left + width, bottom: top + body_h };
+        let body = D2D_RECT_F {
+            left,
+            top,
+            right: left + width,
+            bottom: top + body_h,
+        };
 
         // Three offset translucent layers approximate a soft compositor shadow.
         for (spread, alpha) in [(8.0, 18u8), (5.0, 26u8), (2.0, 34u8)] {
@@ -548,7 +571,11 @@ fn draw_overlay(
                 bottom: body.bottom + 5.0 + spread,
             };
             target.FillRoundedRectangle(
-                &D2D1_ROUNDED_RECT { rect, radiusX: 16.0 + spread, radiusY: 16.0 + spread },
+                &D2D1_ROUNDED_RECT {
+                    rect,
+                    radiusX: 16.0 + spread,
+                    radiusY: 16.0 + spread,
+                },
                 &brush,
             );
         }
@@ -556,14 +583,22 @@ fn draw_overlay(
         let surface = color(Color::rgba(36, 36, 36, 248));
         let surface_brush = target.CreateSolidColorBrush(&surface, None)?;
         target.FillRoundedRectangle(
-            &D2D1_ROUNDED_RECT { rect: body, radiusX: 14.0, radiusY: 14.0 },
+            &D2D1_ROUNDED_RECT {
+                rect: body,
+                radiusX: 14.0,
+                radiusY: 14.0,
+            },
             &surface_brush,
         );
 
         let border = color(theme.border_strong);
         let border_brush = target.CreateSolidColorBrush(&border, None)?;
         target.DrawRoundedRectangle(
-            &D2D1_ROUNDED_RECT { rect: body, radiusX: 14.0, radiusY: 14.0 },
+            &D2D1_ROUNDED_RECT {
+                rect: body,
+                radiusX: 14.0,
+                radiusY: 14.0,
+            },
             &border_brush,
             1.0,
             None,
@@ -580,8 +615,14 @@ fn draw_overlay(
             let y = top + PAD * scale + index as f32 * ROW_HEIGHT * scale;
             if index > 0 {
                 target.DrawLine(
-                    windows_numerics::Vector2 { X: left + 58.0 * scale, Y: y },
-                    windows_numerics::Vector2 { X: body.right - 16.0 * scale, Y: y },
+                    windows_numerics::Vector2 {
+                        X: left + 58.0 * scale,
+                        Y: y,
+                    },
+                    windows_numerics::Vector2 {
+                        X: body.right - 16.0 * scale,
+                        Y: y,
+                    },
                     &border_brush,
                     1.0,
                     None,
@@ -599,13 +640,23 @@ fn draw_overlay(
             let icon_center_y = y + ROW_HEIGHT * scale * 0.5;
             target.FillEllipse(
                 &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
-                    point: windows_numerics::Vector2 { X: icon_center_x, Y: icon_center_y },
+                    point: windows_numerics::Vector2 {
+                        X: icon_center_x,
+                        Y: icon_center_y,
+                    },
                     radiusX: 17.0 * scale,
                     radiusY: 17.0 * scale,
                 },
                 &tone_brush,
             );
-            draw_icon(target, row.icon, icon_center_x, icon_center_y, scale, &surface_brush);
+            draw_icon(
+                target,
+                row.icon,
+                icon_center_x,
+                icon_center_y,
+                scale,
+                &surface_brush,
+            );
 
             draw_text(
                 target,
@@ -629,7 +680,11 @@ fn draw_overlay(
                     right: body.right - 18.0 * scale,
                     bottom: y + 54.0 * scale,
                 },
-                if row.tone == OverlayTone::Unavailable { &tone_brush } else { &secondary_brush },
+                if row.tone == OverlayTone::Unavailable {
+                    &tone_brush
+                } else {
+                    &secondary_brush
+                },
             );
         }
         Ok(())
@@ -643,24 +698,25 @@ unsafe fn make_format(
 ) -> Result<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat> {
     // SAFETY: DWrite factory/text-format COM calls on objects created by the caller.
     unsafe {
-    let family = HSTRING::from("Segoe UI Variable Text");
-    let locale = HSTRING::from("en-US");
-    let format = dwrite
-        .CreateTextFormat(
-            PCWSTR(family.as_ptr()),
-            None,
-            weight,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            size,
-            PCWSTR(locale.as_ptr()),
-        )
-        .map_err(|e| Error::win("overlay CreateTextFormat", &e))?;
-    format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-    format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-    format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-    Ok(format)
-} }
+        let family = HSTRING::from("Segoe UI Variable Text");
+        let locale = HSTRING::from("en-US");
+        let format = dwrite
+            .CreateTextFormat(
+                PCWSTR(family.as_ptr()),
+                None,
+                weight,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                PCWSTR(locale.as_ptr()),
+            )
+            .map_err(|e| Error::win("overlay CreateTextFormat", &e))?;
+        format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        Ok(format)
+    }
+}
 
 unsafe fn draw_text(
     target: &ID2D1RenderTarget,
@@ -671,16 +727,17 @@ unsafe fn draw_text(
 ) {
     // SAFETY: Direct2D DrawText on a live render target; buffers sized locally.
     unsafe {
-    let wide: Vec<u16> = value.encode_utf16().collect();
-    target.DrawText(
-        &wide,
-        format,
-        &rect,
-        brush,
-        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-        DWRITE_MEASURING_MODE_NATURAL,
-    );
-} }
+        let wide: Vec<u16> = value.encode_utf16().collect();
+        target.DrawText(
+            &wide,
+            format,
+            &rect,
+            brush,
+            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+            DWRITE_MEASURING_MODE_NATURAL,
+        );
+    }
+}
 
 unsafe fn draw_icon(
     target: &ID2D1RenderTarget,
@@ -692,131 +749,202 @@ unsafe fn draw_icon(
 ) {
     // SAFETY: Direct2D geometry drawing on a live render target created above.
     unsafe {
-    let w = 1.8 * scale;
-    match icon {
-        OverlayIcon::Microphone => {
-            target.DrawRoundedRectangle(
-                &D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: cx - 4.0 * scale,
-                        top: cy - 9.0 * scale,
-                        right: cx + 4.0 * scale,
-                        bottom: cy + 4.0 * scale,
+        let w = 1.8 * scale;
+        match icon {
+            OverlayIcon::Microphone => {
+                target.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: cx - 4.0 * scale,
+                            top: cy - 9.0 * scale,
+                            right: cx + 4.0 * scale,
+                            bottom: cy + 4.0 * scale,
+                        },
+                        radiusX: 4.0 * scale,
+                        radiusY: 4.0 * scale,
                     },
-                    radiusX: 4.0 * scale,
-                    radiusY: 4.0 * scale,
-                },
-                brush,
-                w,
-                None,
-            );
-            target.DrawLine(
-                windows_numerics::Vector2 { X: cx - 8.0 * scale, Y: cy },
-                windows_numerics::Vector2 { X: cx - 8.0 * scale, Y: cy + 1.0 * scale },
-                brush,
-                w,
-                None,
-            );
-            target.DrawLine(
-                windows_numerics::Vector2 { X: cx - 8.0 * scale, Y: cy + 1.0 * scale },
-                windows_numerics::Vector2 { X: cx, Y: cy + 9.0 * scale },
-                brush,
-                w,
-                None,
-            );
-            target.DrawLine(
-                windows_numerics::Vector2 { X: cx, Y: cy + 9.0 * scale },
-                windows_numerics::Vector2 { X: cx + 8.0 * scale, Y: cy + 1.0 * scale },
-                brush,
-                w,
-                None,
-            );
-        }
-        OverlayIcon::Output => {
-            let points = [
-                (cx - 9.0 * scale, cy - 4.0 * scale, cx - 4.0 * scale, cy - 4.0 * scale),
-                (cx - 4.0 * scale, cy - 4.0 * scale, cx + 2.0 * scale, cy - 9.0 * scale),
-                (cx + 2.0 * scale, cy - 9.0 * scale, cx + 2.0 * scale, cy + 9.0 * scale),
-                (cx + 2.0 * scale, cy + 9.0 * scale, cx - 4.0 * scale, cy + 4.0 * scale),
-                (cx - 4.0 * scale, cy + 4.0 * scale, cx - 9.0 * scale, cy + 4.0 * scale),
-            ];
-            for (x1, y1, x2, y2) in points {
+                    brush,
+                    w,
+                    None,
+                );
                 target.DrawLine(
-                    windows_numerics::Vector2 { X: x1, Y: y1 },
-                    windows_numerics::Vector2 { X: x2, Y: y2 },
+                    windows_numerics::Vector2 {
+                        X: cx - 8.0 * scale,
+                        Y: cy,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx - 8.0 * scale,
+                        Y: cy + 1.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx - 8.0 * scale,
+                        Y: cy + 1.0 * scale,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx,
+                        Y: cy + 9.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx,
+                        Y: cy + 9.0 * scale,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx + 8.0 * scale,
+                        Y: cy + 1.0 * scale,
+                    },
                     brush,
                     w,
                     None,
                 );
             }
-            target.DrawLine(
-                windows_numerics::Vector2 { X: cx + 6.0 * scale, Y: cy - 6.0 * scale },
-                windows_numerics::Vector2 { X: cx + 10.0 * scale, Y: cy },
-                brush,
-                w,
-                None,
-            );
-            target.DrawLine(
-                windows_numerics::Vector2 { X: cx + 10.0 * scale, Y: cy },
-                windows_numerics::Vector2 { X: cx + 6.0 * scale, Y: cy + 6.0 * scale },
-                brush,
-                w,
-                None,
-            );
-        }
-        OverlayIcon::Application => {
-            target.DrawRoundedRectangle(
-                &D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: cx - 9.0 * scale,
-                        top: cy - 7.0 * scale,
-                        right: cx + 9.0 * scale,
-                        bottom: cy + 7.0 * scale,
+            OverlayIcon::Output => {
+                let points = [
+                    (
+                        cx - 9.0 * scale,
+                        cy - 4.0 * scale,
+                        cx - 4.0 * scale,
+                        cy - 4.0 * scale,
+                    ),
+                    (
+                        cx - 4.0 * scale,
+                        cy - 4.0 * scale,
+                        cx + 2.0 * scale,
+                        cy - 9.0 * scale,
+                    ),
+                    (
+                        cx + 2.0 * scale,
+                        cy - 9.0 * scale,
+                        cx + 2.0 * scale,
+                        cy + 9.0 * scale,
+                    ),
+                    (
+                        cx + 2.0 * scale,
+                        cy + 9.0 * scale,
+                        cx - 4.0 * scale,
+                        cy + 4.0 * scale,
+                    ),
+                    (
+                        cx - 4.0 * scale,
+                        cy + 4.0 * scale,
+                        cx - 9.0 * scale,
+                        cy + 4.0 * scale,
+                    ),
+                ];
+                for (x1, y1, x2, y2) in points {
+                    target.DrawLine(
+                        windows_numerics::Vector2 { X: x1, Y: y1 },
+                        windows_numerics::Vector2 { X: x2, Y: y2 },
+                        brush,
+                        w,
+                        None,
+                    );
+                }
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx + 6.0 * scale,
+                        Y: cy - 6.0 * scale,
                     },
-                    radiusX: 2.0 * scale,
-                    radiusY: 2.0 * scale,
-                },
-                brush,
-                w,
-                None,
-            );
-            target.DrawLine(
-                windows_numerics::Vector2 { X: cx - 9.0 * scale, Y: cy - 2.0 * scale },
-                windows_numerics::Vector2 { X: cx + 9.0 * scale, Y: cy - 2.0 * scale },
-                brush,
-                w,
-                None,
-            );
-        }
-        OverlayIcon::Info => {
-            target.DrawEllipse(
-                &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
-                    point: windows_numerics::Vector2 { X: cx, Y: cy },
-                    radiusX: 9.0 * scale,
-                    radiusY: 9.0 * scale,
-                },
-                brush,
-                w,
-                None,
-            );
-            target.DrawLine(
-                windows_numerics::Vector2 { X: cx, Y: cy - 1.0 * scale },
-                windows_numerics::Vector2 { X: cx, Y: cy + 5.0 * scale },
-                brush,
-                w,
-                None,
-            );
-            target.FillEllipse(
-                &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
-                    point: windows_numerics::Vector2 { X: cx, Y: cy - 5.0 * scale },
-                    radiusX: 1.2 * scale,
-                    radiusY: 1.2 * scale,
-                },
-                brush,
-            );
+                    windows_numerics::Vector2 {
+                        X: cx + 10.0 * scale,
+                        Y: cy,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx + 10.0 * scale,
+                        Y: cy,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx + 6.0 * scale,
+                        Y: cy + 6.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+            }
+            OverlayIcon::Application => {
+                target.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: cx - 9.0 * scale,
+                            top: cy - 7.0 * scale,
+                            right: cx + 9.0 * scale,
+                            bottom: cy + 7.0 * scale,
+                        },
+                        radiusX: 2.0 * scale,
+                        radiusY: 2.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx - 9.0 * scale,
+                        Y: cy - 2.0 * scale,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx + 9.0 * scale,
+                        Y: cy - 2.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+            }
+            OverlayIcon::Info => {
+                target.DrawEllipse(
+                    &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                        point: windows_numerics::Vector2 { X: cx, Y: cy },
+                        radiusX: 9.0 * scale,
+                        radiusY: 9.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx,
+                        Y: cy - 1.0 * scale,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx,
+                        Y: cy + 5.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+                target.FillEllipse(
+                    &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                        point: windows_numerics::Vector2 {
+                            X: cx,
+                            Y: cy - 5.0 * scale,
+                        },
+                        radiusX: 1.2 * scale,
+                        radiusY: 1.2 * scale,
+                    },
+                    brush,
+                );
+            }
         }
     }
-} }
+}
 
 fn color(color: Color) -> D2D1_COLOR_F {
     color.d2d()
@@ -839,8 +967,8 @@ fn select_monitor(choice: MonitorChoice) -> Option<crate::platform::monitor::Mon
         // Tray-triggered overlays must target the LAST external window's
         // monitor — the true foreground is WinShort itself (#26).
         MonitorChoice::Foreground => {
-            let target = crate::platform::foreground::last_external_hwnd()
-                .unwrap_or_else(|| unsafe {
+            let target =
+                crate::platform::foreground::last_external_hwnd().unwrap_or_else(|| unsafe {
                     windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
                 });
             crate::platform::monitor::info_for(crate::platform::monitor::from_window(target))
@@ -886,28 +1014,29 @@ unsafe extern "system" fn overlay_wndproc(
 ) -> LRESULT {
     // SAFETY: window handle is thread-valid; state access via WindowState cell.
     unsafe {
-    if msg == WM_NCCREATE {
-        let create = &*(lparam.0 as *const CREATESTRUCTW);
-        let state = Box::from_raw(create.lpCreateParams as *mut OverlayState);
-        win::store_state_ptr(hwnd, win::WindowState::new(*state));
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-    if msg == WM_NCDESTROY {
-        drop(unsafe { win::take_state::<OverlayState>(hwnd) });
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-    let Some(cell) = (unsafe { win::state_cell::<OverlayState>(hwnd) }) else {
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
-    };
-    match msg {
-        WM_TIMER if wparam.0 == TIMER_ID => {
-            cell.borrow_mut().tick(hwnd);
-            LRESULT(0)
+        if msg == WM_NCCREATE {
+            let create = &*(lparam.0 as *const CREATESTRUCTW);
+            let state = Box::from_raw(create.lpCreateParams as *mut OverlayState);
+            win::store_state_ptr(hwnd, win::WindowState::new(*state));
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
-        WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
-        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
-        WM_ERASEBKGND => LRESULT(1),
-        WM_DPICHANGED => LRESULT(0),
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        if msg == WM_NCDESTROY {
+            drop(unsafe { win::take_state::<OverlayState>(hwnd) });
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        let Some(cell) = (unsafe { win::state_cell::<OverlayState>(hwnd) }) else {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        };
+        match msg {
+            WM_TIMER if wparam.0 == TIMER_ID => {
+                cell.borrow_mut().tick(hwnd);
+                LRESULT(0)
+            }
+            WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+            WM_ERASEBKGND => LRESULT(1),
+            WM_DPICHANGED => LRESULT(0),
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
-} }
+}

@@ -85,13 +85,7 @@ pub fn draw_row(
     }
 }
 
-pub fn draw_button(
-    r: &Renderer,
-    rect: Rect,
-    label: &str,
-    primary: bool,
-    interaction: Interaction,
-) {
+pub fn draw_button(r: &Renderer, rect: Rect, label: &str, primary: bool, interaction: Interaction) {
     let disabled = interaction.disabled;
     let bg = if disabled {
         BrushRole::CardPressed
@@ -133,9 +127,23 @@ pub fn draw_app_mark(r: &Renderer, rect: Rect) {
     let cx = rect.x + rect.w * 0.5;
     let cy = rect.y + rect.h * 0.5;
     // Compact equalizer mark; authored vector, no Unicode icon.
-    r.line(cx - 7.0, cy + 5.0, cx - 7.0, cy - 3.0, BrushRole::AccentText, 2.0);
+    r.line(
+        cx - 7.0,
+        cy + 5.0,
+        cx - 7.0,
+        cy - 3.0,
+        BrushRole::AccentText,
+        2.0,
+    );
     r.line(cx, cy + 5.0, cx, cy - 7.0, BrushRole::AccentText, 2.0);
-    r.line(cx + 7.0, cy + 5.0, cx + 7.0, cy + 1.0, BrushRole::AccentText, 2.0);
+    r.line(
+        cx + 7.0,
+        cy + 5.0,
+        cx + 7.0,
+        cy + 1.0,
+        BrushRole::AccentText,
+        2.0,
+    );
 }
 
 pub fn draw_scrollbar(r: &Renderer, viewport: Rect, scroll: f32, max_scroll: f32) {
@@ -154,7 +162,12 @@ pub fn draw_scrollbar(r: &Renderer, viewport: Rect, scroll: f32, max_scroll: f32
 }
 
 fn control_rect(row: Rect, width: f32) -> Rect {
-    Rect::new(row.right() - 18.0 - width, row.y + (row.h - 34.0) * 0.5, width, 34.0)
+    Rect::new(
+        row.right() - 18.0 - width,
+        row.y + (row.h - 34.0) * 0.5,
+        width,
+        34.0,
+    )
 }
 
 fn draw_toggle(r: &Renderer, row: Rect, value: bool, interaction: Interaction) {
@@ -210,7 +223,11 @@ fn draw_value_box(
     r.stroke_rounded(
         rect.d2d(),
         6.0,
-        if interaction.focused { BrushRole::Focus } else { BrushRole::BorderStrong },
+        if interaction.focused {
+            BrushRole::Focus
+        } else {
+            BrushRole::BorderStrong
+        },
         if interaction.focused { 1.5 } else { 1.0 },
     );
 
@@ -232,13 +249,7 @@ fn draw_value_box(
     }
 }
 
-fn draw_slider(
-    r: &Renderer,
-    row: Rect,
-    ratio: f32,
-    label: &str,
-    interaction: Interaction,
-) {
+fn draw_slider(r: &Renderer, row: Rect, ratio: f32, label: &str, interaction: Interaction) {
     let rect = control_rect(row, 190.0);
     let label_w = 52.0;
     let track = Rect::new(rect.x, rect.y + 15.0, rect.w - label_w - 12.0, 4.0);
@@ -253,7 +264,11 @@ fn draw_slider(
         track.y + 2.0,
         if interaction.pressed { 7.0 } else { 6.0 },
         if interaction.pressed { 7.0 } else { 6.0 },
-        if interaction.disabled { BrushRole::TextDisabled } else { BrushRole::Accent },
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Accent
+        },
         true,
         0.0,
     );
@@ -261,7 +276,11 @@ fn draw_slider(
         label,
         Rect::new(rect.right() - label_w, rect.y, label_w, rect.h).d2d(),
         TextStyle::CaptionRight,
-        if interaction.disabled { BrushRole::TextDisabled } else { BrushRole::TextSecondary },
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::TextSecondary
+        },
     );
 }
 
@@ -280,6 +299,10 @@ fn draw_action(r: &Renderer, row: Rect, label: &str, interaction: Interaction) {
         label,
         rect.d2d(),
         TextStyle::ButtonSmall,
-        if interaction.disabled { BrushRole::TextDisabled } else { BrushRole::Accent },
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Accent
+        },
     );
 }

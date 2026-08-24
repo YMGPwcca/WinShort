@@ -13,8 +13,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_OPTIONS,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
     D2D1_ROUNDED_RECT,
 };
@@ -22,8 +22,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 
 use crate::error::{Error, Result};
@@ -197,30 +197,27 @@ impl Renderer {
     }
 
     pub fn fill_rounded(&self, rect: D2D_RECT_F, radius: f32, role: BrushRole) {
-        let rr = D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius };
+        let rr = D2D1_ROUNDED_RECT {
+            rect,
+            radiusX: radius,
+            radiusY: radius,
+        };
         unsafe { self.target.FillRoundedRectangle(&rr, self.brush(role)) }
     }
 
-    pub fn stroke_rounded(
-        &self,
-        rect: D2D_RECT_F,
-        radius: f32,
-        role: BrushRole,
-        width: f32,
-    ) {
-        let rr = D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius };
-        unsafe { self.target.DrawRoundedRectangle(&rr, self.brush(role), width, None) }
+    pub fn stroke_rounded(&self, rect: D2D_RECT_F, radius: f32, role: BrushRole, width: f32) {
+        let rr = D2D1_ROUNDED_RECT {
+            rect,
+            radiusX: radius,
+            radiusY: radius,
+        };
+        unsafe {
+            self.target
+                .DrawRoundedRectangle(&rr, self.brush(role), width, None)
+        }
     }
 
-    pub fn line(
-        &self,
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-        role: BrushRole,
-        width: f32,
-    ) {
+    pub fn line(&self, x1: f32, y1: f32, x2: f32, y2: f32, role: BrushRole, width: f32) {
         unsafe {
             self.target.DrawLine(
                 windows_numerics::Vector2 { X: x1, Y: y1 },
@@ -251,7 +248,8 @@ impl Renderer {
             if fill {
                 self.target.FillEllipse(&ellipse, self.brush(role));
             } else {
-                self.target.DrawEllipse(&ellipse, self.brush(role), width, None);
+                self.target
+                    .DrawEllipse(&ellipse, self.brush(role), width, None);
             }
         }
     }
@@ -295,15 +293,60 @@ impl Renderer {
     fn rebuild_formats(&mut self) -> Result<()> {
         self.formats.clear();
         let entries = [
-            (TextStyle::Title, 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING),
-            (TextStyle::Subtitle, 13.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING),
-            (TextStyle::Section, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING),
-            (TextStyle::Body, 13.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING),
-            (TextStyle::BodyStrong, 13.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING),
-            (TextStyle::Caption, 11.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING),
-            (TextStyle::CaptionRight, 11.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_TRAILING),
-            (TextStyle::Button, 13.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER),
-            (TextStyle::ButtonSmall, 11.5, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER),
+            (
+                TextStyle::Title,
+                24.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
+                TextStyle::Subtitle,
+                13.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
+                TextStyle::Section,
+                14.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
+                TextStyle::Body,
+                13.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
+                TextStyle::BodyStrong,
+                13.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
+                TextStyle::Caption,
+                11.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
+                TextStyle::CaptionRight,
+                11.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_TRAILING,
+            ),
+            (
+                TextStyle::Button,
+                13.0,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            ),
+            (
+                TextStyle::ButtonSmall,
+                11.5,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
+            ),
         ];
         for (style, size, weight, alignment) in entries {
             let format = self.create_format(size, weight, alignment)?;
@@ -346,7 +389,9 @@ impl Renderer {
                 .map_err(|e| Error::win("CreateTextFormat", &e))?
         };
         unsafe {
-            format.SetTextAlignment(alignment).map_err(|e| Error::win("SetTextAlignment", &e))?;
+            format
+                .SetTextAlignment(alignment)
+                .map_err(|e| Error::win("SetTextAlignment", &e))?;
             format
                 .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
                 .map_err(|e| Error::win("SetParagraphAlignment", &e))?;
@@ -394,5 +439,10 @@ fn brush_colors(theme: Theme) -> [(BrushRole, Color); 19] {
 }
 
 pub fn rect(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
-    D2D_RECT_F { left, top, right, bottom }
+    D2D_RECT_F {
+        left,
+        top,
+        right,
+        bottom,
+    }
 }

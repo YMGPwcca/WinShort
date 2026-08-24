@@ -41,8 +41,14 @@ static LOGGER: OnceLock<Logger> = OnceLock::new();
 /// Initialize logging. Creates the directory if possible; if the filesystem is
 /// unavailable the process still runs (logs go nowhere).
 pub fn init(logs_dir: &Path, level: Level) {
-    let dir = std::fs::create_dir_all(logs_dir).is_ok().then(|| logs_dir.to_path_buf());
-    let _ = LOGGER.set(Logger { level, dir, state: Mutex::new(None) });
+    let dir = std::fs::create_dir_all(logs_dir)
+        .is_ok()
+        .then(|| logs_dir.to_path_buf());
+    let _ = LOGGER.set(Logger {
+        level,
+        dir,
+        state: Mutex::new(None),
+    });
 }
 
 pub fn enabled(level: Level) -> bool {
@@ -115,9 +121,14 @@ fn local_utc_offset_secs() -> i64 {
 fn timestamp() -> String {
     let (secs, ms) = now_parts();
     let rem = (secs as i64 + local_utc_offset_secs()).rem_euclid(86_400) as u64;
-    format!("{:02}:{:02}:{:02}.{:03}", rem / 3600, (rem % 3600) / 60, rem % 60, ms)
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60,
+        ms
+    )
 }
-
 
 #[macro_export]
 macro_rules! log_debug {

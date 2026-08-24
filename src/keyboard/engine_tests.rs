@@ -11,7 +11,10 @@ fn table_with_win_digits() -> BindingTable {
     let mut t = BindingTable::default();
     for d in 1u16..=9 {
         t.insert(
-            Hotkey { modifiers: ModifierMask::WIN, key: VirtualKey(0x30 + d) },
+            Hotkey {
+                modifiers: ModifierMask::WIN,
+                key: VirtualKey(0x30 + d),
+            },
             HotkeyAction::SwitchDesktop((d - 1) as u8),
         );
     }
@@ -41,19 +44,34 @@ const VK_L: u16 = b'L' as u16;
 const VK_S: u16 = b'S' as u16;
 const VK_SHIFT: u16 = 0xA0; // left shift normalized form arrives as VK_LSHIFT
 
-fn feed(engine: &mut KeyboardEngine, table: &BindingTable, events: &[RawKeyEvent]) -> Vec<EngineOutcome> {
+fn feed(
+    engine: &mut KeyboardEngine,
+    table: &BindingTable,
+    events: &[RawKeyEvent],
+) -> Vec<EngineOutcome> {
     events.iter().map(|e| engine.on_event(*e, table)).collect()
 }
 
 fn expect_dispatch(out: EngineOutcome, action: HotkeyAction, dirty: bool) {
-    assert_eq!(out, EngineOutcome::Dispatch { action, dirty_win_chord: dirty }, "wrong outcome");
+    assert_eq!(
+        out,
+        EngineOutcome::Dispatch {
+            action,
+            dirty_win_chord: dirty
+        },
+        "wrong outcome"
+    );
 }
 
 #[test]
 fn win_tap_alone_does_not_dispatch_or_suppress() {
     let mut e = KeyboardEngine::new();
     let t = table_with_win_digits();
-    let out = feed(&mut e, &t, &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::up(VK_LWIN)]);
+    let out = feed(
+        &mut e,
+        &t,
+        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::up(VK_LWIN)],
+    );
     assert_eq!(out, vec![EngineOutcome::Pass, EngineOutcome::Pass]);
 }
 
@@ -84,7 +102,11 @@ fn right_win_symmetric() {
     let out = feed(
         &mut e,
         &t,
-        &[RawKeyEvent::down(VK_RWIN), RawKeyEvent::down(b'2' as u16), RawKeyEvent::up(VK_RWIN)],
+        &[
+            RawKeyEvent::down(VK_RWIN),
+            RawKeyEvent::down(b'2' as u16),
+            RawKeyEvent::up(VK_RWIN),
+        ],
     );
     expect_dispatch(out[1], HotkeyAction::SwitchDesktop(1), true);
     assert_eq!(out[2], EngineOutcome::Pass);
@@ -94,7 +116,11 @@ fn right_win_symmetric() {
 fn win_plus_9() {
     let mut e = KeyboardEngine::new();
     let t = table_with_win_digits();
-    let out = feed(&mut e, &t, &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::down(b'9' as u16)]);
+    let out = feed(
+        &mut e,
+        &t,
+        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::down(b'9' as u16)],
+    );
     expect_dispatch(out[1], HotkeyAction::SwitchDesktop(8), true);
 }
 
@@ -106,7 +132,12 @@ fn unbound_win_shortcuts_fully_pass_through() {
         let out = feed(
             &mut e,
             &t,
-            &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::down(seq_key), RawKeyEvent::up(seq_key), RawKeyEvent::up(VK_LWIN)],
+            &[
+                RawKeyEvent::down(VK_LWIN),
+                RawKeyEvent::down(seq_key),
+                RawKeyEvent::up(seq_key),
+                RawKeyEvent::up(VK_LWIN),
+            ],
         );
         assert!(
             out.iter().all(|o| *o == EngineOutcome::Pass),
@@ -145,18 +176,41 @@ fn rapid_win_1_2_3_dispatch_three_times() {
     }
     events.push(RawKeyEvent::up(VK_LWIN));
     let out = feed(&mut e, &t, &events);
-    assert_eq!(out[1], EngineOutcome::Dispatch { action: HotkeyAction::SwitchDesktop(0), dirty_win_chord: true });
+    assert_eq!(
+        out[1],
+        EngineOutcome::Dispatch {
+            action: HotkeyAction::SwitchDesktop(0),
+            dirty_win_chord: true
+        }
+    );
     assert_eq!(out[2], EngineOutcome::Swallow);
-    assert_eq!(out[3], EngineOutcome::Dispatch { action: HotkeyAction::SwitchDesktop(1), dirty_win_chord: true });
+    assert_eq!(
+        out[3],
+        EngineOutcome::Dispatch {
+            action: HotkeyAction::SwitchDesktop(1),
+            dirty_win_chord: true
+        }
+    );
     assert_eq!(out[4], EngineOutcome::Swallow);
-    assert_eq!(out[5], EngineOutcome::Dispatch { action: HotkeyAction::SwitchDesktop(2), dirty_win_chord: true });
+    assert_eq!(
+        out[5],
+        EngineOutcome::Dispatch {
+            action: HotkeyAction::SwitchDesktop(2),
+            dirty_win_chord: true
+        }
+    );
 }
 
 #[test]
 fn holding_win_and_digit_fires_once_despite_autorepeat() {
     let mut e = KeyboardEngine::new();
     let t = table_with_win_digits();
-    let repeat = RawKeyEvent { vk: b'3' as u16, extended: false, down: true, injected: false };
+    let repeat = RawKeyEvent {
+        vk: b'3' as u16,
+        extended: false,
+        down: true,
+        injected: false,
+    };
     let out = feed(
         &mut e,
         &t,
@@ -169,8 +223,21 @@ fn holding_win_and_digit_fires_once_despite_autorepeat() {
             RawKeyEvent::up(b'3' as u16),
         ],
     );
-    assert_eq!(out[1], EngineOutcome::Dispatch { action: HotkeyAction::SwitchDesktop(2), dirty_win_chord: true });
-    assert_eq!(&out[2..5], &[EngineOutcome::Swallow, EngineOutcome::Swallow, EngineOutcome::Swallow]);
+    assert_eq!(
+        out[1],
+        EngineOutcome::Dispatch {
+            action: HotkeyAction::SwitchDesktop(2),
+            dirty_win_chord: true
+        }
+    );
+    assert_eq!(
+        &out[2..5],
+        &[
+            EngineOutcome::Swallow,
+            EngineOutcome::Swallow,
+            EngineOutcome::Swallow
+        ]
+    );
 }
 
 #[test]
@@ -201,7 +268,12 @@ fn modifiers_released_in_strange_orders_stay_consistent() {
     let first = feed(
         &mut e,
         &t,
-        &[RawKeyEvent::down(VK_RWIN), RawKeyEvent::down(b'5' as u16), RawKeyEvent::up(b'5' as u16), RawKeyEvent::up(VK_RWIN)],
+        &[
+            RawKeyEvent::down(VK_RWIN),
+            RawKeyEvent::down(b'5' as u16),
+            RawKeyEvent::up(b'5' as u16),
+            RawKeyEvent::up(VK_RWIN),
+        ],
     );
     expect_dispatch(first[1], HotkeyAction::SwitchDesktop(4), true);
 
@@ -209,7 +281,12 @@ fn modifiers_released_in_strange_orders_stay_consistent() {
     let second = feed(
         &mut e,
         &t,
-        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::down(b'6' as u16), RawKeyEvent::up(VK_LWIN), RawKeyEvent::up(b'6' as u16)],
+        &[
+            RawKeyEvent::down(VK_LWIN),
+            RawKeyEvent::down(b'6' as u16),
+            RawKeyEvent::up(VK_LWIN),
+            RawKeyEvent::up(b'6' as u16),
+        ],
     );
     expect_dispatch(second[1], HotkeyAction::SwitchDesktop(5), true);
     assert_eq!(second[2], EngineOutcome::Pass);
@@ -224,23 +301,31 @@ fn config_swap_while_modifiers_held_applies_immediately() {
     // New table moves microphone to Win+7.
     let mut new_table = BindingTable::default();
     new_table.insert(
-        Hotkey { modifiers: ModifierMask::WIN, key: VirtualKey(b'7' as u16) },
+        Hotkey {
+            modifiers: ModifierMask::WIN,
+            key: VirtualKey(b'7' as u16),
+        },
         HotkeyAction::ToggleMicrophone,
     );
 
-    assert_eq!(e.on_event(RawKeyEvent::down(VK_LWIN), &old), EngineOutcome::Pass);
+    assert_eq!(
+        e.on_event(RawKeyEvent::down(VK_LWIN), &old),
+        EngineOutcome::Pass
+    );
     // While Win held, swap happens.
     let out = e.on_event(RawKeyEvent::down(b'M' as u16), &old); // old table: no Win+M
     assert_eq!(out, EngineOutcome::Pass);
     let out = e.on_event(RawKeyEvent::up(b'M' as u16), &old);
     let out = e.on_event(RawKeyEvent::down(b'7' as u16), &new_table); // new table active
-    // The shell already saw `M` during this chord, so no dirtier is needed.
+                                                                      // The shell already saw `M` during this chord, so no dirtier is needed.
     assert_eq!(
         out,
-        EngineOutcome::Dispatch { action: HotkeyAction::ToggleMicrophone, dirty_win_chord: false }
+        EngineOutcome::Dispatch {
+            action: HotkeyAction::ToggleMicrophone,
+            dirty_win_chord: false
+        }
     );
 }
-
 
 #[test]
 fn injected_events_never_bind_or_suppress() {
@@ -249,7 +334,10 @@ fn injected_events_never_bind_or_suppress() {
     let out = feed(
         &mut e,
         &t,
-        &[RawKeyEvent::down(VK_LWIN).injected(), RawKeyEvent::down(b'1' as u16).injected()],
+        &[
+            RawKeyEvent::down(VK_LWIN).injected(),
+            RawKeyEvent::down(b'1' as u16).injected(),
+        ],
     );
     assert!(out.iter().all(|o| *o == EngineOutcome::Pass));
 }
@@ -262,10 +350,10 @@ fn extra_modifier_prevents_exact_match() {
         &mut e,
         &t,
         &[
-            RawKeyEvent::down(0xA2),          // LCtrl
-            RawKeyEvent::down(0xA4),          // LAlt
-            RawKeyEvent::down(VK_SHIFT),      // +Shift held
-            RawKeyEvent::down(b'M' as u16),   // Ctrl+Alt+Shift+M != Ctrl+Alt+M
+            RawKeyEvent::down(0xA2),        // LCtrl
+            RawKeyEvent::down(0xA4),        // LAlt
+            RawKeyEvent::down(VK_SHIFT),    // +Shift held
+            RawKeyEvent::down(b'M' as u16), // Ctrl+Alt+Shift+M != Ctrl+Alt+M
         ],
     );
     assert_eq!(out[3], EngineOutcome::Pass);
@@ -280,21 +368,40 @@ fn numpad_digits_are_distinct_from_top_row() {
     let out = feed(
         &mut e,
         &t,
-        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent { vk: 0x63, extended: false, down: true, injected: false }],
+        &[
+            RawKeyEvent::down(VK_LWIN),
+            RawKeyEvent {
+                vk: 0x63,
+                extended: false,
+                down: true,
+                injected: false,
+            },
+        ],
     );
     assert_eq!(out[1], EngineOutcome::Pass);
 
     // ...while an explicit Numpad3 binding matches only the numpad key.
     let mut t2 = BindingTable::default();
     t2.insert(
-        Hotkey { modifiers: ModifierMask::WIN, key: VirtualKey(0x63) },
+        Hotkey {
+            modifiers: ModifierMask::WIN,
+            key: VirtualKey(0x63),
+        },
         HotkeyAction::ToggleMicrophone,
     );
     let mut e2 = KeyboardEngine::new();
     let out2 = feed(
         &mut e2,
         &t2,
-        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent { vk: 0x63, extended: false, down: true, injected: false }],
+        &[
+            RawKeyEvent::down(VK_LWIN),
+            RawKeyEvent {
+                vk: 0x63,
+                extended: false,
+                down: true,
+                injected: false,
+            },
+        ],
     );
     expect_dispatch(out2[1], HotkeyAction::ToggleMicrophone, true);
 }
@@ -306,7 +413,11 @@ fn reset_clears_stuck_state() {
     let _ = e.on_event(RawKeyEvent::down(VK_LWIN), &t);
     e.reset();
     // After reset the engine must behave as fresh: plain tap passes.
-    let out = feed(&mut e, &t, &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::up(VK_LWIN)]);
+    let out = feed(
+        &mut e,
+        &t,
+        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::up(VK_LWIN)],
+    );
     assert!(out.iter().all(|o| *o == EngineOutcome::Pass));
 }
 
@@ -329,7 +440,11 @@ fn modifier_release_clears_state_for_every_side() {
         let mut e = KeyboardEngine::new();
         let t = table_with_win_digits();
         feed(&mut e, &t, &[RawKeyEvent::down(vk), RawKeyEvent::up(vk)]);
-        assert_eq!(e.current_modifiers(), ModifierMask::NONE, "{name} stuck down");
+        assert_eq!(
+            e.current_modifiers(),
+            ModifierMask::NONE,
+            "{name} stuck down"
+        );
     }
 }
 
@@ -392,9 +507,9 @@ fn altgr_signature_skips_binding_lookup() {
         &mut e,
         &t,
         &[
-            RawKeyEvent::down(0xA2),            // LCtrl down
-            RawKeyEvent::down(0xA5),            // RAlt down -> AltGr signature
-            RawKeyEvent::down(b'M' as u16),     // would be ToggleMicrophone otherwise
+            RawKeyEvent::down(0xA2),        // LCtrl down
+            RawKeyEvent::down(0xA5),        // RAlt down -> AltGr signature
+            RawKeyEvent::down(b'M' as u16), // would be ToggleMicrophone otherwise
         ],
     );
     // The M key-down must NOT dispatch; feed returns outcomes — re-run to inspect.
@@ -409,7 +524,11 @@ fn altgr_signature_skips_binding_lookup() {
             RawKeyEvent::up(b'M' as u16),
         ],
     );
-    assert_eq!(out[2], EngineOutcome::Pass, "AltGr letter must pass through");
+    assert_eq!(
+        out[2],
+        EngineOutcome::Pass,
+        "AltGr letter must pass through"
+    );
 }
 
 #[test]
@@ -439,7 +558,11 @@ fn altgr_signature_detected_when_ralt_precedes_lctrl() {
             RawKeyEvent::up(b'M' as u16),
         ],
     );
-    assert_eq!(out[2], EngineOutcome::Pass, "AltGr letter must pass through");
+    assert_eq!(
+        out[2],
+        EngineOutcome::Pass,
+        "AltGr letter must pass through"
+    );
 }
 
 #[test]
@@ -451,8 +574,8 @@ fn plain_lctrl_lalt_chord_still_dispatches() {
         &mut e,
         &t,
         &[
-            RawKeyEvent::down(0xA2),            // LCtrl
-            RawKeyEvent::down(0xA4),            // LAlt (NOT RAlt)
+            RawKeyEvent::down(0xA2), // LCtrl
+            RawKeyEvent::down(0xA4), // LAlt (NOT RAlt)
             RawKeyEvent::down(b'M' as u16),
         ],
     );
@@ -498,7 +621,6 @@ fn altgr_state_clears_after_either_release_order() {
     );
     expect_dispatch(out[6], HotkeyAction::ToggleMicrophone, false);
 }
-
 
 #[test]
 fn reset_clears_altgr_signature() {

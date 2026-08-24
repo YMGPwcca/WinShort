@@ -24,9 +24,13 @@ impl BackendKind {
 pub enum BackendAvailability {
     Available,
     /// Known build but the Shell refused/dropped the interface.
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
     /// Build not on the compatibility whitelist — fail closed (spec §20).
-    UnsupportedBuild { build: u32 },
+    UnsupportedBuild {
+        build: u32,
+    },
 }
 
 impl BackendAvailability {

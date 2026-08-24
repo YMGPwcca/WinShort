@@ -15,7 +15,10 @@ pub struct Violation {
 
 impl Violation {
     fn new(field: &str, message: impl Into<String>) -> Self {
-        Self { field: field.into(), message: message.into() }
+        Self {
+            field: field.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -40,7 +43,10 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
     for (name, hk) in [
         ("toggle_microphone", &cfg.hotkeys.toggle_microphone),
         ("toggle_output", &cfg.hotkeys.toggle_output),
-        ("toggle_foreground_audio", &cfg.hotkeys.toggle_foreground_audio),
+        (
+            "toggle_foreground_audio",
+            &cfg.hotkeys.toggle_foreground_audio,
+        ),
     ] {
         if let Some(hk) = hk {
             if let Some(other) = seen.insert(*hk, name) {
@@ -123,7 +129,9 @@ mod tests {
         let mut c = Config::default();
         c.hotkeys.toggle_output = c.hotkeys.toggle_microphone;
         let v = validate(&c);
-        assert!(v.iter().any(|x| x.field.contains("toggle_output") && x.message.contains("conflicts")));
+        assert!(v
+            .iter()
+            .any(|x| x.field.contains("toggle_output") && x.message.contains("conflicts")));
     }
 
     #[test]
@@ -169,7 +177,8 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
         let v = validate(&c);
         assert!(
             v.iter().any(|x| x.field == "hotkeys.toggle_output"
-                && x.message.contains("reserved virtual-desktop shortcut Win+5")),
+                && x.message
+                    .contains("reserved virtual-desktop shortcut Win+5")),
             "got {v:?}"
         );
 
@@ -188,5 +197,4 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
         });
         assert!(validate(&c).is_empty());
     }
-
 }

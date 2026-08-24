@@ -19,10 +19,20 @@ pub struct RawKeyEvent {
 
 impl RawKeyEvent {
     pub fn down(vk: u16) -> Self {
-        Self { vk, extended: false, down: true, injected: false }
+        Self {
+            vk,
+            extended: false,
+            down: true,
+            injected: false,
+        }
     }
     pub fn up(vk: u16) -> Self {
-        Self { vk, extended: false, down: false, injected: false }
+        Self {
+            vk,
+            extended: false,
+            down: false,
+            injected: false,
+        }
     }
     pub fn injected(mut self) -> Self {
         self.injected = true;
@@ -143,7 +153,10 @@ impl KeyboardEngine {
                     if let Some(action) = table.lookup(mask, VirtualKey(key)) {
                         self.win_down_swallowed = true;
                         self.passthrough_while_win = false;
-                        return EngineOutcome::Dispatch { action, dirty_win_chord: false };
+                        return EngineOutcome::Dispatch {
+                            action,
+                            dirty_win_chord: false,
+                        };
                     }
                 }
             }
@@ -171,7 +184,10 @@ impl KeyboardEngine {
                 }
                 self.suppressed_ups.insert(vk);
                 let dirty_win_chord = win_held && !self.passthrough_while_win;
-                return EngineOutcome::Dispatch { action, dirty_win_chord };
+                return EngineOutcome::Dispatch {
+                    action,
+                    dirty_win_chord,
+                };
             }
             None => {
                 self.state.set_down(vk, true);

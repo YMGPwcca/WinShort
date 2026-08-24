@@ -43,7 +43,10 @@ impl VirtualDesktopBackend for KeyboardFallback {
 
     fn switch_to(&self, index: usize) -> std::result::Result<(), DesktopError> {
         if index > 31 {
-            return Err(DesktopError::TargetOutOfRange { requested: index, count: 32 });
+            return Err(DesktopError::TargetOutOfRange {
+                requested: index,
+                count: 32,
+            });
         }
         // 32 left chords saturate at Desktop 1 for the supported UX (1–9).
         // Abort on the first failed chord (#22): continuing past a partial

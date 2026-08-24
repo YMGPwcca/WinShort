@@ -52,7 +52,10 @@ impl DesktopService {
             let _ = join.join();
             return Err(Error::desktop("desktop startup timed out"));
         }
-        Ok(Self { sender, join: Some(join) })
+        Ok(Self {
+            sender,
+            join: Some(join),
+        })
     }
 
     pub fn switch_to(&self, index: usize) {
@@ -157,8 +160,9 @@ impl DesktopController {
                     crate::info!("native desktop backend recovered on demand");
                 }
                 Err(e) => {
-                    self.native_availability =
-                        BackendAvailability::Failed { reason: e.to_string() };
+                    self.native_availability = BackendAvailability::Failed {
+                        reason: e.to_string(),
+                    };
                     return NativeOutcome::MayFallback;
                 }
             }
@@ -203,7 +207,9 @@ impl DesktopController {
                 }
             }
             Err(e) => {
-                self.native_availability = BackendAvailability::Failed { reason: e.to_string() };
+                self.native_availability = BackendAvailability::Failed {
+                    reason: e.to_string(),
+                };
                 self.native = None;
             }
         }
@@ -251,16 +257,17 @@ fn desktop_thread(
         Ok(controller) => controller,
         Err(e) => {
             let _ = ready.send(Err(e));
-            unsafe { CoUninitialize(); }
+            unsafe {
+                CoUninitialize();
+            }
             return;
         }
     };
     if let Some(native) = controller.native.as_ref() {
         match (native.desktop_count(), native.current_desktop()) {
-            (Ok(count), Ok(current)) => crate::info!(
-                "virtual desktops: count={count}, current={}",
-                current + 1
-            ),
+            (Ok(count), Ok(current)) => {
+                crate::info!("virtual desktops: count={count}, current={}", current + 1)
+            }
             (count, current) => crate::warn_!(
                 "virtual desktop diagnostics unavailable: count={count:?}, current={current:?}"
             ),
@@ -279,7 +286,9 @@ fn desktop_thread(
         }
     }
     drop(controller);
-    unsafe { CoUninitialize(); }
+    unsafe {
+        CoUninitialize();
+    }
     crate::info!("virtual desktop controller stopped");
 }
 
@@ -319,7 +328,10 @@ mod policy_tests {
     fn target_out_of_range_never_permits_fallback() {
         // #20 acceptance: desktop 9 requested with count 3 must NOT inject
         // keyboard chords.
-        let err = DesktopError::TargetOutOfRange { requested: 8, count: 3 };
+        let err = DesktopError::TargetOutOfRange {
+            requested: 8,
+            count: 3,
+        };
         assert!(!err.permits_fallback());
         assert!(matches!(err, DesktopError::TargetOutOfRange { .. }));
     }
@@ -337,13 +349,19 @@ mod policy_tests {
     fn scripted_backend_surfaces_typed_error() {
         let backend = ScriptedBackend {
             availability: BackendAvailability::Available,
-            errors: RefCell::new(vec![DesktopError::TargetOutOfRange { requested: 8, count: 3 }]),
+            errors: RefCell::new(vec![DesktopError::TargetOutOfRange {
+                requested: 8,
+                count: 3,
+            }]),
             fallback_used: RefCell::new(false),
         };
         let out = VirtualDesktopBackend::switch_to(&backend, 8);
         assert_eq!(
             out,
-            Err(DesktopError::TargetOutOfRange { requested: 8, count: 3 })
+            Err(DesktopError::TargetOutOfRange {
+                requested: 8,
+                count: 3
+            })
         );
         assert!(!*backend.fallback_used.borrow());
     }

@@ -13,11 +13,11 @@
 mod diagnostics;
 
 mod app;
-mod event;
 mod audio;
+mod config;
 mod desktop;
 mod error;
-mod config;
+mod event;
 mod keyboard;
 mod platform;
 mod tray;

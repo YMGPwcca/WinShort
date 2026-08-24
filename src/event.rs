@@ -2,10 +2,10 @@
 //! to move them across thread boundaries: an owned queue woken by
 //! `PostMessageW`, plus WPARAM packing for keyboard actions.
 
-use std::collections::VecDeque;
-use std::sync::Mutex;
 use crate::audio::state::{AppAudioState, AudioState, OutputState};
 use crate::desktop::backend::BackendStatus;
+use std::collections::VecDeque;
+use std::sync::Mutex;
 
 pub const WM_APP_TRAY: u32 = 0x8000; // WM_APP + 0: tray callback notifications
 pub const WM_APP_ACTION: u32 = 0x8001; // keyboard hook recognized a binding

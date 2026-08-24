@@ -1,19 +1,18 @@
 //! Application runtime: hidden main window, tray integration, event routing,
 //! startup/shutdown orchestration (spec §5–§7, §46–§47).
 
+use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_MESSAGE, RegisterWindowMessageW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterWindowMessageW, HWND_MESSAGE,
     WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
 };
-use windows::core::{HSTRING, PCWSTR};
 
 use crate::error::{Error, Result};
 use crate::event::{self, AppEvent, HotkeyAction, WM_APP_EVENT};
 use crate::platform::window as win;
 use crate::tray::{menu as tray_menu, Tray, TrayEvent, TrayState};
 use crate::ui::settings::SettingsWindow;
-
 
 pub static CONFIG: std::sync::OnceLock<std::sync::Arc<crate::config::ConfigHandle>> =
     std::sync::OnceLock::new();
@@ -35,7 +34,6 @@ pub fn taskbar_created_msg() -> u32 {
         RegisterWindowMessageW(PCWSTR(HSTRING::from("TaskbarCreated").as_ptr()))
     })
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingOverlay {
@@ -166,7 +164,6 @@ impl App {
         Ok(())
     }
 
-
     /// Install the tray icon (after the main window exists).
     pub fn install_tray(&mut self) -> Result<()> {
         let size = small_icon_size();
@@ -176,7 +173,6 @@ impl App {
         info!("tray icon installed ({size}px)");
         Ok(())
     }
-
 
     pub fn install_overlay(&mut self) -> Result<()> {
         self.overlay = Some(crate::ui::overlay::OverlayWindow::create()?);
@@ -292,13 +288,24 @@ impl App {
             keyboard.set_suspended(self.suspended);
             keyboard.reset_state();
         }
-        let state = if self.suspended { TrayState::HotkeysSuspended } else { TrayState::Normal };
+        let state = if self.suspended {
+            TrayState::HotkeysSuspended
+        } else {
+            TrayState::Normal
+        };
         if let Some(t) = &mut self.tray {
             if let Err(e) = t.set_state(state) {
                 error_!("tray state update failed: {e}");
             }
         }
-        info!("hotkeys {}", if self.suspended { "suspended" } else { "resumed" });
+        info!(
+            "hotkeys {}",
+            if self.suspended {
+                "suspended"
+            } else {
+                "resumed"
+            }
+        );
     }
 
     fn set_suspended(&mut self, suspended: bool) {
@@ -362,7 +369,10 @@ impl App {
             }
             HotkeyAction::ToggleForegroundAppAudio => {
                 self.pending_overlay = Some(PendingOverlay::Foreground);
-                let pid = self.foreground.as_ref().and_then(|tracker| tracker.target_pid());
+                let pid = self
+                    .foreground
+                    .as_ref()
+                    .and_then(|tracker| tracker.target_pid());
                 if let Some(audio) = &self.audio {
                     audio.send(crate::audio::AudioCommand::ToggleForeground(pid));
                 }
@@ -407,7 +417,10 @@ impl App {
         if self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp {
             rows.push(crate::ui::overlay::application_row(&self.foreground_state));
         }
-        let pid = self.foreground.as_ref().and_then(|tracker| tracker.target_pid());
+        let pid = self
+            .foreground
+            .as_ref()
+            .and_then(|tracker| tracker.target_pid());
         if let Some(audio) = &self.audio {
             audio.send(crate::audio::AudioCommand::QueryForeground(pid));
         }
@@ -524,7 +537,6 @@ impl App {
             );
         }
     }
-
 }
 
 #[cfg(test)]
@@ -620,7 +632,9 @@ unsafe extern "system" fn main_wndproc(
 
     match msg {
         event::WM_APP_TRAY => {
-            unsafe { handle_tray(wparam, lparam); }
+            unsafe {
+                handle_tray(wparam, lparam);
+            }
             LRESULT(0)
         }
 
@@ -669,17 +683,15 @@ unsafe extern "system" fn main_wndproc(
             LRESULT(0)
         }
 
-        windows::Win32::UI::WindowsAndMessaging::WM_POWERBROADCAST => {
-            match wparam.0 as u32 {
-                windows::Win32::UI::WindowsAndMessaging::PBT_APMSUSPEND
-                | windows::Win32::UI::WindowsAndMessaging::PBT_APMRESUMEAUTOMATIC
-                | windows::Win32::UI::WindowsAndMessaging::PBT_APMRESUMESUSPEND => {
-                    with_app(App::reset_keyboard_state);
-                    LRESULT(1)
-                }
-                _ => LRESULT(1),
+        windows::Win32::UI::WindowsAndMessaging::WM_POWERBROADCAST => match wparam.0 as u32 {
+            windows::Win32::UI::WindowsAndMessaging::PBT_APMSUSPEND
+            | windows::Win32::UI::WindowsAndMessaging::PBT_APMRESUMEAUTOMATIC
+            | windows::Win32::UI::WindowsAndMessaging::PBT_APMRESUMESUSPEND => {
+                with_app(App::reset_keyboard_state);
+                LRESULT(1)
             }
-        }
+            _ => LRESULT(1),
+        },
 
         WM_DESTROY => {
             unsafe {

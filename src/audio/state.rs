@@ -12,7 +12,10 @@ pub struct DeviceId {
 
 impl DeviceId {
     pub fn default_device() -> Self {
-        Self { endpoint: "default".into(), name: "Default device".into() }
+        Self {
+            endpoint: "default".into(),
+            name: "Default device".into(),
+        }
     }
 }
 
@@ -43,8 +46,14 @@ impl AudioState {
 /// instead of a persistent-state variant (#17b).
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputState {
-    Unavailable { reason: String },
-    Current { device: DeviceId, muted: bool, volume_pct: u8 },
+    Unavailable {
+        reason: String,
+    },
+    Current {
+        device: DeviceId,
+        muted: bool,
+        volume_pct: u8,
+    },
 }
 
 /// Aggregate mute state across all sessions of one process.
@@ -78,11 +87,21 @@ pub struct AppAudioState {
 
 impl AppAudioState {
     pub fn no_session() -> Self {
-        Self { app_name: None, aggregate: Aggregate::NoSession, sessions: 0, error: None }
+        Self {
+            app_name: None,
+            aggregate: Aggregate::NoSession,
+            sessions: 0,
+            error: None,
+        }
     }
 
     pub fn no_external() -> Self {
-        Self { app_name: None, aggregate: Aggregate::NoExternalApp, sessions: 0, error: None }
+        Self {
+            app_name: None,
+            aggregate: Aggregate::NoExternalApp,
+            sessions: 0,
+            error: None,
+        }
     }
 
     pub fn status_label(&self) -> &'static str {

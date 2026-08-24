@@ -2,8 +2,6 @@
 
 use std::fmt;
 
-
-
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Clone)]
@@ -27,16 +25,28 @@ pub enum Error {
 
 impl Error {
     pub fn os(api: &'static str, code: u32) -> Self {
-        Error::Os { api, code, context: None }
+        Error::Os {
+            api,
+            code,
+            context: None,
+        }
     }
 
     pub fn os_ctx(api: &'static str, code: u32, context: impl Into<String>) -> Self {
-        Error::Os { api, code, context: Some(context.into()) }
+        Error::Os {
+            api,
+            code,
+            context: Some(context.into()),
+        }
     }
 
     /// Build from a `windows` crate error.
     pub fn win(api: &'static str, err: &windows_core::Error) -> Self {
-        Error::Os { api, code: err.code().0 as u32, context: None }
+        Error::Os {
+            api,
+            code: err.code().0 as u32,
+            context: None,
+        }
     }
 
     pub fn config(msg: impl Into<String>) -> Self {
@@ -110,7 +120,12 @@ mod tests {
             (0x80004001, "E_NOTIMPL"),
         ];
         for (code, name) in cases {
-            assert!(Error::code_name(code).starts_with(name), "{name}: {:#010X} -> {}", code, Error::code_name(code));
+            assert!(
+                Error::code_name(code).starts_with(name),
+                "{name}: {:#010X} -> {}",
+                code,
+                Error::code_name(code)
+            );
         }
         assert_eq!(Error::code_name(0x12345678), "0x12345678");
     }
@@ -149,6 +164,10 @@ impl std::error::Error for Error {}
 
 impl From<windows_core::Error> for Error {
     fn from(e: windows_core::Error) -> Self {
-        Error::Os { api: "<unknown>", code: e.code().0 as u32, context: None }
+        Error::Os {
+            api: "<unknown>",
+            code: e.code().0 as u32,
+            context: None,
+        }
     }
 }
