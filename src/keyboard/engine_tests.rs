@@ -367,6 +367,7 @@ fn mixed_order_modifier_releases_converge_empty() {
     );
     assert_eq!(e.current_modifiers(), ModifierMask::NONE);
 
+    // Mirror order: Shift first, Ctrl released first.
     let mut e = KeyboardEngine::new();
     feed(
         &mut e,
@@ -379,6 +380,31 @@ fn mixed_order_modifier_releases_converge_empty() {
         ],
     );
     assert_eq!(e.current_modifiers(), ModifierMask::NONE);
+}
+
+#[test]
+fn lifecycle_reset_after_partial_chord_emits_no_actions() {
+    // #13: Win down + bound digit (dispatched + suppressed up), then a
+    // lifecycle reset, then the physical releases. Nothing may dispatch and
+    // nothing may stay suppressed.
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    let pre = feed(
+        &mut e,
+        &t,
+        &[RawKeyEvent::down(VK_LWIN), RawKeyEvent::down(b'7' as u16)],
+    );
+    expect_dispatch(pre[1], HotkeyAction::SwitchDesktop(6), true);
+
+    e.reset();
+    assert_eq!(e.current_modifiers(), ModifierMask::NONE);
+
+    let out = feed(
+        &mut e,
+        &t,
+        &[RawKeyEvent::up(b'7' as u16), RawKeyEvent::up(VK_LWIN)],
+    );
+    assert!(out.iter().all(|o| *o == EngineOutcome::Pass));
 }
 
 #[test]

@@ -115,6 +115,18 @@ impl App {
             )
         }
         .map_err(|e| Error::win("CreateWindowExW(main)", &e))?;
+        // Session lock/unlock resets (#13). Failure is non-fatal: hook install
+        // and suspend toggle still reset engine state.
+        if unsafe {
+            windows::Win32::System::RemoteDesktop::WTSRegisterSessionNotification(
+                hwnd,
+                windows::Win32::System::RemoteDesktop::NOTIFY_FOR_THIS_SESSION,
+            )
+        }
+        .is_err()
+        {
+            crate::warn_!("WTSRegisterSessionNotification failed; lock/unlock resets disabled");
+        }
         let _ = MAIN_HWND.set(hwnd.0 as isize);
         set_app(App {
             hwnd,
@@ -214,6 +226,17 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Clear keyboard chord state (lock/unlock, sleep/resume, suspend
+    /// toggle). Keys physically released while the app could not see them
+    /// must not stay "held" (#13).
+    pub fn reset_keyboard_state(&mut self) {
+        self.pending_overlay = None;
+        if let Some(keyboard) = &self.keyboard {
+            keyboard.reset_state();
+        }
+        crate::info!("keyboard engine state reset (lifecycle transition)");
+    }
+
     fn ensure_settings(&mut self) -> Result<&mut SettingsWindow> {
         if self.settings.is_none() {
             self.settings = Some(SettingsWindow::create()?);
@@ -237,6 +260,7 @@ impl App {
         self.suspended = !self.suspended;
         if let Some(keyboard) = &self.keyboard {
             keyboard.set_suspended(self.suspended);
+            keyboard.reset_state();
         }
         let state = if self.suspended { TrayState::HotkeysSuspended } else { TrayState::Normal };
         if let Some(t) = &mut self.tray {
@@ -497,7 +521,39 @@ unsafe extern "system" fn main_wndproc(
             LRESULT(0)
         }
 
+        // NOTE: message constants in match patterns MUST be paths or
+        // pre-imported names — a bare unknown identifier becomes an
+        // irrefutable binding that swallows every message.
+        windows::Win32::UI::WindowsAndMessaging::WM_WTSSESSION_CHANGE => {
+            // wparam values from wtsapi32.h (not exported by the crate).
+            const WTS_SESSION_LOCK: u32 = 0x7;
+            const WTS_SESSION_UNLOCK: u32 = 0x8;
+            match wparam.0 as u32 {
+                WTS_SESSION_LOCK | WTS_SESSION_UNLOCK => {
+                    with_app(App::reset_keyboard_state);
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+
+        windows::Win32::UI::WindowsAndMessaging::WM_POWERBROADCAST => {
+            match wparam.0 as u32 {
+                windows::Win32::UI::WindowsAndMessaging::PBT_APMSUSPEND
+                | windows::Win32::UI::WindowsAndMessaging::PBT_APMRESUMEAUTOMATIC
+                | windows::Win32::UI::WindowsAndMessaging::PBT_APMRESUMESUSPEND => {
+                    with_app(App::reset_keyboard_state);
+                    LRESULT(1)
+                }
+                _ => LRESULT(1),
+            }
+        }
+
         WM_DESTROY => {
+            unsafe {
+                let _ =
+                    windows::Win32::System::RemoteDesktop::WTSUnRegisterSessionNotification(hwnd);
+            }
             crate::platform::message_loop::quit(0);
             LRESULT(DefWindowProcW(hwnd, msg, wparam, lparam).0)
         }
@@ -505,6 +561,7 @@ unsafe extern "system" fn main_wndproc(
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
+
 unsafe fn handle_tray(wparam: WPARAM, lparam: LPARAM) {
     match crate::tray::decode_callback(wparam, lparam) {
         TrayEvent::DoubleClick { .. } => {

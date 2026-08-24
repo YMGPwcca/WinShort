@@ -34,6 +34,9 @@ struct HookState {
 
 static HOOK_STATE: AtomicPtr<HookState> = AtomicPtr::new(std::ptr::null_mut());
 
+/// Thread message asking the hook thread to clear engine state (#13).
+const WM_APP_RESET_STATE: u32 = 0x8003; // WM_APP + 3
+
 pub struct KeyboardService {
     thread_id: u32,
     suspended: Arc<AtomicBool>,
@@ -64,6 +67,21 @@ impl KeyboardService {
 
     pub fn is_suspended(&self) -> bool {
         self.suspended.load(Ordering::Acquire)
+    }
+
+    /// Ask the keyboard thread to clear engine state (lock/sleep safety
+    /// valve). Never touches engine memory cross-thread — posts a wake (#13).
+    pub fn reset_state(&self) {
+        if self.thread_id != 0 {
+            unsafe {
+                let _ = PostThreadMessageW(
+                    self.thread_id,
+                    WM_APP_RESET_STATE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
     }
 
     pub fn shutdown(&mut self) {
@@ -122,16 +140,24 @@ fn keyboard_thread(
         if result.0 <= 0 {
             break;
         }
+        if msg.message == WM_APP_RESET_STATE {
+            // Session lock/unlock or power transition: clear chord state so
+            // keys physically released while away cannot stay "held".
+            let ptr = HOOK_STATE.load(Ordering::Acquire);
+            if !ptr.is_null() {
+                // SAFETY: HOOK_STATE is owned by this thread; it is only
+                // nulled after GetMessageW returns (thread teardown).
+                unsafe {
+                    (*ptr).engine.reset();
+                }
+            }
+            continue;
+        }
         unsafe {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
-
-    unsafe {
-        let _ = UnhookWindowsHookEx(hook);
-    }
-    HOOK_STATE.store(std::ptr::null_mut(), Ordering::Release);
     unsafe { drop(Box::from_raw(state_ptr)); }
     crate::info!("keyboard hook uninstalled");
 }

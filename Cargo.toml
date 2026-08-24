@@ -44,6 +44,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_RemoteDesktop",
 ] }
 windows-core = "0.62"
 serde = { version = "1", features = ["derive"] }
