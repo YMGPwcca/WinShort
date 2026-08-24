@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc daa98633617824f0cb4c9d19fd1ae03b59c00794150ed646715b298c814d8f75 # shrinks to picks = [false, false, false, false, false, false, false, false], seed = 0
+cc 88704c3c239886e371fc7ff97be71d224f84dc4e598e86b0f4ac5caa77c8db02 # shrinks to seq = [Down(49), Down(92), Down(91), Up(91)]
+cc ae12e2eee6550df78477ddb2528accece072351d3c4013eea644ca83e66649ea # shrinks to downs = [49, 92, 91]
+cc e40a655b2eba261c39a60edb1cd0859e9c872d72d6ddf8b1e52bfcbf2fb6be12 # shrinks to seq = [Down(91), Down(53), Down(160), Down(53), Up(53)]
+cc a190ed14564c18e9ee20bd25c8db43b54acd02879cdefafc62028d66ebf68e5f # shrinks to seq = [Down(77), Down(57), Down(91), Up(160), Down(57), Up(57)]

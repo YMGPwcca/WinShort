@@ -18,6 +18,9 @@ pub struct RawKeyEvent {
 }
 
 impl RawKeyEvent {
+    // Production code constructs RawKeyEvent literals; these builders
+    // exist for the test suite.
+    #[allow(dead_code)]
     /// Test constructors: production code builds `RawKeyEvent` literals
     /// directly in the hook.
     #[cfg(test)]
@@ -73,6 +76,10 @@ pub enum EngineOutcome {
 struct SuppressionSet([Option<u8>; 8]);
 
 impl SuppressionSet {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.0.iter().all(Option::is_none)
+    }
     fn insert(&mut self, vk: u16) {
         let b = vk as u8;
         if self.0.contains(&Some(b)) {
@@ -108,7 +115,8 @@ pub struct KeyboardEngine {
     passthrough_while_win: bool,
     /// We swallowed a Win DOWN because a digit-first chord completed; its UP
     /// must be swallowed too so the shell never sees this Win cycle.
-    win_down_swallowed: bool,
+    /// Per-side UP-swallow debt from digit-first completions (#57).
+    win_ups_to_swallow: u8,
     /// AltGr signature seen (Right Alt pressed while Left Ctrl held): skip
     /// binding lookups so layout characters never fire hotkeys (#35).
     altgr_active: bool,
@@ -158,7 +166,8 @@ impl KeyboardEngine {
                 let held: Vec<u16> = self.state.pressed_nonmods().collect();
                 for key in held {
                     if let Some(action) = table.lookup(mask, VirtualKey(key)) {
-                        self.win_down_swallowed = true;
+                        self.win_ups_to_swallow |=
+                            if vk == vks::VK_LWIN { 1 } else { 2 };
                         self.passthrough_while_win = false;
                         return EngineOutcome::Dispatch {
                             action,
@@ -224,14 +233,18 @@ impl KeyboardEngine {
             self.state.set_down(vk, false);
             self.update_altgr();
             if KeyState::is_win_key(vk) {
-                if self.state.any_win() {
-                    return EngineOutcome::Pass; // other side still held
-                }
-                if self.win_down_swallowed {
-                    // Hide our synthetic Win cycle completely from the shell.
-                    self.win_down_swallowed = false;
+                // Consume THIS side's swallow-debt first (#57): with both
+                // Wins held over a digit chord, each side armed its own
+                // cycle, so each UP must hide its own half regardless of
+                // whether the other Win is still down.
+                let side_bit: u8 = if vk == vks::VK_LWIN { 1 } else { 2 };
+                if self.win_ups_to_swallow & side_bit != 0 {
+                    self.win_ups_to_swallow &= !side_bit;
                     self.passthrough_while_win = false;
                     return EngineOutcome::Swallow;
+                }
+                if self.state.any_win() {
+                    return EngineOutcome::Pass; // other side still held
                 }
                 self.passthrough_while_win = false;
             }
@@ -254,11 +267,28 @@ impl KeyboardEngine {
         self.state.modifiers()
     }
 
+    /// Test-only (#37): currently held non-modifier keys.
+    #[cfg(test)]
+    pub fn held_nonmods(&self) -> Vec<u16> {
+        self.state.pressed_nonmods().collect()
+    }
+
+    /// Test-only (#37 invariant B/E): engine equals a fresh instance.
+    #[cfg(test)]
+    pub fn is_neutral(&self) -> bool {
+        self.state.is_fully_released()
+            && self.state.modifiers() == ModifierMask::NONE
+            && !self.passthrough_while_win
+            && self.win_ups_to_swallow == 0
+            && !self.altgr_active
+            && self.suppressed_ups.is_empty()
+    }
+
     /// Force-clear all state (focus/session loss safety valve).
     pub fn reset(&mut self) {
         self.state.clear_all();
         self.passthrough_while_win = false;
-        self.win_down_swallowed = false;
+        self.win_ups_to_swallow = 0;
         self.altgr_active = false;
         self.suppressed_ups.clear();
     }

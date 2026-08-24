@@ -60,6 +60,10 @@ mod heapless_like {
         pub fn contains(&self, v: u8) -> bool {
             self.0.contains(&Some(v))
         }
+        #[cfg(test)]
+        pub fn holds_any(&self) -> bool {
+            self.0.iter().any(Option::is_some)
+        }
         pub fn iter(&self) -> impl Iterator<Item = u8> + '_ {
             self.0.iter().filter_map(|s| *s)
         }
@@ -94,6 +98,12 @@ impl KeyState {
 
     pub fn pressed_nonmods(&self) -> impl Iterator<Item = u16> + '_ {
         self.nonmod_pressed.iter().map(|v| v as u16)
+    }
+
+    /// Test-only: true when no physical key/modifier is tracked as down.
+    #[cfg(test)]
+    pub fn is_fully_released(&self) -> bool {
+        self.down.iter().all(|&d| !d) && !self.nonmod_pressed.holds_any()
     }
 
     pub fn clear_all(&mut self) {

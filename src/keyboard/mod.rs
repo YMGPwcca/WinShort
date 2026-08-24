@@ -10,4 +10,8 @@ pub mod hook;
 pub mod keystate;
 
 #[cfg(test)]
+#[cfg(test)]
+mod engine_props;
+
+#[cfg(test)]
 mod engine_tests;
