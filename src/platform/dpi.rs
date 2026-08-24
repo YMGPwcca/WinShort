@@ -1,6 +1,5 @@
 //! Per-Monitor V2 DPI awareness and scale helpers.
 
-use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::UI::HiDpi::{
     GetDpiForMonitor, SetProcessDpiAwarenessContext,
