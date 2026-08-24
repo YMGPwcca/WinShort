@@ -510,7 +510,7 @@ unsafe fn handle_tray(wparam: WPARAM, lparam: LPARAM) {
         TrayEvent::DoubleClick { .. } => {
             with_app(|app| app.show_settings());
         }
-        TrayEvent::ContextMenu { x, y } => {
+        TrayEvent::ContextMenu { x, y, .. } => {
             // TrackPopupMenu runs a modal dispatch loop; never hold the App
             // borrow across it: snapshot state, run the menu, re-borrow to apply.
             let Some((hwnd, state)) = with_app(|app| (app.hwnd, tray_menu_state(app))) else {
@@ -519,7 +519,9 @@ unsafe fn handle_tray(wparam: WPARAM, lparam: LPARAM) {
             let cmd = tray_menu::track_tray_menu(hwnd, POINT { x, y }, &state);
             with_app(|app| apply_menu_command(app, cmd));
         }
-        TrayEvent::Select { .. } => {}
+        TrayEvent::Select { .. } => {
+            with_app(|app| app.show_settings());
+        }
         TrayEvent::Other => {}
     }
 }
