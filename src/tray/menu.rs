@@ -1,6 +1,6 @@
 //! Tray context menu (spec §6 layout).
 
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, TrackPopupMenu,
     HMENU, MF_CHECKED, MF_ENABLED, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
@@ -87,17 +87,30 @@ fn separator(menu: HMENU) -> Result<()> {
 ///
 /// Implements the documented SetForegroundWindow dance so the menu dismisses
 /// on outside click.
+/// Owned popup menu: `DestroyMenu` runs on Drop (#23).
+struct OwnedMenu(HMENU);
+
+impl Drop for OwnedMenu {
+    fn drop(&mut self) {
+        // SAFETY: created by CreatePopupMenu in this module and not
+        // transferred anywhere else.
+        unsafe {
+            let _ = DestroyMenu(self.0);
+        }
+    }
+}
+
 pub fn track_tray_menu(hwnd: HWND, pt: POINT, state: &MenuState) -> Option<u32> {
-    // SAFETY: window owned by this thread; menu destroyed before return.
+    // SAFETY: window owned by this thread; menu destroyed via OwnedMenu.
     unsafe {
         let _ = SetForegroundWindow(hwnd);
         let menu = match build(state) {
-            Ok(m) => m,
+            Ok(m) => OwnedMenu(m),
             Err(_) => return None,
         };
         // With TPM_RETURNCMD the BOOL payload IS the chosen command id.
         let res = TrackPopupMenu(
-            menu,
+            menu.0,
             TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_LEFTBUTTON,
             pt.x,
             pt.y,
@@ -106,6 +119,13 @@ pub fn track_tray_menu(hwnd: HWND, pt: POINT, state: &MenuState) -> Option<u32> 
             None,
         );
         let cmd = res.0 as u32;
+
+        // Documented requirement after TrackPopupMenu on a notification-icon
+        // context menu (#23): without it the next click can be swallowed and
+        // the menu may re-open.
+        use windows::Win32::UI::WindowsAndMessaging::WM_NULL;
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+
         if cmd == 0 {
             None
         } else {

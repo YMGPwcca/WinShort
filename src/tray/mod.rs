@@ -15,12 +15,36 @@ use windows::Win32::UI::Shell::{
 use crate::error::{Error, Result};
 use crate::event::WM_APP_TRAY;
 
-/// Normalize BOOL-returning Shell APIs into our Result.
+/// Normalize BOOL-returning Shell APIs into our Result, preserving
+/// GetLastError so diagnostics are truthful (#23).
 fn bool_ok(ok: windows::core::BOOL, api: &'static str) -> Result<()> {
     if ok.as_bool() {
         Ok(())
     } else {
-        Err(Error::os(api, 0))
+        Err(Error::os(api, unsafe {
+            windows::Win32::Foundation::GetLastError().0
+        }))
+    }
+}
+
+/// Owned `HICON`: `DestroyIcon` runs on Drop (#23). The shell copies the
+/// handle value; ownership of the GDI object stays with us.
+#[derive(Debug)]
+pub struct OwnedIcon(windows::Win32::UI::WindowsAndMessaging::HICON);
+
+impl OwnedIcon {
+    pub fn handle(&self) -> windows::Win32::UI::WindowsAndMessaging::HICON {
+        self.0
+    }
+}
+
+impl Drop for OwnedIcon {
+    fn drop(&mut self) {
+        use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+        // SAFETY: created by CreateIconIndirect and not destroyed elsewhere.
+        unsafe {
+            let _ = DestroyIcon(self.0);
+        }
     }
 }
 
@@ -36,21 +60,24 @@ const TRAY_UID: u32 = 1;
 pub struct Tray {
     hwnd: HWND,
     nid_base: NOTIFYICONDATAW,
-    icon_normal: windows::Win32::UI::WindowsAndMessaging::HICON,
-    icon_suspended: windows::Win32::UI::WindowsAndMessaging::HICON,
+    _icon_normal: OwnedIcon,
+    _icon_suspended: OwnedIcon,
     state: TrayState,
 }
 
 impl Tray {
     /// Add the notification area icon (spec §6).
-    pub fn install(hwnd: HWND, hicons: (windows::Win32::UI::WindowsAndMessaging::HICON, windows::Win32::UI::WindowsAndMessaging::HICON)) -> Result<Tray> {
+    pub fn install(
+        hwnd: HWND,
+        icons: (OwnedIcon, OwnedIcon),
+    ) -> Result<Tray> {
         let mut nid = NOTIFYICONDATAW::default();
         nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
         nid.uID = TRAY_UID;
         nid.uFlags = NOTIFY_ICON_DATA_FLAGS(NIF_MESSAGE | NIF_ICON | NIF_TIP);
         nid.uCallbackMessage = WM_APP_TRAY;
-        nid.hIcon = hicons.0;
+        nid.hIcon = icons.0.handle();
         set_tip(&mut nid, "WinShort");
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
 
@@ -59,14 +86,20 @@ impl Tray {
             // Ask for version-4 semantics AFTER adding (documented order).
             let mut v = nid;
             v.uFlags = NOTIFY_ICON_DATA_FLAGS::default();
-            bool_ok(Shell_NotifyIconW(NIM_SETVERSION, &v), "Shell_NotifyIconW(NIM_SETVERSION)")?;
+            if let Err(e) =
+                bool_ok(Shell_NotifyIconW(NIM_SETVERSION, &v), "Shell_NotifyIconW(NIM_SETVERSION)")
+            {
+                // Roll back the half-installed icon (#23).
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+                return Err(e);
+            }
         }
 
         Ok(Tray {
             hwnd,
             nid_base: nid,
-            icon_normal: hicons.0,
-            icon_suspended: hicons.1,
+            _icon_normal: icons.0,
+            _icon_suspended: icons.1,
             state: TrayState::Normal,
         })
     }
@@ -83,8 +116,8 @@ impl Tray {
         let mut nid = self.nid_base;
         nid.uFlags = NOTIFY_ICON_DATA_FLAGS(NIF_ICON);
         nid.hIcon = match state {
-            TrayState::Normal => self.icon_normal,
-            TrayState::HotkeysSuspended => self.icon_suspended,
+            TrayState::Normal => self._icon_normal.handle(),
+            TrayState::HotkeysSuspended => self._icon_suspended.handle(),
         };
         unsafe {
             bool_ok(Shell_NotifyIconW(NIM_MODIFY, &nid), "Shell_NotifyIconW(NIM_MODIFY)")?;
@@ -98,8 +131,8 @@ impl Tray {
         let mut nid = self.nid_base;
         nid.uFlags = NOTIFY_ICON_DATA_FLAGS(NIF_MESSAGE | NIF_ICON | NIF_TIP);
         nid.hIcon = match self.state {
-            TrayState::Normal => self.icon_normal,
-            TrayState::HotkeysSuspended => self.icon_suspended,
+            TrayState::Normal => self._icon_normal.handle(),
+            TrayState::HotkeysSuspended => self._icon_suspended.handle(),
         };
         unsafe {
             // Ignore "already exists": Explorer may have resurrected us partially.

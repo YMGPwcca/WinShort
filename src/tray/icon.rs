@@ -24,15 +24,11 @@ use crate::tray::TrayState;
 /// GUID_WICPixelFormat32bppPBGRA.
 const WIC_FMT_PBGRA: GUID = windows::Win32::Graphics::Imaging::GUID_WICPixelFormat32bppPBGRA;
 
-/// Render both tray icons at the given pixel size.
-pub fn create_icons(
-    size: u32,
-) -> Result<(
-    windows::Win32::UI::WindowsAndMessaging::HICON,
-    windows::Win32::UI::WindowsAndMessaging::HICON,
-)> {
-    let normal = render_one(size, TrayState::Normal)?;
-    let suspended = render_one(size, TrayState::HotkeysSuspended)?;
+/// Render both tray icons at the given pixel size. Ownership transfers to
+/// [`crate::tray::OwnedIcon`] guards so no GDI icon leaks on later failures (#23).
+pub fn create_icons(size: u32) -> Result<(crate::tray::OwnedIcon, crate::tray::OwnedIcon)> {
+    let normal = crate::tray::OwnedIcon(render_one(size, TrayState::Normal)?);
+    let suspended = crate::tray::OwnedIcon(render_one(size, TrayState::HotkeysSuspended)?);
     Ok((normal, suspended))
 }
 
