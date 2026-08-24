@@ -147,3 +147,6 @@ mod tests {
         assert_eq!(hit, Some(HotkeyAction::ToggleMicrophone));
     }
 }
+
+#[cfg(test)]
+mod config_props;

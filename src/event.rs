@@ -177,4 +177,52 @@ mod tests {
         assert!(matches!(drained[2], AppEvent::DevicesChanged));
         assert!(q.drain().is_empty());
     }
+
+    #[test]
+    fn concurrent_producers_preserve_per_producer_order() {
+        // #37: N producer threads push tagged events; the main-thread drain
+        // must observe every event exactly once, with each producer's own
+        // subsequence in order. No total cross-producer order is asserted.
+        use std::sync::Arc;
+        let q = Arc::new(EventQueue::new());
+        let producers = 4u32;
+        let per = 200u32;
+        let mut handles = Vec::new();
+        for p in 0..producers {
+            let q = Arc::clone(&q);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..per {
+                    q.push(AppEvent::ConfigApplied(((p * 1000 + i) + 1) as u64));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let drained = q.drain();
+        assert_eq!(drained.len(), (producers * per) as usize, "no lost events");
+        // Per-producer subsequences are strictly increasing.
+        let mut last = [0u64; 4];
+        for ev in drained {
+            if let AppEvent::ConfigApplied(seq) = ev {
+                let p = (seq / 1000) as usize;
+                assert!(seq > last[p], "producer {p} order violated");
+                last[p] = seq;
+            }
+        }
+        assert!(q.drain().is_empty(), "drain empties the queue");
+    }
+
+    #[test]
+    fn repeated_push_drain_cycles_remain_usable() {
+        let q = EventQueue::new();
+        for cycle in 0..50 {
+            for i in 0..10 {
+                q.push(AppEvent::ConfigApplied(cycle * 100 + i));
+            }
+            assert_eq!(q.drain().len(), 10);
+            assert!(q.drain().is_empty());
+        }
+    }
+
 }

@@ -570,3 +570,58 @@ mod tests {
         assert_eq!(state.sessions, 0);
     }
 }
+
+#[cfg(test)]
+mod fallback_group_props {
+    use super::*;
+    use std::collections::HashMap;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+
+        /// #46/#37 invariant over generated groups: the selected set contains
+        /// only pids from ONE distinct full-path group; ambiguous selections
+        /// are refused rather than silently merged.
+        #[test]
+        fn fallback_groups_never_merge_distinct_paths(
+            paths in prop::collection::vec("[a-z]{1,8}/player[0-9]{0,2}\\.exe", 1..4),
+            pids in prop::collection::vec(any::<u32>(), 1..8),
+        ) {
+            use crate::audio::sessions::{FallbackCandidate, select_fallback_pids};
+            let stem = "player";
+            let candidates: Vec<_> = pids
+                .iter()
+                .enumerate()
+                .map(|(i, &pid)| {
+                    let path = &paths[i % paths.len()];
+                    FallbackCandidate {
+                        pid,
+                        stem: stem.into(),
+                        image_path: Some(path.clone()),
+                    }
+                })
+                .collect();
+            match select_fallback_pids(stem, &candidates) {
+                crate::audio::sessions::FallbackSelection::Pids(selected) => {
+                    // Every selected pid's path must be identical.
+                    let by_pid: HashMap<u32, String> = candidates
+                        .iter()
+                        .map(|c| (c.pid, c.image_path.clone().unwrap()))
+                        .collect();
+                    let mut distinct_paths: Vec<String> = selected
+                        .iter()
+                        .map(|&pid| by_pid[&pid].clone())
+                        .collect();
+                    distinct_paths.sort();
+                    distinct_paths.dedup();
+                    prop_assert!(
+                        distinct_paths.len() == 1 || selected.is_empty(),
+                        "selected pids span multiple installations: {distinct_paths:?}"
+                    );
+                }
+                other => {}
+            }
+        }
+    }
+}

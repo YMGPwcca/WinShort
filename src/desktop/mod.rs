@@ -9,3 +9,6 @@ pub mod service;
 
 pub use backend::{BackendAvailability, BackendKind, BackendStatus};
 pub use service::DesktopService;
+
+#[cfg(test)]
+mod policy_props;
