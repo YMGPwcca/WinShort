@@ -807,16 +807,6 @@ impl SettingsWindow {
         Ok(())
     }
 
-    pub fn hide(&self) {
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
-        }
-    }
-
-    pub fn is_visible(&self) -> bool {
-        unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.hwnd).as_bool() }
-    }
-
     pub fn refresh(&self) {
         invalidate(self.hwnd);
     }

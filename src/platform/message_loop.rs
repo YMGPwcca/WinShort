@@ -1,6 +1,6 @@
 //! Standard Win32 message loop.
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, TranslateMessage, MSG,
 };

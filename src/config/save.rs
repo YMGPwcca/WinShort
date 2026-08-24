@@ -47,11 +47,6 @@ pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Serialize without writing (used by tests and the "reset" flow preview).
-pub fn to_text(cfg: &Config) -> Result<String> {
-    toml::to_string_pretty(&cfg.to_toml()).map_err(|e| Error::config(format!("serialize: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

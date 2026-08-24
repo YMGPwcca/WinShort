@@ -7,9 +7,7 @@ use std::sync::Arc;
 use windows::Win32::Media::Audio::{
     IMMDeviceEnumerator, IMMNotificationClient, MMDeviceEnumerator,
 };
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
-};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
 use crate::audio::devices::EndpointBinding;
 use crate::audio::notifications::DeviceNotificationClient;
@@ -381,7 +379,7 @@ fn audio_thread(
         while let Ok(next) = receiver.try_recv() {
             backlog.push(next);
         }
-        let (needs_rebuild, mut rest) = coalesce_backlog(backlog);
+        let (needs_rebuild, rest) = coalesce_backlog(backlog);
         let mut stop = false;
         for pending in rest {
             // Shutdown terminates the worker like a direct handle() call.

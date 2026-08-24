@@ -256,6 +256,3 @@ impl KeyboardEngine {
         self.suppressed_ups.clear();
     }
 }
-
-// Re-export for hook-layer convenience.
-pub use vks::VK_LWIN;

@@ -4,7 +4,6 @@ use windows::core::{Interface, GUID};
 use windows::Win32::Media::Audio::{
     IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume,
 };
-use windows::Win32::System::Com::CLSCTX_ALL;
 
 use crate::audio::controller::EndpointFlow;
 use crate::audio::devices::{data_flow, resolve_device};
@@ -218,13 +217,6 @@ pub enum FallbackSelection {
         stem: String,
         processes: Vec<String>,
     },
-}
-
-fn path_stem_lower(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
 }
 
 /// Fail-closed fallback selection (#46).

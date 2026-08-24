@@ -65,10 +65,6 @@ fn query_string(subkey: PCWSTR, value: &str) -> Result<String> {
         return Err(Error::os_ctx("RegGetValueW", res.0, value));
     }
     let len = (size as usize / 2).min(buf.len());
-    while len > 0 && buf[len - 1] == 0 {
-        // trim NUL via slice bound below
-        break;
-    }
     let end = buf[..len]
         .iter()
         .rposition(|&c| c != 0)

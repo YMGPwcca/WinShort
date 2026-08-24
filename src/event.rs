@@ -67,8 +67,6 @@ pub enum AppEvent {
     ShowSettings,
     ShowStatusOverlay,
     ConfigApplied(u64),
-    SuspendToggled(bool),
-
     // State published by workers / callbacks.
     MicrophoneStateChanged(AudioState),
     OutputStateChanged(OutputState),
@@ -76,13 +74,9 @@ pub enum AppEvent {
     /// shows a one-shot card; persistent state stays OutputState::Current.
     DefaultOutputChanged(crate::audio::state::DeviceId),
     ForegroundAudioChanged(AppAudioState),
-    OverlayDismissed,
-
     /// Device list changed (added/removed/default switched): refresh pickers.
     DevicesChanged,
     DesktopBackendChanged(BackendStatus),
-
-    Exit,
 }
 
 /// Process-wide event queue. Producers push from any thread; the main thread
@@ -174,13 +168,13 @@ mod tests {
     fn queue_drains_in_order_then_empties() {
         let q = EventQueue::new();
         q.push(AppEvent::ShowSettings);
-        q.push(AppEvent::OverlayDismissed);
-        q.push(AppEvent::Exit);
+        q.push(AppEvent::ConfigApplied(7));
+        q.push(AppEvent::DevicesChanged);
         let drained = q.drain();
         assert_eq!(drained.len(), 3);
         assert!(matches!(drained[0], AppEvent::ShowSettings));
-        assert!(matches!(drained[1], AppEvent::OverlayDismissed));
-        assert!(matches!(drained[2], AppEvent::Exit));
+        assert!(matches!(drained[1], AppEvent::ConfigApplied(7)));
+        assert!(matches!(drained[2], AppEvent::DevicesChanged));
         assert!(q.drain().is_empty());
     }
 }

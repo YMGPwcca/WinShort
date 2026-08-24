@@ -3,8 +3,6 @@
 
 use std::sync::mpsc::{self, Sender};
 
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-
 use crate::desktop::backend::{
     BackendAvailability, BackendKind, BackendStatus, DesktopError, VirtualDesktopBackend,
 };
@@ -257,10 +255,7 @@ fn desktop_thread(
         Ok(controller) => controller,
         Err(e) => {
             let _ = ready.send(Err(e));
-            unsafe {
-                CoUninitialize();
-            }
-            return;
+            return; // ComApartment guard uninitializes (#24)
         }
     };
     if let Some(native) = controller.native.as_ref() {
@@ -286,9 +281,7 @@ fn desktop_thread(
         }
     }
     drop(controller);
-    unsafe {
-        CoUninitialize();
-    }
+    drop(com);
     crate::info!("virtual desktop controller stopped");
 }
 

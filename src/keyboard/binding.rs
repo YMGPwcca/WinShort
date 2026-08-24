@@ -321,11 +321,6 @@ impl BindingTable {
     }
 }
 
-/// Parse a set of named hotkey strings into a conflict-checked table entry list.
-pub fn parse_binding(spec: &str) -> Result<Hotkey, String> {
-    Hotkey::parse(spec)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

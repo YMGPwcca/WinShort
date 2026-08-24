@@ -6,8 +6,6 @@
 use std::path::Path;
 
 use crate::config::model::{Config, ConfigToml};
-use crate::error::Result;
-
 pub fn config_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("config.toml")
 }
@@ -69,17 +67,6 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
     }
 }
 
-/// Strict variant used by Save: parse errors are hard failures.
-pub fn parse_strict(text: &str) -> Result<Config> {
-    let toml: ConfigToml =
-        toml::from_str(text).map_err(|e| crate::error::Error::config(format!("{e}")))?;
-    let (cfg, warnings) = Config::from_toml(&toml);
-    if !warnings.is_empty() {
-        return Err(crate::error::Error::config(warnings.join("; ")));
-    }
-    Ok(cfg)
-}
-
 fn unknown_keys(text: &str) -> Vec<String> {
     use crate::config::model::known_keys;
     // NOTE: toml::Value::FromStr parses a single VALUE; documents need Table.
@@ -123,7 +110,11 @@ mod tests {
         std::fs::write(config_path(&dir), raw).unwrap();
 
         let (cfg, warnings) = load(&dir);
-        assert!(cfg == Config::default() || true); // defaults used
+        // A future schema must NOT be partially applied: every section falls
+        // back to its default representation.
+        assert_eq!(cfg.overlay, Config::default().overlay);
+        assert_eq!(cfg.hotkeys, Config::default().hotkeys);
+        assert_eq!(cfg.virtual_desktops, Config::default().virtual_desktops);
         assert!(
             warnings.iter().any(|w| w.contains("newer WinShort")),
             "warnings: {warnings:?}"

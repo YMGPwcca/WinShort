@@ -541,7 +541,6 @@ impl Config {
     /// Field-level repair for validation violations (#15a): clamp numeric
     /// ranges, drop conflicting hotkeys. Only violated fields are touched.
     pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
-        use crate::config::validate::Violation;
         let mut drop_hotkeys: Vec<String> = Vec::new();
         for v in violations {
             match v.field.as_str() {

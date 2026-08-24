@@ -62,6 +62,7 @@ impl Motion {
         active
     }
 
+    #[allow(dead_code)] // animation API surface
     pub fn has_active(&self) -> bool {
         let now = Instant::now();
         self.tweens

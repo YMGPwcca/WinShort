@@ -5,10 +5,7 @@ pub mod model;
 pub mod save;
 pub mod validate;
 
-pub use model::{
-    Config, DeviceSelection, EndpointRole, HotkeysCfg, MonitorChoice, OverlayCfg, OverlayPosition,
-    VdCfg, DEFAULT_TOGGLE_FOREGROUND, DEFAULT_TOGGLE_MICROPHONE, DEFAULT_TOGGLE_OUTPUT,
-};
+pub use model::Config;
 pub use validate::validate;
 
 /// Lock-free-read snapshot of the live configuration (spec §9, §10, §45).

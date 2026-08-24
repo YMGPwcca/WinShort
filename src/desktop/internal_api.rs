@@ -125,7 +125,6 @@ impl<T> BackendError<T> for crate::error::Result<T> {
 
 pub struct InternalBackend {
     manager: IVirtualDesktopManagerInternal,
-    build: OsBuild,
 }
 
 impl InternalBackend {
@@ -159,7 +158,7 @@ impl InternalBackend {
                     "compat validation returned implausible desktop count {count}"
                 )));
             }
-            Ok(Self { manager, build })
+            Ok(Self { manager })
         }
     }
 
@@ -264,12 +263,6 @@ impl VirtualDesktopBackend for InternalBackend {
 
     fn kind(&self) -> BackendKind {
         BackendKind::NativeShell
-    }
-}
-
-impl InternalBackend {
-    pub fn build(&self) -> OsBuild {
-        self.build
     }
 }
 

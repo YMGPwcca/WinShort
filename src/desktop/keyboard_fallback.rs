@@ -160,8 +160,8 @@ fn send_chord(arrow: Arrow) -> std::result::Result<(), DesktopError> {
 }
 
 /// Indirection over SendInput (test seam for batch sizes).
-fn send_inputs(inputs: &[INPUT]) -> u32 {
-    use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
+fn send_inputs(inputs: &[windows::Win32::UI::Input::KeyboardAndMouse::INPUT]) -> u32 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
+    // SAFETY: caller-built INPUT_KEYBOARD array with correct size.
     unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) }
 }
-use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, KEYEVENTF_KEYUP};

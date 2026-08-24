@@ -11,9 +11,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1Geometry, ID2D1PathGeometry1, ID2D1RenderTarget,
     ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SIZE_SMALL,
-    D2D1_BRUSH_PROPERTIES, D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
-    D2D1_SWEEP_DIRECTION_CLOCKWISE,
+    D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT, D2D1_SWEEP_DIRECTION_CLOCKWISE,
 };
 use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory, IWICBitmap, IWICImagingFactory};
 use windows_numerics::Vector2;
@@ -124,7 +123,7 @@ fn render_one(
         .map_err(|e| Error::win("CreateDIBSection", &e))?;
         std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
 
-        let mask_row = (((size + 15) / 16) * 2) as usize;
+        let mask_row = (size.div_ceil(16) * 2) as usize;
         let mask_bits = vec![0u8; mask_row * size as usize];
         let hbm_mask = gdi::CreateBitmap(
             size as i32,
@@ -286,7 +285,7 @@ unsafe fn arc_wave(
 ) -> Result<ID2D1PathGeometry1> {
     // SAFETY: all calls operate on COM objects created within this function.
     unsafe {
-        let k = 0.7071f32;
+        let k = std::f32::consts::FRAC_1_SQRT_2;
         let start = pt(cx + radius * k, cy - radius * k);
         let end = pt(cx + radius * k, cy + radius * k);
         let geom = factory

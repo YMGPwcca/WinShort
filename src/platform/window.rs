@@ -128,8 +128,3 @@ pub unsafe fn take_state<T>(hwnd: HWND) -> Option<Box<WindowState<T>>> {
 pub fn def_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
-
-/// True when the message is WM_NCCREATE (used by generic procs to stash state).
-pub fn is_nccreate(msg: u32) -> bool {
-    msg == WM_NCCREATE
-}

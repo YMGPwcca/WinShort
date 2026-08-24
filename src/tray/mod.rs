@@ -223,19 +223,6 @@ pub fn decode_callback(wparam: WPARAM, lparam: LPARAM) -> TrayEvent {
     }
 }
 
-/// Show the context menu anchored near `pt` (screen coords), returning the
-/// chosen command id (see [`menu`]) or None.
-pub fn show_menu(hwnd: HWND, pt: POINT) -> Option<u32> {
-    menu::track_tray_menu(
-        hwnd,
-        pt,
-        &menu::MenuState {
-            suspended: false,
-            start_with_windows: false,
-        },
-    )
-}
-
 // NIF_* constants re-exported locally (bitflag values).
 const NIF_MESSAGE: u32 = 0x01;
 const NIF_ICON: u32 = 0x02;

@@ -437,7 +437,6 @@ impl App {
         match ev {
             AppEvent::ShowSettings => self.show_settings(),
             AppEvent::ShowStatusOverlay => self.show_status_overlay(),
-            AppEvent::Exit => self.begin_shutdown(),
             AppEvent::ConfigApplied(seq) => {
                 let config = crate::app::config();
                 self.set_suspended(!config.general.start_hotkeys_enabled);
