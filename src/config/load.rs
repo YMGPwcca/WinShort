@@ -103,6 +103,7 @@ mod tests {
 
     #[test]
     fn newer_schema_version_refuses_overwrite() {
+        let _guard = crate::config::latch_guard();
         // #15b: schema v2 must mark the store read-only.
         let raw = "schema_version = 9\n";
         let dir = std::env::temp_dir().join(format!("ws_test_{}", std::process::id()));
