@@ -79,17 +79,6 @@ impl Error {
         };
         format!("{named} (0x{code:08X})")
     }
-
-    /// True when the code is an endpoint/audio-stack invalidation that a
-    /// rebuild can recover from (used by the audio controller retry logic).
-    pub fn is_audio_invalidation(&self) -> bool {
-        matches!(self, Error::Os { code, .. } if matches!(
-            *code,
-            0x88890004 | // AUDCLNT_E_DEVICE_INVALIDATED
-            0x8889000F | // AUDCLNT_E_ENDPOINT_CREATE_FAILED
-            0x88890010   // AUDCLNT_E_SERVICE_NOT_RUNNING
-        ))
-    }
 }
 
 #[cfg(test)]

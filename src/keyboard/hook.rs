@@ -26,10 +26,9 @@ use crate::keyboard::engine::{EngineOutcome, KeyboardEngine, RawKeyEvent};
 struct HookState {
     main_hwnd_raw: isize,
     engine: KeyboardEngine,
-    bindings: BindingTable,
-    empty_bindings: BindingTable,
+    /// Empty table used while hotkeys are suspended.
+    suspended_bindings: std::sync::Arc<BindingTable>,
     config: Arc<ConfigHandle>,
-    config_revision: u64,
     suspended: Arc<AtomicBool>,
 }
 
@@ -92,15 +91,11 @@ fn keyboard_thread(
     suspended: Arc<AtomicBool>,
     ready: mpsc::SyncSender<std::result::Result<u32, Error>>,
 ) {
-    let revision = config.revision();
-    let bindings = build_bindings(&config.get());
     let state = Box::new(HookState {
         main_hwnd_raw: hwnd_raw,
         engine: KeyboardEngine::new(),
-        bindings,
-        empty_bindings: BindingTable::default(),
+        suspended_bindings: Arc::new(BindingTable::default()),
         config,
-        config_revision: revision,
         suspended,
     });
     let state_ptr = Box::into_raw(state);
@@ -185,15 +180,13 @@ unsafe extern "system" fn low_level_keyboard_proc(
         injected,
     };
 
-    let revision = state.config.revision();
-    if revision != state.config_revision {
-        state.bindings = build_bindings(&state.config.get());
-        state.config_revision = revision;
-    }
-    let table = if state.suspended.load(Ordering::Acquire) {
-        &state.empty_bindings
+    // Lock-free snapshot read (#10): the table is rebuilt by ConfigHandle on
+    // Save; the callback only loads it. No RwLock, no HashMap rebuild here.
+    let table_guard = state.config.bindings();
+    let table: &BindingTable = if state.suspended.load(Ordering::Acquire) {
+        &state.suspended_bindings
     } else {
-        &state.bindings
+        &table_guard
     };
 
     match state.engine.on_event(event, table) {

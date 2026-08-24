@@ -67,9 +67,12 @@ Win+Shift+S, Win+L etc. are untouched because they don't match the binding table
 
 ## Binding table updates mid-chord
 
-The engine resolves the snapshot `Arc` once per event. If Save swaps bindings while modifiers are
-held, the next event simply matches against the new table; no stale state exists because modifier
-state lives in the engine, not the table.
+The engine resolves the binding snapshot once per event via
+`ConfigHandle::bindings()` — a wait-free `arc-swap` load. `ConfigHandle::replace` rebuilds the
+table on Save, so the hook callback never takes the config RwLock nor rebuilds a HashMap (#10).
+If Save swaps bindings while modifiers are held, the next event simply matches against the new
+table; no stale state exists because modifier state lives in the engine, not the table.
+Suspension selects a shared empty table instead of consulting config.
 
 ## Dispatch
 
