@@ -176,10 +176,16 @@ impl AudioController {
         let old_render = self.render.as_ref().map(|e| e.identity.clone());
         self.rebuild(EndpointFlow::Capture);
         self.rebuild(EndpointFlow::Render);
-        if let Ok(lists) = crate::audio::devices::enumerate_devices(&self.enumerator) {
-            if let Ok(mut shared) = self.devices.write() {
-                *shared = lists;
-            }
+        // Partial-failure tolerant enumeration (#36): a failed flow yields
+        // warnings, not the loss of both lists. Poisoned lock recovery: the
+        // guarded DeviceLists is always structurally valid.
+        let lists = crate::audio::devices::enumerate_devices(&self.enumerator);
+        for warning in &lists.warnings {
+            crate::warn_!("audio {warning}");
+        }
+        match self.devices.write() {
+            Ok(mut shared) => *shared = lists,
+            Err(poisoned) => *poisoned.into_inner() = lists,
         }
 
         if !startup {
@@ -199,9 +205,8 @@ impl AudioController {
             EndpointFlow::Capture => &mut self.capture,
             EndpointFlow::Render => &mut self.render,
         };
-        if let Some(old) = slot.take() {
-            old.unregister();
-        }
+        // Registration is dropped with the binding (#36).
+        let _ = slot.take();
         let config = self.config.get();
         let (selection, role) = match flow {
             EndpointFlow::Capture => (&config.audio.input_device, config.audio.input_role),
@@ -277,12 +282,9 @@ impl AudioController {
     }
 
     fn shutdown(&mut self) {
-        if let Some(endpoint) = self.capture.take() {
-            endpoint.unregister();
-        }
-        if let Some(endpoint) = self.render.take() {
-            endpoint.unregister();
-        }
+        // Endpoint bindings unregister via Drop (#36).
+        self.capture.take();
+        self.render.take();
         unsafe {
             let _ = self
                 .enumerator

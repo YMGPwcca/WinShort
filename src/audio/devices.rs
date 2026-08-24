@@ -16,6 +16,7 @@ use windows::Win32::System::Com::StructuredStorage::{
     PropVariantClear, PropVariantToStringAlloc,
 };
 use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL, STGM_READ};
+use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 
 use crate::audio::controller::{AudioCommand, EndpointFlow};
 use crate::audio::notifications::EndpointVolumeClient;
@@ -28,13 +29,31 @@ use crate::error::{Error, Result};
 pub struct DeviceLists {
     pub inputs: Vec<DeviceId>,
     pub outputs: Vec<DeviceId>,
+    /// Per-flow degradation notes from the last enumeration (#36): a failed
+    /// flow yields an empty list plus a warning instead of failing wholesale.
+    pub warnings: Vec<String>,
 }
 
-pub fn enumerate_devices(enumerator: &IMMDeviceEnumerator) -> Result<DeviceLists> {
-    Ok(DeviceLists {
-        inputs: enumerate_flow(enumerator, EndpointFlow::Capture)?,
-        outputs: enumerate_flow(enumerator, EndpointFlow::Render)?,
-    })
+/// Enumerate active endpoints per flow. One flow failing (or one device's
+/// properties failing inside a flow) degrades to an empty list + warning
+/// rather than losing both flows (#36).
+pub fn enumerate_devices(enumerator: &IMMDeviceEnumerator) -> DeviceLists {
+    let mut warnings = Vec::new();
+    let inputs = match enumerate_flow(enumerator, EndpointFlow::Capture) {
+        Ok(devices) => devices,
+        Err(e) => {
+            warnings.push(format!("capture endpoint enumeration failed: {e}"));
+            Vec::new()
+        }
+    };
+    let outputs = match enumerate_flow(enumerator, EndpointFlow::Render) {
+        Ok(devices) => devices,
+        Err(e) => {
+            warnings.push(format!("render endpoint enumeration failed: {e}"));
+            Vec::new()
+        }
+    };
+    DeviceLists { inputs, outputs, warnings }
 }
 
 fn enumerate_flow(
@@ -100,12 +119,6 @@ impl EndpointBinding {
                 .map_err(|e| Error::win("RegisterControlChangeNotify", &e))?;
         }
         Ok(Self { flow, identity, volume, callback })
-    }
-
-    pub fn unregister(&self) {
-        unsafe {
-            let _ = self.volume.UnregisterControlChangeNotify(&self.callback);
-        }
     }
 
     pub fn mute(&self) -> Result<bool> {
@@ -211,21 +224,45 @@ pub(crate) fn identity(device: &IMMDevice, flow: EndpointFlow) -> Result<DeviceI
     Ok(DeviceId { endpoint, name })
 }
 
+/// Owned [`PROPVARIANT`] whose `PropVariantClear` runs on every exit,
+/// including early returns and panics (#36).
+struct PropVar(PROPVARIANT);
+
+impl Drop for PropVar {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = PropVariantClear(&mut self.0);
+        }
+    }
+}
+
 fn friendly_name(device: &IMMDevice) -> Result<String> {
     unsafe {
         let store = device
             .OpenPropertyStore(STGM_READ)
             .map_err(|e| Error::win("IMMDevice::OpenPropertyStore", &e))?;
-        let mut value = store
-            .GetValue(&PKEY_DEVICE_FRIENDLY_NAME)
-            .map_err(|e| Error::win("IPropertyStore::GetValue", &e))?;
-        let string = PropVariantToStringAlloc(&value)
+        let value = PropVar(
+            store
+                .GetValue(&PKEY_DEVICE_FRIENDLY_NAME)
+                .map_err(|e| Error::win("IPropertyStore::GetValue", &e))?,
+        );
+        let string = PropVariantToStringAlloc(&value.0)
             .map_err(|e| Error::win("PropVariantToStringAlloc", &e))?;
         let result = string
             .to_string()
             .map_err(|e| Error::audio(format!("friendly name UTF-16: {e}")));
         CoTaskMemFree(Some(string.0.cast()));
-        let _ = PropVariantClear(&mut value);
         result
     }
 }
+
+impl Drop for EndpointBinding {
+// Registration guard (#36): unregistration is tied to object lifetime so
+// no rebuild/shutdown path can forget it.
+fn drop(&mut self) {
+    unsafe {
+        let _ = self.volume.UnregisterControlChangeNotify(&self.callback);
+    }
+}
+}
+
