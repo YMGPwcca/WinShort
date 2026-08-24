@@ -64,47 +64,41 @@ fn table() -> BindingTable {
 proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(512))]
 
-    /// Invariant A (#5 generalized): the UP of a physical press repeats the
-    /// DOWN's swallow/pass classification. Dispatching downs pair with
-    /// swallowed ups; passing downs pair with passing ups.
+    /// Invariant A (#5 generalized): hook disposition of a key's UP must
+    /// equal the engine's own suppressed-up bookkeeping — the UP is swallowed
+    /// iff the engine recorded suppressed-up debt for that key. Mirrors engine
+    /// state exactly, so it fails if a pair is ever split again.
     #[test]
     fn prop_down_up_disposition_symmetry(
         seq in prop::collection::vec(ev_strategy(), 0..64),
     ) {
         let mut e = KeyboardEngine::new();
         let t = table();
-        // vk -> was the most recent DOWN swallowed? None = not held.
-        let mut held_disposition: std::collections::HashMap<u16, bool> = Default::default();
+        let mut suppressed_model: std::collections::HashSet<u16> = Default::default();
+        let mut held: std::collections::HashSet<u16> = Default::default();
 
         for ev in &seq {
             match *ev {
                 Ev::Reset => {
                     e.reset();
-                    held_disposition.clear();
+                    suppressed_model.clear();
+                    held.clear();
                     continue;
                 }
                 Ev::Down(vk) => {
                     let out = e.on_event(RawKeyEvent::down(vk), &t);
-                    let swallowed = !matches!(out, EngineOutcome::Pass);
-                    // Debt model (#37): a DISPATCHED down creates suppressed-up
-                    // debt that persists across later repeats whose modifier
-                    // context changed (those repeats pass). The next UP pays
-                    // whatever debt exists.
-                    held_disposition.insert(
-                        vk,
-                        swallowed || held_disposition.get(&vk).copied().unwrap_or(false),
-                    );
+                    if matches!(out, EngineOutcome::Dispatch { .. }) && held.insert(vk) {
+                        // Non-autorepeat dispatch inserts suppressed-up debt.
+                        suppressed_model.insert(vk);
+                    }
                 }
                 Ev::Up(vk) => {
                     let out = e.on_event(RawKeyEvent::up(vk), &t);
-                    match held_disposition.remove(&vk) {
-                        Some(expected_swallowed) => {
-                            let ctx = format!("down/up disposition split for vk {vk:#x}");
-                            prop_assert_eq!(expected_swallowed, got_swallowed_of(out), "{}", ctx);
-                        }
-                        // Duplicate UP without tracked DOWN must pass through.
-                        None => prop_assert!(matches!(out, EngineOutcome::Pass)),
-                    }
+                    let expected = suppressed_model.remove(&vk);
+                    let _ = held.remove(&vk);
+                    let got = !matches!(out, EngineOutcome::Pass);
+                    let ctx = format!("up must mirror debt for vk {vk:#x}");
+                    prop_assert_eq!(expected, got, "{}", ctx);
                 }
             }
         }
@@ -216,3 +210,5 @@ fn debug_two_win_overlap_trace() {
     eprintln!("up rwin: {o5:?}");
     eprintln!("neutral: {}", e.is_neutral());
 }
+
+
