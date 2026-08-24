@@ -432,12 +432,12 @@ impl Config {
             ("input_device", &t.audio.input_device, &mut c.audio.input_device),
             ("output_device", &t.audio.output_device, &mut c.audio.output_device),
         ] {
+            // Windows endpoint IDs are opaque strings (typically
+            // "{0.0.0.00000000}.{guid}") — accept any non-empty id (#7).
             if raw.is_empty() || raw == "default" {
                 *slot = DeviceSelection::Default;
-            } else if looks_like_guid(raw) {
-                *slot = DeviceSelection::Endpoint(raw.clone());
             } else {
-                warnings.push(format!("audio.{field}: not a device id `{raw}`"));
+                *slot = DeviceSelection::Endpoint(raw.clone());
             }
         }
 
@@ -467,7 +467,3 @@ impl Config {
     }
 }
 
-fn looks_like_guid(s: &str) -> bool {
-    let inner = s.trim_matches(|c| c == '{' || c == '}');
-    inner.len() == 36 && inner.chars().filter(|c| *c == '-').count() == 4
-}

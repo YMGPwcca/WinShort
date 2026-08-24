@@ -52,14 +52,14 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
         }
     }
 
-    // Device GUID shape (defense in depth; parse already checks).
+    // Endpoint IDs are opaque; only emptiness is malformed (parse already
+    // routes empty to Default, so this is defense in depth) (#7).
     for (field, dev) in [
         ("audio.input_device", &cfg.audio.input_device),
         ("audio.output_device", &cfg.audio.output_device),
     ] {
         if let DeviceSelection::Endpoint(s) = dev {
-            let inner = s.trim_matches(|c| c == '{' || c == '}');
-            if inner.len() != 36 || !inner.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            if s.trim().is_empty() {
                 v.push(Violation::new(field, format!("malformed device id `{s}`")));
             }
         }
@@ -96,4 +96,36 @@ mod tests {
         let v = validate(&c);
         assert!(v.iter().any(|x| x.field.contains("toggle_output") && x.message.contains("conflicts")));
     }
+
+    #[test]
+    fn opaque_endpoint_id_is_accepted_and_round_trips() {
+        // Regression for #7: real MMDevice ids look like
+        // "{0.0.0.00000000}.{guid}" — 36-char GUID checks rejected them.
+        let raw = r#"
+[general]
+start_hotkeys_enabled = true
+start_with_windows = false
+
+[hotkeys]
+
+[overlay]
+
+[audio]
+output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
+"#;
+        let t: ConfigToml = toml::from_str(raw).unwrap();
+        let (cfg, warnings) = Config::from_toml(&t);
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        match &cfg.audio.output_device {
+            DeviceSelection::Endpoint(id) => {
+                assert!(id.starts_with("{0.0.0.00000000}."));
+            }
+            other => panic!("expected Endpoint, got {other:?}"),
+        }
+        assert!(
+            !validate(&cfg).iter().any(|x| x.field.contains("device")),
+            "opaque id must validate"
+        );
+    }
+
 }
