@@ -1,12 +1,10 @@
 //! Application runtime: hidden main window, tray integration, event routing,
 //! startup/shutdown orchestration (spec §5–§7, §46–§47).
 
-use std::sync::atomic::{AtomicPtr, Ordering};
-
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, WINDOW_STYLE, HWND_MESSAGE, WM_DESTROY,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_MESSAGE, RegisterWindowMessageW,
+    WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
 };
 use windows::core::{HSTRING, PCWSTR};
 
@@ -65,7 +63,34 @@ pub struct App {
     shutting_down: bool,
 }
 
-static APP_PTR: AtomicPtr<App> = AtomicPtr::new(std::ptr::null_mut());
+thread_local! {
+    /// Process-singleton [`App`]. Owned by the main thread; the WndProc and
+    /// main-thread callbacks borrow it here. Reentrant Win32 dispatch while a
+    /// borrow is live panics on the `RefCell` (loud failure) instead of
+    /// aliasing mutable state.
+    static APP: std::cell::RefCell<Option<App>> = const { std::cell::RefCell::new(None) };
+}
+
+static MAIN_HWND: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
+
+/// Run `f` with mutable access to the app singleton (main thread only).
+/// Returns `None` before window creation and after teardown.
+pub fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    APP.with_borrow_mut(|slot| slot.as_mut().map(f))
+}
+
+/// Store the singleton exactly once; called by [`App::create_main_window`].
+pub fn set_app(app: App) {
+    APP.with_borrow_mut(|slot| {
+        debug_assert!(slot.is_none(), "app singleton installed twice");
+        *slot = Some(app);
+    });
+}
+
+/// The main window handle, valid from creation until process exit.
+pub fn main_hwnd() -> Option<HWND> {
+    MAIN_HWND.get().map(|h| HWND(*h as *mut _))
+}
 
 impl App {
     /// Create the hidden message window and install the App singleton.
@@ -90,7 +115,8 @@ impl App {
             )
         }
         .map_err(|e| Error::win("CreateWindowExW(main)", &e))?;
-        let app = Box::new(App {
+        let _ = MAIN_HWND.set(hwnd.0 as isize);
+        set_app(App {
             hwnd,
             tray: None,
             settings: None,
@@ -120,18 +146,9 @@ impl App {
             suspended: false,
             shutting_down: false,
         });
-        APP_PTR.store(Box::into_raw(app), Ordering::Release);
         Ok(())
     }
 
-    pub fn get() -> Option<&'static mut App> {
-        let ptr = APP_PTR.load(Ordering::Acquire);
-        if ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { &mut *ptr })
-        }
-    }
 
     /// Install the tray icon (after the main window exists).
     pub fn install_tray(&mut self) -> Result<()> {
@@ -402,14 +419,18 @@ impl App {
                 let _ = DestroyWindow(s.hwnd);
             }
         }
+        // Never DestroyWindow the borrowed main window here (reentrancy);
+        // post WM_CLOSE so destruction happens outside any App borrow.
         unsafe {
-            let _ = DestroyWindow(self.hwnd);
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(self.hwnd),
+                windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            );
         }
-}
-
-    pub fn is_shutting_down(&self) -> bool {
-        self.shutting_down
     }
+
 }
 
 /// State snapshot for tray menu checkmarks.
@@ -429,7 +450,7 @@ unsafe extern "system" fn main_wndproc(
     let taskbar_created = taskbar_created_msg();
 
     if msg == taskbar_created && taskbar_created != 0 {
-        if let Some(app) = App::get() {
+        with_app(|app| {
             if let Some(t) = &mut app.tray {
                 if let Err(e) = t.recreate() {
                     error_!("tray recreate failed: {e}");
@@ -437,7 +458,7 @@ unsafe extern "system" fn main_wndproc(
                     info!("tray recreated after Explorer restart");
                 }
             }
-        }
+        });
         return LRESULT(0);
     }
 
@@ -453,29 +474,30 @@ unsafe extern "system" fn main_wndproc(
                     error_!("failed to consume Win chord: {e}");
                 }
             }
-            if let (Some(app), Some(action)) = (App::get(), HotkeyAction::unpack(wparam.0)) {
-                app.dispatch_action(action);
+            if let Some(action) = HotkeyAction::unpack(wparam.0) {
+                with_app(|app| app.dispatch_action(action));
             }
             LRESULT(0)
         }
 
         WM_APP_EVENT => {
             for ev in event::EVENTS.get_or_init(event::EventQueue::new).drain() {
-                if let Some(app) = App::get() {
-                    app.route_event(ev);
-                }
+                with_app(|app| app.route_event(ev));
+            }
+            LRESULT(0)
+        }
+
+        WM_CLOSE => {
+            // Idempotent ordered teardown, then destroy. Posted by
+            // begin_shutdown; external close requests land here too.
+            with_app(App::begin_shutdown);
+            unsafe {
+                let _ = DestroyWindow(hwnd);
             }
             LRESULT(0)
         }
 
         WM_DESTROY => {
-            if let Some(app) = App::get() {
-                if !app.is_shutting_down() {
-                    // External destruction path: still run ordered teardown.
-                    app.begin_shutdown();
-                    return LRESULT(DefWindowProcW(hwnd, msg, wparam, lparam).0);
-                }
-            }
             crate::platform::message_loop::quit(0);
             LRESULT(DefWindowProcW(hwnd, msg, wparam, lparam).0)
         }
@@ -484,13 +506,18 @@ unsafe extern "system" fn main_wndproc(
     }
 }
 unsafe fn handle_tray(wparam: WPARAM, lparam: LPARAM) {
-    let Some(app) = App::get() else { return };
     match crate::tray::decode_callback(wparam, lparam) {
-        TrayEvent::DoubleClick { .. } => app.show_settings(),
+        TrayEvent::DoubleClick { .. } => {
+            with_app(|app| app.show_settings());
+        }
         TrayEvent::ContextMenu { x, y } => {
-            let state = tray_menu_state(app);
-            let cmd = tray_menu::track_tray_menu(app.hwnd, POINT { x, y }, &state);
-            apply_menu_command(app, cmd);
+            // TrackPopupMenu runs a modal dispatch loop; never hold the App
+            // borrow across it: snapshot state, run the menu, re-borrow to apply.
+            let Some((hwnd, state)) = with_app(|app| (app.hwnd, tray_menu_state(app))) else {
+                return;
+            };
+            let cmd = tray_menu::track_tray_menu(hwnd, POINT { x, y }, &state);
+            with_app(|app| apply_menu_command(app, cmd));
         }
         TrayEvent::Select { .. } => {}
         TrayEvent::Other => {}

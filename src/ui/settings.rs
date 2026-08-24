@@ -268,8 +268,7 @@ impl SettingsUi {
                 self.hotkey_value(id, self.draft.hotkeys.toggle_foreground_audio)
             }
             ElementId::InputDevice => {
-                let devices = crate::app::App::get()
-                    .map(|app| app.audio_devices().inputs)
+                let devices = crate::app::with_app(|app| app.audio_devices().inputs)
                     .unwrap_or_default();
                 ControlValue::Text(Cow::Owned(device_label(
                     &self.draft.audio.input_device,
@@ -277,8 +276,7 @@ impl SettingsUi {
                 )))
             }
             ElementId::OutputDevice => {
-                let devices = crate::app::App::get()
-                    .map(|app| app.audio_devices().outputs)
+                let devices = crate::app::with_app(|app| app.audio_devices().outputs)
                     .unwrap_or_default();
                 ControlValue::Text(Cow::Owned(device_label(
                     &self.draft.audio.output_device,
@@ -319,21 +317,20 @@ impl SettingsUi {
             },
             ElementId::OverlayPreview => ControlValue::Action(Cow::Borrowed("Preview")),
             ElementId::DiagnosticsStatus => {
-                let text = crate::app::App::get()
-                    .map(|app| {
-                        let status = app.desktop_status();
-                        let count = status
-                            .desktop_count
-                            .map(|count| format!(" • {count} desktops"))
-                            .unwrap_or_default();
-                        format!(
-                            "{}{} • {}",
-                            status.active.label(),
-                            count,
-                            status.native.label()
-                        )
-                    })
-                    .unwrap_or_else(|| "Detecting virtual desktop backend…".into());
+                let text = crate::app::with_app(|app| {
+                    let status = app.desktop_status();
+                    let count = status
+                        .desktop_count
+                        .map(|count| format!(" • {count} desktops"))
+                        .unwrap_or_default();
+                    format!(
+                        "{}{} • {}",
+                        status.active.label(),
+                        count,
+                        status.native.label()
+                    )
+                })
+                .unwrap_or_else(|| "Detecting virtual desktop backend…".into());
                 ControlValue::Text(Cow::Owned(text))
             }
             ElementId::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
@@ -450,15 +447,13 @@ impl SettingsUi {
                 self.validation.clear();
             }
             ElementId::InputDevice => {
-                let devices = crate::app::App::get()
-                    .map(|app| app.audio_devices().inputs)
+                let devices = crate::app::with_app(|app| app.audio_devices().inputs)
                     .unwrap_or_default();
                 self.draft.audio.input_device =
                     next_device(&self.draft.audio.input_device, &devices);
             }
             ElementId::OutputDevice => {
-                let devices = crate::app::App::get()
-                    .map(|app| app.audio_devices().outputs)
+                let devices = crate::app::with_app(|app| app.audio_devices().outputs)
                     .unwrap_or_default();
                 self.draft.audio.output_device =
                     next_device(&self.draft.audio.output_device, &devices);
@@ -1023,9 +1018,9 @@ fn next_device(
 }
 
 fn post_main(event: crate::event::AppEvent) {
-    if let Some(app) = crate::app::App::get() {
+    if let Some(hwnd) = crate::app::main_hwnd() {
         unsafe {
-            let _ = crate::event::post_event(app.hwnd, event);
+            let _ = crate::event::post_event(hwnd, event);
         }
     }
 }

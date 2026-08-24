@@ -108,25 +108,29 @@ fn main() {
 fn run(role: PrimaryRole) -> Result<()> {
     // Hidden message-only main window + App singleton.
     app::App::create_main_window()?;
-    let Some(app) = app::App::get() else {
-        return Err(error::Error::internal("app singleton missing"));
-    };
-
-    // Tray icon.
-    app.install_tray()?;
-
+    let hwnd_raw = app::main_hwnd()
+        .ok_or_else(|| error::Error::internal("main window missing"))?
+        .0 as isize;
     let config = app::CONFIG
         .get()
         .cloned()
         .ok_or_else(|| error::Error::internal("config handle missing"))?;
-    app.install_overlay()?;
-    app.install_foreground_tracker()?;
-    app.install_audio(config.clone())?;
-    app.install_keyboard(config)?;
-    app.install_desktop()?;
 
-    // HWND is !Send; transfer as an integer and rebuild on the watcher thread.
-    let hwnd_raw = app.hwnd.0 as isize;
+    // Install subsystems inside one main-thread borrow.
+    match app::with_app(|app| -> Result<()> {
+        app.install_tray()?;
+        app.install_overlay()?;
+        app.install_foreground_tracker()?;
+        app.install_audio(config.clone())?;
+        app.install_keyboard(config)?;
+        app.install_desktop()?;
+        Ok(())
+    }) {
+        Some(Ok(())) => {}
+        Some(Err(e)) => return Err(e),
+        None => return Err(error::Error::internal("app singleton missing")),
+    }
+
     platform::single_instance::spawn_watcher(role.activate_event, stop_flag(), move || unsafe {
         let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
         unsafe { event::post_event(hwnd, event::AppEvent::ShowSettings); }
