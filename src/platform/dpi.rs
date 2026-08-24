@@ -1,7 +1,7 @@
 //! Per-Monitor V2 DPI awareness and scale helpers.
 
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::UI::HiDpi::{
     GetDpiForMonitor, GetDpiForWindow, SetProcessDpiAwarenessContext,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, MDT_EFFECTIVE_DPI,
@@ -22,13 +22,6 @@ pub fn dpi_for_window(hwnd: HWND) -> u32 {
     unsafe { GetDpiForWindow(hwnd).max(96) }
 }
 
-/// Effective DPI of the monitor nearest to `hwnd`'s rect.
-pub fn dpi_for_monitor_of(hwnd: HWND) -> u32 {
-    monitor_dpi(unsafe {
-        windows::Win32::Graphics::Gdi::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-    })
-}
-
 pub fn monitor_dpi(hmon: HMONITOR) -> u32 {
     // SAFETY: hmon from MonitorFromWindow; MDT_EFFECTIVE_DPI matches PMv2 scaling.
     unsafe {
@@ -40,8 +33,4 @@ pub fn monitor_dpi(hmon: HMONITOR) -> u32 {
             96
         }
     }
-}
-
-pub fn scale(dpi: u32) -> f32 {
-    dpi as f32 / 96.0
 }

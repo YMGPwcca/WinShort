@@ -3,13 +3,10 @@
 pub mod icon;
 pub mod menu;
 
-use std::mem::size_of;
-
-use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW,
-    NOTIFYICON_VERSION_4, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_STATE,
+    NOTIFYICON_VERSION_4, NOTIFY_ICON_DATA_FLAGS,
 };
 
 use crate::error::{Error, Result};
@@ -58,7 +55,6 @@ pub enum TrayState {
 const TRAY_UID: u32 = 1;
 
 pub struct Tray {
-    hwnd: HWND,
     nid_base: NOTIFYICONDATAW,
     _icon_normal: OwnedIcon,
     _icon_suspended: OwnedIcon,
@@ -68,8 +64,10 @@ pub struct Tray {
 impl Tray {
     /// Add the notification area icon (spec §6).
     pub fn install(hwnd: HWND, icons: (OwnedIcon, OwnedIcon)) -> Result<Tray> {
-        let mut nid = NOTIFYICONDATAW::default();
-        nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            ..Default::default()
+        };
         nid.hWnd = hwnd;
         nid.uID = TRAY_UID;
         nid.uFlags = NOTIFY_ICON_DATA_FLAGS(NIF_MESSAGE | NIF_ICON | NIF_TIP);
@@ -97,16 +95,11 @@ impl Tray {
         }
 
         Ok(Tray {
-            hwnd,
             nid_base: nid,
             _icon_normal: icons.0,
             _icon_suspended: icons.1,
             state: TrayState::Normal,
         })
-    }
-
-    pub fn state(&self) -> TrayState {
-        self.state
     }
 
     /// Reflect hotkey suspension visually (spec §6: "visibly change").

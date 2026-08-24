@@ -315,7 +315,7 @@ fn config_swap_while_modifiers_held_applies_immediately() {
     // While Win held, swap happens.
     let out = e.on_event(RawKeyEvent::down(b'M' as u16), &old); // old table: no Win+M
     assert_eq!(out, EngineOutcome::Pass);
-    let out = e.on_event(RawKeyEvent::up(b'M' as u16), &old);
+    let _out = e.on_event(RawKeyEvent::up(b'M' as u16), &old);
     let out = e.on_event(RawKeyEvent::down(b'7' as u16), &new_table); // new table active
                                                                       // The shell already saw `M` during this chord, so no dirtier is needed.
     assert_eq!(

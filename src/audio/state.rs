@@ -10,35 +10,12 @@ pub struct DeviceId {
     pub name: String,
 }
 
-impl DeviceId {
-    pub fn default_device() -> Self {
-        Self {
-            endpoint: "default".into(),
-            name: "Default device".into(),
-        }
-    }
-}
-
 /// Microphone / capture state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioState {
     Unavailable { reason: String },
     Muted { volume_pct: u8 },
     Active { volume_pct: u8 },
-}
-
-impl AudioState {
-    pub fn short_label(&self) -> String {
-        match self {
-            AudioState::Unavailable { .. } => "Unavailable".into(),
-            AudioState::Muted { .. } => "Muted".into(),
-            AudioState::Active { volume_pct } => format!("{volume_pct}%"),
-        }
-    }
-
-    pub fn is_muted(&self) -> bool {
-        matches!(self, AudioState::Muted { .. })
-    }
 }
 
 /// Output / render state. Transient "output changed" presentation is carried
@@ -86,32 +63,12 @@ pub struct AppAudioState {
 }
 
 impl AppAudioState {
-    pub fn no_session() -> Self {
-        Self {
-            app_name: None,
-            aggregate: Aggregate::NoSession,
-            sessions: 0,
-            error: None,
-        }
-    }
-
     pub fn no_external() -> Self {
         Self {
             app_name: None,
             aggregate: Aggregate::NoExternalApp,
             sessions: 0,
             error: None,
-        }
-    }
-
-    pub fn status_label(&self) -> &'static str {
-        match self.aggregate {
-            Aggregate::NoSession => "No audio session",
-            Aggregate::AllMuted => "Muted",
-            Aggregate::AllActive => "Active",
-            Aggregate::Mixed => "Mixed",
-            Aggregate::NoExternalApp => "No external application selected",
-            Aggregate::Error => "Error",
         }
     }
 }

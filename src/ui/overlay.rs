@@ -19,7 +19,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
     DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, AC_SRC_ALPHA,
@@ -32,12 +32,12 @@ use windows::Win32::Graphics::Imaging::{
 };
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, KillTimer, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, UpdateLayeredWindow, CREATESTRUCTW, GWLP_USERDATA, HTTRANSPARENT, HWND_TOPMOST,
-    MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
-    ULW_ALPHA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE,
-    WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, KillTimer, SetTimer, SetWindowPos, ShowWindow,
+    UpdateLayeredWindow, CREATESTRUCTW, HTTRANSPARENT, HWND_TOPMOST, MA_NOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY,
+    WM_NCHITTEST, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::config::model::{MonitorChoice, OverlayCfg, OverlayPosition};
@@ -60,6 +60,8 @@ pub enum OverlayIcon {
     Microphone,
     Output,
     Application,
+    /// Reserved for informational rows (tone ladder completeness).
+    #[allow(dead_code)]
     Info,
 }
 
@@ -201,8 +203,7 @@ fn concise(value: &str) -> String {
 impl OverlayWindow {
     pub fn create() -> Result<Self> {
         let _atom = *REGISTERED.get_or_init(|| {
-            win::register_class::<OverlayState>(CLASS_NAME, Some(overlay_wndproc))
-                .expect("register overlay class")
+            win::register_class(CLASS_NAME, Some(overlay_wndproc)).expect("register overlay class")
         });
         let graphics = OverlayGraphics::create()?;
         let state = Box::new(OverlayState::new(graphics));
@@ -288,7 +289,10 @@ impl OverlayState {
             return Ok(());
         }
         let monitor = select_monitor(config.monitor.clone());
-        self.dpi = monitor.as_ref().map_or(96, |m| m.dpi).max(96);
+        // PMv2: the window's own DPI is authoritative once created; take the
+        // larger of monitor estimate and window DPI to avoid undershoot.
+        let win_dpi = crate::platform::dpi::dpi_for_window(hwnd);
+        self.dpi = monitor.as_ref().map_or(96, |m| m.dpi).max(win_dpi).max(96);
         self.model = model;
         self.config = config.clone();
         self.surface = Some(
@@ -299,7 +303,7 @@ impl OverlayState {
         self.base_position = position_for(
             monitor.as_ref().map(|m| m.work).unwrap_or(RECT_FALLBACK),
             size,
-            config.position.clone(),
+            config.position,
             self.dpi,
         );
         let now = Instant::now();
@@ -1021,10 +1025,10 @@ unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         if msg == WM_NCDESTROY {
-            drop(unsafe { win::take_state::<OverlayState>(hwnd) });
+            drop(win::take_state::<OverlayState>(hwnd)); // outer unsafe scope
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
-        let Some(cell) = (unsafe { win::state_cell::<OverlayState>(hwnd) }) else {
+        let Some(cell) = win::state_cell::<OverlayState>(hwnd) else {
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         };
         match msg {

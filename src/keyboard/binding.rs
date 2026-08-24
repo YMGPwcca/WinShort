@@ -296,6 +296,13 @@ impl BindingTable {
         self.map.get(&(mods, key)).copied()
     }
 
+    /// Exact-match probe used by the reserved-slot guard (#12).
+    pub fn conflicts(&self, candidate: &Hotkey) -> Option<HotkeyAction> {
+        self.lookup(candidate.modifiers, candidate.key)
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // test helper surface
     pub fn iter(&self) -> impl Iterator<Item = (Hotkey, HotkeyAction)> + '_ {
         self.map.iter().map(|((m, k), a)| {
             (
@@ -308,14 +315,13 @@ impl BindingTable {
         })
     }
 
-    pub fn conflicts(&self, candidate: &Hotkey) -> Option<HotkeyAction> {
-        self.lookup(candidate.modifiers, candidate.key)
-    }
-
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)] // test helper surface
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }

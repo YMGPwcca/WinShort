@@ -30,7 +30,7 @@ use crate::platform::single_instance::{InstanceRole, PrimaryRole};
 
 /// Process data root: %LOCALAPPDATA%\WinShort.
 fn app_data_dir() -> Result<PathBuf> {
-    crate::config::try_data_dir().map_err(|e| e)
+    crate::config::try_data_dir()
 }
 
 fn init_logging() -> Result<()> {
@@ -151,13 +151,11 @@ fn run(role: PrimaryRole, _com: crate::platform::com::ComApartment) -> Result<()
 
     // Owned watcher runtime (#24): joined after the loop exits; begin_shutdown
     // signals its shutdown event BEFORE destroying any window.
-    let mut watcher =
-        platform::single_instance::spawn_watcher(role.activate_event, move || unsafe {
-            let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
-            unsafe {
-                event::post_event(hwnd, event::AppEvent::ShowSettings);
-            }
-        });
+    let watcher = platform::single_instance::spawn_watcher(role.activate_event, move || unsafe {
+        let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
+        // SAFETY: hwnd was valid at startup and outlives the watcher.
+        event::post_event(hwnd, event::AppEvent::ShowSettings);
+    });
 
     info!("startup complete; entering message loop");
     let code = platform::message_loop::run();

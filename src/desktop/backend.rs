@@ -43,10 +43,6 @@ impl BackendAvailability {
             }
         }
     }
-
-    pub fn is_available(&self) -> bool {
-        matches!(self, BackendAvailability::Available)
-    }
 }
 
 /// Published status for the settings Advanced page and tray diagnostics.
@@ -71,11 +67,16 @@ pub enum DesktopError {
     TargetOutOfRange { requested: usize, count: usize },
     /// Backend cannot operate right now (not activated, safety limit).
     BackendUnavailable(String),
-    /// Build not whitelisted — fail closed (spec §20).
+    /// Build not whitelisted — fail closed (spec §20). Produced by
+    /// `detect()` gating; constructed directly only in policy_tests.
+    #[allow(dead_code)]
     UnsupportedBuild(u32),
     /// Shell RPC dropped (Explorer restart): proxy rebuild + fallback allowed.
     RpcDisconnected,
     /// Interface layout mismatch against the pinned build contract.
+    /// Currently surfaced via `BackendUnavailable`; retained for typed
+    /// matching and exercised by policy_tests.
+    #[allow(dead_code)]
     AbiMismatch(String),
     /// Shell rejected the switch with this HRESULT.
     SwitchFailed(i32),
@@ -114,12 +115,10 @@ impl std::error::Error for DesktopError {}
 /// Backend contract. Implementations must be safe to call from the desktop
 /// worker thread only; they serialize internally.
 pub trait VirtualDesktopBackend {
-    fn availability(&self) -> BackendAvailability;
     fn desktop_count(&self) -> std::result::Result<usize, DesktopError>;
     /// 0-based index of the current desktop.
     fn current_desktop(&self) -> std::result::Result<usize, DesktopError>;
     /// Switch to 0-based `index`. Returns Err(TargetOutOfRange) when the
     /// target doesn't exist.
     fn switch_to(&self, index: usize) -> std::result::Result<(), DesktopError>;
-    fn kind(&self) -> BackendKind;
 }

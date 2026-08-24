@@ -102,6 +102,36 @@ impl Error {
     }
 }
 
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Os { api, code, context } => {
+                write!(f, "{api} failed: {}", Self::code_name(*code))?;
+                if let Some(c) = context {
+                    write!(f, " ({c})")?;
+                }
+                Ok(())
+            }
+            Error::Config(m) => write!(f, "configuration error: {m}"),
+            Error::Audio(m) => write!(f, "audio error: {m}"),
+            Error::Desktop(m) => write!(f, "virtual desktop error: {m}"),
+            Error::Internal(w) => write!(f, "internal error: {w}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<windows_core::Error> for Error {
+    fn from(e: windows_core::Error) -> Self {
+        Error::Os {
+            api: "<unknown>",
+            code: e.code().0 as u32,
+            context: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Error;
@@ -139,35 +169,5 @@ mod tests {
         }
         let e = Error::os("test", 0x80070005); // E_ACCESSDENIED is not invalidation
         assert!(!e.is_audio_invalidation());
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Os { api, code, context } => {
-                write!(f, "{api} failed: {}", Self::code_name(*code))?;
-                if let Some(c) = context {
-                    write!(f, " ({c})")?;
-                }
-                Ok(())
-            }
-            Error::Config(m) => write!(f, "configuration error: {m}"),
-            Error::Audio(m) => write!(f, "audio error: {m}"),
-            Error::Desktop(m) => write!(f, "virtual desktop error: {m}"),
-            Error::Internal(w) => write!(f, "internal error: {w}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<windows_core::Error> for Error {
-    fn from(e: windows_core::Error) -> Self {
-        Error::Os {
-            api: "<unknown>",
-            code: e.code().0 as u32,
-            context: None,
-        }
     }
 }

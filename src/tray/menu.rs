@@ -2,9 +2,9 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, TrackPopupMenu,
-    HMENU, MF_CHECKED, MF_ENABLED, MF_SEPARATOR, MF_STRING, TPMPARAMS, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, TPM_LEFTBUTTON, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, TrackPopupMenu, HMENU,
+    MF_CHECKED, MF_ENABLED, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_LEFTBUTTON, TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
 
 use crate::error::{Error, Result};
@@ -25,15 +25,14 @@ pub struct MenuState {
 pub fn build(state: &MenuState) -> Result<HMENU> {
     unsafe {
         let menu = CreatePopupMenu().map_err(|e| Error::win("CreatePopupMenu", &e))?;
-        append(menu, cmd::OPEN_SETTINGS, "&Open Settings", false, false)?;
-        append(menu, cmd::SHOW_STATUS, "&Show Status", false, false)?;
+        append(menu, cmd::OPEN_SETTINGS, "&Open Settings", false)?;
+        append(menu, cmd::SHOW_STATUS, "&Show Status", false)?;
         separator(menu)?;
         append(
             menu,
             cmd::SUSPEND_HOTKEYS,
             "&Suspend Hotkeys",
             state.suspended,
-            true,
         )?;
         separator(menu)?;
         append(
@@ -41,18 +40,15 @@ pub fn build(state: &MenuState) -> Result<HMENU> {
             cmd::START_WITH_WINDOWS,
             "&Start with Windows",
             state.start_with_windows,
-            true,
         )?;
         separator(menu)?;
-        append(menu, cmd::EXIT, "E&xit", false, false)?;
+        append(menu, cmd::EXIT, "E&xit", false)?;
         Ok(menu)
     }
 }
 
-fn append(menu: HMENU, id: u32, text: &str, checked: bool, toggleable: bool) -> Result<()> {
-    let flags = MF_STRING
-        | if checked { MF_CHECKED } else { MF_ENABLED }
-        | if toggleable { MF_ENABLED } else { MF_ENABLED };
+fn append(menu: HMENU, id: u32, text: &str, checked: bool) -> Result<()> {
+    let flags = MF_STRING | if checked { MF_CHECKED } else { MF_ENABLED };
     // SAFETY: valid HMENU from CreatePopupMenu.
     let ok = unsafe {
         windows::Win32::UI::WindowsAndMessaging::AppendMenuW(

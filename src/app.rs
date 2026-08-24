@@ -96,7 +96,7 @@ pub fn main_hwnd() -> Option<HWND> {
 impl App {
     /// Create the hidden message window and install the App singleton.
     pub fn create_main_window() -> Result<()> {
-        win::register_class::<App>(CLASS_NAME, Some(main_wndproc))?;
+        win::register_class(CLASS_NAME, Some(main_wndproc))?;
 
         // SAFETY: plain message-only window; no state passed through NCCREATE.
         let hwnd = unsafe {
@@ -485,7 +485,6 @@ impl App {
             AppEvent::DesktopBackendChanged(status) => {
                 self.desktop_status = status;
             }
-            _ => { /* later phases */ }
         }
     }
     fn begin_shutdown(&mut self) {
@@ -535,68 +534,6 @@ impl App {
                 windows::Win32::Foundation::LPARAM(0),
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod shutdown_gate_tests {
-    use super::*;
-    use windows::Win32::Foundation::HWND;
-
-    fn test_app() -> App {
-        App {
-            hwnd: HWND(std::ptr::null_mut()),
-            tray: None,
-            settings: None,
-            overlay: None,
-            foreground: None,
-            keyboard: None,
-            audio: None,
-            desktop: None,
-            desktop_status: crate::desktop::BackendStatus {
-                native: crate::desktop::BackendAvailability::Failed {
-                    reason: "test".into(),
-                },
-                fallback: crate::desktop::BackendAvailability::Available,
-                active: crate::desktop::BackendKind::KeyboardFallback,
-                desktop_count: None,
-                last_served: None,
-            },
-            microphone_state: crate::audio::AudioState::Unavailable {
-                reason: "test".into(),
-            },
-            output_state: crate::audio::OutputState::Unavailable {
-                reason: "test".into(),
-            },
-            foreground_state: crate::audio::AppAudioState::no_external(),
-            microphone_seen: false,
-            output_seen: false,
-            pending_overlay: None,
-            suspended: false,
-            shutting_down: false,
-            degraded: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn gated_route_event_creates_nothing_after_shutdown_begins() {
-        // #43: once shutdown begins, user-facing events must not create state.
-        let mut app = test_app();
-        app.shutting_down = true;
-        app.route_event(AppEvent::ShowSettings);
-        assert!(app.settings.is_none(), "settings must not be created");
-        app.route_event(AppEvent::ShowStatusOverlay);
-        assert!(app.overlay.is_none(), "overlay must not be created");
-    }
-
-    #[test]
-    fn gated_dispatch_is_a_no_op_after_shutdown_begins() {
-        let mut app = test_app();
-        app.shutting_down = true;
-        // Must not panic or enqueue anything (no audio subsystem present).
-        app.dispatch_action(HotkeyAction::ToggleMicrophone);
-        app.dispatch_action(HotkeyAction::SwitchDesktop(0));
-        assert!(app.pending_overlay.is_none());
     }
 }
 
@@ -752,5 +689,67 @@ fn small_icon_size() -> u32 {
             windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON,
             windows::Win32::UI::HiDpi::GetDpiForSystem(),
         ) as u32
+    }
+}
+
+#[cfg(test)]
+mod shutdown_gate_tests {
+    use super::*;
+    use windows::Win32::Foundation::HWND;
+
+    fn test_app() -> App {
+        App {
+            hwnd: HWND(std::ptr::null_mut()),
+            tray: None,
+            settings: None,
+            overlay: None,
+            foreground: None,
+            keyboard: None,
+            audio: None,
+            desktop: None,
+            desktop_status: crate::desktop::BackendStatus {
+                native: crate::desktop::BackendAvailability::Failed {
+                    reason: "test".into(),
+                },
+                fallback: crate::desktop::BackendAvailability::Available,
+                active: crate::desktop::BackendKind::KeyboardFallback,
+                desktop_count: None,
+                last_served: None,
+            },
+            microphone_state: crate::audio::AudioState::Unavailable {
+                reason: "test".into(),
+            },
+            output_state: crate::audio::OutputState::Unavailable {
+                reason: "test".into(),
+            },
+            foreground_state: crate::audio::AppAudioState::no_external(),
+            microphone_seen: false,
+            output_seen: false,
+            pending_overlay: None,
+            suspended: false,
+            shutting_down: false,
+            degraded: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn gated_route_event_creates_nothing_after_shutdown_begins() {
+        // #43: once shutdown begins, user-facing events must not create state.
+        let mut app = test_app();
+        app.shutting_down = true;
+        app.route_event(AppEvent::ShowSettings);
+        assert!(app.settings.is_none(), "settings must not be created");
+        app.route_event(AppEvent::ShowStatusOverlay);
+        assert!(app.overlay.is_none(), "overlay must not be created");
+    }
+
+    #[test]
+    fn gated_dispatch_is_a_no_op_after_shutdown_begins() {
+        let mut app = test_app();
+        app.shutting_down = true;
+        // Must not panic or enqueue anything (no audio subsystem present).
+        app.dispatch_action(HotkeyAction::ToggleMicrophone);
+        app.dispatch_action(HotkeyAction::SwitchDesktop(0));
+        assert!(app.pending_overlay.is_none());
     }
 }

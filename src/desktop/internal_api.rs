@@ -11,9 +11,7 @@ use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::Common::IObjectArray;
 use windows_core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT, HSTRING};
 
-use crate::desktop::backend::{
-    BackendAvailability, BackendKind, DesktopError, VirtualDesktopBackend,
-};
+use crate::desktop::backend::{DesktopError, VirtualDesktopBackend};
 use crate::desktop::detect::OsBuild;
 use crate::error::{Error, Result};
 
@@ -175,10 +173,6 @@ impl InternalBackend {
 }
 
 impl VirtualDesktopBackend for InternalBackend {
-    fn availability(&self) -> BackendAvailability {
-        BackendAvailability::Available
-    }
-
     fn desktop_count(&self) -> std::result::Result<usize, DesktopError> {
         let inner: crate::error::Result<usize> = (|| {
             let array = unsafe { desktop_array(&self.manager)? };
@@ -259,10 +253,6 @@ impl VirtualDesktopBackend for InternalBackend {
                 other => Err(classify(other)),
             },
         }
-    }
-
-    fn kind(&self) -> BackendKind {
-        BackendKind::NativeShell
     }
 }
 

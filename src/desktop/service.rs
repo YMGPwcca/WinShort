@@ -4,7 +4,7 @@
 use std::sync::mpsc::{self, Sender};
 
 use crate::desktop::backend::{
-    BackendAvailability, BackendKind, BackendStatus, DesktopError, VirtualDesktopBackend,
+    BackendAvailability, BackendKind, BackendStatus, VirtualDesktopBackend,
 };
 use crate::desktop::detect::{detect, OsBuild};
 use crate::desktop::internal_api::InternalBackend;
@@ -16,7 +16,7 @@ use crate::event::AppEvent;
 enum NativeOutcome {
     Served,
     /// Semantic refusal: log and never inject.
-    Refused(DesktopError),
+    Refused,
     MayFallback,
 }
 
@@ -123,7 +123,7 @@ impl DesktopController {
                 self.publish_status();
                 return;
             }
-            NativeOutcome::Refused(_) => {
+            NativeOutcome::Refused => {
                 self.publish_status();
                 return;
             }
@@ -181,7 +181,7 @@ impl DesktopController {
                 // Semantic/ABI refusal (#20): never inject keystrokes for a
                 // target that does not exist or a build we cannot serve.
                 crate::error_!("native desktop switch refused: {e}");
-                return NativeOutcome::Refused(e);
+                return NativeOutcome::Refused;
             }
         }
         // Explorer may have restarted; rebuild the STA proxy once.
@@ -199,7 +199,7 @@ impl DesktopController {
                     }
                     Err(e) if !e.permits_fallback() => {
                         crate::error_!("native desktop switch refused after rebuild: {e}");
-                        return NativeOutcome::Refused(e);
+                        return NativeOutcome::Refused;
                     }
                     Err(_) => {} // still unavailable: fallback permitted
                 }
@@ -288,18 +288,14 @@ fn desktop_thread(
 #[cfg(test)]
 mod policy_tests {
     use super::*;
-    use crate::desktop::backend::{BackendAvailability, DesktopError};
+    use crate::desktop::backend::DesktopError;
     use std::cell::RefCell;
 
     struct ScriptedBackend {
-        availability: BackendAvailability,
         errors: RefCell<Vec<DesktopError>>,
         fallback_used: RefCell<bool>,
     }
     impl VirtualDesktopBackend for ScriptedBackend {
-        fn availability(&self) -> BackendAvailability {
-            self.availability.clone()
-        }
         fn desktop_count(&self) -> std::result::Result<usize, DesktopError> {
             Err(DesktopError::BackendUnavailable("scripted".into()))
         }
@@ -311,9 +307,6 @@ mod policy_tests {
                 Some(e) => Err(e),
                 None => Ok(()),
             }
-        }
-        fn kind(&self) -> BackendKind {
-            BackendKind::NativeShell
         }
     }
 
@@ -341,7 +334,6 @@ mod policy_tests {
     #[test]
     fn scripted_backend_surfaces_typed_error() {
         let backend = ScriptedBackend {
-            availability: BackendAvailability::Available,
             errors: RefCell::new(vec![DesktopError::TargetOutOfRange {
                 requested: 8,
                 count: 3,

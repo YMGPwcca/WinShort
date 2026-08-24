@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_IGNORE, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
@@ -68,6 +68,9 @@ pub enum TextStyle {
 pub struct Renderer {
     hwnd: HWND,
     dpi: u32,
+    /// Kept alive deliberately: D2D/DWrite objects created from it retain
+    /// references, but rustc cannot see the transitive use.
+    #[allow(dead_code)]
     factory: ID2D1Factory1,
     target: ID2D1HwndRenderTarget,
     dwrite: IDWriteFactory,
@@ -124,14 +127,6 @@ impl Renderer {
             renderer.rebuild_formats()?;
             Ok(renderer)
         }
-    }
-
-    pub fn dpi(&self) -> u32 {
-        self.dpi
-    }
-
-    pub fn theme(&self) -> Theme {
-        self.theme
     }
 
     pub fn set_theme(&mut self, theme: Theme) -> Result<()> {
@@ -229,6 +224,7 @@ impl Renderer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // mirrors D2D1_ELLIPSE shape
     pub fn ellipse(
         &self,
         cx: f32,

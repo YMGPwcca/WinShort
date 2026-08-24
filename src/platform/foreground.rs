@@ -20,7 +20,7 @@ static LAST_EXTERNAL_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::A
 /// foreground is WinShort itself.
 pub fn last_external_hwnd() -> Option<windows::Win32::Foundation::HWND> {
     let raw = LAST_EXTERNAL_HWND.load(std::sync::atomic::Ordering::Acquire);
-    (raw != 0).then(|| windows::Win32::Foundation::HWND(raw as *mut _))
+    (raw != 0).then_some(windows::Win32::Foundation::HWND(raw as *mut _))
 }
 
 pub struct ForegroundTracker {

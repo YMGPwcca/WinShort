@@ -18,6 +18,9 @@ pub struct RawKeyEvent {
 }
 
 impl RawKeyEvent {
+    /// Test constructors: production code builds `RawKeyEvent` literals
+    /// directly in the hook.
+    #[cfg(test)]
     pub fn down(vk: u16) -> Self {
         Self {
             vk,
@@ -26,6 +29,7 @@ impl RawKeyEvent {
             injected: false,
         }
     }
+    #[cfg(test)]
     pub fn up(vk: u16) -> Self {
         Self {
             vk,
@@ -34,10 +38,13 @@ impl RawKeyEvent {
             injected: false,
         }
     }
+    #[cfg(test)]
     pub fn injected(mut self) -> Self {
         self.injected = true;
         self
     }
+    #[cfg(test)]
+    #[allow(dead_code)] // available for future extended-flag tests
     pub fn ext(mut self) -> Self {
         self.extended = true;
         self
@@ -68,7 +75,7 @@ struct SuppressionSet([Option<u8>; 8]);
 impl SuppressionSet {
     fn insert(&mut self, vk: u16) {
         let b = vk as u8;
-        if self.0.iter().any(|s| *s == Some(b)) {
+        if self.0.contains(&Some(b)) {
             return;
         }
         for slot in self.0.iter_mut() {
@@ -184,10 +191,10 @@ impl KeyboardEngine {
                 }
                 self.suppressed_ups.insert(vk);
                 let dirty_win_chord = win_held && !self.passthrough_while_win;
-                return EngineOutcome::Dispatch {
+                EngineOutcome::Dispatch {
                     action,
                     dirty_win_chord,
-                };
+                }
             }
             None => {
                 self.state.set_down(vk, true);

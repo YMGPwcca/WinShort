@@ -4,9 +4,7 @@
 //! reach N best-effort, walk left past any realistic desktop count, then right
 //! N times. Diagnostics explicitly report that count/current are unavailable.
 
-use crate::desktop::backend::{
-    BackendAvailability, BackendKind, DesktopError, VirtualDesktopBackend,
-};
+use crate::desktop::backend::{DesktopError, VirtualDesktopBackend};
 
 pub struct KeyboardFallback;
 
@@ -25,10 +23,6 @@ impl KeyboardFallback {
 }
 
 impl VirtualDesktopBackend for KeyboardFallback {
-    fn availability(&self) -> BackendAvailability {
-        BackendAvailability::Available
-    }
-
     fn desktop_count(&self) -> std::result::Result<usize, DesktopError> {
         Err(DesktopError::BackendUnavailable(
             "keyboard fallback cannot enumerate virtual desktops".into(),
@@ -68,10 +62,6 @@ impl VirtualDesktopBackend for KeyboardFallback {
         }
         Ok(())
     }
-
-    fn kind(&self) -> BackendKind {
-        BackendKind::KeyboardFallback
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -82,8 +72,8 @@ enum Arrow {
 
 fn send_chord(arrow: Arrow) -> std::result::Result<(), DesktopError> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+        GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+        KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
 
     const VK_CONTROL: u16 = 0x11;

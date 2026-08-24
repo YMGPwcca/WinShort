@@ -139,6 +139,7 @@ pub struct SectionLabel {
 #[derive(Debug, Clone)]
 pub struct SettingsLayout {
     pub width: f32,
+    #[allow(dead_code)] // design-space record; metrics derived from width/rows
     pub height: f32,
     pub content_clip: Rect,
     pub footer: Rect,

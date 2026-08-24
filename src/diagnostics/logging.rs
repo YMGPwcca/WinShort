@@ -51,6 +51,7 @@ pub fn init(logs_dir: &Path, level: Level) {
     });
 }
 
+#[cfg(test)]
 pub fn enabled(level: Level) -> bool {
     LOGGER.get().is_some_and(|l| level >= l.level)
 }

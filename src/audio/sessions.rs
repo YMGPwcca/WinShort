@@ -73,7 +73,7 @@ fn toggle_once(
     pid: u32,
     app_name: &Option<String>,
 ) -> Result<AppAudioState> {
-    let mut sessions = match resolve_sessions(enumerator, config, pid, app_name)? {
+    let sessions = match resolve_sessions(enumerator, config, pid, app_name)? {
         Resolved::Sessions(sessions) => sessions,
         Resolved::Ambiguous {
             stem,
@@ -359,7 +359,7 @@ fn collect_all_render_pids(enumerator: &IMMDeviceEnumerator) -> Result<Vec<u32>>
             let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
                 continue;
             };
-            if let Ok(session_pid) = (unsafe { control2.GetProcessId() }) {
+            if let Ok(session_pid) = unsafe { control2.GetProcessId() } {
                 if session_pid != 0 && !pids.contains(&session_pid) {
                     pids.push(session_pid);
                 }

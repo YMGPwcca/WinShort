@@ -58,7 +58,7 @@ mod heapless_like {
             }
         }
         pub fn contains(&self, v: u8) -> bool {
-            self.0.iter().any(|s| *s == Some(v))
+            self.0.contains(&Some(v))
         }
         pub fn iter(&self) -> impl Iterator<Item = u8> + '_ {
             self.0.iter().filter_map(|s| *s)

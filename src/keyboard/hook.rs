@@ -280,10 +280,6 @@ impl KeyboardService {
         self.suspended.store(suspended, Ordering::Release);
     }
 
-    pub fn is_suspended(&self) -> bool {
-        self.suspended.load(Ordering::Acquire)
-    }
-
     /// Ask the keyboard thread to clear engine state (lock/sleep safety
     /// valve). Never touches engine memory cross-thread — posts a wake (#13).
     pub fn reset_state(&self) {

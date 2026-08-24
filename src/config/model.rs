@@ -194,12 +194,6 @@ impl EndpointRole {
             EndpointRole::Communications => "communications",
         }
     }
-
-    pub const ALL: [EndpointRole; 3] = [
-        EndpointRole::Console,
-        EndpointRole::Multimedia,
-        EndpointRole::Communications,
-    ];
 }
 
 /// "default" (follow system default) or a specific endpoint GUID string.
@@ -207,19 +201,6 @@ impl EndpointRole {
 pub enum DeviceSelection {
     Default,
     Endpoint(String),
-}
-
-impl DeviceSelection {
-    pub fn follows_default(&self) -> bool {
-        matches!(self, DeviceSelection::Default)
-    }
-
-    pub fn label(&self) -> String {
-        match self {
-            DeviceSelection::Default => "Default device".into(),
-            DeviceSelection::Endpoint(_) => "Specific device".into(),
-        }
-    }
 }
 
 impl Default for Config {
@@ -458,7 +439,7 @@ impl Config {
                 t.audio.output_role
             )),
         }
-        for (field, raw, slot) in [
+        for (_field, raw, slot) in [
             (
                 "input_device",
                 &t.audio.input_device,
@@ -547,11 +528,9 @@ impl Config {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
                 "overlay.scale" => self.overlay.scale = 1.0,
                 "overlay.opacity" => self.overlay.opacity = 0.85,
-                f if f.starts_with("hotkeys.toggle_") || f.starts_with("hotkeys.") => {
+                f if f.starts_with("hotkeys.") && v.message.contains("conflicts") => {
                     // Conflict-class violations: drop the offending binding.
-                    if v.message.contains("conflicts") {
-                        drop_hotkeys.push(v.field.trim_start_matches("hotkeys.").to_string());
-                    }
+                    drop_hotkeys.push(f.trim_start_matches("hotkeys.").to_string());
                 }
                 _ => {}
             }

@@ -73,7 +73,7 @@ fn enumerate_flow(enumerator: &IMMDeviceEnumerator, flow: EndpointFlow) -> Resul
                 devices.push(id);
             }
         }
-        devices.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        devices.sort_by_key(|d| d.name.to_lowercase());
         Ok(devices)
     }
 }
@@ -88,7 +88,6 @@ const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
 pub const AUDIO_EVENT_CONTEXT: GUID = GUID::from_u128(0x7f4f3793_9098_4ad8_9f6e_6a6815af3984);
 
 pub struct EndpointBinding {
-    pub flow: EndpointFlow,
     pub identity: DeviceId,
     pub volume: IAudioEndpointVolume,
     callback: IAudioEndpointVolumeCallback,
@@ -116,7 +115,6 @@ impl EndpointBinding {
                 .map_err(|e| Error::win("RegisterControlChangeNotify", &e))?;
         }
         Ok(Self {
-            flow,
             identity,
             volume,
             callback,

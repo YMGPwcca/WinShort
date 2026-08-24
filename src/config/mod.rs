@@ -61,31 +61,6 @@ impl ConfigHandle {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::event::HotkeyAction;
-    use crate::keyboard::binding::{Hotkey, ModifierMask, VirtualKey};
-
-    #[test]
-    fn replace_publishes_new_binding_snapshot_immediately() {
-        // Regression for #10: the hook must see new bindings without taking
-        // the config lock or rebuilding the table inside the callback.
-        let handle = ConfigHandle::new(Config::default());
-        let mut cfg = Config::default();
-        cfg.hotkeys.toggle_microphone = Some(Hotkey {
-            modifiers: ModifierMask::CTRL.union(ModifierMask::ALT),
-            key: VirtualKey(0x7A), // VK_F13 — never a default binding
-        });
-        handle.replace(cfg);
-        let hit = handle.bindings().lookup(
-            ModifierMask::CTRL.union(ModifierMask::ALT),
-            VirtualKey(0x7A),
-        );
-        assert_eq!(hit, Some(HotkeyAction::ToggleMicrophone));
-    }
-}
-
 /// Authoritative process data root via the Known Folder API (#15e): no "."
 /// fallback — callers decide whether failure is fatal.
 pub fn try_data_dir() -> crate::error::Result<std::path::PathBuf> {
@@ -139,4 +114,29 @@ pub fn set_config_readonly(reason: &str) {
 
 pub fn config_readonly() -> bool {
     CONFIG_READONLY.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::HotkeyAction;
+    use crate::keyboard::binding::{Hotkey, ModifierMask, VirtualKey};
+
+    #[test]
+    fn replace_publishes_new_binding_snapshot_immediately() {
+        // Regression for #10: the hook must see new bindings without taking
+        // the config lock or rebuilding the table inside the callback.
+        let handle = ConfigHandle::new(Config::default());
+        let mut cfg = Config::default();
+        cfg.hotkeys.toggle_microphone = Some(Hotkey {
+            modifiers: ModifierMask::CTRL.union(ModifierMask::ALT),
+            key: VirtualKey(0x7A), // VK_F13 — never a default binding
+        });
+        handle.replace(cfg);
+        let hit = handle.bindings().lookup(
+            ModifierMask::CTRL.union(ModifierMask::ALT),
+            VirtualKey(0x7A),
+        );
+        assert_eq!(hit, Some(HotkeyAction::ToggleMicrophone));
+    }
 }

@@ -236,12 +236,9 @@ unsafe fn line_figure(
 ) -> Result<ID2D1PathGeometry1> {
     // SAFETY: all calls operate on COM objects created within this function.
     unsafe {
-        // SAFETY: factory is alive for the duration of rendering.
-        let geom = unsafe {
-            factory
-                .CreatePathGeometry()
-                .map_err(|e| Error::win("CreatePathGeometry", &e))?
-        };
+        let geom = factory
+            .CreatePathGeometry()
+            .map_err(|e| Error::win("CreatePathGeometry", &e))?;
         let sink = geom
             .Open()
             .map_err(|e| Error::win("GeometrySink Open", &e))?;

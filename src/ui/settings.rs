@@ -23,9 +23,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR,
-    WM_CLOSE, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+    CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW, SWP_NOACTIVATE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
     WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_OVERLAPPEDWINDOW,
 };
@@ -37,7 +37,7 @@ use crate::keyboard::binding::{Hotkey, ModifierMask, VirtualKey};
 use crate::platform::window as win;
 use crate::ui::animation::Motion;
 use crate::ui::controls::{self, ControlValue, Interaction};
-use crate::ui::layout::{ElementId, ElementKind, Rect as UiRect, SettingsLayout};
+use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
 use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
 use crate::ui::theme::{Theme, ThemeMode};
 
@@ -89,13 +89,6 @@ impl SettingsUi {
             applied_until: None,
             mouse_tracking: false,
         }
-    }
-
-    fn ensure_renderer(&mut self, hwnd: HWND) -> Result<&mut Renderer> {
-        if self.renderer.is_none() {
-            self.renderer = Some(Renderer::new(hwnd, self.dpi, Theme::current())?);
-        }
-        Ok(self.renderer.as_mut().expect("created"))
     }
 
     fn rebuild_layout(&mut self, hwnd: HWND) {
@@ -751,7 +744,7 @@ pub struct SettingsWindow {
 impl SettingsWindow {
     pub fn create() -> Result<Self> {
         let _atom = *REGISTERED.get_or_init(|| {
-            win::register_class::<SettingsUi>(CLASS_NAME, Some(settings_wndproc))
+            win::register_class(CLASS_NAME, Some(settings_wndproc))
                 .expect("register settings class")
         });
 
@@ -792,7 +785,8 @@ impl SettingsWindow {
     }
 
     pub fn show(&mut self) -> Result<()> {
-        if let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(self.hwnd) }) {
+        // SAFETY: settings window is owned by this main-thread object.
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();
             if !ui.dirty() {
                 ui.draft = (*crate::app::config()).clone();
@@ -854,12 +848,13 @@ unsafe extern "system" fn settings_wndproc(
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
 
-        let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(hwnd) }) else {
-            return win::def_proc(hwnd, msg, wparam, lparam);
+        let cell = match win::state_cell::<SettingsUi>(hwnd) {
+            Some(cell) => cell,
+            None => return win::def_proc(hwnd, msg, wparam, lparam),
         };
 
         if msg == WM_NCDESTROY {
-            drop(unsafe { win::take_state::<SettingsUi>(hwnd) });
+            drop(win::take_state::<SettingsUi>(hwnd)); // outer unsafe scope
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
 
