@@ -424,6 +424,106 @@ fn normalize_maps_extended_generics_to_right_sides() {
 }
 
 #[test]
+fn altgr_signature_detected_when_ralt_precedes_lctrl() {
+    // #44 sequence B: RAlt down FIRST, then LCtrl — the signature must still
+    // suppress Ctrl+Alt hotkey lookup so the AltGr character passes through.
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits(); // includes Ctrl+Alt+M mic binding
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA5),        // RAlt down
+            RawKeyEvent::down(0xA2),        // LCtrl down -> signature completes
+            RawKeyEvent::down(b'M' as u16), // would be ToggleMicrophone otherwise
+            RawKeyEvent::up(b'M' as u16),
+        ],
+    );
+    assert_eq!(out[2], EngineOutcome::Pass, "AltGr letter must pass through");
+}
+
+#[test]
+fn plain_lctrl_lalt_chord_still_dispatches() {
+    // #44 guard: LeftAlt-based Ctrl+Alt chords are NOT AltGr and must work.
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),            // LCtrl
+            RawKeyEvent::down(0xA4),            // LAlt (NOT RAlt)
+            RawKeyEvent::down(b'M' as u16),
+        ],
+    );
+    expect_dispatch(out[2], HotkeyAction::ToggleMicrophone, false);
+}
+
+#[test]
+fn altgr_state_clears_after_either_release_order() {
+    // Release RAlt first, then LCtrl: a FRESH LCtrl+LAlt+M chord must
+    // dispatch again (signature gone, plain chord unaffected).
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA5),
+            RawKeyEvent::up(0xA5), // RAlt up first -> signature clears
+            RawKeyEvent::up(0xA2),
+            // Fresh plain chord:
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA4), // LAlt
+            RawKeyEvent::down(b'M' as u16),
+        ],
+    );
+    expect_dispatch(out[6], HotkeyAction::ToggleMicrophone, false);
+
+    // Mirror: release LCtrl first.
+    let mut e = KeyboardEngine::new();
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA5),
+            RawKeyEvent::up(0xA2), // LCtrl up first -> signature clears
+            RawKeyEvent::up(0xA5),
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA4),
+            RawKeyEvent::down(b'M' as u16),
+        ],
+    );
+    expect_dispatch(out[6], HotkeyAction::ToggleMicrophone, false);
+}
+
+
+#[test]
+fn reset_clears_altgr_signature() {
+    let mut e = KeyboardEngine::new();
+    let t = table_with_win_digits();
+    feed(
+        &mut e,
+        &t,
+        &[RawKeyEvent::down(0xA5), RawKeyEvent::down(0xA2)],
+    );
+    e.reset();
+    // After reset ALL modifier state is gone; rebuild the plain chord.
+    let out = feed(
+        &mut e,
+        &t,
+        &[
+            RawKeyEvent::down(0xA2),
+            RawKeyEvent::down(0xA4),
+            RawKeyEvent::down(b'M' as u16),
+        ],
+    );
+    expect_dispatch(out[2], HotkeyAction::ToggleMicrophone, false);
+}
+
+#[test]
 fn lifecycle_reset_after_partial_chord_emits_no_actions() {
     // #13: Win down + bound digit (dispatched + suppressed up), then a
     // lifecycle reset, then the physical releases. Nothing may dispatch and

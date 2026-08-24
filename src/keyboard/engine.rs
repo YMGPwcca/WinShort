@@ -127,9 +127,7 @@ impl KeyboardEngine {
     fn on_key_down(&mut self, vk: u16, table: &BindingTable) -> EngineOutcome {
         if KeyState::is_modifier(vk) {
             self.state.set_down(vk, true);
-            if vk == vks::VK_RMENU && self.state.is_down(vks::VK_LCONTROL) {
-                self.altgr_active = true;
-            }
+            self.update_altgr();
 
             // Digit-first completion: a non-modifier is already held and this
             // Win press completes a binding. That earlier key-down already
@@ -186,15 +184,22 @@ impl KeyboardEngine {
         }
     }
 
+    /// Recompute the AltGr signature from live modifier state (#44).
+    ///
+    /// Signature: Right Alt held together with any Ctrl. Deriving it from
+    /// state instead of detecting one specific transition makes BOTH arrival
+    /// orderings (LCtrl→RAlt and RAlt→LCtrl) work, clears deterministically
+    /// as soon as either side releases, and leaves plain LCtrl+LAlt chords
+    /// untouched.
+    fn update_altgr(&mut self) {
+        self.altgr_active = self.state.is_down(vks::VK_RMENU)
+            && (self.state.is_down(vks::VK_LCONTROL) || self.state.is_down(vks::VK_RCONTROL));
+    }
+
     fn on_key_up(&mut self, vk: u16) -> EngineOutcome {
         if KeyState::is_modifier(vk) {
             self.state.set_down(vk, false);
-            if self.altgr_active
-                && !self.state.is_down(vks::VK_RMENU)
-                && !self.state.is_down(vks::VK_LCONTROL)
-            {
-                self.altgr_active = false;
-            }
+            self.update_altgr();
             if KeyState::is_win_key(vk) {
                 if self.state.any_win() {
                     return EngineOutcome::Pass; // other side still held
