@@ -20,7 +20,7 @@ pub enum EndpointFlow {
     Render,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioCommand {
     ToggleMicrophone,
     ToggleOutput,
@@ -318,12 +318,89 @@ fn audio_thread(
     let _ = ready.send(Ok(()));
     crate::info!("audio controller ready");
 
-    while let Ok(command) = receiver.recv() {
+    // Coalescing worker loop (#19): after each handled command, drain the
+    // backlog and collapse refresh bursts into a single rebuild. Toggle-style
+    // commands still execute individually.
+    loop {
+        let command = match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(command) => command,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         if !controller.handle(command) {
             break;
+        }
+        let mut backlog: Vec<AudioCommand> = Vec::new();
+        while let Ok(next) = receiver.try_recv() {
+            backlog.push(next);
+        }
+        let (needs_rebuild, mut rest) = coalesce_backlog(backlog);
+        let mut stop = false;
+        for pending in rest {
+            // Shutdown terminates the worker like a direct handle() call.
+            if !controller.handle(pending) {
+                stop = true;
+                break;
+            }
+        }
+        if stop {
+            break;
+        }
+        if needs_rebuild {
+            controller.rebuild_all(false);
         }
     }
     controller.shutdown();
     unsafe { CoUninitialize(); }
     crate::info!("audio controller stopped");
+}
+
+/// Collapse a command backlog (#19): any number of refresh-style commands
+/// becomes a single rebuild request; all other commands pass through in
+/// order.
+fn coalesce_backlog(backlog: Vec<AudioCommand>) -> (bool, Vec<AudioCommand>) {
+    let mut needs_rebuild = false;
+    let mut rest = Vec::new();
+    for cmd in backlog {
+        match cmd {
+            AudioCommand::RefreshAll | AudioCommand::ConfigChanged => needs_rebuild = true,
+            other => rest.push(other),
+        }
+    }
+    (needs_rebuild, rest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_burst_collapses_to_single_rebuild() {
+        // #19: five rapid RefreshAll commands must produce exactly one rebuild.
+        let backlog = vec![
+            AudioCommand::RefreshAll,
+            AudioCommand::RefreshEndpoint(EndpointFlow::Capture),
+            AudioCommand::RefreshAll,
+            AudioCommand::ToggleOutput,
+            AudioCommand::RefreshAll,
+            AudioCommand::ConfigChanged,
+            AudioCommand::Shutdown,
+        ];
+        let (rebuild, rest) = coalesce_backlog(backlog);
+        assert!(rebuild, "burst requires exactly one rebuild");
+        assert_eq!(
+            rest,
+            vec![
+                AudioCommand::RefreshEndpoint(EndpointFlow::Capture),
+                AudioCommand::ToggleOutput,
+                AudioCommand::Shutdown,
+            ],
+            "non-refresh commands pass through in order"
+        );
+    }
+
+    #[test]
+    fn empty_backlog_needs_no_rebuild() {
+        assert!(!coalesce_backlog(Vec::new()).0);
+    }
 }
