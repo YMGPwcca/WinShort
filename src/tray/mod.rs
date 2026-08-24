@@ -158,8 +158,13 @@ impl Tray {
 
 fn set_tip(nid: &mut NOTIFYICONDATAW, tip: &str) {
     let wide: Vec<u16> = tip.encode_utf16().take(127).collect();
-    nid.szTip[..wide.len()].copy_from_slice(&wide);
-    nid.szTip[wide.len()] = 0;
+    // SAFETY: szTip lives inside a packed struct — write through raw pointers
+    // to avoid unaligned references (#28 found this on i686).
+    let tip_ptr = std::ptr::addr_of_mut!(nid.szTip) as *mut u16;
+    unsafe {
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), tip_ptr, wide.len());
+        *tip_ptr.add(wide.len()) = 0;
+    }
 }
 
 /// Decode a version-4 tray callback message.

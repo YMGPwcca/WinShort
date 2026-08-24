@@ -22,19 +22,33 @@ pub enum HotkeyAction {
 }
 
 impl HotkeyAction {
+    /// Fixed-width 32-bit encoding (issue #28): kind in the high half, arg in
+    /// the low byte. Safe on any pointer width — no `usize`-shift assumptions.
     pub fn pack(self) -> usize {
+        (self.pack_u32()) as usize
+    }
+
+    pub fn pack_u32(self) -> u32 {
+        const KIND_MIC: u32 = 1;
+        const KIND_OUT: u32 = 2;
+        const KIND_FG: u32 = 3;
+        const KIND_DESKTOP: u32 = 4;
         match self {
-            HotkeyAction::ToggleMicrophone => 1usize << 32,
-            HotkeyAction::ToggleOutput => 2usize << 32,
-            HotkeyAction::ToggleForegroundAppAudio => 3usize << 32,
-            HotkeyAction::SwitchDesktop(n) => (4usize << 32) | n as usize,
+            HotkeyAction::ToggleMicrophone => KIND_MIC << 16,
+            HotkeyAction::ToggleOutput => KIND_OUT << 16,
+            HotkeyAction::ToggleForegroundAppAudio => KIND_FG << 16,
+            HotkeyAction::SwitchDesktop(n) => (KIND_DESKTOP << 16) | n as u32,
         }
     }
 
     /// Inverse of [`pack`]; returns None for foreign messages.
     pub fn unpack(wparam: usize) -> Option<Self> {
-        let kind = wparam >> 32;
-        let arg = (wparam & 0xFFFF_FFFF) as u8;
+        Self::unpack_u32(wparam as u32)
+    }
+
+    pub fn unpack_u32(word: u32) -> Option<Self> {
+        let kind = word >> 16;
+        let arg = word as u8;
         match kind {
             1 => Some(HotkeyAction::ToggleMicrophone),
             2 => Some(HotkeyAction::ToggleOutput),
@@ -118,6 +132,38 @@ pub unsafe fn post_event(hwnd: windows::Win32::Foundation::HWND, ev: AppEvent) -
     events().push(ev);
     // SAFETY: hwnd contract documented above; wake-only message.
     unsafe { PostMessageW(Some(hwnd), WM_APP_EVENT, WPARAM(0), LPARAM(0)).is_ok() }
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+
+    #[test]
+    fn packing_is_32_bit_and_round_trips() {
+        // #28: values must fit u32 and survive a round trip on any target.
+        let all = [
+            HotkeyAction::ToggleMicrophone,
+            HotkeyAction::ToggleOutput,
+            HotkeyAction::ToggleForegroundAppAudio,
+            HotkeyAction::SwitchDesktop(0),
+            HotkeyAction::SwitchDesktop(8),
+        ];
+        for action in all {
+            let packed = action.pack();
+            assert!(
+                packed <= u32::MAX as usize,
+                "{action:?} packs beyond 32 bits"
+            );
+            assert_eq!(HotkeyAction::unpack(packed), Some(action));
+        }
+        // Distinct encodings.
+        let packed: Vec<usize> = all.iter().map(|a| a.pack()).collect();
+        for (i, a) in packed.iter().enumerate() {
+            for b in &packed[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

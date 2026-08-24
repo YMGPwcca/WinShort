@@ -807,11 +807,7 @@ unsafe extern "system" fn settings_wndproc(
     if msg == WM_NCCREATE {
         let cs = &*(lparam.0 as *const CREATESTRUCTW);
         let ui = Box::from_raw(cs.lpCreateParams as *mut SettingsUi);
-        windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
-            hwnd,
-            GWLP_USERDATA,
-            Box::into_raw(win::WindowState::new(*ui)) as isize,
-        );
+        win::store_state_ptr(hwnd, win::WindowState::new(*ui));
         return win::def_proc(hwnd, msg, wparam, lparam);
     }
 

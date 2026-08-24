@@ -88,7 +88,11 @@ fn send_chord(arrow: Arrow) -> std::result::Result<(), DesktopError> {
     const VK_RWIN: u16 = 0x5C;
     const VK_LEFT: u16 = 0x25;
     const VK_RIGHT: u16 = 0x27;
+    // dwExtraInfo is pointer-width: keep the tag value width-agnostic (#28).
+    #[cfg(target_pointer_width = "64")]
     const TAG: usize = 0x5753_484F_5254; // "WSHORT"
+    #[cfg(target_pointer_width = "32")]
+    const TAG: usize = 0x5753_5254; // "WSRT"
 
     let win_held = unsafe {
         (GetAsyncKeyState(VK_LWIN as i32) as u16 & 0x8000) != 0

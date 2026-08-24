@@ -870,7 +870,7 @@ unsafe extern "system" fn overlay_wndproc(
     if msg == WM_NCCREATE {
         let create = &*(lparam.0 as *const CREATESTRUCTW);
         let state = Box::from_raw(create.lpCreateParams as *mut OverlayState);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(win::WindowState::new(*state)) as isize);
+        win::store_state_ptr(hwnd, win::WindowState::new(*state));
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
     if msg == WM_NCDESTROY {

@@ -66,6 +66,20 @@ pub fn register_class<T>(name: &str, wndproc: WNDPROC) -> Result<u16, crate::err
 }
 
 
+/// Store a boxed [`WindowState`] pointer into GWLP_USERDATA with the right
+/// integer width for the target (#28).
+pub fn store_state_ptr<T>(hwnd: HWND, state: Box<WindowState<T>>) {
+    use windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW;
+    // SAFETY: caller owns window creation flow; ptr ownership moves to slot.
+    #[cfg(target_pointer_width = "64")]
+    let value = Box::into_raw(state) as isize;
+    #[cfg(target_pointer_width = "32")]
+    let value = Box::into_raw(state) as i32;
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, value);
+    }
+}
+
 /// Recover the state cell from a window created with a [`WindowState`] in
 /// `GWLP_USERDATA` (stashed at `WM_NCCREATE`).
 ///
