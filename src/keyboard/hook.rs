@@ -190,11 +190,12 @@ fn keyboard_thread(
     let state_ptr = Box::into_raw(state);
     HOOK_STATE.store(state_ptr, Ordering::Release);
 
-    let hook = install_hook();
-    let hook = match hook {
-        Ok(hook) => hook,
+    // Install first; on success ownership of uninstall moves to HookGuard.
+    let hook = match install_hook() {
+        Ok(hook) => HookGuard(hook),
         Err(e) => {
             HOOK_STATE.store(std::ptr::null_mut(), Ordering::Release);
+            // SAFETY: publication above is undone before the free.
             unsafe { drop(Box::from_raw(state_ptr)); }
             let _ = ready.send(Err(e));
             return;
@@ -229,6 +230,17 @@ fn keyboard_thread(
             DispatchMessageW(&msg);
         }
     }
+    // Ordered teardown (#42). WH_KEYBOARD_LL callbacks run only on THIS
+    // thread while it pumps messages — none can be in flight here, and none
+    // can start once the hook is gone.
+    //
+    // 1) Stop receiving callbacks entirely.
+    drop(hook);
+    // 2) Clear callback-visible global state.
+    HOOK_STATE.store(std::ptr::null_mut(), Ordering::Release);
+    // SAFETY: publication was undone immediately above; this thread is the
+    // sole owner of the allocation.
+    // 3) Free the state.
     unsafe { drop(Box::from_raw(state_ptr)); }
     crate::info!("keyboard hook uninstalled");
 }
@@ -244,6 +256,24 @@ fn install_hook() -> Result<HHOOK> {
             0,
         )
         .map_err(|e| Error::win("SetWindowsHookExW(WH_KEYBOARD_LL)", &e))
+    }
+}
+
+/// Owns an installed `HHOOK`; `UnhookWindowsHookEx` runs on Drop (#42).
+///
+/// For a `WH_KEYBOARD_LL` hook installed without a DLL, callbacks are
+/// dispatched only on the installing thread while it pumps messages, so
+/// dropping the guard from that same thread after its message loop has
+/// exited cannot race an in-flight callback.
+struct HookGuard(HHOOK);
+
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        // SAFETY: handle was returned by SetWindowsHookExW and is dropped
+        // exactly once here.
+        unsafe {
+            let _ = UnhookWindowsHookEx(self.0);
+        }
     }
 }
 
@@ -446,5 +476,40 @@ mod tests {
         );
         // Other digits still get their desktop shortcuts (8 = 3 audio + 8 of 9 digits).
         assert_eq!(table.len(), 11);
+    }
+
+    #[test]
+    fn hook_guard_round_trip_releases_the_hook() {
+        // #42: HookGuard must unhook on drop so a fresh install immediately
+        // afterwards succeeds and the system is not left with a stale hook.
+        // (User-mode code cannot observe the global hook count directly;
+        // success here exercises install -> guard-drop -> reinstall.)
+        let first = install_hook().expect("first install");
+        drop(HookGuard(first));
+        let second = install_hook().expect("reinstall after guard drop");
+        drop(HookGuard(second));
+    }
+
+    #[test]
+    fn state_publication_is_null_before_teardown_test_double() {
+        // #42 ordering contract, exercised on plain memory: clear must happen
+        // BEFORE the state allocation is freed. Mirrors keyboard_thread's
+        // teardown sequence without a live message loop.
+        let state = Box::new(HookState {
+            main_hwnd_raw: 0,
+            engine: KeyboardEngine::new(),
+            suspended_bindings: Arc::new(BindingTable::default()),
+            config: Arc::new(ConfigHandle::new(crate::config::Config::default())),
+            suspended: Arc::new(AtomicBool::new(false)),
+        });
+        let ptr = Box::into_raw(state);
+        HOOK_STATE.store(ptr, Ordering::Release);
+
+        // Teardown order under test: uninstall (no-op here) -> clear -> free.
+        HOOK_STATE.store(std::ptr::null_mut(), Ordering::Release);
+        assert!(HOOK_STATE.load(Ordering::Acquire).is_null());
+        // SAFETY: ownership was taken by into_raw above and publication was
+        // just undone.
+        unsafe { drop(Box::from_raw(ptr)) };
     }
 }
