@@ -20,7 +20,6 @@ pub struct Config {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GeneralCfg {
-    pub start_with_windows: bool,
     pub start_hotkeys_enabled: bool,
 }
 
@@ -215,7 +214,7 @@ impl DeviceSelection {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            general: GeneralCfg { start_with_windows: false, start_hotkeys_enabled: true },
+            general: GeneralCfg { start_hotkeys_enabled: true },
             overlay: OverlayCfg {
                 enabled: true,
                 duration_ms: 1300,
@@ -264,6 +263,7 @@ fn default_schema_version() -> u8 {
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct GeneralToml {
+    /// Legacy key (#16): registry owns startup now; parsed but ignored+warned.
     #[serde(default)]
     pub start_with_windows: bool,
     #[serde(default = "default_true")]
@@ -352,7 +352,8 @@ impl Config {
         ConfigToml {
             schema_version: 1,
             general: GeneralToml {
-                start_with_windows: self.general.start_with_windows,
+                // Legacy key never written anymore (#16).
+                start_with_windows: false,
                 start_hotkeys_enabled: self.general.start_hotkeys_enabled,
             },
             overlay: OverlayToml {
@@ -402,7 +403,11 @@ impl Config {
         let mut warnings = Vec::new();
         let mut c = Config::default();
 
-        c.general.start_with_windows = t.general.start_with_windows;
+        if t.general.start_with_windows {
+            warnings.push(
+                "ignored general.start_with_windows; startup is managed in Settings/tray (registry)".into(),
+            );
+        }
         c.general.start_hotkeys_enabled = t.general.start_hotkeys_enabled;
 
         c.overlay.enabled = t.overlay.enabled;

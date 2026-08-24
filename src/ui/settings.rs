@@ -260,7 +260,9 @@ impl SettingsUi {
 
     fn value_for(&self, id: ElementId) -> ControlValue<'_> {
         match id {
-            ElementId::StartWithWindows => ControlValue::Toggle(self.draft.general.start_with_windows),
+            ElementId::StartWithWindows => {
+                ControlValue::Toggle(crate::platform::startup::is_enabled())
+            }
             ElementId::StartHotkeysEnabled => {
                 ControlValue::Toggle(self.draft.general.start_hotkeys_enabled)
             }
@@ -374,7 +376,7 @@ impl SettingsUi {
 
     fn interaction(&self, id: ElementId, disabled: bool) -> Interaction {
         let toggle_value = match id {
-            ElementId::StartWithWindows => self.draft.general.start_with_windows,
+            ElementId::StartWithWindows => crate::platform::startup::is_enabled(),
             ElementId::StartHotkeysEnabled => self.draft.general.start_hotkeys_enabled,
             ElementId::DesktopsEnabled => self.draft.virtual_desktops.enabled,
             ElementId::WinNumberEnabled => self.draft.virtual_desktops.win_number_switching,
@@ -449,8 +451,17 @@ impl SettingsUi {
         }
         match id {
             ElementId::StartWithWindows => {
-                self.draft.general.start_with_windows = !self.draft.general.start_with_windows;
-                self.animate_toggle(hwnd, id, self.draft.general.start_with_windows);
+                // Registry-backed toggle (#16): applies immediately, not on Save.
+                let enable = !crate::platform::startup::is_enabled();
+                if let Err(e) = crate::platform::startup::set_enabled(enable) {
+                    self.validation.push(Violation {
+                        field: "general.start_with_windows".into(),
+                        message: e.to_string(),
+                    });
+                    invalidate(hwnd);
+                    return;
+                }
+                self.animate_toggle(hwnd, id, enable);
             }
             ElementId::StartHotkeysEnabled => {
                 self.draft.general.start_hotkeys_enabled =
@@ -546,23 +557,9 @@ impl SettingsUi {
             return;
         }
 
-        let old = crate::app::config();
-        let startup_changed = old.general.start_with_windows != self.draft.general.start_with_windows;
-        if startup_changed {
-            if let Err(e) = crate::platform::startup::set_enabled(self.draft.general.start_with_windows) {
-                self.validation.push(Violation {
-                    field: "general.start_with_windows".into(),
-                    message: e.to_string(),
-                });
-                invalidate(hwnd);
-                return;
-            }
-        }
-
+        // Startup is registry-driven and applied at toggle time (#16); Save
+        // persists everything else.
         if let Err(e) = crate::config::save::save(&crate::config::data_dir(), &self.draft) {
-            if startup_changed {
-                let _ = crate::platform::startup::set_enabled(old.general.start_with_windows);
-            }
             self.validation.push(Violation {
                 field: "config.toml".into(),
                 message: e.to_string(),
