@@ -1,11 +1,27 @@
 # Test Plan
 
-## A. Keyboard engine unit tests (pure, no Windows — run everywhere)
+## Classification (#37)
 
-Harness: `keyboard::engine` fed `RawKeyEvent` sequences; assertions on emitted
-`EngineOutput { dispatch: Option<Action>, swallow: bool }`.
+Every behavior in this plan is classified as one of:
 
-Win-key matrix (§55):
+- **AUTOMATED IN CI** — deterministic `cargo test` coverage running on every push/PR.
+- **PROPERTY TEST** — proptest-generated coverage over an invariant domain (runs in CI).
+- **FUZZ-STRATEGY / arbitrary-input property coverage** — bounded arbitrary-input tests inside
+  `cargo test` (see Fuzzing note below); no separate libFuzzer job.
+- **MANUAL / HARDWARE-DEPENDENT** — requires a real desktop session, physical devices,
+  or shell state; must be verified by hand per release.
+
+Current verified hosted baseline: Windows runners execute fmt, clippy `-D warnings`, the full
+`cargo test` suite (110 tests at the time of writing — a moving number, check CI for the live
+count), x86_64 release build with embedded-manifest byte-check, i686 and aarch64 compile
+checks, an MSRV 1.85 job, and cargo-deny. See `.github/workflows/ci.yml`.
+
+## A. Keyboard engine (AUTOMATED IN CI + PROPERTY TEST)
+
+Pure harness: `KeyboardEngine` fed `RawKeyEvent`s, asserting emitted
+`EngineOutcome { Pass, Swallow, Dispatch { action, dirty_win_chord } }`.
+
+Deterministic Win-key matrix (`engine_tests.rs`):
 
 | Sequence | Expected |
 |---|---|
@@ -16,85 +32,79 @@ Win-key matrix (§55):
 | LWIN down, E down/up, LWIN up | nothing swallowed, no dispatch |
 | Win+R, Win+D, Win+L, Win+Shift+S | pass through untouched |
 | rapid Win+1 → Win+2 → Win+3 | three dispatches in order |
-| hold Win, hold 3 | exactly one dispatch despite autorepeat events |
-| 1 down first, then Win down, 1 already down? (press order digit-then-win with digit re-tap) | dispatch on completion transition |
-| modifiers released in odd orders (digit released before Win etc.) | no stray dispatch/suppression |
+| hold Win, hold 3 | exactly one dispatch despite autorepeat |
+| modifiers released in odd orders | no stray dispatch/suppression |
 | config swapped while Win held | next event uses new table |
 | injected Win+1 | passed to chain, ignored by binder |
 | autorepeat on bound key after match | repeats swallowed, zero extra dispatches |
-| Ctrl+Alt+M binding fires and is suppressed; Ctrl+Alt+Shift+M does not fire it (exact-match rule) | as stated |
+| Ctrl+Alt+M fires; Ctrl+Alt+Shift+M does not (exact match) | as stated |
+| overlapping LWin/RWin over held digit (#57) | per-side UP debt; both Win-ups swallowed |
 
-Start-menu countermeasure: recognition of Win+n while Win physically down emits
-`inject_chord_dirtier` flag → verified injected VK_CONTROL pair order.
+Property invariants (`engine_props.rs`, #37): A disposition symmetry (UP mirrors DOWN's
+classification; pinned regression seeds), B quiescence after full release, C autorepeat bounds,
+D modifier-release permutations never dispatch, E reset from any reachable prefix yields fresh
+state.
 
-## B. Binding table / parsing tests
+Start-menu countermeasure: `dirty_win_chord` flag posted with the action; main-thread
+`dispatcher::dirty_win_chord()` injects the VK_CONTROL pair (KEYBOARD_HOOK_DESIGN.md).
 
-parse/display round-trips, conflict detection errors name both actions, invalid combos rejected
-(modifier-only), case-insensitive parse, canonical display ordering.
+## B. Binding table / parsing (AUTOMATED IN CI)
 
-## C. Config tests
+parse/display round-trips for every supported key; conflict detection errors name both actions;
+invalid combos rejected (modifier-only, no-modifier #35, empty token #58); case-insensitive
+parse; canonical display ordering; numpad distinct from top row (#11).
 
-defaults load when file missing; corrupt file → defaults + warning; validation rejects out-of-range
-and conflicting hotkeys with actionable messages; atomic save leaves no temp residue; round-trip
-serialize→parse equality; unknown fields tolerated.
+## C. Config (AUTOMATED IN CI + PROPERTY TEST)
 
-## D. Audio matrix (live Windows, manual + logged smoke)
+defaults load when file missing; corrupt file → defaults + warning; validation violations and
+repair idempotence (`config_props.rs`: endpoint-ID round-trips over generated opaque IDs,
+boundary repair idempotence); future-schema read-only latch (deterministic + arbitrary TOML
+fuzz strategy proving latched configs never enable writes); atomic save leaves no temp residue;
+round-trip serialize→parse equality; unknown-field warnings.
 
-mute/unmute default mic · change default mic while running · disconnect mic (state event,
-no crash) · output device switch (overlay "Output changed") · external volume change arrives via
-callback · foreground app mute · app without audio ("No audio session") · multi-session app
-(aggregate Mixed→mute-all) · app exits mid-enumeration · audio service restart (`net stop audiosrv`)
-→ endpoints rebuild.
+## D. Audio matrix (MANUAL / HARDWARE-DEPENDENT)
 
-Automated where scriptable: a test binary mode exercising toggle paths against real endpoints,
-asserting state flips and events posted.
+mute/unmute default mic · change default mic while running · disconnect mic (state event, no
+crash) · output device switch (overlay "Output changed") · external volume change arrives via
+callback (own events filtered) · foreground app mute · app without audio ("no audio session")
+· multi-session app (aggregate Mixed→mute-all) · app exits mid-enumeration · audio service
+restart (`net stop audiosrv`) → endpoints rebuild · same-basename different installations
+(ambiguous refusal) · same-full-path independent instances (accepted limitation).
 
-## E. Virtual desktop matrix (live)
+Policy-level properties run in CI: resolver ladder grouping invariants (#37).
 
-1/2/5/9 desktops · Win+1 from desktop N≠1 lands on 1 · Win+n while already there (no-op, no flicker)
-· rapid sequences · desktop add/remove/reorder/rename between switches · Task View switch then
-Win+number · unsupported-build simulation (force-detect off) → fallback backend active + status line
-"Unsupported build" in diagnostics. Backend trait unit-tested with fake for index clamping.
+## E. Virtual desktop matrix (live; policy AUTOMATED IN CI)
 
-## F. Overlay matrix (live)
+Win+1 from desktop N≠1 lands on 1 · already-there no-op · rapid sequences · desktop
+add/remove/reorder between switches · Task View switch then Win+number · unsupported build →
+fallback active + status line. Policy properties in CI: semantic errors never fall back,
+only RPC/backend-unavailable permits one bounded retry then fallback (#37). Real COM switching
+remains MANUAL (build-pinned; see VIRTUAL_DESKTOP_COMPAT.md tested-results table).
 
-DPI 100–200% crispness (screenshot QA) · single/multi monitor · per-monitor DPI moves ·
-foreground-monitor follow · over fullscreen/borderless game (never steals focus — verified by focus
-probe) · rapid updates coalesce into one window with reset timer · settings open simultaneously OK.
+## F. Overlay / DPI matrix (MANUAL / HARDWARE-DEPENDENT)
 
-## G. UI quality gate (screenshot-driven)
+crispness at DPI 100–200% · single/multi monitor · per-monitor DPI moves incl. 150%→100%
+(#49) · foreground-monitor follow · over fullscreen game (never steals focus) · rapid updates
+coalesce with timer reset · negative virtual-screen coordinates · monitor unplug/replug.
 
-`winshort --debug-screenshot-settings [light|dark] [--scale N]` renders the window off-screen and
-writes a PNG; same for overlay states. Reviewed at 100%/150%/200%, dark/light. Checks: spacing grid,
-alignment, hover/focus/disabled/error states captured programmatically where possible.
+Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
+flag exists).
 
-## H. Process-level smoke
+## G. Process-level smoke (MANUAL / HARDWARE-DEPENDENT)
 
-release exe launches silently (no console) · tray icon present · double-click opens one settings
-window · close keeps process alive · Exit removes icon and process ends · second launch activates
-first instance and exits · idle CPU ≈ 0 (measured via typeperf over 30 s idle).
-
----
-
-# Test classification (#37)
-
-Every behavior in this plan is classified as one of:
-
-- **AUTOMATED IN CI** — deterministic `cargo test` coverage running on every push/PR.
-- **PROPERTY TEST** — proptest-generated coverage over an invariant domain (runs in CI).
-- **FUZZ TARGET** — robustness strategy expressed as bounded arbitrary-input tests inside
-  `cargo test` (see Fuzzing note below); no separate libFuzzer job.
-- **MANUAL / HARDWARE-DEPENDENT** — requires a real desktop session, physical devices,
-  or shell state; must be verified by hand per release.
+release exe launches silently · tray icon present · double-click opens one settings window ·
+close keeps process alive · Exit removes icon and process ends · second launch activates first
+instance and exits · idle CPU ≈ 0.
 
 ## Fuzzing note (platform reality)
 
-`cargo-fuzz`/libFuzzer targets require nightly + a sanitizer runtime and are not
-supported for `windows-msvc` targets in this repository's setup. The practical
-equivalent implemented here: **bounded arbitrary-input strategies via proptest**
-against the hotkey parser and config TOML parser (no panic, bounded time), executed
-as normal `#[test]`s in CI. These run on every push; no continuous fuzz campaign is
-claimed.
+`cargo-fuzz`/libFuzzer requires nightly plus a sanitizer runtime and is not supported for
+windows-msvc targets in this repository's setup. Implemented instead: **bounded
+arbitrary-input strategies via proptest** — keyboard event sequences (engine invariants) and
+arbitrary TOML documents against config loading (no panic, bounded time, latched configs never
+writable). Hotkey strings are exercised through those TOML documents; the hotkey parser itself
+has deterministic round-trip coverage. These run as normal tests on every push; no continuous
+fuzz campaign is claimed or running.
 
 ## Manual regression matrix
 
@@ -102,10 +112,10 @@ claimed.
 - Win+E / Win+R / Win+D / Win+L / Win+Shift+S
 - Win+1..9 desktop switching
 - Digit-first Win+number (digit held before Win)
-- AltGr typing on a real AltGr layout (e.g. German)
-- Hotkey recorder capture of an already-bound hotkey
-- Rapid recorder cancel → re-arm → keypress (#47/#48 race window)
 - Overlapping LWin/RWin over a held digit (#57)
+- AltGr typing on a real AltGr layout (e.g. German)
+- Hotkey recorder capture of an already-bound hotkey (conflict error)
+- Rapid recorder cancel → re-arm → keypress (#47/#48 race window)
 
 ### Lifecycle
 - Second instance while running (activation)

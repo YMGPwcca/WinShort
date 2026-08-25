@@ -104,10 +104,14 @@ test evidence: [docs/VIRTUAL_DESKTOP_COMPAT.md](docs/VIRTUAL_DESKTOP_COMPAT.md).
 ## Development
 
 ```powershell
-cargo test            # 31 unit tests (keyboard engine, config, bindings — Windows-free core)
-cargo check           # fast type check
+cargo test            # full suite (deterministic unit + property tests; Windows-free core)
 cargo build --release # ship binary
 ```
+
+Hosted CI additionally verifies fmt, clippy `-D warnings`, the x86_64 release build with an
+embedded-manifest check, i686 + aarch64 compile checks, an MSRV 1.85 job, and cargo-deny —
+see `.github/workflows/ci.yml`. Tagging `vX.Y.Z` packages signed-ready x86_64/i686 ZIPs with
+SHA256SUMS via `.github/workflows/release.yml`.
 
 The keyboard engine, binding parser, config model, and validation are pure logic with no
 `windows` imports, so the test suite runs anywhere. Live integration procedures
@@ -132,5 +136,5 @@ MIT — see [LICENSE](LICENSE).
 
 Windows requirements: Windows 10 (24H2-era virtual desktop ABI) and Windows 11.
 The virtual-desktop integration is pinned to specific build families — see
-`docs/VIRTUAL_DESKTOP_COMPAT.md`. MSRV: Rust 1.82 (driven by the `windows`
-crate).
+[docs/VIRTUAL_DESKTOP_COMPAT.md](docs/VIRTUAL_DESKTOP_COMPAT.md).
+MSRV: Rust 1.85 (`rust-version` in Cargo.toml, verified by the MSRV CI job).

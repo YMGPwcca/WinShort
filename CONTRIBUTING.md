@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Windows 10 (build 26100-era layouts supported) or Windows 11
-- Rust toolchain (MSRV 1.82 — enforced via `rust-version`)
+- Rust toolchain (MSRV 1.85 — enforced via `rust-version` and the MSRV CI job)
 - MSVC build tools (link.exe + Windows SDK for `winresource`)
 
 ## Local gates (all required before submitting)
@@ -16,7 +16,8 @@ cargo build --release
 cargo check --target i686-pc-windows-msvc
 ```
 
-CI (`ci.yml`) runs exactly these plus `cargo deny check`.
+CI (`ci.yml`) runs these plus the x86_64 release build with an embedded-manifest check, an
+aarch64 compile check, an MSRV 1.85 job, and `cargo deny check`.
 
 ## Commit discipline
 
