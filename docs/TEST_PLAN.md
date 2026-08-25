@@ -12,9 +12,36 @@ Every behavior in this plan is classified as one of:
   or shell state; must be verified by hand per release.
 
 Current verified hosted baseline: Windows runners execute fmt, clippy `-D warnings`, the full
-`cargo test` suite (110 tests at the time of writing — a moving number, check CI for the live
+`cargo test` suite (115 tests at the time of writing — a moving number, check CI for the live
 count), x86_64 release build with embedded-manifest byte-check, i686 and aarch64 compile
 checks, an MSRV 1.85 job, and cargo-deny. See `.github/workflows/ci.yml`.
+
+## Diagnostics & support (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
+
+Automated coverage (`src/diagnostics/support.rs`) verifies:
+
+- Windows path redaction, including case-insensitive profile paths and private project folders.
+- Report-local endpoint pseudonym stability and raw endpoint exclusion.
+- Config projection preserves semantic fields without exporting raw endpoint IDs.
+- Sensitive log fields (`last_key`, `recent_key`, `window_title`, `command_line`, and capture
+  history) are removed before export.
+- ZIP assembly contains only `diagnostics.txt`, `config.sanitized.toml`, bounded recent logs,
+  and `bundle-info.txt`; the archive is readable and sanitized.
+
+The bundle policy is newest three `winshort-*.log` files, at most 512 KiB per file and 2 MiB
+total. Current-file read races are best-effort; skipped/truncated files are listed in the
+manifest. Bundle work runs off the UI thread and is joined during shutdown.
+
+Manual checks:
+
+- Open Diagnostics & Support repeatedly; verify no extra window/resource accumulation.
+- Copy Diagnostics and paste Unicode text into a text editor.
+- Open Logs opens `%LOCALAPPDATA%\\WinShort\\logs` (or the configured fallback directory).
+- Create Support Bundle produces a ZIP that Explorer can open; inspect the disclosure, manifest,
+  sanitized config, and sanitized logs.
+- Close Diagnostics or exit WinShort while a bundle is being created.
+
+No automatic upload, telemetry, raw config attachment, or raw log attachment is implemented.
 
 ## A. Keyboard engine (AUTOMATED IN CI + PROPERTY TEST)
 

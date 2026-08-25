@@ -39,6 +39,9 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
   best-effort `Ctrl+Win+Arrow` fallback when the native backend is unavailable.
 - **Hot-reload config** — typed TOML model, atomic writes, inline validation, draft/live
   separation. Cancel always restores the live snapshot.
+- **Diagnostics & support** — separate native status page, passive self-test, Unicode
+  diagnostics copy, direct log-folder opening, and a bounded sanitized support ZIP. No upload
+  or telemetry.
 - **Event-driven idle** — no polling loops; idle CPU ≈ 0%.
 
 ## Default shortcuts
@@ -66,9 +69,8 @@ The binary lands at `target/release/winshort.exe` (GUI subsystem, no console win
 
 ## Install
 
-1. Copy `winshort.exe` anywhere user-writable (e.g. `%LOCALAPPDATA%\WinShort\`).
-2. Run it once, open Settings → General → **Start with Windows** → Save
-   (writes the `HKCU\...\Run` entry; no elevation, no service).
+2. Run it once, open Settings → General → **Start with Windows**, and toggle it on
+   (the registry-backed setting applies immediately; no elevation, no service).
 3. Optional: tweak hotkeys, overlay position/duration, device roles.
 
 Configuration lives at `%LOCALAPPDATA%\WinShort\config.toml`; logs in
@@ -85,21 +87,21 @@ fail-closed on unknown layouts:
 | 26100 (24H2), 26200–26299 (25H2) | Native Shell COM — absolute switching, enumeration |
 | anything else | Keyboard fallback (`Ctrl+Win+Arrow` walking, best effort) |
 
-The Settings → Advanced row always shows the active backend and reason. Details and
-test evidence: [docs/VIRTUAL_DESKTOP_COMPAT.md](docs/VIRTUAL_DESKTOP_COMPAT.md).
+The Settings → Advanced area opens Diagnostics & Support; the diagnostics page shows the active
+backend and reason. Details and test evidence: [docs/VIRTUAL_DESKTOP_COMPAT.md](docs/VIRTUAL_DESKTOP_COMPAT.md).
 
 ## Documentation
 
 | File | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Subsystems, threading model, event flow, startup/shutdown order |
-| [docs/WIN32_LIFETIME.md](docs/WIN32_LIFETIME.md) | Handle/COM ownership rules, shutdown ordering, failure handling |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Subsystems, threading model, event flow, diagnostics, startup/shutdown order |
+| [docs/WIN32_LIFETIME.md](docs/WIN32_LIFETIME.md) | Handle/COM ownership rules, support worker/clipboard lifetime, shutdown ordering |
 | [docs/KEYBOARD_HOOK_DESIGN.md](docs/KEYBOARD_HOOK_DESIGN.md) | Hook rules, suppression, Win-key state machine, injected input |
 | [docs/AUDIO_DESIGN.md](docs/AUDIO_DESIGN.md) | Endpoints, notifications, foreground-session semantics, edge cases |
 | [docs/VIRTUAL_DESKTOP_COMPAT.md](docs/VIRTUAL_DESKTOP_COMPAT.md) | Interface GUIDs/vtables per build, tested results, fallback guarantees |
-| [docs/UI_DESIGN.md](docs/UI_DESIGN.md) | Design tokens, widget set, overlay behavior, quality gate |
+| [docs/UI_DESIGN.md](docs/UI_DESIGN.md) | Settings and Diagnostics UI, design tokens, widget set, overlay behavior |
 | [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md) | `config.toml` reference and validation rules |
-| [docs/TEST_PLAN.md](docs/TEST_PLAN.md) | Unit matrices and live test procedures |
+| [docs/TEST_PLAN.md](docs/TEST_PLAN.md) | Unit matrices, diagnostics privacy tests, and live procedures |
 
 ## Development
 
@@ -117,10 +119,15 @@ The keyboard engine, binding parser, config model, and validation are pure logic
 `windows` imports, so the test suite runs anywhere. Live integration procedures
 (audio endpoints, desktop switching, overlay focus behavior) are documented in the test plan.
 
-## Privacy
+## Privacy and support
 
-WinShort never logs keystrokes. Only recognized configured shortcuts are logged, and only
-when diagnostic level is enabled. No network access, no telemetry.
+WinShort never logs raw keystrokes. Only recognized configured shortcuts are logged, and only
+when diagnostic level is enabled. Diagnostics exports exclude raw key history, window titles,
+command lines, unrelated process identity, and raw endpoint IDs. Paths are reduced to safe
+profile tokens or basename + report-local path tokens; endpoint IDs receive report-local
+pseudonyms. Support bundles are created under `%LOCALAPPDATA%\WinShort\Support` and include
+only sanitized diagnostics, sanitized config, the newest three bounded log files, and a manifest.
+No network access, upload, or telemetry is performed.
 
 ## License
 

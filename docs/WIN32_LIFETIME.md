@@ -28,6 +28,9 @@ Every OS handle/interface has exactly one owner thread or struct.
 | Tray icon (NOTIFYICON_VERSION_4) | main thread | tray module | `NIM_DELETE` in `begin_shutdown`; icon HICON owned by `OwnedIcon` → `DestroyIcon` on Drop/replacement |
 | Settings renderer (D2D factory, `ID2D1HwndRenderTarget`, brushes, text formats) | main thread | `ui::renderer::Renderer` | dropped with the settings UI; any `EndDraw` failure drops the whole Renderer so the next paint rebuilds it from scratch |
 | Overlay surface (WIC bitmap, DIB section, compatible DC) | main thread | `OverlayGraphics`/`LayeredSurface` | re-created per `show()`; released with the overlay |
+| Diagnostics HWND | main thread | `DiagnosticsWindow` / main thread | hidden on close; destroyed during `App::begin_shutdown` |
+| Support worker | one-shot filesystem thread | `App::support_bundle: Option<JoinHandle<()>>` | completion posts an event; App joins it before diagnostics HWND teardown |
+| Clipboard HGLOBAL | main thread during Copy Diagnostics | Windows after successful `SetClipboardData(CF_UNICODETEXT, ...)` | WinShort frees it only when allocation/clipboard transfer fails |
 | WinEvent hook (foreground) | main thread | foreground tracker | unhooked when tracker drops in shutdown |
 
 ## COM interfaces

@@ -77,6 +77,19 @@ enum AppEvent { ToggleMicrophone, ToggleOutput, ToggleForegroundAppAudio, Switch
 Saving rebuilds the `BindingTable` and swaps the `ArcSwap` pointer; the hook is never
 reinstalled for config changes. Suspension selects a shared empty table.
 
+## Diagnostics & support
+
+**Status: Implemented.** `App::diagnostics_snapshot` copies cached subsystem state into an
+immutable `DiagnosticsSnapshot` on the main thread. The Diagnostics window renders that copy
+with the existing Direct2D renderer; `WM_PAINT` performs no Core Audio enumeration, Shell COM
+call, registry query, filesystem scan, or process inspection.
+
+Copy Diagnostics formats a sanitizer projection directly to `CF_UNICODETEXT`. Open Logs uses
+`ShellExecuteW`. Support bundle creation owns a one-shot `winshort-support-bundle` worker;
+the worker receives only the copied snapshot, reads a bounded set of recent logs, writes a
+local ZIP, posts completion through `EventQueue`, and is joined during shutdown. It owns no
+HWND/App references and performs no network operation.
+
 ## Startup sequence
 
 single-instance check (named mutex) -> DPI awareness (PerMonitorV2) -> logging init ->

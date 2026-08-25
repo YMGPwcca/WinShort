@@ -60,3 +60,16 @@ body:
     attributes:
       label: Relevant log output (%LOCALAPPDATA%\WinShort\logs)
       description: Paste sanitized excerpts only. Do NOT include raw keystroke history or personal data.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: WinShort diagnostics
+      description: Paste the output from Settings → Diagnostics & Support → Copy Diagnostics. It is designed for GitHub issues; review it before posting.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: support-bundle
+    attributes:
+      label: Support bundle
+      description: Attach a support bundle only when requested. Create it from Diagnostics & Support; do not attach raw config or log directories.

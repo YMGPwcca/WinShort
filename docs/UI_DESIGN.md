@@ -1,7 +1,7 @@
 # UI Design
 
 **Status: Implemented** sections describe current `main`; **Planned** sections are design
-intent only (tracked in #29/#30/#31) and must not be read as existing behavior.
+intent only (tracked in #29/#30) and must not be read as existing behavior.
 
 ## Stack — current
 
@@ -62,8 +62,32 @@ scrolled into view.
 ## Settings layout — current
 
 Width 610 logical dip; height fits content up to work area − 48. Sections top-to-bottom:
-General, Hotkeys, Audio, Virtual Desktops, Overlay, Advanced (read-only backend status).
+General, Hotkeys, Audio, Virtual Desktops, Overlay, Advanced (Diagnostics & support entry,
+config folder, reset draft).
 Dirty-state: Save enabled only when draft ≠ live; Cancel restores the live snapshot.
+
+## Diagnostics & Support — current
+
+**Status: Implemented.** The Advanced entry opens a separate native owner-drawn window rather
+than expanding the Settings scroll page. It uses the shared Direct2D HwndRenderTarget,
+DirectWrite, theme tokens, rounded DWM chrome, and PMv2 DPI handling.
+
+The page is a dense read-only operator view: application/Windows build, keyboard hook and
+bindings, audio endpoint availability and foreground aggregate, desktop backend/count/last
+served, config path/schema/latch/warnings, overlay target/DPI, startup registration, logs, and
+degraded startup reasons. It also exposes Copy Diagnostics, Open Logs, Create Support Bundle,
+Run Self-Test, and Close.
+
+Self-Test is passive: it observes current cached services, endpoint inventory, config metadata,
+desktop status, overlay availability, logging directory metadata, and startup readability. It
+does not mute audio, inject keys, switch desktops, change the registry, restart services, or
+show an overlay.
+
+Support exports use an explicit sanitizer projection rather than scraping UI text. Config and
+logs are sanitized before a bounded local ZIP is written; endpoint IDs become report-local
+tokens, absolute executable paths become basename + path token, and raw key history, window
+titles, command lines, and unrelated process identity are excluded. No upload or telemetry is
+performed.
 
 ## Overlay — current
 
