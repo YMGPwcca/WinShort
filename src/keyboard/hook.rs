@@ -35,6 +35,11 @@ struct HookState {
 
 static HOOK_STATE: AtomicPtr<HookState> = AtomicPtr::new(std::ptr::null_mut());
 
+/// Whether the low-level hook state is currently published to callbacks.
+pub fn hook_active() -> bool {
+    !HOOK_STATE.load(Ordering::Acquire).is_null()
+}
+
 /// One recorded shortcut delivered to the Settings hotkey recorder (#14).
 /// `key: None` means cancelled (Esc).
 #[derive(Debug, Clone, Copy)]
@@ -133,6 +138,11 @@ pub fn capture_token() -> Option<u32> {
 fn capture_token_live() -> Option<u32> {
     let cur = CAPTURE_STATE.load(Ordering::Acquire);
     (capture_state_of(cur) == CAPTURE_ARMED).then(|| capture_generation(cur))
+}
+
+/// Whether a recorder capture session is currently armed.
+pub fn capture_active() -> bool {
+    capture_token_live().is_some()
 }
 
 fn pack_chord(modifiers: ModifierMask, key: Option<VirtualKey>) -> u32 {

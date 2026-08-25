@@ -59,13 +59,18 @@ impl HotkeyAction {
     }
 }
 
-/// Events routed through the main window. Workers post boxed payloads;
-/// the main thread owns reconstruction.
+/// Events routed through the main window. Payloads live in the process-wide
+/// queue; `PostMessageW` carries only a wake-up message or packed action.
 #[derive(Debug)]
 pub enum AppEvent {
     // Commands executed on the main thread.
     ShowSettings,
+    ShowDiagnostics,
     ShowStatusOverlay,
+    RunDiagnosticsSelfTest,
+    CopyDiagnostics,
+    OpenDiagnosticsLogs,
+    CreateSupportBundle,
     ConfigApplied(u64),
     // State published by workers / callbacks.
     MicrophoneStateChanged(AudioState),
@@ -77,6 +82,10 @@ pub enum AppEvent {
     /// Device list changed (added/removed/default switched): refresh pickers.
     DevicesChanged,
     DesktopBackendChanged(BackendStatus),
+    SupportBundleFinished {
+        path: Option<std::path::PathBuf>,
+        error: Option<String>,
+    },
 }
 
 /// Process-wide event queue. Producers push from any thread; the main thread

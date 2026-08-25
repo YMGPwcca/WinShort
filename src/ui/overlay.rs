@@ -3,7 +3,7 @@
 //! when idle (spec §30–§33).
 
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
@@ -94,6 +94,14 @@ impl OverlayModel {
 
 pub struct OverlayWindow {
     pub hwnd: HWND,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OverlayRuntimeStatus {
+    pub window_available: bool,
+    pub target_monitor: Option<String>,
+    pub render_dpi: Option<u32>,
+    pub last_shown: Option<SystemTime>,
 }
 
 pub fn microphone_row(state: &crate::audio::AudioState) -> OverlayRow {
@@ -248,6 +256,21 @@ impl OverlayWindow {
     }
 }
 
+impl OverlayWindow {
+    pub fn status(&self) -> OverlayRuntimeStatus {
+        let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
+            return OverlayRuntimeStatus::default();
+        };
+        let state = cell.borrow();
+        OverlayRuntimeStatus {
+            window_available: true,
+            target_monitor: state.last_target_monitor.clone(),
+            render_dpi: state.last_render_dpi,
+            last_shown: state.last_shown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Phase {
     Hidden,
@@ -266,6 +289,9 @@ struct OverlayState {
     phase_started: Instant,
     hold_until: Instant,
     dpi: u32,
+    last_target_monitor: Option<String>,
+    last_render_dpi: Option<u32>,
+    last_shown: Option<SystemTime>,
 }
 
 impl OverlayState {
@@ -281,6 +307,9 @@ impl OverlayState {
             phase_started: now,
             hold_until: now,
             dpi: 96,
+            last_target_monitor: None,
+            last_render_dpi: None,
+            last_shown: None,
         }
     }
 
@@ -294,6 +323,9 @@ impl OverlayState {
         // window DPI is stale — never max() it (monotonic DPI breaks
         // high->low transitions).
         self.dpi = crate::platform::dpi::effective_render_dpi(monitor.as_ref().map(|m| m.dpi));
+        self.last_target_monitor = monitor.as_ref().map(|value| value.device_name.clone());
+        self.last_render_dpi = Some(self.dpi);
+        self.last_shown = Some(SystemTime::now());
         self.model = model;
         self.config = config.clone();
         self.surface = Some(

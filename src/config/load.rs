@@ -19,20 +19,26 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
             let mut warnings = unknown_keys(&text);
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
-                    if toml.schema_version > 1 {
+                    let schema_version = toml.schema_version;
+                    if schema_version > 1 {
                         let msg = format!(
                             "config written by a newer WinShort (schema v{}); not overwriting",
-                            toml.schema_version
+                            schema_version
                         );
                         crate::error_!("{msg}");
                         crate::config::set_config_readonly(&msg);
                         warnings.push(msg.clone());
+                        record_diagnostics(&path, schema_version, &warnings, &[], &[]);
                         return (Config::default(), warnings);
                     }
-                    let (mut cfg, mut ws) = Config::from_toml(&toml);
-                    warnings.append(&mut ws);
+                    let (mut cfg, mut parsed_warnings) = Config::from_toml(&toml);
+                    warnings.append(&mut parsed_warnings);
                     // Validate and repair in place (#15a).
                     let violations = crate::config::validate(&cfg);
+                    let repaired_fields: Vec<String> = violations
+                        .iter()
+                        .map(|violation| violation.field.clone())
+                        .collect();
                     if !violations.is_empty() {
                         for v in &violations {
                             crate::warn_!("config violation repaired: {} ({})", v.field, v.message);
@@ -46,25 +52,58 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                             warnings
                         );
                     }
+                    let migrations = if text.to_ascii_lowercase().contains("monitor = \"index:") {
+                        vec!["overlay.monitor index:N mapped to primary".into()]
+                    } else {
+                        Vec::new()
+                    };
+                    record_diagnostics(
+                        &path,
+                        schema_version,
+                        &warnings,
+                        &repaired_fields,
+                        &migrations,
+                    );
                     (cfg, warnings)
                 }
                 Err(e) => {
                     let msg = format!("config parse failed: {e}");
                     crate::error_!("{}", msg);
-                    (Config::default(), vec![msg])
+                    let warnings = vec![msg];
+                    record_diagnostics(&path, 1, &warnings, &[], &[]);
+                    (Config::default(), warnings)
                 }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             crate::info!("config not found; using defaults ({})", path.display());
+            record_diagnostics(&path, 1, &[], &[], &[]);
             (Config::default(), Vec::new())
         }
         Err(e) => {
             let msg = format!("config read failed: {e}");
             crate::error_!("{}", msg);
-            (Config::default(), vec![msg])
+            let warnings = vec![msg];
+            record_diagnostics(&path, 1, &warnings, &[], &[]);
+            (Config::default(), warnings)
         }
     }
+}
+
+fn record_diagnostics(
+    path: &Path,
+    schema_version: u8,
+    warnings: &[String],
+    repaired_fields: &[String],
+    migrations: &[String],
+) {
+    crate::config::set_load_diagnostics(crate::config::ConfigLoadDiagnostics {
+        path: path.to_path_buf(),
+        schema_version,
+        warnings: warnings.to_vec(),
+        repaired_fields: repaired_fields.to_vec(),
+        migrations: migrations.to_vec(),
+    });
 }
 
 fn unknown_keys(text: &str) -> Vec<String> {

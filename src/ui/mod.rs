@@ -2,6 +2,7 @@
 
 pub mod animation;
 pub mod controls;
+pub mod diagnostics;
 pub mod layout;
 pub mod overlay;
 pub mod renderer;

@@ -20,7 +20,7 @@ pub enum Level {
 }
 
 impl Level {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Level::Debug => "DEBUG",
             Level::Info => "INFO ",
@@ -37,6 +37,27 @@ struct Logger {
 }
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
+
+/// Read-only logger metadata used by the Diagnostics surface.
+#[derive(Debug, Clone)]
+pub struct LoggerInfo {
+    pub directory: Option<PathBuf>,
+    pub level: Level,
+}
+
+pub fn info() -> Option<LoggerInfo> {
+    LOGGER.get().map(|logger| LoggerInfo {
+        directory: logger.dir.clone(),
+        level: logger.level,
+    })
+}
+
+pub fn current_log_path() -> Option<PathBuf> {
+    LOGGER
+        .get()
+        .and_then(|logger| logger.dir.as_ref())
+        .map(|dir| path_for(dir, &today_stamp()))
+}
 
 /// Initialize logging. Creates the directory if possible; if the filesystem is
 /// unavailable the process still runs (logs go nowhere).

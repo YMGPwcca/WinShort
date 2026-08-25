@@ -8,6 +8,33 @@ pub mod validate;
 pub use model::Config;
 pub use validate::validate;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigLoadDiagnostics {
+    pub path: std::path::PathBuf,
+    pub schema_version: u8,
+    pub warnings: Vec<String>,
+    pub repaired_fields: Vec<String>,
+    pub migrations: Vec<String>,
+}
+
+static LOAD_DIAGNOSTICS: std::sync::OnceLock<std::sync::RwLock<ConfigLoadDiagnostics>> =
+    std::sync::OnceLock::new();
+
+pub fn set_load_diagnostics(diagnostics: ConfigLoadDiagnostics) {
+    let lock =
+        LOAD_DIAGNOSTICS.get_or_init(|| std::sync::RwLock::new(ConfigLoadDiagnostics::default()));
+    if let Ok(mut current) = lock.write() {
+        *current = diagnostics;
+    }
+}
+
+pub fn load_diagnostics() -> ConfigLoadDiagnostics {
+    LOAD_DIAGNOSTICS
+        .get()
+        .and_then(|lock| lock.read().ok().map(|value| value.clone()))
+        .unwrap_or_default()
+}
+
 /// Lock-free-read snapshot of the live configuration (spec §9, §10, §45).
 ///
 /// Readers clone the current `Arc` cheaply under a short read lock; the only

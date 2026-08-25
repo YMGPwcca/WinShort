@@ -336,35 +336,7 @@ impl SettingsUi {
                 label: Cow::Owned(format!("{:.1}×", self.draft.overlay.scale)),
             },
             ElementId::OverlayPreview => ControlValue::Action(Cow::Borrowed("Preview")),
-            ElementId::DiagnosticsStatus => {
-                let text = crate::app::with_app(|app| {
-                    let status = app.desktop_status();
-                    let count = status
-                        .desktop_count
-                        .map(|count| format!(" • {count} desktops"))
-                        .unwrap_or_default();
-                    let last = status
-                        .last_served
-                        .map(|kind| kind.label())
-                        .unwrap_or("none yet");
-                    let mut text = format!(
-                        "{}{} • {} • last served {}",
-                        status.active.label(),
-                        count,
-                        status.native.label(),
-                        last
-                    );
-                    if let Some(degraded) = crate::app::with_app(|app| app.degraded_summary()) {
-                        if degraded != "all subsystems ok" {
-                            text.push_str(" • degraded: ");
-                            text.push_str(&degraded);
-                        }
-                    }
-                    text
-                })
-                .unwrap_or_else(|| "Detecting virtual desktop backend…".into());
-                ControlValue::Text(Cow::Owned(text))
-            }
+            ElementId::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("Open")),
             ElementId::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
             ElementId::ResetSettings => ControlValue::Action(Cow::Borrowed("Reset draft")),
             ElementId::Cancel | ElementId::Save => ControlValue::Action(Cow::Borrowed("")),
@@ -415,7 +387,6 @@ impl SettingsUi {
             | ElementId::OverlayOpacity
             | ElementId::OverlayScale
             | ElementId::OverlayPreview => !self.draft.overlay.enabled,
-            ElementId::DiagnosticsStatus => true,
             ElementId::Save => !self.dirty(),
             _ => false,
         }
@@ -572,10 +543,8 @@ impl SettingsUi {
                 self.recording = None;
             }
             ElementId::Save => self.save(hwnd),
-            ElementId::OverlayDuration
-            | ElementId::OverlayOpacity
-            | ElementId::OverlayScale
-            | ElementId::DiagnosticsStatus => {}
+            ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale => {}
+            ElementId::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
         }
         self.validation.clear();
         invalidate(hwnd);

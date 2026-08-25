@@ -87,6 +87,40 @@ pub fn startup_state() -> Result<StartupState> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupDetails {
+    pub state: StartupState,
+    pub registered_command: Option<String>,
+    pub current_command: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Read the registry-backed startup state and both commands in one snapshot.
+/// The raw commands stay in-memory for the local Diagnostics page; support
+/// export applies the explicit path sanitizer before formatting them.
+pub fn details() -> StartupDetails {
+    let current = command_line();
+    let current_command = current.as_ref().ok().cloned();
+    let registered_command = registered_command().ok().flatten();
+    let state = match (&current, &registered_command) {
+        (Ok(current), Some(registered)) if same_command(registered, current) => {
+            StartupState::Enabled
+        }
+        (Ok(current), Some(registered)) => StartupState::Stale {
+            registered: registered.clone(),
+            current: current.clone(),
+        },
+        (Ok(_), None) => StartupState::Disabled,
+        (Err(_), _) => StartupState::Disabled,
+    };
+    StartupDetails {
+        state,
+        registered_command,
+        current_command,
+        error: current.err().map(|error| error.to_string()),
+    }
+}
+
 pub fn is_enabled() -> bool {
     matches!(startup_state(), Ok(StartupState::Enabled))
 }

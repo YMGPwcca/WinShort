@@ -114,7 +114,6 @@ pub enum ElementKind {
     Value,
     Slider,
     Action,
-    Status,
     ButtonSecondary,
     ButtonPrimary,
 }
@@ -334,9 +333,9 @@ impl SettingsLayout {
             &[
                 row(
                     ElementId::DiagnosticsStatus,
-                    ElementKind::Status,
-                    "Virtual desktop engine",
-                    "Runtime compatibility and Windows build",
+                    ElementKind::Action,
+                    "Diagnostics & support",
+                    "System status, logs, and a sanitized support bundle",
                 ),
                 row(
                     ElementId::OpenConfigFolder,

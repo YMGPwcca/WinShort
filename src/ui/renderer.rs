@@ -2,7 +2,8 @@
 //!
 //! Coordinates are 96-DPI logical pixels. The render target owns the current
 //! window DPI, so moving between monitors rerenders vector/text content instead
-//! of raster scaling. DirectComposition is used by the overlay subsystem.
+//! of raster scaling. This renderer is used by the settings and diagnostics
+//! windows; the overlay has its own WIC/DIB path.
 
 use std::collections::HashMap;
 
