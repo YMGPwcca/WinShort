@@ -626,7 +626,9 @@ impl SettingsUi {
                     PickerKind::OverlayMonitor,
                 ));
             }
-            ElementId::OverlayPreview => post_main(crate::event::AppEvent::ShowStatusOverlay),
+            ElementId::OverlayPreview => post_main(crate::event::AppEvent::PreviewOverlay {
+                config: self.draft.overlay.clone(),
+            }),
             ElementId::OpenConfigFolder => open_config_folder(),
             ElementId::ResetSettings => {
                 if Self::consume_reset_confirmation(&mut self.reset_confirm) {

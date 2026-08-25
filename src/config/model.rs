@@ -9,6 +9,7 @@ pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
 pub const CURRENT_SCHEMA_VERSION: u8 = 2;
+pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -278,7 +279,7 @@ impl Default for Config {
 
 // ---- TOML boundary types ------------------------------------------------
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 pub struct ConfigToml {
     #[serde(default = "default_schema_version")]
     pub schema_version: u8,
@@ -294,11 +295,24 @@ pub struct ConfigToml {
     pub virtual_desktops: VdToml,
 }
 
-fn default_schema_version() -> u8 {
-    CURRENT_SCHEMA_VERSION
+impl Default for ConfigToml {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            general: GeneralToml::default(),
+            overlay: OverlayToml::default(),
+            audio: AudioToml::default(),
+            hotkeys: HotkeysToml::default(),
+            virtual_desktops: VdToml::default(),
+        }
+    }
 }
 
-#[derive(Serialize, Deserialize, Default)]
+fn default_schema_version() -> u8 {
+    LEGACY_SCHEMA_VERSION
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct GeneralToml {
     /// Legacy key (#16): registry owns startup now; parsed but ignored+warned.
     #[serde(default)]
@@ -307,7 +321,16 @@ pub struct GeneralToml {
     pub start_hotkeys_enabled: bool,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+impl Default for GeneralToml {
+    fn default() -> Self {
+        Self {
+            start_with_windows: false,
+            start_hotkeys_enabled: true,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct OverlayToml {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -327,7 +350,22 @@ pub struct OverlayToml {
     pub show_external_audio_changes: bool,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+impl Default for OverlayToml {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            duration_ms: default_duration(),
+            position: default_position(),
+            monitor: default_monitor(),
+            scale: default_scale(),
+            opacity: default_opacity(),
+            appearance: default_appearance(),
+            show_external_audio_changes: default_show_external_audio_changes(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct AudioToml {
     #[serde(default = "default_role")]
     pub input_role: String,
@@ -339,7 +377,18 @@ pub struct AudioToml {
     pub output_device: String,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+impl Default for AudioToml {
+    fn default() -> Self {
+        Self {
+            input_role: default_role(),
+            output_role: default_role(),
+            input_device: String::new(),
+            output_device: String::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct HotkeysToml {
     #[serde(default = "default_mic")]
     pub toggle_microphone: String,
@@ -349,12 +398,31 @@ pub struct HotkeysToml {
     pub toggle_foreground_audio: String,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+impl Default for HotkeysToml {
+    fn default() -> Self {
+        Self {
+            toggle_microphone: default_mic(),
+            toggle_output: default_out(),
+            toggle_foreground_audio: default_fg(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct VdToml {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub win_number_switching: bool,
+}
+
+impl Default for VdToml {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            win_number_switching: true,
+        }
+    }
 }
 
 fn default_true() -> bool {

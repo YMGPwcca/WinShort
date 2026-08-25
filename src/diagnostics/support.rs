@@ -286,7 +286,7 @@ pub fn build_report(
     let diagnostics = format_diagnostics(snapshot, self_test, sanitizer);
     let config = format_config(
         &snapshot.config.raw,
-        snapshot.config.schema_version,
+        snapshot.config.effective_schema_version,
         sanitizer,
     );
     let (logs, mut notes) = collect_logs(snapshot.logging.directory.as_deref(), sanitizer);
@@ -486,7 +486,20 @@ fn format_diagnostics(
     );
     line(
         &mut out,
-        &format!("Schema: {}", snapshot.config.schema_version),
+        &format!(
+            "Source schema: {}",
+            snapshot
+                .config
+                .source_schema_version
+                .map_or_else(|| "not present".into(), |version| version.to_string())
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Effective schema: {}",
+            snapshot.config.effective_schema_version
+        ),
     );
     line(
         &mut out,
@@ -1366,7 +1379,8 @@ safe=1"#,
             config: ConfigDiagnostics {
                 health: Health::Healthy,
                 path: config_path,
-                schema_version: 1,
+                source_schema_version: Some(1),
+                effective_schema_version: 2,
                 read_only: false,
                 warnings: Vec::new(),
                 repaired_fields: Vec::new(),

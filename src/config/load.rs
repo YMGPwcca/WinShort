@@ -17,18 +17,21 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
         Ok(text) => {
             // Unknown top-level/section keys (double parse, #15c).
             let mut warnings = unknown_keys(&text);
+            let source_schema = source_schema_version(&text);
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
-                    let schema_version = toml.schema_version;
-                    if schema_version > CURRENT_SCHEMA_VERSION {
+                    // Versionless documents deserialize as the legacy v1
+                    // baseline; newly serialized documents always include v2.
+                    let parsed_schema = toml.schema_version;
+                    if parsed_schema > CURRENT_SCHEMA_VERSION {
                         let msg = format!(
                             "config written by a newer WinShort (schema v{}); not overwriting",
-                            schema_version
+                            parsed_schema
                         );
                         crate::error_!("{msg}");
                         crate::config::set_config_readonly(&msg);
                         warnings.push(msg.clone());
-                        record_diagnostics(&path, schema_version, &warnings, &[], &[]);
+                        record_diagnostics(&path, source_schema, &warnings, &[], &[]);
                         return (Config::default(), warnings);
                     }
                     let (mut cfg, mut parsed_warnings) = Config::from_toml(&toml);
@@ -53,9 +56,9 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                         );
                     }
                     let mut migrations = Vec::new();
-                    if schema_version < CURRENT_SCHEMA_VERSION {
+                    if parsed_schema < CURRENT_SCHEMA_VERSION {
                         migrations.push(format!(
-                            "schema v{schema_version} migrated to v{CURRENT_SCHEMA_VERSION}: missing overlay appearance/external audio policy use v2 defaults"
+                            "schema v{parsed_schema} migrated to v{CURRENT_SCHEMA_VERSION}: missing overlay appearance/external audio policy use v2 defaults"
                         ));
                     }
                     if text.to_ascii_lowercase().contains("monitor = \"index:") {
@@ -63,7 +66,7 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     }
                     record_diagnostics(
                         &path,
-                        schema_version,
+                        source_schema,
                         &warnings,
                         &repaired_fields,
                         &migrations,
@@ -74,36 +77,43 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     let msg = format!("config parse failed: {e}");
                     crate::error_!("{}", msg);
                     let warnings = vec![msg];
-                    record_diagnostics(&path, 1, &warnings, &[], &[]);
+                    record_diagnostics(&path, None, &warnings, &[], &[]);
                     (Config::default(), warnings)
                 }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             crate::info!("config not found; using defaults ({})", path.display());
-            record_diagnostics(&path, 1, &[], &[], &[]);
+            record_diagnostics(&path, None, &[], &[], &[]);
             (Config::default(), Vec::new())
         }
         Err(e) => {
             let msg = format!("config read failed: {e}");
             crate::error_!("{}", msg);
             let warnings = vec![msg];
-            record_diagnostics(&path, 1, &warnings, &[], &[]);
+            record_diagnostics(&path, None, &warnings, &[], &[]);
             (Config::default(), warnings)
         }
     }
 }
 
+fn source_schema_version(text: &str) -> Option<u8> {
+    let table = text.parse::<toml::Table>().ok()?;
+    let value = table.get("schema_version")?.as_integer()?;
+    u8::try_from(value).ok()
+}
+
 fn record_diagnostics(
     path: &Path,
-    schema_version: u8,
+    source_schema_version: Option<u8>,
     warnings: &[String],
     repaired_fields: &[String],
     migrations: &[String],
 ) {
     crate::config::set_load_diagnostics(crate::config::ConfigLoadDiagnostics {
         path: path.to_path_buf(),
-        schema_version,
+        source_schema_version,
+        effective_schema_version: CURRENT_SCHEMA_VERSION,
         warnings: warnings.to_vec(),
         repaired_fields: repaired_fields.to_vec(),
         migrations: migrations.to_vec(),
@@ -163,10 +173,15 @@ mod tests {
             warnings.iter().any(|w| w.contains("newer WinShort")),
             "warnings: {warnings:?}"
         );
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.source_schema_version, Some(9));
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
         assert!(crate::config::config_readonly());
         // Save must refuse while read-only.
         let err = crate::config::save::save(&dir, &Config::default());
         assert!(err.is_err());
+        crate::config::clear_config_readonly();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -183,17 +198,106 @@ mod tests {
         .unwrap();
 
         let (cfg, warnings) = load(&dir);
+        let diagnostics = crate::config::load_diagnostics();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(cfg.overlay.appearance, OverlayAppearance::System);
         assert!(cfg.overlay.show_external_audio_changes);
-        let diagnostics = crate::config::load_diagnostics();
-        assert_eq!(diagnostics.schema_version, 1);
+        assert_eq!(diagnostics.source_schema_version, Some(1));
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
         assert!(diagnostics
             .migrations
             .iter()
             .any(|value| value.contains("schema v1 migrated")));
 
         crate::config::clear_config_readonly();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn versionless_document_is_legacy_v1_with_current_effective_schema() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_schema_absent_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            "[audio]\ninput_role = \"console\"\noutput_role = \"console\"\n",
+        )
+        .unwrap();
+
+        let (cfg, warnings) = load(&dir);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(cfg, Config::default());
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.source_schema_version, None);
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(diagnostics
+            .migrations
+            .iter()
+            .any(|value| value.contains("schema v1 migrated")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_config_reports_no_source_and_current_effective_schema() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_schema_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (cfg, warnings) = load(&dir);
+        assert_eq!(cfg, Config::default());
+        assert!(warnings.is_empty());
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.source_schema_version, None);
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn corrupt_config_reports_no_source_schema() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_schema_corrupt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            "schema_version = 1\n[overlay]\nduration_ms = \"bad\"\n",
+        )
+        .unwrap();
+
+        let (cfg, warnings) = load(&dir);
+        assert_eq!(cfg, Config::default());
+        assert!(!warnings.is_empty());
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.source_schema_version, None);
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_migrated_config_updates_diagnostics_to_v2() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_schema_save_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            "schema_version = 1\n[audio]\ninput_role = \"console\"\noutput_role = \"console\"\n",
+        )
+        .unwrap();
+        let _ = load(&dir);
+        assert!(crate::config::save::save(&dir, &Config::default()).is_ok());
+        let text = std::fs::read_to_string(config_path(&dir)).unwrap();
+        let parsed: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.schema_version, CURRENT_SCHEMA_VERSION);
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(
+            diagnostics.source_schema_version,
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

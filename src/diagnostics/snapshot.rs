@@ -126,7 +126,8 @@ pub struct DesktopDiagnostics {
 pub struct ConfigDiagnostics {
     pub health: Health,
     pub path: PathBuf,
-    pub schema_version: u8,
+    pub source_schema_version: Option<u8>,
+    pub effective_schema_version: u8,
     pub read_only: bool,
     pub warnings: Vec<String>,
     pub repaired_fields: Vec<String>,

@@ -352,8 +352,16 @@ impl DiagnosticsUi {
         );
         row(
             &mut lines,
-            "Schema",
-            s.config.schema_version.to_string(),
+            "Source schema",
+            s.config
+                .source_schema_version
+                .map_or_else(|| "Not present".into(), |version| version.to_string()),
+            None,
+        );
+        row(
+            &mut lines,
+            "Effective schema",
+            s.config.effective_schema_version.to_string(),
             None,
         );
         row(

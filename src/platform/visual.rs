@@ -4,7 +4,9 @@
 //! consumes the copied value and never queries Win32 preference APIs itself.
 
 use windows::core::BOOL;
-use windows::Win32::Graphics::Gdi::{GetSysColor, COLOR_HIGHLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT};
+use windows::Win32::Graphics::Gdi::{
+    GetSysColor, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT,
+};
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SPI_GETDISABLEOVERLAPPEDCONTENT,
@@ -26,7 +28,8 @@ pub struct SystemVisualPreferences {
     pub system_theme: crate::ui::theme::ThemeMode,
     pub high_contrast_background: VisualRgb,
     pub high_contrast_foreground: VisualRgb,
-    pub high_contrast_accent: VisualRgb,
+    pub high_contrast_highlight: VisualRgb,
+    pub high_contrast_highlight_foreground: VisualRgb,
 }
 
 impl Default for SystemVisualPreferences {
@@ -42,11 +45,12 @@ impl Default for SystemVisualPreferences {
                 g: 255,
                 b: 255,
             },
-            high_contrast_accent: VisualRgb {
+            high_contrast_highlight: VisualRgb {
                 r: 255,
                 g: 255,
                 b: 0,
             },
+            high_contrast_highlight_foreground: VisualRgb { r: 0, g: 0, b: 0 },
         }
     }
 }
@@ -104,7 +108,8 @@ impl SystemVisualPreferences {
 
         preferences.high_contrast_background = rgb(COLOR_WINDOW);
         preferences.high_contrast_foreground = rgb(COLOR_WINDOWTEXT);
-        preferences.high_contrast_accent = rgb(COLOR_HIGHLIGHT);
+        preferences.high_contrast_highlight = rgb(COLOR_HIGHLIGHT);
+        preferences.high_contrast_highlight_foreground = rgb(COLOR_HIGHLIGHTTEXT);
         preferences
     }
 }

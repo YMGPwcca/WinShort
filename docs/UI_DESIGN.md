@@ -132,6 +132,18 @@ and no shadow. `SPI_GETDISABLEOVERLAPPEDCONTENT` also selects an opaque, shadow-
 `WM_DPICHANGED` is deliberately ignored for the overlay: it owns its own size/position and
 re-renders at the new monitor's DPI on next show.
 
+Settings Preview posts the current draft `OverlayCfg` directly; it does not save
+or replace the live `ConfigHandle`. Normal hotkey/status presentations continue
+to use the saved config. A deterministic active microphone row is used for the
+preview.
+
+High-contrast state circles use `COLOR_WINDOW`/`COLOR_WINDOWTEXT` for normal
+states and the paired `COLOR_HIGHLIGHT`/`COLOR_HIGHLIGHTTEXT` colors for Changed.
+State text remains explicit. Coalesced updates during Appearing preserve the
+full configured settled hold after the appearance completes; a matching delayed
+status query refreshes the multi-row status presentation instead of creating a
+foreground-only result.
+
 Icons: hand-authored D2D path geometry (microphone, speaker, app window, desktop grid,
 warning). Vector at every DPI; no emoji fonts, no bitmaps.
 

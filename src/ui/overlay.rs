@@ -51,6 +51,8 @@ pub const CLASS_NAME: &str = "WinShort.Overlay";
 const TIMER_ID: usize = 2;
 const TIMER_MS: u32 = 16;
 const COALESCE_WINDOW_MS: u64 = 180;
+const APPEAR_MS: u64 = 140;
+const LEAVE_MS: u64 = 180;
 const BASE_WIDTH: f32 = 372.0;
 const ROW_HEIGHT: f32 = 62.0;
 const PAD: f32 = 16.0;
@@ -91,16 +93,65 @@ struct OverlayPalette {
     shadow: Color,
     shadow_enabled: bool,
     opaque: bool,
+    icon: Color,
+    changed_icon: Color,
     tone_muted: Color,
     tone_active: Color,
     tone_changed: Color,
     tone_unavailable: Color,
+    unavailable_text: Color,
 }
 fn motion_policy(preferences: SystemVisualPreferences) -> MotionPolicy {
     if preferences.animations_enabled {
         MotionPolicy::Animated
     } else {
         MotionPolicy::Reduced
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShowTiming {
+    phase: Phase,
+    restart_phase: bool,
+    hold_after_now_ms: u64,
+}
+
+fn timing_after_show(
+    phase: Phase,
+    appearance_elapsed_ms: u64,
+    motion: MotionPolicy,
+    coalesced: bool,
+    duration_ms: u64,
+) -> ShowTiming {
+    if motion == MotionPolicy::Reduced {
+        return ShowTiming {
+            phase: Phase::Holding,
+            restart_phase: true,
+            hold_after_now_ms: duration_ms,
+        };
+    }
+    if !coalesced {
+        return ShowTiming {
+            phase: Phase::Appearing,
+            restart_phase: true,
+            hold_after_now_ms: APPEAR_MS + duration_ms,
+        };
+    }
+    match phase {
+        Phase::Appearing => ShowTiming {
+            phase: Phase::Appearing,
+            restart_phase: false,
+            hold_after_now_ms: APPEAR_MS.saturating_sub(appearance_elapsed_ms) + duration_ms,
+        },
+        Phase::Holding => ShowTiming {
+            phase: Phase::Holding,
+            restart_phase: false,
+            hold_after_now_ms: duration_ms,
+        },
+        Phase::Leaving | Phase::Hidden => ShowTiming {
+            phase: Phase::Holding,
+            restart_phase: true,
+            hold_after_now_ms: duration_ms,
+        },
     }
 }
 
@@ -112,7 +163,9 @@ fn palette_for(
     if preferences.high_contrast {
         let background = color_from_visual(preferences.high_contrast_background);
         let foreground = color_from_visual(preferences.high_contrast_foreground);
-        let accent = color_from_visual(preferences.high_contrast_accent);
+        let highlight = color_from_visual(preferences.high_contrast_highlight);
+        let highlight_foreground =
+            color_from_visual(preferences.high_contrast_highlight_foreground);
         return OverlayPalette {
             surface: background,
             border: foreground,
@@ -121,10 +174,13 @@ fn palette_for(
             shadow: Color::rgba(0, 0, 0, 0),
             shadow_enabled: false,
             opaque: true,
-            tone_muted: foreground,
-            tone_active: foreground,
-            tone_changed: accent,
-            tone_unavailable: foreground,
+            icon: foreground,
+            changed_icon: highlight_foreground,
+            tone_muted: background,
+            tone_active: background,
+            tone_changed: highlight,
+            tone_unavailable: background,
+            unavailable_text: foreground,
         };
     }
     let theme = match appearance {
@@ -135,23 +191,27 @@ fn palette_for(
         OverlayAppearance::Dark => Theme::dark(),
         OverlayAppearance::Light => Theme::light(),
     };
+    let surface = Color::rgba(
+        theme.card.r,
+        theme.card.g,
+        theme.card.b,
+        if simple { 255 } else { 248 },
+    );
     OverlayPalette {
-        surface: Color::rgba(
-            theme.card.r,
-            theme.card.g,
-            theme.card.b,
-            if simple { 255 } else { 248 },
-        ),
+        surface,
         border: theme.border_strong,
         text: theme.text,
         secondary: theme.text_secondary,
         shadow: theme.shadow,
         shadow_enabled: !simple,
         opaque: simple,
+        icon: surface,
+        changed_icon: surface,
         tone_muted: theme.danger,
         tone_active: theme.success,
         tone_changed: theme.accent,
         tone_unavailable: theme.text_disabled,
+        unavailable_text: theme.text_disabled,
     }
 }
 
@@ -472,20 +532,22 @@ impl OverlayState {
         self.last_presented = now;
         let monitor = select_monitor(self.config.monitor.clone());
         self.rebuild_surface(monitor.as_ref())?;
-        self.hold_until = now + Duration::from_millis(self.config.duration_ms as u64);
-        if coalesce {
-            if self.motion == MotionPolicy::Reduced || self.phase == Phase::Leaving {
-                self.phase = Phase::Holding;
-                self.phase_started = now;
-            }
-        } else if self.motion == MotionPolicy::Reduced {
-            self.phase = Phase::Holding;
+        let appearance_elapsed_ms = now
+            .duration_since(self.phase_started)
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let timing = timing_after_show(
+            self.phase,
+            appearance_elapsed_ms,
+            self.motion,
+            coalesce,
+            self.config.duration_ms as u64,
+        );
+        self.phase = timing.phase;
+        if timing.restart_phase {
             self.phase_started = now;
-        } else {
-            self.phase = Phase::Appearing;
-            self.phase_started = now;
-            self.hold_until += Duration::from_millis(140);
         }
+        self.hold_until = now + Duration::from_millis(timing.hold_after_now_ms);
         unsafe {
             let _ = SetWindowPos(
                 hwnd,
@@ -574,7 +636,7 @@ impl OverlayState {
         }
         match self.phase {
             Phase::Appearing => {
-                if now.duration_since(self.phase_started) >= Duration::from_millis(140) {
+                if now.duration_since(self.phase_started) >= Duration::from_millis(APPEAR_MS) {
                     self.phase = Phase::Holding;
                     self.phase_started = now;
                 }
@@ -586,7 +648,7 @@ impl OverlayState {
                 }
             }
             Phase::Leaving => {
-                if now.duration_since(self.phase_started) >= Duration::from_millis(180) {
+                if now.duration_since(self.phase_started) >= Duration::from_millis(LEAVE_MS) {
                     self.phase = Phase::Hidden;
                     unsafe {
                         let _ = KillTimer(Some(hwnd), TIMER_ID);
@@ -614,13 +676,13 @@ impl OverlayState {
         } else {
             match self.phase {
                 Phase::Appearing => {
-                    let t = (elapsed / 0.14).clamp(0.0, 1.0);
+                    let t = (elapsed / (APPEAR_MS as f32 / 1000.0)).clamp(0.0, 1.0);
                     let eased = 1.0 - (1.0 - t).powi(3);
                     (eased, 12.0 * (1.0 - eased))
                 }
                 Phase::Holding => (1.0, 0.0),
                 Phase::Leaving => {
-                    let t = (elapsed / 0.18).clamp(0.0, 1.0);
+                    let t = (elapsed / (LEAVE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
                     (1.0 - t * t, 8.0 * t)
                 }
                 Phase::Hidden => (0.0, 0.0),
@@ -888,6 +950,8 @@ fn draw_overlay(
         let secondary = color(palette.secondary);
         let text_brush = target.CreateSolidColorBrush(&text, None)?;
         let secondary_brush = target.CreateSolidColorBrush(&secondary, None)?;
+        let unavailable_text = color(palette.unavailable_text);
+        let unavailable_brush = target.CreateSolidColorBrush(&unavailable_text, None)?;
 
         for (index, row) in model.rows.iter().enumerate() {
             let y = top + PAD * scale + index as f32 * ROW_HEIGHT * scale;
@@ -914,6 +978,13 @@ fn draw_overlay(
             };
             let tone = color(tone_color);
             let tone_brush = target.CreateSolidColorBrush(&tone, None)?;
+            let icon_color = if row.tone == OverlayTone::Changed {
+                palette.changed_icon
+            } else {
+                palette.icon
+            };
+            let icon_brush_color = color(icon_color);
+            let icon_brush = target.CreateSolidColorBrush(&icon_brush_color, None)?;
             let icon_center_x = left + 34.0 * scale;
             let icon_center_y = y + ROW_HEIGHT * scale * 0.5;
             target.FillEllipse(
@@ -933,7 +1004,7 @@ fn draw_overlay(
                 icon_center_x,
                 icon_center_y,
                 scale,
-                &surface_brush,
+                &icon_brush,
             );
 
             draw_text(
@@ -959,7 +1030,7 @@ fn draw_overlay(
                     bottom: y + 54.0 * scale,
                 },
                 if row.tone == OverlayTone::Unavailable {
-                    &tone_brush
+                    &unavailable_brush
                 } else {
                     &secondary_brush
                 },
@@ -1347,25 +1418,34 @@ mod tests {
         let preferences = SystemVisualPreferences {
             animations_enabled: false,
             high_contrast: true,
-            high_contrast_background: VisualRgb { r: 1, g: 2, b: 3 },
-            high_contrast_foreground: VisualRgb {
-                r: 240,
-                g: 241,
-                b: 242,
-            },
-            high_contrast_accent: VisualRgb {
+            high_contrast_background: VisualRgb {
                 r: 10,
                 g: 20,
                 b: 30,
             },
+            high_contrast_foreground: VisualRgb {
+                r: 240,
+                g: 200,
+                b: 160,
+            },
+            high_contrast_highlight: VisualRgb {
+                r: 50,
+                g: 100,
+                b: 150,
+            },
+            high_contrast_highlight_foreground: VisualRgb { r: 1, g: 2, b: 3 },
             ..SystemVisualPreferences::default()
         };
 
         assert_eq!(motion_policy(preferences), MotionPolicy::Reduced);
         let palette = palette_for(OverlayAppearance::System, preferences);
-        assert_eq!(palette.surface, Color::rgb(1, 2, 3));
-        assert_eq!(palette.text, Color::rgb(240, 241, 242));
-        assert_eq!(palette.tone_changed, Color::rgb(10, 20, 30));
+        assert_eq!(palette.surface, Color::rgb(10, 20, 30));
+        assert_eq!(palette.unavailable_text, Color::rgb(240, 200, 160));
+        assert_eq!(palette.text, Color::rgb(240, 200, 160));
+        assert_eq!(palette.tone_muted, Color::rgb(10, 20, 30));
+        assert_eq!(palette.tone_changed, Color::rgb(50, 100, 150));
+        assert_eq!(palette.icon, Color::rgb(240, 200, 160));
+        assert_eq!(palette.changed_icon, Color::rgb(1, 2, 3));
         assert!(!palette.shadow_enabled);
         assert!(palette.opaque);
     }
@@ -1421,5 +1501,38 @@ mod tests {
         let rendered = microphone_row(&crate::audio::AudioState::Active { volume_pct: 42 });
         assert!(rendered.detail.contains("input volume"));
         assert!(!rendered.detail.contains("input level"));
+    }
+
+    #[test]
+    fn coalesced_timing_preserves_full_settled_hold() {
+        let appearing_early =
+            timing_after_show(Phase::Appearing, 10, MotionPolicy::Animated, true, 1300);
+        assert_eq!(appearing_early.phase, Phase::Appearing);
+        assert!(!appearing_early.restart_phase);
+        assert_eq!(appearing_early.hold_after_now_ms, 1430);
+
+        let appearing_late =
+            timing_after_show(Phase::Appearing, 139, MotionPolicy::Animated, true, 1300);
+        assert_eq!(appearing_late.hold_after_now_ms, 1301);
+
+        let holding = timing_after_show(Phase::Holding, 0, MotionPolicy::Animated, true, 1300);
+        assert_eq!(holding.phase, Phase::Holding);
+        assert!(!holding.restart_phase);
+        assert_eq!(holding.hold_after_now_ms, 1300);
+
+        let leaving = timing_after_show(Phase::Leaving, 40, MotionPolicy::Animated, true, 1300);
+        assert_eq!(leaving.phase, Phase::Holding);
+        assert!(leaving.restart_phase);
+        assert_eq!(leaving.hold_after_now_ms, 1300);
+
+        let reduced = timing_after_show(Phase::Appearing, 10, MotionPolicy::Reduced, true, 1300);
+        assert_eq!(reduced.phase, Phase::Holding);
+        assert!(reduced.restart_phase);
+        assert_eq!(reduced.hold_after_now_ms, 1300);
+
+        let fresh = timing_after_show(Phase::Hidden, 0, MotionPolicy::Animated, false, 1300);
+        assert_eq!(fresh.phase, Phase::Appearing);
+        assert!(fresh.restart_phase);
+        assert_eq!(fresh.hold_after_now_ms, 1440);
     }
 }

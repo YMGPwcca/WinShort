@@ -145,11 +145,13 @@ crispness at DPI 100–200% · single/multi monitor · per-monitor DPI moves inc
 (#49) · foreground-monitor follow · over fullscreen game (never steals focus) · rapid updates
 coalesce with timer reset · negative virtual-screen coordinates · monitor unplug/replug.
 
-#30 accessibility matrix: System/Dark/Light appearance, Windows animation-off yields
-settled overlay with no fade/slide, high-contrast yields opaque system-colored surface with
-strong border/no shadow, overlapped-content preference removes translucency, and setting
-changes refresh an already-visible overlay. External audio changes obey the saved policy;
-WinShort actions and status requests remain visible.
+#30 accessibility/source matrix: System/Dark/Light appearance, Windows animation-off yields
+settled overlay with no fade/slide, high-contrast uses paired system colors with an opaque
+surface/strong border/no shadow, overlapped-content preference removes translucency, and
+setting changes refresh an already-visible overlay. Preview uses unsaved draft appearance,
+scale, opacity, position, monitor, and duration without saving. External audio changes obey
+the saved policy; WinShort actions and status requests remain visible. Delayed status results
+refresh the multi-row status presentation. Coalesced updates preserve the full settled hold.
 
 Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
 flag exists).

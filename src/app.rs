@@ -53,6 +53,7 @@ pub struct App {
     output_seen: bool,
     foreground_seen: bool,
     next_audio_request_id: u64,
+    status_request_id: Option<u64>,
     suspended: bool,
     shutting_down: bool,
     support_bundle: Option<std::thread::JoinHandle<()>>,
@@ -156,6 +157,7 @@ impl App {
             output_seen: false,
             foreground_seen: false,
             next_audio_request_id: 0,
+            status_request_id: None,
             suspended: false,
             shutting_down: false,
             support_bundle: None,
@@ -248,13 +250,13 @@ impl App {
         seen: bool,
         changed: bool,
         show_external: bool,
-        status_request_shows: bool,
+        status_request_matches: bool,
     ) -> bool {
         match origin {
             AudioEventOrigin::Initial => false,
             AudioEventOrigin::External => show_external && seen && changed,
             AudioEventOrigin::WinShortAction(_) => true,
-            AudioEventOrigin::StatusRequest(_) => status_request_shows,
+            AudioEventOrigin::StatusRequest(_) => status_request_matches,
         }
     }
 
@@ -549,19 +551,25 @@ impl App {
             }
         }
     }
-
-    fn show_overlay_model(&mut self, model: crate::ui::overlay::OverlayModel) {
-        let config = crate::app::config();
-        if !config.overlay.enabled {
+    fn show_overlay_model_with_config(
+        &mut self,
+        model: crate::ui::overlay::OverlayModel,
+        config: crate::config::model::OverlayCfg,
+    ) {
+        if !config.enabled {
             return;
         }
         if let Some(overlay) = &self.overlay {
-            if let Err(e) = overlay.show(model, config.overlay.clone()) {
-                error_!("overlay show failed: {e}");
+            if let Err(error) = overlay.show(model, config) {
+                error_!("overlay show failed: {error}");
             }
         }
     }
 
+    fn show_overlay_model(&mut self, model: crate::ui::overlay::OverlayModel) {
+        let config = crate::app::config();
+        self.show_overlay_model_with_config(model, config.overlay.clone());
+    }
     fn show_microphone_overlay(&mut self) {
         let row = crate::ui::overlay::microphone_row(&self.microphone_state);
         self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
@@ -572,25 +580,37 @@ impl App {
         self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
     }
 
-    fn show_status_overlay(&mut self) {
+    fn show_preview_overlay(&mut self, config: crate::config::model::OverlayCfg) {
+        let state = crate::audio::AudioState::Active { volume_pct: 50 };
+        let model =
+            crate::ui::overlay::OverlayModel::single(crate::ui::overlay::microphone_row(&state));
+        self.show_overlay_model_with_config(model, config);
+    }
+
+    fn status_overlay_model(&self) -> crate::ui::overlay::OverlayModel {
         let mut rows = vec![
             crate::ui::overlay::microphone_row(&self.microphone_state),
             crate::ui::overlay::output_row(&self.output_state),
         ];
-        // Cached row shows immediately; the live query below replaces it when
-        // the answer arrives (stale-status fix, #18).
         if self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp {
             rows.push(crate::ui::overlay::application_row(&self.foreground_state));
         }
+        crate::ui::overlay::OverlayModel { rows }
+    }
+
+    fn show_status_overlay(&mut self) {
+        let request_id = self.next_audio_request_id();
+        self.status_request_id = Some(request_id);
         let pid = self
             .foreground
             .as_ref()
             .and_then(|tracker| tracker.target_pid());
-        let request_id = self.next_audio_request_id();
         if let Some(audio) = &self.audio {
             audio.send(crate::audio::AudioCommand::QueryForeground { pid, request_id });
         }
-        self.show_overlay_model(crate::ui::overlay::OverlayModel { rows });
+        // Cached rows show immediately; a matching delayed query result
+        // refreshes this same multi-row presentation (#18, #72).
+        self.show_overlay_model(self.status_overlay_model());
     }
     /// Route an event posted from any thread.
     pub fn route_event(&mut self, ev: AppEvent) {
@@ -605,6 +625,7 @@ impl App {
             AppEvent::ShowDiagnostics => self.show_diagnostics(),
             AppEvent::OpenSettingsPicker(kind) => self.open_settings_picker(kind),
             AppEvent::ShowStatusOverlay => self.show_status_overlay(),
+            AppEvent::PreviewOverlay { config } => self.show_preview_overlay(config),
             AppEvent::RunDiagnosticsSelfTest => self.run_diagnostics_self_test(),
             AppEvent::CopyDiagnostics => self.copy_diagnostics(),
             AppEvent::OpenDiagnosticsLogs => self.open_diagnostics_logs(),
@@ -675,18 +696,36 @@ impl App {
             AppEvent::ForegroundAudioChanged { state, origin } => {
                 let changed = self.foreground_state != state;
                 let config = crate::app::config();
+                let is_status_request = matches!(origin, AudioEventOrigin::StatusRequest(_));
+                let status_request_matches = match origin {
+                    AudioEventOrigin::StatusRequest(request_id) => {
+                        self.status_request_id == Some(request_id)
+                    }
+                    _ => false,
+                };
                 let should_show = Self::should_show_audio_overlay(
                     origin,
                     self.foreground_seen,
                     changed,
                     config.overlay.show_external_audio_changes,
-                    true,
+                    status_request_matches,
                 );
                 self.foreground_state = state;
                 self.foreground_seen = true;
+                if is_status_request {
+                    if status_request_matches {
+                        self.status_request_id = None;
+                    }
+                } else {
+                    self.status_request_id = None;
+                }
                 if should_show {
-                    let row = crate::ui::overlay::application_row(&self.foreground_state);
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
+                    if is_status_request {
+                        self.show_overlay_model(self.status_overlay_model());
+                    } else {
+                        let row = crate::ui::overlay::application_row(&self.foreground_state);
+                        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
+                    }
                 }
             }
             AppEvent::DesktopBackendChanged(status) => {
@@ -713,8 +752,8 @@ impl App {
             .map(|violation| format!("{}: {}", violation.field, violation.message))
             .collect();
         let config_health = if load
-            .schema_version
-            .gt(&crate::config::model::CURRENT_SCHEMA_VERSION)
+            .source_schema_version
+            .is_some_and(|version| version > crate::config::model::CURRENT_SCHEMA_VERSION)
             || crate::config::config_readonly()
         {
             Health::Error
@@ -936,15 +975,16 @@ impl App {
             audio,
             desktop,
             config: ConfigDiagnostics {
+                warnings: load.warnings,
                 health: config_health,
                 path: if load.path.as_os_str().is_empty() {
                     crate::config::load::config_path(&crate::config::data_dir())
                 } else {
                     load.path
                 },
-                schema_version: load.schema_version,
+                source_schema_version: load.source_schema_version,
+                effective_schema_version: load.effective_schema_version,
                 read_only: crate::config::config_readonly(),
-                warnings: load.warnings,
                 repaired_fields: load.repaired_fields,
                 migrations: load.migrations,
                 validation: validation_messages,
@@ -1237,6 +1277,7 @@ mod shutdown_gate_tests {
             output_seen: false,
             foreground_seen: false,
             next_audio_request_id: 0,
+            status_request_id: None,
             suspended: false,
             shutting_down: false,
             support_bundle: None,
@@ -1309,5 +1350,61 @@ mod shutdown_gate_tests {
             false,
             true,
         ));
+    }
+
+    #[test]
+    fn preview_event_carries_draft_presentation_without_mutating_live_config() {
+        let saved = crate::config::Config::default();
+        let mut draft = saved.clone();
+        draft.overlay.appearance = crate::config::model::OverlayAppearance::Light;
+        draft.overlay.scale = 1.6;
+        draft.overlay.opacity = 0.5;
+        draft.overlay.position = crate::config::model::OverlayPosition::TopLeft;
+        let event = AppEvent::PreviewOverlay {
+            config: draft.overlay.clone(),
+        };
+        let AppEvent::PreviewOverlay { config } = event else {
+            panic!("expected preview event");
+        };
+        assert_eq!(config, draft.overlay);
+        assert_eq!(
+            saved.overlay.appearance,
+            crate::config::model::OverlayAppearance::System
+        );
+        assert_eq!(saved.overlay.scale, 1.0);
+        assert_eq!(saved.overlay.opacity, 1.0);
+    }
+
+    #[test]
+    fn matching_status_request_refreshes_multi_row_presentation() {
+        let mut app = test_app();
+        app.status_request_id = Some(7);
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            state: crate::audio::AppAudioState {
+                app_name: Some("Test app".into()),
+                aggregate: crate::audio::Aggregate::AllActive,
+                sessions: 1,
+                error: None,
+            },
+            origin: AudioEventOrigin::StatusRequest(7),
+        });
+        assert_eq!(app.status_request_id, None);
+        assert_eq!(app.status_overlay_model().rows.len(), 3);
+    }
+
+    #[test]
+    fn stale_status_request_does_not_replace_current_request() {
+        let mut app = test_app();
+        app.status_request_id = Some(8);
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            state: crate::audio::AppAudioState {
+                app_name: Some("Stale app".into()),
+                aggregate: crate::audio::Aggregate::AllActive,
+                sessions: 1,
+                error: None,
+            },
+            origin: AudioEventOrigin::StatusRequest(7),
+        });
+        assert_eq!(app.status_request_id, Some(8));
     }
 }

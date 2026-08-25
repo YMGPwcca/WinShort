@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use crate::config::load::config_path;
-use crate::config::model::Config;
+use crate::config::model::{Config, CURRENT_SCHEMA_VERSION};
 use crate::error::{Error, Result};
 
 pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
@@ -43,6 +43,13 @@ pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         Error::config(format!("rename: {e}"))
     })?;
+    let mut diagnostics = crate::config::load_diagnostics();
+    if diagnostics.path.as_os_str().is_empty() || diagnostics.path == path {
+        diagnostics.path = path.clone();
+        diagnostics.source_schema_version = Some(CURRENT_SCHEMA_VERSION);
+        diagnostics.effective_schema_version = CURRENT_SCHEMA_VERSION;
+        crate::config::set_load_diagnostics(diagnostics);
+    }
     crate::info!("config saved to {}", path.display());
     Ok(())
 }
@@ -51,7 +58,7 @@ pub fn save(data_dir: &Path, cfg: &Config) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::load::load;
-    use crate::config::model::Config;
+    use crate::config::model::{Config, CURRENT_SCHEMA_VERSION};
 
     #[test]
     fn round_trip_preserves_config() {
@@ -65,6 +72,12 @@ mod tests {
         let (loaded, warnings) = load(&dir);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(loaded, cfg);
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(
+            diagnostics.source_schema_version,
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
         // No temp residue.
         assert!(!dir.join("config.toml.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);

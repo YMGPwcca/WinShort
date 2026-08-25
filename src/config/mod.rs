@@ -8,13 +8,29 @@ pub mod validate;
 pub use model::Config;
 pub use validate::validate;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigLoadDiagnostics {
     pub path: std::path::PathBuf,
-    pub schema_version: u8,
+    /// Schema explicitly present in the loaded document, if any.
+    pub source_schema_version: Option<u8>,
+    /// Schema of the runtime model and serializer used by this executable.
+    pub effective_schema_version: u8,
     pub warnings: Vec<String>,
     pub repaired_fields: Vec<String>,
     pub migrations: Vec<String>,
+}
+
+impl Default for ConfigLoadDiagnostics {
+    fn default() -> Self {
+        Self {
+            path: std::path::PathBuf::new(),
+            source_schema_version: None,
+            effective_schema_version: crate::config::model::CURRENT_SCHEMA_VERSION,
+            warnings: Vec::new(),
+            repaired_fields: Vec::new(),
+            migrations: Vec::new(),
+        }
+    }
 }
 
 static LOAD_DIAGNOSTICS: std::sync::OnceLock<std::sync::RwLock<ConfigLoadDiagnostics>> =

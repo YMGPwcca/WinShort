@@ -76,6 +76,10 @@ pub enum AppEvent {
     ShowDiagnostics,
     OpenSettingsPicker(crate::ui::picker::PickerKind),
     ShowStatusOverlay,
+    /// Render the Settings draft overlay without persisting it.
+    PreviewOverlay {
+        config: crate::config::model::OverlayCfg,
+    },
     RunDiagnosticsSelfTest,
     CopyDiagnostics,
     OpenDiagnosticsLogs,

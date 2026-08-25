@@ -62,6 +62,15 @@ letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no m
 
 Loading a document with `schema_version > 2` (`config/load.rs::load`):
 
+An absent `schema_version` is treated as legacy source schema v1. New files
+serialized by `Config::to_toml()` always write schema v2.
+
+Diagnostics separates `source_schema_version` from `effective_schema_version`:
+missing/corrupt input has no source version and effective v2; v1 input has
+source v1 and effective v2; v2 input has source and effective v2. A future
+source version is retained while runtime state falls back to safe defaults and
+the read-only latch remains active.
+
 * logs an error and warns "config written by a newer WinShort; not overwriting",
 * returns **default values for every section** (the future document is never partially applied),
 * sets the process-global `CONFIG_READONLY: AtomicBool` latch (`config/mod.rs`).
@@ -120,8 +129,9 @@ Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
 ## Migration
 
-Schema v1 files load with the v2 defaults for `overlay.appearance` (`system`) and
-`overlay.show_external_audio_changes` (`true`). Load diagnostics records this
-migration; Save writes schema v2 on the next successful save. Legacy
+Schema v1 files, including versionless legacy files, load with the v2 defaults for
+`overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`).
+Load diagnostics records the source/effective transition. A successful Save
+writes schema v2 and updates active load diagnostics to source v2. Legacy
 `overlay.monitor = "index:N"` still maps to `primary`, and
 `general.start_with_windows` remains ignored because startup is registry-owned.
