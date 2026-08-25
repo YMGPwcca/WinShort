@@ -62,6 +62,7 @@ pub enum ElementId {
     ForegroundHotkey,
     InputDevice,
     OutputDevice,
+    DebugLogging,
     DiagnosticsStatus,
     InputRole,
     OutputRole,
@@ -83,7 +84,7 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 24] = [
+    pub const FOCUS_ORDER: [ElementId; 25] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
@@ -104,6 +105,7 @@ impl ElementId {
         ElementId::OverlayOpacity,
         ElementId::OverlayScale,
         ElementId::OverlayPreview,
+        ElementId::DebugLogging,
         ElementId::OpenConfigFolder,
         ElementId::ResetSettings,
         ElementId::Cancel,
@@ -339,7 +341,6 @@ impl SettingsLayout {
                 ),
             ],
         );
-
         add_section(&mut raw_sections, &mut y, "Advanced");
         add_card_rows(
             &mut raw_elements,
@@ -347,6 +348,12 @@ impl SettingsLayout {
             card_x,
             card_w,
             &[
+                row(
+                    ElementId::DebugLogging,
+                    ElementKind::Toggle,
+                    "Debug logging",
+                    "Extra troubleshooting detail until WinShort restarts",
+                ),
                 row(
                     ElementId::DiagnosticsStatus,
                     ElementKind::Action,

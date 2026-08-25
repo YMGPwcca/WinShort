@@ -558,6 +558,30 @@ impl DiagnosticsUi {
             None,
         );
         row(&mut lines, "Log level", s.logging.level.clone(), None);
+        row(
+            &mut lines,
+            "Default log level",
+            s.logging.default_level.clone(),
+            None,
+        );
+        row(
+            &mut lines,
+            "Temporary debug",
+            if s.logging.temporary_debug {
+                "Enabled"
+            } else {
+                "Off"
+            }
+            .into(),
+            None,
+        );
+        row(
+            &mut lines,
+            "Retention",
+            format!("{} days", s.logging.retention_days),
+            None,
+        );
+        row(&mut lines, "Buffering", s.logging.buffering.clone(), None);
         if let Some(error) = &s.startup.error {
             row(
                 &mut lines,

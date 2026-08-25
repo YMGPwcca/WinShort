@@ -170,8 +170,11 @@ pub struct LoggingDiagnostics {
     pub directory: Option<PathBuf>,
     pub current_file: Option<PathBuf>,
     pub level: String,
+    pub default_level: String,
+    pub temporary_debug: bool,
+    pub retention_days: i64,
+    pub buffering: String,
 }
-
 #[derive(Debug, Clone)]
 pub struct DegradedSubsystem {
     pub name: String,

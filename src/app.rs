@@ -5,7 +5,7 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterWindowMessageW, HWND_MESSAGE,
-    WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
+    WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_TIMER,
 };
 
 use crate::error::{Error, Result};
@@ -369,6 +369,7 @@ impl App {
     }
 
     fn open_diagnostics_logs(&mut self) {
+        crate::diagnostics::logging::flush();
         let snapshot = self.diagnostics_snapshot();
         let status =
             match crate::diagnostics::support::open_logs(snapshot.logging.directory.as_deref()) {
@@ -397,6 +398,7 @@ impl App {
             }
             return;
         }
+        crate::diagnostics::logging::flush();
         let snapshot = self.diagnostics_snapshot();
         if let Some(window) = &mut self.diagnostics {
             window.set_bundle_running(true);
@@ -944,8 +946,43 @@ impl App {
                 Health::Unavailable
             },
             directory: logger.as_ref().and_then(|value| value.directory.clone()),
-            current_file: crate::diagnostics::logging::current_log_path(),
-            level: logger.map_or_else(|| "unavailable".into(), |value| value.level.as_str().into()),
+            current_file: logger
+                .as_ref()
+                .and_then(|value| value.current_file.clone())
+                .or_else(crate::diagnostics::logging::current_log_path),
+            level: logger.as_ref().map_or_else(
+                || "unavailable".into(),
+                |value| {
+                    if value.temporary_debug {
+                        format!("{} (temporary)", value.level.as_str())
+                    } else {
+                        value.level.as_str().into()
+                    }
+                },
+            ),
+            default_level: logger.as_ref().map_or_else(
+                || "unavailable".into(),
+                |value| value.default_level.as_str().into(),
+            ),
+            temporary_debug: logger.as_ref().is_some_and(|value| value.temporary_debug),
+            retention_days: logger
+                .as_ref()
+                .map_or(crate::diagnostics::logging::LOG_RETENTION_DAYS, |value| {
+                    value.retention_days
+                }),
+            buffering: logger.as_ref().map_or_else(
+                || "unavailable".into(),
+                |value| {
+                    if value.buffered {
+                        format!(
+                            "BufWriter; Warn/Error + {}s dirty flush",
+                            crate::diagnostics::logging::FLUSH_TIMER_MS / 1000
+                        )
+                    } else {
+                        "unbuffered".into()
+                    }
+                },
+            ),
         };
 
         let degraded: Vec<DegradedSubsystem> = self
@@ -1011,6 +1048,7 @@ impl App {
             return;
         }
         self.shutting_down = true;
+        crate::diagnostics::logging::stop_flush_timer(self.hwnd);
 
         // Wake-and-stop the second-instance watcher before any window goes
         // away (#24 ordering).
@@ -1052,6 +1090,7 @@ impl App {
                 let _ = DestroyWindow(s.hwnd);
             }
         }
+        crate::diagnostics::logging::flush();
         // Never DestroyWindow the borrowed main window here (reentrancy);
         // post WM_CLOSE so destruction happens outside any App borrow.
         unsafe {
@@ -1144,6 +1183,10 @@ unsafe extern "system" fn main_wndproc(
             LRESULT(0)
         }
 
+        WM_TIMER if wparam.0 == crate::diagnostics::logging::FLUSH_TIMER_ID => {
+            crate::diagnostics::logging::flush_if_dirty();
+            LRESULT(0)
+        }
         WM_CLOSE => {
             // Idempotent ordered teardown, then destroy. Posted by
             // begin_shutdown; external close requests land here too.

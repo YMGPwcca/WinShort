@@ -36,6 +36,7 @@ fn is_toggle_element(id: ElementId) -> bool {
             | ElementId::WinNumberEnabled
             | ElementId::OverlayEnabled
             | ElementId::OverlayExternalChanges
+            | ElementId::DebugLogging
     )
 }
 const TBM_SETRANGE: u32 = 0x0400 + 6;
@@ -178,6 +179,9 @@ fn help_text(id: ElementId) -> &'static str {
         ElementId::OverlayOpacity => "Adjust from 30 percent to 100 percent.",
         ElementId::OverlayScale => "Adjust from 0.7× to 1.6×.",
         ElementId::OverlayPreview => "Show a representative status overlay.",
+        ElementId::DebugLogging => {
+            "Enable extra diagnostic logging until WinShort restarts; this is not saved."
+        }
         ElementId::DiagnosticsStatus => "Open runtime diagnostics and sanitized support actions.",
         ElementId::OpenConfigFolder => "Open WinShort's data directory.",
         ElementId::ResetSettings => {
@@ -417,5 +421,10 @@ mod semantic_tests {
     #[test]
     fn external_audio_setting_is_a_toggle() {
         assert!(is_toggle_element(ElementId::OverlayExternalChanges));
+    }
+
+    #[test]
+    fn debug_logging_setting_is_a_toggle() {
+        assert!(is_toggle_element(ElementId::DebugLogging));
     }
 }

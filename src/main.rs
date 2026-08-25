@@ -33,25 +33,12 @@ fn app_data_dir() -> Result<PathBuf> {
     crate::config::try_data_dir()
 }
 
-fn init_logging() -> Result<()> {
+fn init_logging() -> Result<diagnostics::logging::LoggingGuard> {
     let dir = app_data_dir()?.join("logs");
-    diagnostics::logging::init(&dir, diagnostics::logging::Level::Debug);
-    // Bias is minutes WEST of UTC (documented sign); we need seconds east.
-    let bias = unsafe { tz_bias_minutes() };
-    diagnostics::logging::set_local_offset(-(bias as i64) * 60);
-    Ok(())
-}
-
-unsafe fn tz_bias_minutes() -> i32 {
-    use windows::Win32::System::Time::{
-        GetDynamicTimeZoneInformation, DYNAMIC_TIME_ZONE_INFORMATION,
-    };
-    // SAFETY: plain out-parameter query with no side effects.
-    unsafe {
-        let mut tz = DYNAMIC_TIME_ZONE_INFORMATION::default();
-        GetDynamicTimeZoneInformation(&mut tz);
-        tz.Bias
-    }
+    let level = diagnostics::logging::default_level_for_build(cfg!(debug_assertions));
+    diagnostics::logging::init(&dir, level);
+    diagnostics::logging::install_panic_hook();
+    Ok(diagnostics::logging::guard())
 }
 
 fn main() -> std::process::ExitCode {
@@ -70,13 +57,17 @@ fn main() -> std::process::ExitCode {
 
     // ---- DPI awareness before any window -------------------------------
     platform::dpi::set_process_awareness();
-    if let Err(e) = init_logging() {
-        // Logging is best effort, but a missing data dir means config cannot
-        // be persisted either — treat as fatal with a visible reason (#15e).
-        error_!("fatal: {e}");
-        fatal_message_box(&e.to_string());
-        return std::process::ExitCode::FAILURE;
-    }
+
+    let _logging_guard = match init_logging() {
+        Ok(guard) => guard,
+        Err(error) => {
+            // Logging is best effort, but a missing data dir means config
+            // cannot be persisted either — treat it as fatal (#15e).
+            error_!("fatal: {error}");
+            fatal_message_box(&error.to_string());
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     info!("WinShort starting");
 
     // ---- Configuration (spec §46: load/validate before UI) ---------------
@@ -116,9 +107,10 @@ fn main() -> std::process::ExitCode {
 fn run(role: PrimaryRole, _com: crate::platform::com::ComApartment) -> Result<()> {
     // Hidden message-only main window + App singleton.
     app::App::create_main_window()?;
-    let hwnd_raw = app::main_hwnd()
-        .ok_or_else(|| error::Error::internal("main window missing"))?
-        .0 as isize;
+    let main_hwnd =
+        app::main_hwnd().ok_or_else(|| error::Error::internal("main window missing"))?;
+    let hwnd_raw = main_hwnd.0 as isize;
+    diagnostics::logging::start_flush_timer(main_hwnd);
     let config = app::CONFIG
         .get()
         .cloned()

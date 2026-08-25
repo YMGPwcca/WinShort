@@ -655,6 +655,29 @@ fn format_diagnostics(
     line(&mut out, &format!("Log level: {}", snapshot.logging.level));
     line(
         &mut out,
+        &format!("Default log level: {}", snapshot.logging.default_level),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Temporary debug: {}",
+            if snapshot.logging.temporary_debug {
+                "enabled"
+            } else {
+                "off"
+            }
+        ),
+    );
+    line(
+        &mut out,
+        &format!("Retention days: {}", snapshot.logging.retention_days),
+    );
+    line(
+        &mut out,
+        &format!("Buffering: {}", snapshot.logging.buffering),
+    );
+    line(
+        &mut out,
         &format!(
             "Current log file: {}",
             snapshot
@@ -987,6 +1010,7 @@ fn format_manifest(
 }
 
 pub fn create_support_bundle(snapshot: &DiagnosticsSnapshot) -> Result<PathBuf> {
+    crate::diagnostics::logging::flush();
     let mut sanitizer = Sanitizer::default();
     let report = build_report(snapshot, None, &mut sanitizer);
     let data_dir = snapshot
@@ -1417,12 +1441,50 @@ safe=1"#,
                 directory: Some(log_dir.clone()),
                 current_file: Some(log_dir.join("winshort-20260825.log")),
                 level: "DEBUG".into(),
+                default_level: "INFO".into(),
+                temporary_debug: true,
+                retention_days: 14,
+                buffering: "BufWriter; Warn/Error + 5s dirty flush".into(),
             },
             degraded: vec![DegradedSubsystem {
                 name: "test".into(),
                 reason: r#"\\corp-server\clients\SecretClient\tool.exe"#.into(),
             }],
         }
+    }
+
+    #[test]
+    fn support_bundle_flushes_buffered_records_before_collecting_logs() {
+        let root = std::env::temp_dir().join(format!(
+            "winshort-support-buffered-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let snapshot = sample_snapshot(&root);
+        fs::create_dir_all(snapshot.logging.directory.as_ref().unwrap()).unwrap();
+        crate::diagnostics::logging::init(
+            snapshot.logging.directory.as_ref().unwrap(),
+            crate::diagnostics::logging::Level::Info,
+        );
+        crate::info!("buffered support record");
+
+        let bundle = create_support_bundle(&snapshot).unwrap();
+        let file = File::open(&bundle).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut found = false;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            if entry.name().starts_with("logs/") {
+                let mut contents = String::new();
+                entry.read_to_string(&mut contents).unwrap();
+                found |= contents.contains("buffered support record");
+            }
+        }
+        assert!(found, "support bundle omitted buffered record");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1445,6 +1507,7 @@ window_title=Secret
 path="C:\Users\Alice\Projects\Secret Client\foo.exe"
 unc=\\corp-server\clients\SecretClient\tool.exe
 extended=\\?\UNC\server\share\Private\foo.exe
+panic=C:\Users\Alice\private-project\foo.rs
 endpoint=opaque-endpoint-secret
 "#,
         )
@@ -1499,7 +1562,7 @@ endpoint=opaque-endpoint-secret
         assert!(!log.contains("SecretClient"));
         assert!(!log.contains("corp-server"));
         assert!(!log.contains("Secret Client"));
-        assert!(!log.contains("Private"));
+        assert!(!log.contains("private-project"));
         assert!(!log.contains("opaque-endpoint-secret"));
         drop(archive);
         fs::remove_dir_all(root).unwrap();

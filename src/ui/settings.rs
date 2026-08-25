@@ -355,6 +355,9 @@ impl SettingsUi {
                 label: Cow::Owned(format!("{:.1}×", self.draft.overlay.scale)),
             },
             ElementId::OverlayPreview => ControlValue::Action(Cow::Borrowed("Preview")),
+            ElementId::DebugLogging => {
+                ControlValue::Toggle(crate::diagnostics::logging::debug_logging_enabled())
+            }
             ElementId::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("Open")),
             ElementId::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
             ElementId::ResetSettings => {
@@ -390,6 +393,7 @@ impl SettingsUi {
             ElementId::WinNumberEnabled => self.draft.virtual_desktops.win_number_switching,
             ElementId::OverlayEnabled => self.draft.overlay.enabled,
             ElementId::OverlayExternalChanges => self.draft.overlay.show_external_audio_changes,
+            ElementId::DebugLogging => crate::diagnostics::logging::debug_logging_enabled(),
             _ => false,
         };
         Interaction {
@@ -625,6 +629,11 @@ impl SettingsUi {
                 post_main(crate::event::AppEvent::OpenSettingsPicker(
                     PickerKind::OverlayMonitor,
                 ));
+            }
+            ElementId::DebugLogging => {
+                let enabled = !crate::diagnostics::logging::debug_logging_enabled();
+                crate::diagnostics::logging::set_debug_logging(enabled);
+                self.animate_toggle(hwnd, id, enabled);
             }
             ElementId::OverlayPreview => post_main(crate::event::AppEvent::PreviewOverlay {
                 config: self.draft.overlay.clone(),
