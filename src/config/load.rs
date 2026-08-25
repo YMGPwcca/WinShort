@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::config::model::{Config, ConfigToml};
+use crate::config::model::{Config, ConfigToml, CURRENT_SCHEMA_VERSION};
 pub fn config_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("config.toml")
 }
@@ -20,7 +20,7 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
                     let schema_version = toml.schema_version;
-                    if schema_version > 1 {
+                    if schema_version > CURRENT_SCHEMA_VERSION {
                         let msg = format!(
                             "config written by a newer WinShort (schema v{}); not overwriting",
                             schema_version
@@ -52,11 +52,15 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                             warnings
                         );
                     }
-                    let migrations = if text.to_ascii_lowercase().contains("monitor = \"index:") {
-                        vec!["overlay.monitor index:N mapped to primary".into()]
-                    } else {
-                        Vec::new()
-                    };
+                    let mut migrations = Vec::new();
+                    if schema_version < CURRENT_SCHEMA_VERSION {
+                        migrations.push(format!(
+                            "schema v{schema_version} migrated to v{CURRENT_SCHEMA_VERSION}: missing overlay appearance/external audio policy use v2 defaults"
+                        ));
+                    }
+                    if text.to_ascii_lowercase().contains("monitor = \"index:") {
+                        migrations.push("overlay.monitor index:N mapped to primary".into());
+                    }
                     record_diagnostics(
                         &path,
                         schema_version,
@@ -143,7 +147,7 @@ mod tests {
     #[test]
     fn newer_schema_version_refuses_overwrite() {
         let _guard = crate::config::latch_guard();
-        // #15b: schema v2 must mark the store read-only.
+        // #15b: a future schema must mark the store read-only.
         let raw = "schema_version = 9\n";
         let dir = std::env::temp_dir().join(format!("ws_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -163,6 +167,34 @@ mod tests {
         // Save must refuse while read-only.
         let err = crate::config::save::save(&dir, &Config::default());
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn schema_v1_gets_overlay_defaults_and_records_migration() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_schema_v1_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            "schema_version = 1\n[overlay]\nenabled = true\nduration_ms = 900\n[audio]\ninput_role = \"console\"\noutput_role = \"console\"\n",
+        )
+        .unwrap();
+
+        let (cfg, warnings) = load(&dir);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(cfg.overlay.appearance, OverlayAppearance::System);
+        assert!(cfg.overlay.show_external_audio_changes);
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.schema_version, 1);
+        assert!(diagnostics
+            .migrations
+            .iter()
+            .any(|value| value.contains("schema v1 migrated")));
+
+        crate::config::clear_config_readonly();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -24,14 +24,20 @@ pub enum EndpointFlow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioCommand {
-    ToggleMicrophone,
-    ToggleOutput,
-    ToggleForeground(Option<u32>),
+    ToggleMicrophone(u64),
+    ToggleOutput(u64),
+    ToggleForeground {
+        pid: Option<u32>,
+        request_id: u64,
+    },
     RefreshEndpoint(EndpointFlow),
     RefreshAll,
     ConfigChanged,
     /// Live read-only foreground resolver for Show Status (#18).
-    QueryForeground(Option<u32>),
+    QueryForeground {
+        pid: Option<u32>,
+        request_id: u64,
+    },
     Shutdown,
 }
 
@@ -184,9 +190,15 @@ impl AudioController {
     fn handle_other(&mut self, command: AudioCommand) -> bool {
         self.refresh_config_if_needed();
         match command {
-            AudioCommand::ToggleMicrophone => self.toggle(EndpointFlow::Capture),
-            AudioCommand::ToggleOutput => self.toggle(EndpointFlow::Render),
-            AudioCommand::ToggleForeground(pid) => {
+            AudioCommand::ToggleMicrophone(request_id) => self.toggle(
+                EndpointFlow::Capture,
+                crate::event::AudioEventOrigin::WinShortAction(request_id),
+            ),
+            AudioCommand::ToggleOutput(request_id) => self.toggle(
+                EndpointFlow::Render,
+                crate::event::AudioEventOrigin::WinShortAction(request_id),
+            ),
+            AudioCommand::ToggleForeground { pid, request_id } => {
                 let config = self.config.get();
                 let state =
                     crate::audio::sessions::toggle_foreground(&self.enumerator, &config, pid)
@@ -196,15 +208,18 @@ impl AudioController {
                             sessions: 0,
                             error: Some(e.to_string()),
                         });
-                self.post(AppEvent::ForegroundAudioChanged(state));
+                self.post(AppEvent::ForegroundAudioChanged {
+                    state,
+                    origin: crate::event::AudioEventOrigin::WinShortAction(request_id),
+                });
             }
             AudioCommand::RefreshEndpoint(flow) => {
                 crate::log_debug!("audio {:?} endpoint notification", flow);
-                self.publish(flow);
+                self.publish(flow, crate::event::AudioEventOrigin::External);
             }
             // ConfigChanged is consumed by handle() above; refresh_config_if_needed
             // covers any residual revision drift.
-            AudioCommand::QueryForeground(pid) => {
+            AudioCommand::QueryForeground { pid, request_id } => {
                 let config = self.config.get();
                 let state =
                     crate::audio::sessions::query_foreground(&self.enumerator, &config, pid)
@@ -214,7 +229,10 @@ impl AudioController {
                             sessions: 0,
                             error: Some(e.to_string()),
                         });
-                self.post(AppEvent::ForegroundAudioChanged(state));
+                self.post(AppEvent::ForegroundAudioChanged {
+                    state,
+                    origin: crate::event::AudioEventOrigin::StatusRequest(request_id),
+                });
             }
             AudioCommand::RefreshAll => self.rebuild_all(false),
             AudioCommand::ConfigChanged => {}
@@ -256,8 +274,13 @@ impl AudioController {
             }
             self.post(AppEvent::DevicesChanged);
         }
-        self.publish(EndpointFlow::Capture);
-        self.publish(EndpointFlow::Render);
+        let origin = if startup {
+            crate::event::AudioEventOrigin::Initial
+        } else {
+            crate::event::AudioEventOrigin::External
+        };
+        self.publish(EndpointFlow::Capture, origin);
+        self.publish(EndpointFlow::Render, origin);
     }
 
     fn rebuild(&mut self, flow: EndpointFlow) {
@@ -315,7 +338,7 @@ impl AudioController {
         }
     }
 
-    fn toggle(&mut self, flow: EndpointFlow) {
+    fn toggle(&mut self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
         let missing = match flow {
             EndpointFlow::Capture => self.capture.is_none(),
             EndpointFlow::Render => self.render.is_none(),
@@ -333,10 +356,10 @@ impl AudioController {
         if let Err(e) = result {
             crate::warn_!("audio toggle {:?} failed: {e}", flow);
         }
-        self.publish(flow);
+        self.publish(flow, origin);
     }
 
-    fn publish(&self, flow: EndpointFlow) {
+    fn publish(&self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
         match flow {
             EndpointFlow::Capture => {
                 let state = self
@@ -347,7 +370,7 @@ impl AudioController {
                     .unwrap_or_else(|e| AudioState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::MicrophoneStateChanged(state));
+                self.post(AppEvent::MicrophoneStateChanged { state, origin });
             }
             EndpointFlow::Render => {
                 let state = self
@@ -358,7 +381,7 @@ impl AudioController {
                     .unwrap_or_else(|e| OutputState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::OutputStateChanged(state));
+                self.post(AppEvent::OutputStateChanged { state, origin });
             }
         }
     }
@@ -472,7 +495,7 @@ mod tests {
             AudioCommand::RefreshAll,
             AudioCommand::RefreshEndpoint(EndpointFlow::Capture),
             AudioCommand::RefreshAll,
-            AudioCommand::ToggleOutput,
+            AudioCommand::ToggleOutput(1),
             AudioCommand::RefreshAll,
             AudioCommand::ConfigChanged,
             AudioCommand::Shutdown,
@@ -483,7 +506,7 @@ mod tests {
             rest,
             vec![
                 AudioCommand::RefreshEndpoint(EndpointFlow::Capture),
-                AudioCommand::ToggleOutput,
+                AudioCommand::ToggleOutput(1),
                 AudioCommand::Shutdown,
             ],
             "non-refresh commands pass through in order"

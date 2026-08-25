@@ -59,6 +59,14 @@ impl HotkeyAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioEventOrigin {
+    Initial,
+    External,
+    WinShortAction(u64),
+    StatusRequest(u64),
+}
+
 /// Events routed through the main window. Payloads live in the process-wide
 /// queue; `PostMessageW` carries only a wake-up message or packed action.
 #[derive(Debug)]
@@ -74,12 +82,21 @@ pub enum AppEvent {
     CreateSupportBundle,
     ConfigApplied(u64),
     // State published by workers / callbacks.
-    MicrophoneStateChanged(AudioState),
-    OutputStateChanged(OutputState),
+    MicrophoneStateChanged {
+        state: AudioState,
+        origin: AudioEventOrigin,
+    },
+    OutputStateChanged {
+        state: OutputState,
+        origin: AudioEventOrigin,
+    },
     /// Transient "default output changed" presentation (#17b): the overlay
     /// shows a one-shot card; persistent state stays OutputState::Current.
     DefaultOutputChanged(crate::audio::state::DeviceId),
-    ForegroundAudioChanged(AppAudioState),
+    ForegroundAudioChanged {
+        state: AppAudioState,
+        origin: AudioEventOrigin,
+    },
     /// Device list changed (added/removed/default switched): refresh pickers.
     DevicesChanged,
     DesktopBackendChanged(BackendStatus),

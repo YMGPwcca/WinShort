@@ -9,7 +9,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 No backup copies are kept.
 
 ```toml
-schema_version = 1              # u8; CURRENT value is 1 (hard-coded in model.rs/to_toml)
+schema_version = 2              # u8; CURRENT value is 2 (v1 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -22,6 +22,8 @@ position = "bottom-center"      # top-left|top-center|top-right|center|bottom-le
 monitor = "foreground"          # foreground | primary | "device:\\\\.\\DISPLAY1"
 scale = 1.0                     # valid 0.7..=1.6
 opacity = 1.0                   # valid 0.3..=1.0
+appearance = "system"           # system | dark | light
+show_external_audio_changes = true
 
 [audio]
 input_role = "console"          # console|multimedia|communications (default console)
@@ -42,9 +44,10 @@ Raw strings exist only at the TOML boundary (`config/load.rs`). After parsing:
 ```rust
 struct Hotkey { modifiers: ModifierMask /*u8 bitflags*/, key: VirtualKey }
 enum OverlayPosition { TopLeft, TopCenter, TopRight, Center, BottomLeft, BottomCenter, BottomRight }
+enum OverlayAppearance { System, Dark, Light }
 enum MonitorChoice { Foreground, Primary, Device(String) }   // Device = stable monitor name "\\.\DISPLAYn" (#26)
 enum EndpointRole { Console, Multimedia, Communications }
-struct Config { schema_version: u8, general: GeneralCfg, overlay: OverlayCfg,
+struct Config { general: GeneralCfg, overlay: OverlayCfg,
                 audio: AudioCfg, hotkeys: HotkeysCfg, virtual_desktops: VdCfg }
 ```
 
@@ -57,7 +60,7 @@ letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no m
 
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 1` (`config/load.rs::load`):
+Loading a document with `schema_version > 2` (`config/load.rs::load`):
 
 * logs an error and warns "config written by a newer WinShort; not overwriting",
 * returns **default values for every section** (the future document is never partially applied),
@@ -108,9 +111,7 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 ## Defaults (as coded)
 
 | Field | Default |
-|---|---|
-| hotkeys | `Ctrl+Alt+M` / `Ctrl+Alt+O` / `Ctrl+Alt+P` |
-| overlay | enabled, 1300 ms, bottom-center, foreground monitor, scale 1.0, opacity 1.0 |
+| overlay | enabled, 1300 ms, bottom-center, foreground monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
 | audio roles / devices | console / console, default devices |
 | `start_hotkeys_enabled` | true |
 | virtual desktops | enabled, `win_number_switching` true |
@@ -119,6 +120,8 @@ Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
 ## Migration
 
-There is no generic migration machinery — only forward-latch (future schema) plus two
-incidental legacy parsings: `"index:N"` monitors → `Primary` (#26), ignored
-`start_with_windows` (#16).
+Schema v1 files load with the v2 defaults for `overlay.appearance` (`system`) and
+`overlay.show_external_audio_changes` (`true`). Load diagnostics records this
+migration; Save writes schema v2 on the next successful save. Legacy
+`overlay.monitor = "index:N"` still maps to `primary`, and
+`general.start_with_windows` remains ignored because startup is registry-owned.

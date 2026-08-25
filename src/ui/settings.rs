@@ -30,7 +30,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_OVERLAPPEDWINDOW,
 };
 
-use crate::config::model::{Config, DeviceSelection, EndpointRole, MonitorChoice, OverlayPosition};
+use crate::config::model::{
+    Config, DeviceSelection, EndpointRole, MonitorChoice, OverlayAppearance, OverlayPosition,
+};
 use crate::config::validate::Violation;
 use crate::error::{Error, Result};
 use crate::keyboard::binding::{Hotkey, ModifierMask, VirtualKey};
@@ -321,6 +323,12 @@ impl SettingsUi {
                 ControlValue::Toggle(self.draft.virtual_desktops.win_number_switching)
             }
             ElementId::OverlayEnabled => ControlValue::Toggle(self.draft.overlay.enabled),
+            ElementId::OverlayAppearance => {
+                ControlValue::Text(Cow::Borrowed(self.draft.overlay.appearance.label()))
+            }
+            ElementId::OverlayExternalChanges => {
+                ControlValue::Toggle(self.draft.overlay.show_external_audio_changes)
+            }
             ElementId::OverlayPosition => {
                 ControlValue::Text(Cow::Borrowed(self.draft.overlay.position.label()))
             }
@@ -381,6 +389,7 @@ impl SettingsUi {
             ElementId::DesktopsEnabled => self.draft.virtual_desktops.enabled,
             ElementId::WinNumberEnabled => self.draft.virtual_desktops.win_number_switching,
             ElementId::OverlayEnabled => self.draft.overlay.enabled,
+            ElementId::OverlayExternalChanges => self.draft.overlay.show_external_audio_changes,
             _ => false,
         };
         Interaction {
@@ -404,7 +413,9 @@ impl SettingsUi {
             ElementId::WinNumberEnabled => !self.draft.virtual_desktops.enabled,
             ElementId::InputRole => !Self::endpoint_role_enabled(&self.draft.audio.input_device),
             ElementId::OutputRole => !Self::endpoint_role_enabled(&self.draft.audio.output_device),
-            ElementId::OverlayPosition
+            ElementId::OverlayAppearance
+            | ElementId::OverlayExternalChanges
+            | ElementId::OverlayPosition
             | ElementId::OverlayMonitor
             | ElementId::OverlayDuration
             | ElementId::OverlayOpacity
@@ -594,6 +605,16 @@ impl SettingsUi {
             ElementId::OverlayEnabled => {
                 self.draft.overlay.enabled = !self.draft.overlay.enabled;
                 self.animate_toggle(hwnd, id, self.draft.overlay.enabled);
+            }
+            ElementId::OverlayAppearance => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::OverlayAppearance,
+                ));
+            }
+            ElementId::OverlayExternalChanges => {
+                self.draft.overlay.show_external_audio_changes =
+                    !self.draft.overlay.show_external_audio_changes;
+                self.animate_toggle(hwnd, id, self.draft.overlay.show_external_audio_changes);
             }
             ElementId::OverlayPosition => {
                 post_main(crate::event::AppEvent::OpenSettingsPicker(
@@ -819,6 +840,9 @@ impl SettingsUi {
             }
             (PickerKind::OutputRole, PickerValue::Role(value)) => {
                 self.draft.audio.output_role = value;
+            }
+            (PickerKind::OverlayAppearance, PickerValue::Appearance(value)) => {
+                self.draft.overlay.appearance = value;
             }
             (PickerKind::OverlayPosition, PickerValue::Position(value)) => {
                 self.draft.overlay.position = value;
@@ -1211,6 +1235,7 @@ fn picker_element(kind: PickerKind) -> Option<ElementId> {
         PickerKind::OutputDevice => ElementId::OutputDevice,
         PickerKind::InputRole => ElementId::InputRole,
         PickerKind::OutputRole => ElementId::OutputRole,
+        PickerKind::OverlayAppearance => ElementId::OverlayAppearance,
         PickerKind::OverlayPosition => ElementId::OverlayPosition,
         PickerKind::OverlayMonitor => ElementId::OverlayMonitor,
     })
@@ -1286,6 +1311,16 @@ fn picker_choices(
                     value: PickerValue::Role(role),
                 });
             }
+        }
+        PickerKind::OverlayAppearance => {
+            choices.extend(
+                OverlayAppearance::ALL
+                    .into_iter()
+                    .map(|appearance| PickerChoice {
+                        label: appearance.label().into(),
+                        value: PickerValue::Appearance(appearance),
+                    }),
+            );
         }
         PickerKind::OverlayPosition => {
             choices.extend(
@@ -1371,6 +1406,7 @@ fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
         PickerKind::OutputDevice => PickerValue::Device(draft.audio.output_device.clone()),
         PickerKind::InputRole => PickerValue::Role(draft.audio.input_role),
         PickerKind::OutputRole => PickerValue::Role(draft.audio.output_role),
+        PickerKind::OverlayAppearance => PickerValue::Appearance(draft.overlay.appearance),
         PickerKind::OverlayPosition => PickerValue::Position(draft.overlay.position),
         PickerKind::OverlayMonitor => PickerValue::Monitor(draft.overlay.monitor.clone()),
     }

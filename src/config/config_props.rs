@@ -65,9 +65,14 @@ proptest! {
         std::fs::write(crate::config::load::config_path(&dir), &doc).unwrap();
         let _ = load(&dir);
         // A latching doc must keep save blocked; anything else saves fine.
-        if doc.contains("schema_version = ") && !doc.contains("schema_version = 1") {
-            prop_assert!(config_readonly() || !doc.contains("schema_version"),
-                "future schema must latch reads");
+        let future_schema = toml::from_str::<ConfigToml>(&doc)
+            .map(|parsed| parsed.schema_version > CURRENT_SCHEMA_VERSION)
+            .unwrap_or(false);
+        if future_schema {
+            prop_assert!(
+                config_readonly(),
+                "future schema must latch reads"
+            );
         }
         clear_config_readonly();
         assert!(crate::config::save::save(&dir, &Config::default()).is_ok());

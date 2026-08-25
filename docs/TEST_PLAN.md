@@ -145,6 +145,12 @@ crispness at DPI 100–200% · single/multi monitor · per-monitor DPI moves inc
 (#49) · foreground-monitor follow · over fullscreen game (never steals focus) · rapid updates
 coalesce with timer reset · negative virtual-screen coordinates · monitor unplug/replug.
 
+#30 accessibility matrix: System/Dark/Light appearance, Windows animation-off yields
+settled overlay with no fade/slide, high-contrast yields opaque system-colored surface with
+strong border/no shadow, overlapped-content preference removes translucency, and setting
+changes refresh an already-visible overlay. External audio changes obey the saved policy;
+WinShort actions and status requests remain visible.
+
 Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
 flag exists).
 

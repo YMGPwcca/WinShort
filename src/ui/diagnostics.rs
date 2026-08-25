@@ -423,6 +423,72 @@ impl DiagnosticsUi {
             if s.overlay.enabled { "Yes" } else { "No" }.into(),
             None,
         );
+        row(&mut lines, "Appearance", s.overlay.appearance.clone(), None);
+        row(
+            &mut lines,
+            "Resolved appearance",
+            s.overlay
+                .resolved_appearance
+                .clone()
+                .unwrap_or_else(|| "Unknown".into()),
+            None,
+        );
+        row(
+            &mut lines,
+            "External audio changes",
+            if s.overlay.external_audio_changes {
+                "Shown"
+            } else {
+                "Hidden"
+            }
+            .into(),
+            None,
+        );
+        row(
+            &mut lines,
+            "Animations",
+            s.overlay.animations_enabled.map_or_else(
+                || "Unknown".into(),
+                |enabled| {
+                    if enabled {
+                        "Enabled".into()
+                    } else {
+                        "Reduced".into()
+                    }
+                },
+            ),
+            None,
+        );
+        row(
+            &mut lines,
+            "High contrast",
+            s.overlay.high_contrast.map_or_else(
+                || "Unknown".into(),
+                |enabled| {
+                    if enabled {
+                        "Enabled".into()
+                    } else {
+                        "Off".into()
+                    }
+                },
+            ),
+            None,
+        );
+        row(
+            &mut lines,
+            "Overlapped content",
+            s.overlay.disable_overlapped_content.map_or_else(
+                || "Unknown".into(),
+                |disabled| {
+                    if disabled {
+                        "Disabled".into()
+                    } else {
+                        "Allowed".into()
+                    }
+                },
+            ),
+            None,
+        );
         row(&mut lines, "Position", s.overlay.position.clone(), None);
         row(
             &mut lines,

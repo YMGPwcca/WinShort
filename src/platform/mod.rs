@@ -7,4 +7,5 @@ pub mod message_loop;
 pub mod monitor;
 pub mod single_instance;
 pub mod startup;
+pub mod visual;
 pub mod window;

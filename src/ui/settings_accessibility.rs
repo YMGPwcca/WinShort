@@ -35,6 +35,7 @@ fn is_toggle_element(id: ElementId) -> bool {
             | ElementId::DesktopsEnabled
             | ElementId::WinNumberEnabled
             | ElementId::OverlayEnabled
+            | ElementId::OverlayExternalChanges
     )
 }
 const TBM_SETRANGE: u32 = 0x0400 + 6;
@@ -166,7 +167,11 @@ fn help_text(id: ElementId) -> &'static str {
         }
         ElementId::DesktopsEnabled => "Use the native desktop backend when compatible.",
         ElementId::WinNumberEnabled => "Reserve Win+1 through Win+9 for desktop switching.",
+        ElementId::OverlayAppearance => "Choose Follow System, Dark, or Light appearance.",
         ElementId::OverlayEnabled => "Show status changes without stealing focus.",
+        ElementId::OverlayExternalChanges => {
+            "Show overlays for mute/volume changes made outside WinShort."
+        }
         ElementId::OverlayPosition => "Choose one of the seven overlay positions.",
         ElementId::OverlayMonitor => "Choose Foreground, Primary, or a stable monitor device name.",
         ElementId::OverlayDuration => "Adjust from 500 ms to 10 seconds.",
@@ -407,5 +412,10 @@ mod semantic_tests {
         assert!(is_toggle_element(ElementId::OverlayEnabled));
         assert!(!is_toggle_element(ElementId::InputDevice));
         assert!(!is_toggle_element(ElementId::OverlayDuration));
+    }
+
+    #[test]
+    fn external_audio_setting_is_a_toggle() {
+        assert!(is_toggle_element(ElementId::OverlayExternalChanges));
     }
 }

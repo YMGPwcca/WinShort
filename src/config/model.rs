@@ -8,6 +8,7 @@ use crate::keyboard::binding::Hotkey;
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
+pub const CURRENT_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -31,6 +32,8 @@ pub struct OverlayCfg {
     pub monitor: MonitorChoice,
     pub scale: f32,
     pub opacity: f32,
+    pub appearance: OverlayAppearance,
+    pub show_external_audio_changes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +57,41 @@ pub struct VdCfg {
     pub win_number_switching: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayAppearance {
+    System,
+    Dark,
+    Light,
+}
+
+impl OverlayAppearance {
+    pub const ALL: [Self; 3] = [Self::System, Self::Dark, Self::Light];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "Follow System",
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "system" => Self::System,
+            "dark" => Self::Dark,
+            "light" => Self::Light,
+            _ => return None,
+        })
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayPosition {
     TopLeft,
@@ -216,6 +254,8 @@ impl Default for Config {
                 monitor: MonitorChoice::Foreground,
                 scale: 1.0,
                 opacity: 1.0,
+                appearance: OverlayAppearance::System,
+                show_external_audio_changes: true,
             },
             audio: AudioCfg {
                 input_role: EndpointRole::Console,
@@ -255,7 +295,7 @@ pub struct ConfigToml {
 }
 
 fn default_schema_version() -> u8 {
-    1
+    CURRENT_SCHEMA_VERSION
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -281,6 +321,10 @@ pub struct OverlayToml {
     pub scale: f32,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    #[serde(default = "default_appearance")]
+    pub appearance: String,
+    #[serde(default = "default_show_external_audio_changes")]
+    pub show_external_audio_changes: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -331,6 +375,12 @@ fn default_scale() -> f32 {
 fn default_opacity() -> f32 {
     1.0
 }
+fn default_appearance() -> String {
+    "system".into()
+}
+fn default_show_external_audio_changes() -> bool {
+    true
+}
 fn default_role() -> String {
     "console".into()
 }
@@ -347,7 +397,7 @@ fn default_fg() -> String {
 impl Config {
     pub fn to_toml(&self) -> ConfigToml {
         ConfigToml {
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
             general: GeneralToml {
                 // Legacy key never written anymore (#16).
                 start_with_windows: false,
@@ -360,6 +410,8 @@ impl Config {
                 monitor: self.overlay.monitor.as_str(),
                 scale: self.overlay.scale,
                 opacity: self.overlay.opacity,
+                appearance: self.overlay.appearance.as_str().into(),
+                show_external_audio_changes: self.overlay.show_external_audio_changes,
             },
             audio: AudioToml {
                 input_role: self.audio.input_role.as_str().into(),
@@ -424,6 +476,14 @@ impl Config {
         }
         c.overlay.scale = t.overlay.scale;
         c.overlay.opacity = t.overlay.opacity;
+        match OverlayAppearance::parse(&t.overlay.appearance) {
+            Some(appearance) => c.overlay.appearance = appearance,
+            None => warnings.push(format!(
+                "overlay.appearance: unknown `{}`",
+                t.overlay.appearance
+            )),
+        }
+        c.overlay.show_external_audio_changes = t.overlay.show_external_audio_changes;
 
         match EndpointRole::parse(&t.audio.input_role) {
             Some(r) => c.audio.input_role = r,
@@ -495,7 +555,6 @@ impl Config {
 }
 
 /// Known TOML sections/keys for unknown-field warnings (#15c).
-/// Known TOML sections/keys for unknown-field warnings (#15c).
 pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
     match section {
         "general" => Some(&["start_hotkeys_enabled", "start_with_windows"]),
@@ -506,6 +565,8 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "duration_ms",
             "opacity",
             "scale",
+            "appearance",
+            "show_external_audio_changes",
         ]),
         "audio" => Some(&["input_device", "output_device", "input_role", "output_role"]),
         "hotkeys" => Some(&[

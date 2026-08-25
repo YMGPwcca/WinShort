@@ -68,6 +68,8 @@ pub enum ElementId {
     DesktopsEnabled,
     WinNumberEnabled,
     OverlayEnabled,
+    OverlayAppearance,
+    OverlayExternalChanges,
     OverlayPosition,
     OverlayMonitor,
     OverlayDuration,
@@ -81,7 +83,7 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 22] = [
+    pub const FOCUS_ORDER: [ElementId; 24] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
@@ -94,6 +96,8 @@ impl ElementId {
         ElementId::DesktopsEnabled,
         ElementId::WinNumberEnabled,
         ElementId::OverlayEnabled,
+        ElementId::OverlayAppearance,
+        ElementId::OverlayExternalChanges,
         ElementId::OverlayPosition,
         ElementId::OverlayMonitor,
         ElementId::OverlayDuration,
@@ -284,6 +288,18 @@ impl SettingsLayout {
                     ElementKind::Toggle,
                     "Show status overlay",
                     "Never steals focus or receives clicks",
+                ),
+                row(
+                    ElementId::OverlayAppearance,
+                    ElementKind::Value,
+                    "Appearance",
+                    "Follow System, Dark, or Light",
+                ),
+                row(
+                    ElementId::OverlayExternalChanges,
+                    ElementKind::Toggle,
+                    "Show external audio changes",
+                    "Show overlays for changes made outside WinShort",
                 ),
                 row(
                     ElementId::OverlayPosition,

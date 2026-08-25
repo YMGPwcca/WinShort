@@ -523,6 +523,58 @@ fn format_diagnostics(
     );
     line(
         &mut out,
+        &format!("Appearance: {}", snapshot.overlay.appearance),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Resolved appearance: {}",
+            snapshot
+                .overlay
+                .resolved_appearance
+                .as_deref()
+                .unwrap_or("unknown")
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "External audio changes: {}",
+            yes_no(snapshot.overlay.external_audio_changes)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Animations enabled: {}",
+            snapshot.overlay.animations_enabled.map_or_else(
+                || String::from("unknown"),
+                |value| String::from(yes_no(value))
+            )
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "High contrast: {}",
+            snapshot.overlay.high_contrast.map_or_else(
+                || String::from("unknown"),
+                |value| String::from(yes_no(value))
+            )
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Disable overlapped content: {}",
+            snapshot.overlay.disable_overlapped_content.map_or_else(
+                || String::from("unknown"),
+                |value| String::from(yes_no(value))
+            )
+        ),
+    );
+    line(
+        &mut out,
         &format!("Position: {}", snapshot.overlay.position),
     );
     line(
@@ -684,6 +736,8 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
             monitor: safe_monitor(&config.overlay.monitor),
             scale: config.overlay.scale,
             opacity: config.overlay.opacity,
+            appearance: config.overlay.appearance.as_str().into(),
+            show_external_audio_changes: config.overlay.show_external_audio_changes,
         },
         audio: SafeAudio {
             input_role: config.audio.input_role.as_str().into(),
@@ -755,6 +809,8 @@ struct SafeOverlay {
     monitor: String,
     scale: f32,
     opacity: f32,
+    appearance: String,
+    show_external_audio_changes: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1322,6 +1378,12 @@ safe=1"#,
             overlay: OverlayDiagnostics {
                 health: Health::Healthy,
                 enabled: true,
+                appearance: "system".into(),
+                resolved_appearance: Some("dark".into()),
+                external_audio_changes: true,
+                animations_enabled: Some(true),
+                high_contrast: Some(false),
+                disable_overlapped_content: Some(false),
                 position: "Bottom Center".into(),
                 monitor_selector: "foreground".into(),
                 target_monitor: Some(r"\\.\DISPLAY1".into()),

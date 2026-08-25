@@ -1,7 +1,7 @@
 # UI Design
 
 **Status: Implemented** sections describe current `main`; **Planned** sections are design
-intent only (tracked in #29/#30) and must not be read as existing behavior.
+intent only (tracked in #29 and the remaining manual #30 acceptance) and must not be read as existing behavior.
 
 ## Stack — current
 
@@ -30,8 +30,8 @@ card `#ffffff`, …). Spacing/radius values are inline literals in `controls.rs`
 (8 px grid), not named constants.
 
 Theme follows `AppsUseLightTheme` (`HKCU\…\Themes\Personalize`) via `RegGetValueW`,
-re-read on `WM_SETTINGCHANGE` — **settings window only**; the overlay always renders dark
-(planned: follow system there too).
+re-read on `WM_SETTINGCHANGE` by both Settings and the overlay. Settings keeps its
+existing owner-drawn theme; the overlay resolves its System/Dark/Light appearance separately.
 
 ## Widget set — current (`ui/layout.rs`, `ui/controls.rs`)
 
@@ -43,8 +43,8 @@ only while motion or recording is active; idle UI has no render loop.
 * Hotkey recorder row — capture-mode box with inline conflict/validation error; Esc cancels;
   modifier-only rejected (#35)
 * Picker rows — explicit native LISTBOX popup for input/output device, endpoint role, overlay
-  position, and monitor; current selection is visible, keyboard navigable, Escape cancels,
-  Enter/click commits, focus loss closes
+  appearance, position, and monitor; current selection is visible, keyboard navigable, Escape
+  cancels, Enter/click commits, focus loss closes
 * Slider rows — duration / opacity / scale, mouse drag plus native trackbar keyboard semantics
 * Buttons — footer Cancel / Save (Save disabled until draft differs from live)
 * Scrollable content column — wheel scrolling with slim custom scrollbar
@@ -77,12 +77,13 @@ when the window closes or the app shuts down. Restored rectangles scale from the
 select the nearest current monitor, and clamp enough of the window/title area into the work area.
 
 Help uses inline row descriptions, native accessibility names, and delayed native
-`TOOLTIPS_CLASS` popups for non-obvious settings. Global high-contrast/reduced-motion behavior
-remains outside this issue's implemented scope (#30).
+`TOOLTIPS_CLASS` popups for non-obvious settings. The overlay reads Windows animation,
+high-contrast, and overlapped-content preferences and refreshes them at runtime.
 
 ## Widget set — planned (NOT implemented)
 
-* Reduced-motion / high-contrast respect and calmer overlay motion (#30)
+No #30 overlay accessibility behavior remains planned here. Full live Narrator acceptance
+of the native Settings surface remains tracked separately in #29.
 
 ## Settings layout — current
 
@@ -123,9 +124,13 @@ within the selected monitor's work area (foreground / primary / device match wit
 Rendering: one persistent layered HWND; each `show()` renders the card bitmap once at the
 target monitor's effective DPI (#49), then a Phase state machine (`Appearing` 140 ms →
 `Holding` → `Leaving` 180 ms) ticks a 16 ms timer varying layer alpha (ease curves) and slide
-offset — CPU-composited frames through `UpdateLayeredWindow`, no GPU swapchain. `WM_DPICHANGED`
-is deliberately ignored for the overlay: it owns its own size/position and re-renders at the
-new monitor's DPI on next show.
+offset — CPU-composited frames through `UpdateLayeredWindow`, no GPU swapchain. When Windows
+client-area animations are disabled, the overlay uses a single settled frame with no fade or
+slide. High contrast uses system window/highlight colors, an opaque surface, strong borders,
+and no shadow. `SPI_GETDISABLEOVERLAPPEDCONTENT` also selects an opaque, shadow-free palette.
+`WM_SETTINGCHANGE`, `WM_SYSCOLORCHANGE`, and `WM_THEMECHANGED` refresh the live policy.
+`WM_DPICHANGED` is deliberately ignored for the overlay: it owns its own size/position and
+re-renders at the new monitor's DPI on next show.
 
 Icons: hand-authored D2D path geometry (microphone, speaker, app window, desktop grid,
 warning). Vector at every DPI; no emoji fonts, no bitmaps.

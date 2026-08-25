@@ -140,6 +140,12 @@ pub struct ConfigDiagnostics {
 pub struct OverlayDiagnostics {
     pub health: Health,
     pub enabled: bool,
+    pub appearance: String,
+    pub resolved_appearance: Option<String>,
+    pub external_audio_changes: bool,
+    pub animations_enabled: Option<bool>,
+    pub high_contrast: Option<bool>,
+    pub disable_overlapped_content: Option<bool>,
     pub position: String,
     pub monitor_selector: String,
     pub target_monitor: Option<String>,

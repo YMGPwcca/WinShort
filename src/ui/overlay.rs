@@ -36,18 +36,21 @@ use windows::Win32::UI::WindowsAndMessaging::{
     UpdateLayeredWindow, CREATESTRUCTW, HTTRANSPARENT, HWND_TOPMOST, MA_NOACTIVATE, SWP_NOACTIVATE,
     SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY,
-    WM_NCHITTEST, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    WM_NCHITTEST, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED, WM_TIMER, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-use crate::config::model::{MonitorChoice, OverlayCfg, OverlayPosition};
+use crate::config::model::{MonitorChoice, OverlayAppearance, OverlayCfg, OverlayPosition};
 use crate::error::{Error, Result};
+use crate::platform::visual::{SystemVisualPreferences, VisualRgb};
 use crate::platform::window as win;
-use crate::ui::theme::{Color, Theme};
+use crate::ui::theme::{Color, Theme, ThemeMode};
 
 pub const CLASS_NAME: &str = "WinShort.Overlay";
+
 const TIMER_ID: usize = 2;
 const TIMER_MS: u32 = 16;
+const COALESCE_WINDOW_MS: u64 = 180;
 const BASE_WIDTH: f32 = 372.0;
 const ROW_HEIGHT: f32 = 62.0;
 const PAD: f32 = 16.0;
@@ -71,6 +74,115 @@ pub enum OverlayTone {
     Active,
     Changed,
     Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MotionPolicy {
+    Animated,
+    Reduced,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OverlayPalette {
+    surface: Color,
+    border: Color,
+    text: Color,
+    secondary: Color,
+    shadow: Color,
+    shadow_enabled: bool,
+    opaque: bool,
+    tone_muted: Color,
+    tone_active: Color,
+    tone_changed: Color,
+    tone_unavailable: Color,
+}
+fn motion_policy(preferences: SystemVisualPreferences) -> MotionPolicy {
+    if preferences.animations_enabled {
+        MotionPolicy::Animated
+    } else {
+        MotionPolicy::Reduced
+    }
+}
+
+fn palette_for(
+    appearance: OverlayAppearance,
+    preferences: SystemVisualPreferences,
+) -> OverlayPalette {
+    let simple = preferences.high_contrast || preferences.disable_overlapped_content;
+    if preferences.high_contrast {
+        let background = color_from_visual(preferences.high_contrast_background);
+        let foreground = color_from_visual(preferences.high_contrast_foreground);
+        let accent = color_from_visual(preferences.high_contrast_accent);
+        return OverlayPalette {
+            surface: background,
+            border: foreground,
+            text: foreground,
+            secondary: foreground,
+            shadow: Color::rgba(0, 0, 0, 0),
+            shadow_enabled: false,
+            opaque: true,
+            tone_muted: foreground,
+            tone_active: foreground,
+            tone_changed: accent,
+            tone_unavailable: foreground,
+        };
+    }
+    let theme = match appearance {
+        OverlayAppearance::System => match preferences.system_theme {
+            ThemeMode::Dark => Theme::dark(),
+            ThemeMode::Light => Theme::light(),
+        },
+        OverlayAppearance::Dark => Theme::dark(),
+        OverlayAppearance::Light => Theme::light(),
+    };
+    OverlayPalette {
+        surface: Color::rgba(
+            theme.card.r,
+            theme.card.g,
+            theme.card.b,
+            if simple { 255 } else { 248 },
+        ),
+        border: theme.border_strong,
+        text: theme.text,
+        secondary: theme.text_secondary,
+        shadow: theme.shadow,
+        shadow_enabled: !simple,
+        opaque: simple,
+        tone_muted: theme.danger,
+        tone_active: theme.success,
+        tone_changed: theme.accent,
+        tone_unavailable: theme.text_disabled,
+    }
+}
+
+fn color_from_visual(value: VisualRgb) -> Color {
+    Color::rgb(value.r, value.g, value.b)
+}
+fn row_rank(icon: OverlayIcon) -> usize {
+    match icon {
+        OverlayIcon::Microphone => 0,
+        OverlayIcon::Output => 1,
+        OverlayIcon::Application => 2,
+        OverlayIcon::Info => 3,
+    }
+}
+
+fn merge_overlay_models(current: &OverlayModel, incoming: &OverlayModel) -> OverlayModel {
+    if incoming.rows.len() != 1 {
+        return OverlayModel {
+            rows: incoming.rows.iter().take(3).cloned().collect(),
+        };
+    }
+    let incoming_row = &incoming.rows[0];
+    let mut rows = current.rows.clone();
+    if let Some(existing) = rows.iter_mut().find(|row| row.icon == incoming_row.icon) {
+        *existing = incoming_row.clone();
+    } else {
+        rows.push(incoming_row.clone());
+    }
+    rows.sort_by_key(|row| row_rank(row.icon));
+    rows.truncate(3);
+    OverlayModel { rows }
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +211,10 @@ pub struct OverlayWindow {
 #[derive(Debug, Clone, Default)]
 pub struct OverlayRuntimeStatus {
     pub window_available: bool,
+    pub resolved_appearance: Option<String>,
+    pub animations_enabled: Option<bool>,
+    pub high_contrast: Option<bool>,
+    pub disable_overlapped_content: Option<bool>,
     pub target_monitor: Option<String>,
     pub render_dpi: Option<u32>,
     pub last_shown: Option<SystemTime>,
@@ -111,13 +227,13 @@ pub fn microphone_row(state: &crate::audio::AudioState) -> OverlayRow {
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Muted,
             title: "Microphone".into(),
-            detail: format!("Muted • {volume_pct}% input level"),
+            detail: format!("Muted • {volume_pct}% input volume"),
         },
         AudioState::Active { volume_pct } => OverlayRow {
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Active,
             title: "Microphone".into(),
-            detail: format!("Active • {volume_pct}% input level"),
+            detail: format!("Active • {volume_pct}% input volume"),
         },
         AudioState::Unavailable { reason } => OverlayRow {
             icon: OverlayIcon::Microphone,
@@ -262,8 +378,23 @@ impl OverlayWindow {
             return OverlayRuntimeStatus::default();
         };
         let state = cell.borrow();
+        let resolved = match state.config.appearance {
+            OverlayAppearance::System => state.preferences.system_theme,
+            OverlayAppearance::Dark => ThemeMode::Dark,
+            OverlayAppearance::Light => ThemeMode::Light,
+        };
         OverlayRuntimeStatus {
             window_available: true,
+            resolved_appearance: Some(
+                match resolved {
+                    ThemeMode::Dark => "dark",
+                    ThemeMode::Light => "light",
+                }
+                .into(),
+            ),
+            animations_enabled: Some(state.preferences.animations_enabled),
+            high_contrast: Some(state.preferences.high_contrast),
+            disable_overlapped_content: Some(state.preferences.disable_overlapped_content),
             target_monitor: state.last_target_monitor.clone(),
             render_dpi: state.last_render_dpi,
             last_shown: state.last_shown,
@@ -271,7 +402,7 @@ impl OverlayWindow {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Hidden,
     Appearing,
@@ -284,10 +415,14 @@ struct OverlayState {
     surface: Option<LayeredSurface>,
     model: OverlayModel,
     config: OverlayCfg,
+    preferences: SystemVisualPreferences,
+    palette: OverlayPalette,
+    motion: MotionPolicy,
     base_position: POINT,
     phase: Phase,
     phase_started: Instant,
     hold_until: Instant,
+    last_presented: Instant,
     dpi: u32,
     last_target_monitor: Option<String>,
     last_render_dpi: Option<u32>,
@@ -297,15 +432,21 @@ struct OverlayState {
 impl OverlayState {
     fn new(graphics: OverlayGraphics) -> Self {
         let now = Instant::now();
+        let preferences = SystemVisualPreferences::query();
+        let config = crate::config::Config::default().overlay;
         Self {
             graphics,
             surface: None,
             model: OverlayModel::default(),
-            config: crate::config::Config::default().overlay,
+            palette: palette_for(config.appearance, preferences),
+            config,
+            preferences,
+            motion: motion_policy(preferences),
             base_position: POINT::default(),
             phase: Phase::Hidden,
             phase_started: now,
             hold_until: now,
+            last_presented: now,
             dpi: 96,
             last_target_monitor: None,
             last_render_dpi: None,
@@ -317,32 +458,34 @@ impl OverlayState {
         if model.rows.is_empty() || !config.enabled {
             return Ok(());
         }
-        let monitor = select_monitor(config.monitor.clone());
-        // PMv2 (#49): the TARGET monitor's effective DPI is the sole source of
-        // truth. The HWND still lives on the previous monitor here, so its
-        // window DPI is stale — never max() it (monotonic DPI breaks
-        // high->low transitions).
-        self.dpi = crate::platform::dpi::effective_render_dpi(monitor.as_ref().map(|m| m.dpi));
-        self.last_target_monitor = monitor.as_ref().map(|value| value.device_name.clone());
-        self.last_render_dpi = Some(self.dpi);
-        self.last_shown = Some(SystemTime::now());
-        self.model = model;
-        self.config = config.clone();
-        self.surface = Some(
-            self.graphics
-                .render(&self.model, self.dpi, self.config.scale)?,
-        );
-        let size = self.surface.as_ref().expect("surface").size;
-        self.base_position = position_for(
-            monitor.as_ref().map(|m| m.work).unwrap_or(RECT_FALLBACK),
-            size,
-            config.position,
-            self.dpi,
-        );
+        self.preferences = SystemVisualPreferences::query();
+        self.motion = motion_policy(self.preferences);
+        self.config = config;
         let now = Instant::now();
-        self.phase = Phase::Appearing;
-        self.phase_started = now;
-        self.hold_until = now + Duration::from_millis(config.duration_ms as u64 + 140);
+        let coalesce = self.phase != Phase::Hidden
+            && now.duration_since(self.last_presented) <= Duration::from_millis(COALESCE_WINDOW_MS);
+        self.model = if coalesce {
+            merge_overlay_models(&self.model, &model)
+        } else {
+            model
+        };
+        self.last_presented = now;
+        let monitor = select_monitor(self.config.monitor.clone());
+        self.rebuild_surface(monitor.as_ref())?;
+        self.hold_until = now + Duration::from_millis(self.config.duration_ms as u64);
+        if coalesce {
+            if self.motion == MotionPolicy::Reduced || self.phase == Phase::Leaving {
+                self.phase = Phase::Holding;
+                self.phase_started = now;
+            }
+        } else if self.motion == MotionPolicy::Reduced {
+            self.phase = Phase::Holding;
+            self.phase_started = now;
+        } else {
+            self.phase = Phase::Appearing;
+            self.phase_started = now;
+            self.hold_until += Duration::from_millis(140);
+        }
         unsafe {
             let _ = SetWindowPos(
                 hwnd,
@@ -354,13 +497,81 @@ impl OverlayState {
                 SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetTimer(Some(hwnd), TIMER_ID, TIMER_MS, None);
         }
+        self.arm_timer(hwnd);
         self.render_frame(hwnd)
+    }
+
+    fn rebuild_surface(
+        &mut self,
+        monitor: Option<&crate::platform::monitor::MonitorGeometry>,
+    ) -> Result<()> {
+        self.dpi = crate::platform::dpi::effective_render_dpi(monitor.map(|value| value.dpi));
+        self.last_target_monitor = monitor.map(|value| value.device_name.clone());
+        self.last_render_dpi = Some(self.dpi);
+        self.last_shown = Some(SystemTime::now());
+        self.palette = palette_for(self.config.appearance, self.preferences);
+        self.surface =
+            Some(
+                self.graphics
+                    .render(&self.model, self.dpi, self.config.scale, self.palette)?,
+            );
+        let size = self.surface.as_ref().expect("surface").size;
+        self.base_position = position_for(
+            monitor.map(|value| value.work).unwrap_or(RECT_FALLBACK),
+            size,
+            self.config.position,
+            self.dpi,
+        );
+        Ok(())
+    }
+
+    fn arm_timer(&self, hwnd: HWND) {
+        let interval = if self.motion == MotionPolicy::Reduced {
+            self.hold_until
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .clamp(1, u32::MAX as u128) as u32
+        } else {
+            TIMER_MS
+        };
+        unsafe {
+            let _ = SetTimer(Some(hwnd), TIMER_ID, interval, None);
+        }
+    }
+
+    fn refresh_preferences(&mut self, hwnd: HWND) -> Result<()> {
+        let preferences = SystemVisualPreferences::query();
+        if preferences == self.preferences {
+            return Ok(());
+        }
+        self.preferences = preferences;
+        self.motion = motion_policy(preferences);
+        if self.phase != Phase::Hidden {
+            let monitor = select_monitor(self.config.monitor.clone());
+            self.rebuild_surface(monitor.as_ref())?;
+            if self.motion == MotionPolicy::Reduced {
+                self.phase = Phase::Holding;
+                self.phase_started = Instant::now();
+            }
+            self.arm_timer(hwnd);
+            self.render_frame(hwnd)?;
+        }
+        Ok(())
     }
 
     fn tick(&mut self, hwnd: HWND) {
         let now = Instant::now();
+        if self.motion == MotionPolicy::Reduced {
+            if now >= self.hold_until {
+                self.phase = Phase::Hidden;
+                unsafe {
+                    let _ = KillTimer(Some(hwnd), TIMER_ID);
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                }
+            }
+            return;
+        }
         match self.phase {
             Phase::Appearing => {
                 if now.duration_since(self.phase_started) >= Duration::from_millis(140) {
@@ -386,8 +597,8 @@ impl OverlayState {
             }
             Phase::Hidden => return,
         }
-        if let Err(e) = self.render_frame(hwnd) {
-            crate::warn_!("overlay frame failed: {e}");
+        if let Err(error) = self.render_frame(hwnd) {
+            crate::warn_!("overlay frame failed: {error}");
         }
     }
 
@@ -398,20 +609,28 @@ impl OverlayState {
         let elapsed = Instant::now()
             .duration_since(self.phase_started)
             .as_secs_f32();
-        let (alpha, slide_dip) = match self.phase {
-            Phase::Appearing => {
-                let t = (elapsed / 0.14).clamp(0.0, 1.0);
-                let eased = 1.0 - (1.0 - t).powi(3);
-                (eased, 12.0 * (1.0 - eased))
+        let (alpha, slide_dip) = if self.motion == MotionPolicy::Reduced {
+            (1.0, 0.0)
+        } else {
+            match self.phase {
+                Phase::Appearing => {
+                    let t = (elapsed / 0.14).clamp(0.0, 1.0);
+                    let eased = 1.0 - (1.0 - t).powi(3);
+                    (eased, 12.0 * (1.0 - eased))
+                }
+                Phase::Holding => (1.0, 0.0),
+                Phase::Leaving => {
+                    let t = (elapsed / 0.18).clamp(0.0, 1.0);
+                    (1.0 - t * t, 8.0 * t)
+                }
+                Phase::Hidden => (0.0, 0.0),
             }
-            Phase::Holding => (1.0, 0.0),
-            Phase::Leaving => {
-                let t = (elapsed / 0.18).clamp(0.0, 1.0);
-                (1.0 - t * t, 8.0 * t)
-            }
-            Phase::Hidden => (0.0, 0.0),
         };
-        let opacity = (alpha * self.config.opacity.clamp(0.3, 1.0) * 255.0).round() as u8;
+        let opacity = if self.palette.opaque {
+            255
+        } else {
+            (alpha * self.config.opacity.clamp(0.3, 1.0) * 255.0).round() as u8
+        };
         let slide_px = (slide_dip * self.dpi as f32 / 96.0).round() as i32;
         let destination = POINT {
             x: self.base_position.x,
@@ -498,11 +717,22 @@ impl OverlayGraphics {
         }
     }
 
-    fn render(&self, model: &OverlayModel, dpi: u32, scale: f32) -> Result<LayeredSurface> {
+    fn render(
+        &self,
+        model: &OverlayModel,
+        dpi: u32,
+        scale: f32,
+        palette: OverlayPalette,
+    ) -> Result<LayeredSurface> {
         let scale = scale.clamp(0.7, 1.6);
         let logical_w = BASE_WIDTH * scale;
+        let shadow_pad = if palette.shadow_enabled {
+            SHADOW_PAD
+        } else {
+            0.0
+        };
         let logical_h =
-            (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale + SHADOW_PAD * 2.0;
+            (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale + shadow_pad * 2.0;
         let px_scale = dpi as f32 / 96.0;
         let width = (logical_w * px_scale).ceil() as u32;
         let height = (logical_h * px_scale).ceil() as u32;
@@ -533,7 +763,7 @@ impl OverlayGraphics {
                 .map_err(|e| Error::win("CreateWicBitmapRenderTarget(overlay)", &e))?;
             target.BeginDraw();
             target.Clear(None);
-            draw_overlay(&target, &self.dwrite, model, scale)?;
+            draw_overlay(&target, &self.dwrite, model, scale, palette)?;
             target
                 .EndDraw(None, None)
                 .map_err(|e| Error::win("overlay EndDraw", &e))?;
@@ -583,13 +813,18 @@ fn draw_overlay(
     dwrite: &IDWriteFactory,
     model: &OverlayModel,
     scale: f32,
+    palette: OverlayPalette,
 ) -> Result<()> {
     unsafe {
-        let theme = Theme::dark();
         let width = BASE_WIDTH * scale;
+        let shadow_pad = if palette.shadow_enabled {
+            SHADOW_PAD
+        } else {
+            0.0
+        };
         let body_h = (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale;
-        let left = SHADOW_PAD;
-        let top = SHADOW_PAD;
+        let left = shadow_pad;
+        let top = shadow_pad;
         let body = D2D_RECT_F {
             left,
             top,
@@ -597,27 +832,33 @@ fn draw_overlay(
             bottom: top + body_h,
         };
 
-        // Three offset translucent layers approximate a soft compositor shadow.
-        for (spread, alpha) in [(8.0, 18u8), (5.0, 26u8), (2.0, 34u8)] {
-            let shadow = color(Color::rgba(0, 0, 0, alpha));
-            let brush = target.CreateSolidColorBrush(&shadow, None)?;
-            let rect = D2D_RECT_F {
-                left: body.left - spread,
-                top: body.top + 5.0 - spread,
-                right: body.right + spread,
-                bottom: body.bottom + 5.0 + spread,
-            };
-            target.FillRoundedRectangle(
-                &D2D1_ROUNDED_RECT {
-                    rect,
-                    radiusX: 16.0 + spread,
-                    radiusY: 16.0 + spread,
-                },
-                &brush,
-            );
+        if palette.shadow_enabled {
+            for (spread, alpha) in [(8.0, 18u8), (5.0, 26u8), (2.0, 34u8)] {
+                let shadow = color(Color::rgba(
+                    palette.shadow.r,
+                    palette.shadow.g,
+                    palette.shadow.b,
+                    alpha,
+                ));
+                let brush = target.CreateSolidColorBrush(&shadow, None)?;
+                let rect = D2D_RECT_F {
+                    left: body.left - spread,
+                    top: body.top + 5.0 - spread,
+                    right: body.right + spread,
+                    bottom: body.bottom + 5.0 + spread,
+                };
+                target.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect,
+                        radiusX: 16.0 + spread,
+                        radiusY: 16.0 + spread,
+                    },
+                    &brush,
+                );
+            }
         }
 
-        let surface = color(Color::rgba(36, 36, 36, 248));
+        let surface = color(palette.surface);
         let surface_brush = target.CreateSolidColorBrush(&surface, None)?;
         target.FillRoundedRectangle(
             &D2D1_ROUNDED_RECT {
@@ -628,7 +869,7 @@ fn draw_overlay(
             &surface_brush,
         );
 
-        let border = color(theme.border_strong);
+        let border = color(palette.border);
         let border_brush = target.CreateSolidColorBrush(&border, None)?;
         target.DrawRoundedRectangle(
             &D2D1_ROUNDED_RECT {
@@ -643,8 +884,8 @@ fn draw_overlay(
 
         let title_format = make_format(dwrite, 14.0 * scale, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let detail_format = make_format(dwrite, 12.0 * scale, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let text = color(theme.text);
-        let secondary = color(theme.text_secondary);
+        let text = color(palette.text);
+        let secondary = color(palette.secondary);
         let text_brush = target.CreateSolidColorBrush(&text, None)?;
         let secondary_brush = target.CreateSolidColorBrush(&secondary, None)?;
 
@@ -666,10 +907,10 @@ fn draw_overlay(
                 );
             }
             let tone_color = match row.tone {
-                OverlayTone::Muted => theme.danger,
-                OverlayTone::Active => theme.success,
-                OverlayTone::Changed => theme.accent,
-                OverlayTone::Unavailable => theme.text_disabled,
+                OverlayTone::Muted => palette.tone_muted,
+                OverlayTone::Active => palette.tone_active,
+                OverlayTone::Changed => palette.tone_changed,
+                OverlayTone::Unavailable => palette.tone_unavailable,
             };
             let tone = color(tone_color);
             let tone_brush = target.CreateSolidColorBrush(&tone, None)?;
@@ -1065,6 +1306,12 @@ unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         };
         match msg {
+            WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+                if let Err(error) = cell.borrow_mut().refresh_preferences(hwnd) {
+                    crate::warn_!("overlay visual preference refresh failed: {error}");
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == TIMER_ID => {
                 cell.borrow_mut().tick(hwnd);
                 LRESULT(0)
@@ -1079,5 +1326,100 @@ unsafe extern "system" fn overlay_wndproc(
             WM_DPICHANGED => LRESULT(0),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(icon: OverlayIcon, title: &str) -> OverlayRow {
+        OverlayRow {
+            icon,
+            tone: OverlayTone::Active,
+            title: title.into(),
+            detail: "detail".into(),
+        }
+    }
+
+    #[test]
+    fn visual_preferences_select_reduced_motion_and_high_contrast_palette() {
+        let preferences = SystemVisualPreferences {
+            animations_enabled: false,
+            high_contrast: true,
+            high_contrast_background: VisualRgb { r: 1, g: 2, b: 3 },
+            high_contrast_foreground: VisualRgb {
+                r: 240,
+                g: 241,
+                b: 242,
+            },
+            high_contrast_accent: VisualRgb {
+                r: 10,
+                g: 20,
+                b: 30,
+            },
+            ..SystemVisualPreferences::default()
+        };
+
+        assert_eq!(motion_policy(preferences), MotionPolicy::Reduced);
+        let palette = palette_for(OverlayAppearance::System, preferences);
+        assert_eq!(palette.surface, Color::rgb(1, 2, 3));
+        assert_eq!(palette.text, Color::rgb(240, 241, 242));
+        assert_eq!(palette.tone_changed, Color::rgb(10, 20, 30));
+        assert!(!palette.shadow_enabled);
+        assert!(palette.opaque);
+    }
+
+    #[test]
+    fn appearance_policy_resolves_system_and_explicit_modes() {
+        let preferences = SystemVisualPreferences {
+            system_theme: ThemeMode::Light,
+            ..SystemVisualPreferences::default()
+        };
+
+        let system = palette_for(OverlayAppearance::System, preferences);
+        let explicit_dark = palette_for(OverlayAppearance::Dark, preferences);
+        let explicit_light = palette_for(OverlayAppearance::Light, preferences);
+        assert_eq!(system.surface, Color::rgba(255, 255, 255, 248));
+        assert_eq!(explicit_dark.surface, Color::rgba(43, 43, 43, 248));
+        assert_eq!(explicit_light.surface, Color::rgba(255, 255, 255, 248));
+    }
+
+    #[test]
+    fn coalescer_replaces_same_icon_and_keeps_deterministic_order() {
+        let current = OverlayModel {
+            rows: vec![
+                row(OverlayIcon::Output, "old output"),
+                row(OverlayIcon::Application, "app"),
+            ],
+        };
+        let incoming = OverlayModel::single(row(OverlayIcon::Microphone, "mic"));
+        let merged = merge_overlay_models(&current, &incoming);
+        assert_eq!(
+            merged
+                .rows
+                .iter()
+                .map(|value| value.icon)
+                .collect::<Vec<_>>(),
+            vec![
+                OverlayIcon::Microphone,
+                OverlayIcon::Output,
+                OverlayIcon::Application
+            ]
+        );
+
+        let replaced = merge_overlay_models(
+            &merged,
+            &OverlayModel::single(row(OverlayIcon::Output, "new output")),
+        );
+        assert_eq!(replaced.rows.len(), 3);
+        assert_eq!(replaced.rows[1].title, "new output");
+    }
+
+    #[test]
+    fn microphone_row_uses_volume_terminology() {
+        let rendered = microphone_row(&crate::audio::AudioState::Active { volume_pct: 42 });
+        assert!(rendered.detail.contains("input volume"));
+        assert!(!rendered.detail.contains("input level"));
     }
 }

@@ -9,7 +9,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::error::{Error, Result};
-use crate::event::{self, AppEvent, HotkeyAction, WM_APP_EVENT};
+use crate::event::{self, AppEvent, AudioEventOrigin, HotkeyAction, WM_APP_EVENT};
 use crate::platform::window as win;
 use crate::tray::{menu as tray_menu, Tray, TrayEvent, TrayState};
 use crate::ui::settings::SettingsWindow;
@@ -35,12 +35,6 @@ pub fn taskbar_created_msg() -> u32 {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingOverlay {
-    Microphone,
-    Output,
-    Foreground,
-}
 pub struct App {
     pub hwnd: HWND,
     tray: Option<Tray>,
@@ -57,7 +51,8 @@ pub struct App {
     foreground_state: crate::audio::AppAudioState,
     microphone_seen: bool,
     output_seen: bool,
-    pending_overlay: Option<PendingOverlay>,
+    foreground_seen: bool,
+    next_audio_request_id: u64,
     suspended: bool,
     shutting_down: bool,
     support_bundle: Option<std::thread::JoinHandle<()>>,
@@ -159,7 +154,8 @@ impl App {
             foreground_state: crate::audio::AppAudioState::no_external(),
             microphone_seen: false,
             output_seen: false,
-            pending_overlay: None,
+            foreground_seen: false,
+            next_audio_request_id: 0,
             suspended: false,
             shutting_down: false,
             support_bundle: None,
@@ -239,12 +235,33 @@ impl App {
             .find(|(n, _)| *n == name)
             .map(|(_, r)| r.clone())
     }
+    fn next_audio_request_id(&mut self) -> u64 {
+        self.next_audio_request_id = self.next_audio_request_id.wrapping_add(1);
+        if self.next_audio_request_id == 0 {
+            self.next_audio_request_id = 1;
+        }
+        self.next_audio_request_id
+    }
+
+    fn should_show_audio_overlay(
+        origin: AudioEventOrigin,
+        seen: bool,
+        changed: bool,
+        show_external: bool,
+        status_request_shows: bool,
+    ) -> bool {
+        match origin {
+            AudioEventOrigin::Initial => false,
+            AudioEventOrigin::External => show_external && seen && changed,
+            AudioEventOrigin::WinShortAction(_) => true,
+            AudioEventOrigin::StatusRequest(_) => status_request_shows,
+        }
+    }
 
     /// Clear keyboard chord state (lock/unlock, sleep/resume, suspend
     /// toggle). Keys physically released while the app could not see them
     /// must not stay "held" (#13).
     pub fn reset_keyboard_state(&mut self) {
-        self.pending_overlay = None;
         if let Some(keyboard) = &self.keyboard {
             keyboard.reset_state();
         }
@@ -474,40 +491,55 @@ impl App {
         }
         match action {
             HotkeyAction::ToggleMicrophone => {
+                let request_id = self.next_audio_request_id();
                 if let Some(audio) = &self.audio {
-                    self.pending_overlay = Some(PendingOverlay::Microphone);
-                    audio.send(crate::audio::AudioCommand::ToggleMicrophone);
+                    audio.send(crate::audio::AudioCommand::ToggleMicrophone(request_id));
                 } else {
                     // Degraded startup (#27): tell the user why nothing happened.
                     let reason = self
                         .degraded_reason("audio")
                         .unwrap_or_else(|| "audio subsystem unavailable".into());
-                    self.route_event(AppEvent::MicrophoneStateChanged(
-                        crate::audio::AudioState::Unavailable { reason },
-                    ));
+                    self.route_event(AppEvent::MicrophoneStateChanged {
+                        state: crate::audio::AudioState::Unavailable { reason },
+                        origin: AudioEventOrigin::WinShortAction(request_id),
+                    });
                 }
             }
             HotkeyAction::ToggleOutput => {
+                let request_id = self.next_audio_request_id();
                 if let Some(audio) = &self.audio {
-                    self.pending_overlay = Some(PendingOverlay::Output);
-                    audio.send(crate::audio::AudioCommand::ToggleOutput);
+                    audio.send(crate::audio::AudioCommand::ToggleOutput(request_id));
                 } else {
                     let reason = self
                         .degraded_reason("audio")
                         .unwrap_or_else(|| "audio subsystem unavailable".into());
-                    self.route_event(AppEvent::OutputStateChanged(
-                        crate::audio::OutputState::Unavailable { reason },
-                    ));
+                    self.route_event(AppEvent::OutputStateChanged {
+                        state: crate::audio::OutputState::Unavailable { reason },
+                        origin: AudioEventOrigin::WinShortAction(request_id),
+                    });
                 }
             }
             HotkeyAction::ToggleForegroundAppAudio => {
-                self.pending_overlay = Some(PendingOverlay::Foreground);
+                let request_id = self.next_audio_request_id();
                 let pid = self
                     .foreground
                     .as_ref()
                     .and_then(|tracker| tracker.target_pid());
                 if let Some(audio) = &self.audio {
-                    audio.send(crate::audio::AudioCommand::ToggleForeground(pid));
+                    audio.send(crate::audio::AudioCommand::ToggleForeground { pid, request_id });
+                } else {
+                    let reason = self
+                        .degraded_reason("audio")
+                        .unwrap_or_else(|| "audio subsystem unavailable".into());
+                    self.route_event(AppEvent::ForegroundAudioChanged {
+                        state: crate::audio::AppAudioState {
+                            app_name: None,
+                            aggregate: crate::audio::Aggregate::Error,
+                            sessions: 0,
+                            error: Some(reason),
+                        },
+                        origin: AudioEventOrigin::WinShortAction(request_id),
+                    });
                 }
             }
             HotkeyAction::SwitchDesktop(n) => {
@@ -554,8 +586,9 @@ impl App {
             .foreground
             .as_ref()
             .and_then(|tracker| tracker.target_pid());
+        let request_id = self.next_audio_request_id();
         if let Some(audio) = &self.audio {
-            audio.send(crate::audio::AudioCommand::QueryForeground(pid));
+            audio.send(crate::audio::AudioCommand::QueryForeground { pid, request_id });
         }
         self.show_overlay_model(crate::ui::overlay::OverlayModel { rows });
     }
@@ -598,25 +631,35 @@ impl App {
                 }
                 info!("config applied (seq {seq})");
             }
-            AppEvent::MicrophoneStateChanged(state) => {
+            AppEvent::MicrophoneStateChanged { state, origin } => {
                 let changed = self.microphone_state != state;
-                let should_show = self.pending_overlay == Some(PendingOverlay::Microphone)
-                    || (self.microphone_seen && changed);
+                let config = crate::app::config();
+                let should_show = Self::should_show_audio_overlay(
+                    origin,
+                    self.microphone_seen,
+                    changed,
+                    config.overlay.show_external_audio_changes,
+                    false,
+                );
                 self.microphone_state = state;
                 self.microphone_seen = true;
                 if should_show {
-                    self.pending_overlay = None;
                     self.show_microphone_overlay();
                 }
             }
-            AppEvent::OutputStateChanged(state) => {
+            AppEvent::OutputStateChanged { state, origin } => {
                 let changed = self.output_state != state;
-                let should_show = self.pending_overlay == Some(PendingOverlay::Output)
-                    || (self.output_seen && changed);
+                let config = crate::app::config();
+                let should_show = Self::should_show_audio_overlay(
+                    origin,
+                    self.output_seen,
+                    changed,
+                    config.overlay.show_external_audio_changes,
+                    false,
+                );
                 self.output_state = state;
                 self.output_seen = true;
                 if should_show {
-                    self.pending_overlay = None;
                     self.show_output_overlay();
                 }
             }
@@ -629,11 +672,22 @@ impl App {
                     settings.refresh();
                 }
             }
-            AppEvent::ForegroundAudioChanged(state) => {
+            AppEvent::ForegroundAudioChanged { state, origin } => {
+                let changed = self.foreground_state != state;
+                let config = crate::app::config();
+                let should_show = Self::should_show_audio_overlay(
+                    origin,
+                    self.foreground_seen,
+                    changed,
+                    config.overlay.show_external_audio_changes,
+                    true,
+                );
                 self.foreground_state = state;
-                self.pending_overlay = None;
-                let row = crate::ui::overlay::application_row(&self.foreground_state);
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
+                self.foreground_seen = true;
+                if should_show {
+                    let row = crate::ui::overlay::application_row(&self.foreground_state);
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
+                }
             }
             AppEvent::DesktopBackendChanged(status) => {
                 self.desktop_status = status;
@@ -658,7 +712,11 @@ impl App {
             .iter()
             .map(|violation| format!("{}: {}", violation.field, violation.message))
             .collect();
-        let config_health = if load.schema_version.gt(&1) || crate::config::config_readonly() {
+        let config_health = if load
+            .schema_version
+            .gt(&crate::config::model::CURRENT_SCHEMA_VERSION)
+            || crate::config::config_readonly()
+        {
             Health::Error
         } else if !load.warnings.is_empty() || !load.repaired_fields.is_empty() {
             Health::Warning
@@ -797,6 +855,12 @@ impl App {
         let overlay = OverlayDiagnostics {
             health: overlay_health,
             enabled: raw_config.overlay.enabled,
+            appearance: raw_config.overlay.appearance.as_str().into(),
+            resolved_appearance: overlay_status.resolved_appearance,
+            external_audio_changes: raw_config.overlay.show_external_audio_changes,
+            animations_enabled: overlay_status.animations_enabled,
+            high_contrast: overlay_status.high_contrast,
+            disable_overlapped_content: overlay_status.disable_overlapped_content,
             position: raw_config.overlay.position.label().into(),
             monitor_selector: raw_config.overlay.monitor.as_str(),
             target_monitor: overlay_status.target_monitor,
@@ -1171,7 +1235,8 @@ mod shutdown_gate_tests {
             foreground_state: crate::audio::AppAudioState::no_external(),
             microphone_seen: false,
             output_seen: false,
-            pending_overlay: None,
+            foreground_seen: false,
+            next_audio_request_id: 0,
             suspended: false,
             shutting_down: false,
             support_bundle: None,
@@ -1197,6 +1262,52 @@ mod shutdown_gate_tests {
         // Must not panic or enqueue anything (no audio subsystem present).
         app.dispatch_action(HotkeyAction::ToggleMicrophone);
         app.dispatch_action(HotkeyAction::SwitchDesktop(0));
-        assert!(app.pending_overlay.is_none());
+        assert_eq!(app.next_audio_request_id, 0);
+    }
+
+    #[test]
+    fn external_audio_overlay_requires_opt_in_and_a_real_change() {
+        assert!(!App::should_show_audio_overlay(
+            AudioEventOrigin::External,
+            false,
+            true,
+            true,
+            false,
+        ));
+        assert!(!App::should_show_audio_overlay(
+            AudioEventOrigin::External,
+            true,
+            false,
+            true,
+            false,
+        ));
+        assert!(!App::should_show_audio_overlay(
+            AudioEventOrigin::External,
+            true,
+            true,
+            false,
+            false,
+        ));
+        assert!(App::should_show_audio_overlay(
+            AudioEventOrigin::External,
+            true,
+            true,
+            true,
+            false,
+        ));
+        assert!(App::should_show_audio_overlay(
+            AudioEventOrigin::WinShortAction(7),
+            false,
+            false,
+            false,
+            false,
+        ));
+        assert!(App::should_show_audio_overlay(
+            AudioEventOrigin::StatusRequest(8),
+            false,
+            false,
+            false,
+            true,
+        ));
     }
 }

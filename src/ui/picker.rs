@@ -20,7 +20,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_VISIBLE, WS_VSCROLL,
 };
 
-use crate::config::model::{DeviceSelection, EndpointRole, MonitorChoice, OverlayPosition};
+use crate::config::model::{
+    DeviceSelection, EndpointRole, MonitorChoice, OverlayAppearance, OverlayPosition,
+};
 use crate::error::{Error, Result};
 use crate::platform::window as win;
 
@@ -49,6 +51,7 @@ pub enum PickerKind {
     InputRole,
     OutputRole,
     OverlayPosition,
+    OverlayAppearance,
     OverlayMonitor,
 }
 
@@ -57,6 +60,7 @@ pub enum PickerValue {
     Device(DeviceSelection),
     Role(EndpointRole),
     Position(OverlayPosition),
+    Appearance(OverlayAppearance),
     Monitor(MonitorChoice),
 }
 
