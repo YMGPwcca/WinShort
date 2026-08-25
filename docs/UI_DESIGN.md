@@ -51,10 +51,12 @@ only while motion or recording is active; idle UI has no render loop.
 * Status row (Advanced) — composed virtual-desktop backend text
 
 Keyboard accessibility is implemented through native child HWND semantics layered over the
-owner-drawn rows. Buttons expose names/current values/help descriptions; sliders use native
-trackbars with range semantics. Tab/Shift-Tab, Space/Enter, arrows, Home/End, Page Up/Down,
-focus visibility, and focus-following scroll are supported. The hotkey recorder deliberately
-returns focus to the Settings window before capture so global capture remains generation-safe.
+owner-drawn rows. Toggle rows use real `BS_AUTOCHECKBOX` controls with `BM_SETCHECK`
+synchronization; non-toggle actions use owner-drawn BUTTON controls; sliders use native
+trackbars with range semantics. Buttons expose names/current values/help descriptions. Tab/Shift-
+Tab, Space/Enter, arrows, Home/End, Page Up/Down, focus visibility, and focus-following scroll
+are supported. The hotkey recorder deliberately returns focus to the Settings window before
+capture so global capture remains generation-safe.
 
 ## Settings interaction — current
 
