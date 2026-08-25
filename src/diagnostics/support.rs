@@ -893,20 +893,33 @@ pub fn open_logs(directory: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-pub fn copy_diagnostics(snapshot: &DiagnosticsSnapshot) -> Result<()> {
+pub fn copy_diagnostics(
+    owner: windows::Win32::Foundation::HWND,
+    snapshot: &DiagnosticsSnapshot,
+) -> Result<()> {
     let text = diagnostics_text(snapshot);
-    copy_unicode_text(&text)
+    copy_unicode_text(owner, &text)
 }
 
 #[cfg(windows)]
-fn copy_unicode_text(text: &str) -> Result<()> {
+fn validate_clipboard_owner(owner: windows::Win32::Foundation::HWND) -> Result<()> {
+    if owner.0.is_null() {
+        Err(Error::config("clipboard owner HWND is null"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn copy_unicode_text(owner: windows::Win32::Foundation::HWND, text: &str) -> Result<()> {
     use std::ptr::NonNull;
-    use windows::Win32::Foundation::{GlobalFree, HANDLE, HWND};
+    use windows::Win32::Foundation::{GlobalFree, HANDLE};
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::Ole::CF_UNICODETEXT;
+    validate_clipboard_owner(owner)?;
 
     let mut utf16: Vec<u16> = text.encode_utf16().collect();
     utf16.push(0);
@@ -927,7 +940,7 @@ fn copy_unicode_text(text: &str) -> Result<()> {
         );
         let _ = GlobalUnlock(handle);
     }
-    if unsafe { OpenClipboard(Some(HWND::default())) }.is_err() {
+    if unsafe { OpenClipboard(Some(owner)) }.is_err() {
         unsafe {
             let _ = GlobalFree(Some(handle));
         };
@@ -954,7 +967,7 @@ fn copy_unicode_text(text: &str) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn copy_unicode_text(_text: &str) -> Result<()> {
+fn copy_unicode_text(_owner: windows::Win32::Foundation::HWND, _text: &str) -> Result<()> {
     Err(Error::config(
         "Unicode clipboard is only available on Windows",
     ))
@@ -1062,6 +1075,17 @@ safe=1"#,
         assert!(output.contains("schema_version = 1"));
         assert!(output.contains("endpoint#01"));
         assert!(!output.contains("opaque-endpoint"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn clipboard_owner_seam_rejects_null_hwnd() {
+        use windows::Win32::Foundation::HWND;
+
+        let null = HWND(std::ptr::null_mut());
+        assert!(validate_clipboard_owner(null).is_err());
+        let valid = HWND(1usize as *mut _);
+        assert!(validate_clipboard_owner(valid).is_ok());
     }
     fn sample_snapshot(root: &Path) -> DiagnosticsSnapshot {
         use crate::diagnostics::snapshot::{

@@ -294,9 +294,13 @@ impl App {
 
     fn copy_diagnostics(&mut self) {
         let snapshot = self.diagnostics_snapshot();
-        let status = match crate::diagnostics::support::copy_diagnostics(&snapshot) {
-            Ok(()) => "Diagnostics copied to the Unicode clipboard".into(),
-            Err(error) => format!("Copy failed — {error}"),
+        let owner = self.diagnostics.as_ref().map(|window| window.hwnd);
+        let status = match owner {
+            Some(owner) => match crate::diagnostics::support::copy_diagnostics(owner, &snapshot) {
+                Ok(()) => "Diagnostics copied to the Unicode clipboard".into(),
+                Err(error) => format!("Copy failed — {error}"),
+            },
+            None => "Copy failed — Diagnostics window is not available".into(),
         };
         if let Some(window) = &mut self.diagnostics {
             window.set_action_status(status);
