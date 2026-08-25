@@ -625,7 +625,7 @@ impl App {
             Health::Healthy
         };
 
-        let runtime = self
+        let runtime: crate::audio::AudioRuntimeSnapshot = self
             .audio
             .as_ref()
             .map(crate::audio::AudioService::runtime_snapshot)
