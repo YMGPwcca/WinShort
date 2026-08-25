@@ -10,12 +10,12 @@ use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::Controls::{
     TOOLTIPS_CLASSW, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTTOOLINFOW,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, GetKeyState};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, SetWindowPos, SetWindowTextW, ShowWindow, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_KILLFOCUS, WM_NCDESTROY,
-    WM_SETFOCUS, WS_CHILD, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_NCDESTROY, WM_SETFOCUS, WS_CHILD, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
@@ -23,6 +23,9 @@ use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
 const BUTTON_CLASS: &str = "BUTTON";
 const TRACKBAR_CLASS: &str = "msctls_trackbar32";
 const BS_OWNERDRAW: u32 = 0x0000000B;
+const BS_AUTOCHECKBOX: u32 = 0x00000003;
+const BM_SETCHECK: u32 = 0x00F1;
+const BST_CHECKED: usize = 1;
 const TBS_NOTICKS: u32 = 0x00000010;
 const TBM_SETRANGE: u32 = 0x0400 + 6;
 const TBM_SETPOS: u32 = 0x0400 + 5;
@@ -33,6 +36,7 @@ struct AccessibleControl {
     id: ElementId,
     hwnd: HWND,
     slider: bool,
+    toggle: bool,
 }
 
 const ACCESSIBILITY_SUBCLASS_ID: usize = 2;
@@ -46,6 +50,11 @@ unsafe extern "system" fn accessibility_child_subclass(
     ref_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
     let parent = HWND(ref_data as *mut _);
+    if msg == WM_KEYDOWN && wparam.0 as u16 == 0x09 {
+        let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
+        crate::app::with_app(|app| app.focus_settings_from_child(reverse));
+        return windows::Win32::Foundation::LRESULT(0);
+    }
     if matches!(msg, WM_SETFOCUS | WM_KILLFOCUS) {
         unsafe {
             let _ = InvalidateRect(Some(parent), None, false);
@@ -172,11 +181,23 @@ impl SettingsAccessibility {
                 id,
                 ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale
             );
+            let toggle = matches!(
+                id,
+                ElementId::StartWithWindows
+                    | ElementId::StartHotkeysEnabled
+                    | ElementId::DesktopsEnabled
+                    | ElementId::WinNumberEnabled
+                    | ElementId::OverlayEnabled
+            );
             let class = HSTRING::from(if slider { TRACKBAR_CLASS } else { BUTTON_CLASS });
             let style = if slider {
                 WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | TBS_NOTICKS
             } else {
-                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW
+                WS_CHILD.0
+                    | WS_VISIBLE.0
+                    | WS_TABSTOP.0
+                    | BS_OWNERDRAW
+                    | if toggle { BS_AUTOCHECKBOX } else { 0 }
             };
             let hwnd = unsafe {
                 CreateWindowExW(
@@ -203,7 +224,12 @@ impl SettingsAccessibility {
                         parent.0 as usize,
                     );
                 }
-                controls.push(AccessibleControl { id, hwnd, slider });
+                controls.push(AccessibleControl {
+                    id,
+                    hwnd,
+                    slider,
+                    toggle,
+                });
             }
         }
         let tooltip = TooltipManager::create(parent, &controls);
@@ -232,8 +258,9 @@ impl SettingsAccessibility {
             else {
                 continue;
             };
-            let visible = !element.scrolls || element.rect.intersects(layout.content_clip);
-            let rect = physical_rect(element.rect, dpi as f32 / 96.0);
+            let clipped = clip_rect(element.rect, layout.content_clip, element.scrolls);
+            let visible = clipped.is_some();
+            let rect = physical_rect(clipped.unwrap_or(element.rect), dpi as f32 / 96.0);
             let text = HSTRING::from(format!(
                 "{}: {}. {}",
                 element.label, value, element.description
@@ -251,6 +278,14 @@ impl SettingsAccessibility {
                     rect.bottom - rect.top,
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
+                if control.toggle {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                        control.hwnd,
+                        BM_SETCHECK,
+                        Some(WPARAM(if value == "On" { BST_CHECKED } else { 0 })),
+                        Some(LPARAM(0)),
+                    );
+                }
                 if control.slider {
                     let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
                         control.hwnd,
@@ -308,11 +343,43 @@ impl Drop for SettingsAccessibility {
     }
 }
 
+pub(crate) fn clip_rect(rect: UiRect, viewport: UiRect, scrolls: bool) -> Option<UiRect> {
+    if !scrolls {
+        return Some(rect);
+    }
+    let left = rect.x.max(viewport.x);
+    let top = rect.y.max(viewport.y);
+    let right = rect.right().min(viewport.right());
+    let bottom = rect.bottom().min(viewport.bottom());
+    (right > left && bottom > top).then_some(UiRect::new(left, top, right - left, bottom - top))
+}
+
 fn physical_rect(rect: UiRect, scale: f32) -> RECT {
     RECT {
         left: (rect.x * scale).round() as i32,
         top: (rect.y * scale).round() as i32,
         right: (rect.right() * scale).round() as i32,
         bottom: (rect.bottom() * scale).round() as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipped_scroll_child_matches_rendered_viewport() {
+        let viewport = UiRect::new(0.0, 100.0, 600.0, 300.0);
+        let partial = clip_rect(UiRect::new(20.0, 80.0, 200.0, 80.0), viewport, true)
+            .expect("partial row should remain visible");
+        assert_eq!(partial.y, 100.0);
+        assert_eq!(partial.h, 60.0);
+        assert!(clip_rect(UiRect::new(20.0, 20.0, 200.0, 40.0), viewport, true).is_none());
+        assert_eq!(
+            clip_rect(UiRect::new(20.0, 20.0, 200.0, 40.0), viewport, false)
+                .expect("fixed footer is not viewport-clipped")
+                .y,
+            20.0
+        );
     }
 }

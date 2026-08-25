@@ -745,12 +745,16 @@ impl SettingsUi {
         }
     }
 
-    fn focus_next(&mut self, reverse: bool) {
-        let order = ElementId::FOCUS_ORDER;
-        let current = self
-            .focused
-            .and_then(|id| order.iter().position(|candidate| *candidate == id));
-        let mut index = current.unwrap_or(if reverse { 0 } else { order.len() - 1 });
+    fn next_focus_index(
+        order: &[ElementId],
+        current: Option<ElementId>,
+        reverse: bool,
+        disabled: impl Fn(ElementId) -> bool,
+    ) -> ElementId {
+        let current_index = current
+            .and_then(|id| order.iter().position(|candidate| *candidate == id))
+            .unwrap_or(if reverse { 0 } else { order.len() - 1 });
+        let mut index = current_index;
         for _ in 0..order.len() {
             index = if reverse {
                 if index == 0 {
@@ -761,19 +765,27 @@ impl SettingsUi {
             } else {
                 (index + 1) % order.len()
             };
-            if !self.is_disabled(order[index]) {
-                self.focused = Some(order[index]);
-                if let Some(hwnd) = self
-                    .accessibility
-                    .as_ref()
-                    .and_then(|accessibility| accessibility.focus_hwnd(order[index]))
-                {
-                    unsafe {
-                        let _ = SetFocus(Some(hwnd));
-                    }
-                }
-                self.scroll_focus_into_view(order[index]);
-                break;
+            if !disabled(order[index]) {
+                return order[index];
+            }
+        }
+        order[current_index]
+    }
+
+    fn focus_next(&mut self, hwnd: HWND, reverse: bool) {
+        let order = ElementId::FOCUS_ORDER;
+        let next = Self::next_focus_index(&order, self.focused, reverse, |id| self.is_disabled(id));
+        self.scroll_focus_into_view(next);
+        self.rebuild_layout(hwnd);
+        self.sync_accessibility();
+        self.focused = Some(next);
+        if let Some(child) = self
+            .accessibility
+            .as_ref()
+            .and_then(|accessibility| accessibility.focus_hwnd(next))
+        {
+            unsafe {
+                let _ = SetFocus(Some(child));
             }
         }
     }
@@ -864,6 +876,9 @@ impl SettingsUi {
     fn accessibility_slider_ratio(&self, hwnd: HWND) -> Option<f32> {
         self.accessibility.as_ref()?.slider_ratio(hwnd)
     }
+    fn accessibility_focus_hwnd(&self, id: ElementId) -> Option<HWND> {
+        self.accessibility.as_ref()?.focus_hwnd(id)
+    }
 }
 #[derive(Debug, Clone, Copy)]
 struct SavedSettingsRect {
@@ -874,6 +889,7 @@ struct SavedSettingsRect {
 pub struct SettingsWindow {
     pub hwnd: HWND,
     picker: Option<PickerPopup>,
+    picker_owner: Option<ElementId>,
     last_rect: Option<SavedSettingsRect>,
 }
 
@@ -885,14 +901,14 @@ impl SettingsWindow {
         });
 
         let primary = crate::platform::monitor::primary();
-        let dpi = primary.as_ref().map_or(96, |m| m.dpi);
-        let scale = dpi as f32 / 96.0;
+        let primary_dpi = primary.as_ref().map_or(96, |m| m.dpi);
+        let scale = primary_dpi as f32 / 96.0;
         let default_width = (DESIGN_WIDTH * scale) as i32;
         let default_height = (DESIGN_HEIGHT * scale) as i32;
         let saved = load_settings_rect();
-        let (x, y, w, h) = window_geometry(
+        let (x, y, w, h, dpi) = window_geometry(
             primary.as_ref().map(|monitor| monitor.work),
-            dpi,
+            primary_dpi,
             saved,
             default_width,
             default_height,
@@ -917,10 +933,17 @@ impl SettingsWindow {
         }
         .map_err(|e| Error::win("CreateWindowExW(settings)", &e))?;
 
+        let actual_dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96);
+        if actual_dpi != dpi {
+            if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(hwnd) } {
+                cell.borrow_mut().dpi = actual_dpi;
+            }
+        }
         apply_chrome(hwnd, Theme::current());
         Ok(Self {
             hwnd,
             picker: None,
+            picker_owner: None,
             last_rect: saved,
         })
     }
@@ -1016,6 +1039,7 @@ impl SettingsWindow {
         self.picker = Some(PickerPopup::create(
             self.hwnd, kind, choices, current, geometry,
         )?);
+        self.picker_owner = picker_element(kind);
         Ok(())
     }
 
@@ -1029,10 +1053,30 @@ impl SettingsWindow {
     }
 
     pub fn cancel_picker(&mut self) {
+        let owner = self.picker_owner.take();
         let picker = self.picker.take();
         drop(picker);
+        if let Some(owner) = owner {
+            if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+                let mut ui = cell.borrow_mut();
+                ui.focused = Some(owner);
+                if let Some(child) = ui.accessibility_focus_hwnd(owner) {
+                    unsafe {
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(child));
+                    }
+                    return;
+                }
+            }
+        }
         unsafe {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.hwnd));
+        }
+    }
+
+    pub fn focus_next_from_child(&mut self, reverse: bool) {
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().focus_next(self.hwnd, reverse);
+            invalidate(self.hwnd);
         }
     }
 
@@ -1073,11 +1117,11 @@ fn load_settings_rect() -> Option<SavedSettingsRect> {
 
 fn window_geometry(
     primary_work: Option<RECT>,
-    current_dpi: u32,
+    primary_dpi: u32,
     saved: Option<SavedSettingsRect>,
     default_width: i32,
     default_height: i32,
-) -> (i32, i32, i32, i32) {
+) -> (i32, i32, i32, i32, u32) {
     let fallback = primary_work.unwrap_or(RECT {
         left: 0,
         top: 0,
@@ -1085,10 +1129,17 @@ fn window_geometry(
         bottom: 1080,
     });
     if let Some(saved) = saved {
-        let work = monitor_work_for_rect(saved.rect).unwrap_or(fallback);
-        let scale = current_dpi.max(96) as f32 / saved.dpi.max(96) as f32;
-        let width = ((saved.rect.right - saved.rect.left) as f32 * scale).round() as i32;
-        let height = ((saved.rect.bottom - saved.rect.top) as f32 * scale).round() as i32;
+        let target = monitor_for_rect(saved.rect);
+        let work = target
+            .as_ref()
+            .map(|monitor| monitor.work)
+            .unwrap_or(fallback);
+        let target_dpi = target
+            .as_ref()
+            .map(|monitor| monitor.dpi)
+            .unwrap_or(primary_dpi)
+            .max(96);
+        let (width, height) = scaled_saved_size(saved.rect, saved.dpi, target_dpi);
         let rect = clamp_window_rect(
             RECT {
                 left: saved.rect.left,
@@ -1097,13 +1148,13 @@ fn window_geometry(
                 bottom: saved.rect.top + height,
             },
             work,
-            80,
         );
         return (
             rect.left,
             rect.top,
             rect.right - rect.left,
             rect.bottom - rect.top,
+            target_dpi,
         );
     }
     (
@@ -1111,46 +1162,47 @@ fn window_geometry(
         fallback.top + ((fallback.bottom - fallback.top) - default_height) / 2,
         default_width,
         default_height,
+        primary_dpi.max(96),
     )
 }
 
-fn monitor_work_for_rect(rect: RECT) -> Option<RECT> {
+fn monitor_for_rect(rect: RECT) -> Option<crate::platform::monitor::MonitorGeometry> {
     let monitor = unsafe {
         windows::Win32::Graphics::Gdi::MonitorFromRect(
             &rect,
             windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
         )
     };
-    crate::platform::monitor::info_for(monitor).map(|value| value.work)
+    if monitor.is_invalid() {
+        None
+    } else {
+        crate::platform::monitor::info_for(monitor)
+    }
 }
 
-pub(crate) fn clamp_window_rect(saved: RECT, work: RECT, visible: i32) -> RECT {
+pub(crate) fn clamp_window_rect(saved: RECT, work: RECT) -> RECT {
     let width = (saved.right - saved.left)
         .max(320)
         .min((work.right - work.left).max(1));
     let height = (saved.bottom - saved.top)
         .max(260)
         .min((work.bottom - work.top).max(1));
-    let min_left = work.left - width + visible;
-    let max_left = work.right - visible;
-    let min_top = work.top - height + visible;
-    let max_top = work.bottom - visible;
-    let left = if min_left <= max_left {
-        saved.left.clamp(min_left, max_left)
-    } else {
-        work.left
-    };
-    let top = if min_top <= max_top {
-        saved.top.clamp(min_top, max_top)
-    } else {
-        work.top
-    };
+    let left = saved.left.clamp(work.left, work.right - width);
+    let top = saved.top.clamp(work.top, work.bottom - height);
     RECT {
         left,
         top,
         right: left + width,
         bottom: top + height,
     }
+}
+
+fn scaled_saved_size(rect: RECT, saved_dpi: u32, target_dpi: u32) -> (i32, i32) {
+    let scale = target_dpi.max(96) as f32 / saved_dpi.max(96) as f32;
+    (
+        ((rect.right - rect.left) as f32 * scale).round() as i32,
+        ((rect.bottom - rect.top) as f32 * scale).round() as i32,
+    )
 }
 
 fn picker_element(kind: PickerKind) -> Option<ElementId> {
@@ -1383,7 +1435,8 @@ unsafe extern "system" fn settings_wndproc(
             WM_DRAWITEM => LRESULT(1),
             WM_COMMAND => {
                 let source = HWND(lparam.0 as *mut _);
-                let notification = (wparam.0 & 0xFFFF) as u16;
+                let _control_id = crate::ui::picker::loword(wparam.0);
+                let notification = crate::ui::picker::hiword(wparam.0);
                 let mut ui = cell.borrow_mut();
                 if notification == 0 {
                     if let Some(id) = ui.accessibility_id_for(source) {
@@ -1570,7 +1623,7 @@ unsafe extern "system" fn settings_wndproc(
                 }
                 match vk {
                     0x09 => {
-                        cell.borrow_mut().focus_next(key_down(0x10));
+                        cell.borrow_mut().focus_next(hwnd, key_down(0x10));
                         invalidate(hwnd);
                         LRESULT(0)
                     }
@@ -1750,24 +1803,72 @@ mod interaction_tests {
     }
 
     #[test]
-    fn restored_window_rect_keeps_title_area_reachable() {
+    fn restored_window_rect_is_fully_inside_work_area() {
         let work = RECT {
             left: 0,
             top: 0,
             right: 1000,
             bottom: 800,
         };
-        let saved = RECT {
-            left: 1700,
-            top: -500,
-            right: 2400,
-            bottom: 100,
+        let saved_rects = [
+            RECT {
+                left: 100,
+                top: -500,
+                right: 700,
+                bottom: 100,
+            },
+            RECT {
+                left: 100,
+                top: 750,
+                right: 700,
+                bottom: 1350,
+            },
+            RECT {
+                left: -1500,
+                top: 100,
+                right: -900,
+                bottom: 700,
+            },
+            RECT {
+                left: 1500,
+                top: 100,
+                right: 2100,
+                bottom: 700,
+            },
+            RECT {
+                left: -5000,
+                top: -5000,
+                right: 5000,
+                bottom: 5000,
+            },
+        ];
+        for saved in saved_rects {
+            let clamped = clamp_window_rect(saved, work);
+            assert!(clamped.left >= work.left);
+            assert!(clamped.top >= work.top);
+            assert!(clamped.right <= work.right);
+            assert!(clamped.bottom <= work.bottom);
+        }
+
+        let negative_work = RECT {
+            left: -1920,
+            top: -100,
+            right: 0,
+            bottom: 980,
         };
-        let clamped = clamp_window_rect(saved, work, 80);
-        assert!(clamped.left < work.right);
-        assert!(clamped.top < work.bottom);
-        assert!(clamped.left + 80 <= work.right);
-        assert!(clamped.top + 80 <= work.bottom);
+        let clamped = clamp_window_rect(
+            RECT {
+                left: -5000,
+                top: -5000,
+                right: -4000,
+                bottom: -4000,
+            },
+            negative_work,
+        );
+        assert!(clamped.left >= negative_work.left);
+        assert!(clamped.top >= negative_work.top);
+        assert!(clamped.right <= negative_work.right);
+        assert!(clamped.bottom <= negative_work.bottom);
     }
 
     #[test]
@@ -1826,5 +1927,44 @@ mod interaction_tests {
             (SettingsUi::slider_value(ElementId::OverlayScale, 0.7, 1.0) - 0.8).abs()
                 < f32::EPSILON
         );
+    }
+    #[test]
+    fn focus_policy_skips_disabled_and_wraps_both_directions() {
+        let order = [
+            ElementId::StartWithWindows,
+            ElementId::InputRole,
+            ElementId::OutputRole,
+        ];
+        let disabled = |id| id == ElementId::InputRole;
+        assert_eq!(
+            SettingsUi::next_focus_index(
+                &order,
+                Some(ElementId::StartWithWindows),
+                false,
+                disabled,
+            ),
+            ElementId::OutputRole
+        );
+        assert_eq!(
+            SettingsUi::next_focus_index(&order, Some(ElementId::OutputRole), false, disabled,),
+            ElementId::StartWithWindows
+        );
+        assert_eq!(
+            SettingsUi::next_focus_index(&order, Some(ElementId::OutputRole), true, disabled,),
+            ElementId::StartWithWindows
+        );
+    }
+    #[test]
+    fn saved_size_scales_from_saved_to_target_dpi() {
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: 600,
+            bottom: 400,
+        };
+        assert_eq!(scaled_saved_size(rect, 144, 144), (600, 400));
+        assert_eq!(scaled_saved_size(rect, 96, 144), (900, 600));
+        assert_eq!(scaled_saved_size(rect, 144, 96), (400, 267));
+        assert_eq!(scaled_saved_size(rect, 0, 144), (900, 600));
     }
 }

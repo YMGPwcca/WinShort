@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, IsChild, SetForegroundWindow, ShowWindow, CREATESTRUCTW,
@@ -26,6 +26,13 @@ const LB_ADDSTRING: u32 = 0x0180;
 const LB_SETCURSEL: u32 = 0x0186;
 const LB_GETCURSEL: u32 = 0x0188;
 const LBN_SELCHANGE: u16 = 1;
+pub const fn loword(value: usize) -> u16 {
+    (value & 0xFFFF) as u16
+}
+
+pub const fn hiword(value: usize) -> u16 {
+    ((value >> 16) & 0xFFFF) as u16
+}
 const LBN_DBLCLK: u16 = 2;
 const SUBCLASS_ID: usize = 1;
 static REGISTERED: OnceLock<u16> = OnceLock::new();
@@ -228,6 +235,12 @@ unsafe extern "system" fn picker_list_subclass(
             cancel_picker(parent);
             LRESULT(0)
         }
+        WM_KEYDOWN if wparam.0 as u16 == 0x09 => {
+            let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
+            cancel_picker(parent);
+            crate::app::with_app(|app| app.focus_settings_from_child(reverse));
+            LRESULT(0)
+        }
         WM_KEYDOWN if wparam.0 as u16 == 0x0D => {
             commit_selected(parent, hwnd);
             LRESULT(0)
@@ -276,7 +289,8 @@ unsafe extern "system" fn picker_wndproc(
         match msg {
             WM_MOUSEACTIVATE => LRESULT(MA_ACTIVATE as isize),
             WM_COMMAND => {
-                let notification = (wparam.0 & 0xFFFF) as u16;
+                let _control_id = loword(wparam.0);
+                let notification = hiword(wparam.0);
                 let source = HWND(lparam.0 as *mut _);
                 if source == cell.borrow().list && notification == LBN_DBLCLK {
                     commit_selected(hwnd, source);
@@ -351,5 +365,17 @@ mod tests {
         assert_eq!(rect.right, 500);
         assert!(rect.left >= work.left);
         assert!(rect.top >= work.top);
+    }
+}
+
+#[cfg(test)]
+mod wm_command_tests {
+    use super::{hiword, loword};
+
+    #[test]
+    fn wm_command_words_are_decoded_by_contract() {
+        let packed = (0x1234usize << 16) | 0x0056;
+        assert_eq!(loword(packed), 0x0056);
+        assert_eq!(hiword(packed), 0x1234);
     }
 }

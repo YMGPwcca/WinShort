@@ -328,6 +328,11 @@ impl App {
             settings.persist_position();
         }
     }
+    pub(crate) fn focus_settings_from_child(&mut self, reverse: bool) {
+        if let Some(settings) = &mut self.settings {
+            settings.focus_next_from_child(reverse);
+        }
+    }
 
     fn copy_diagnostics(&mut self) {
         let snapshot = self.diagnostics_snapshot();
