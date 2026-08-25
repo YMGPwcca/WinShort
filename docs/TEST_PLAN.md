@@ -51,9 +51,11 @@ Automated coverage:
 - Explicit unavailable devices remain in picker choices; their opaque selection is not rewritten.
 - Endpoint roles are disabled when an explicit device is selected.
 - Reset requires two activations and changes draft state only.
-- Restored Settings rectangles keep a title-area slice reachable.
+- Restored Settings rectangles are fully contained in the selected work area and use target-DPI
+  scaling.
 - Native picker/listbox and semantic child-control construction remains wired to the fixed
-  focus order; sliders use the coded validation ranges and keyboard step quantization.
+  focus order; child Tab routing, deferred generation-checked picker close, and picker owner
+  focus restoration are covered; sliders use coded validation ranges and keyboard quantization.
 
 Manual matrix:
 

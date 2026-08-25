@@ -27,6 +27,16 @@ const BS_AUTOCHECKBOX: u32 = 0x00000003;
 const BM_SETCHECK: u32 = 0x00F1;
 const BST_CHECKED: usize = 1;
 const TBS_NOTICKS: u32 = 0x00000010;
+fn is_toggle_element(id: ElementId) -> bool {
+    matches!(
+        id,
+        ElementId::StartWithWindows
+            | ElementId::StartHotkeysEnabled
+            | ElementId::DesktopsEnabled
+            | ElementId::WinNumberEnabled
+            | ElementId::OverlayEnabled
+    )
+}
 const TBM_SETRANGE: u32 = 0x0400 + 6;
 const TBM_SETPOS: u32 = 0x0400 + 5;
 const TBM_GETPOS: u32 = 0x0400;
@@ -181,23 +191,14 @@ impl SettingsAccessibility {
                 id,
                 ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale
             );
-            let toggle = matches!(
-                id,
-                ElementId::StartWithWindows
-                    | ElementId::StartHotkeysEnabled
-                    | ElementId::DesktopsEnabled
-                    | ElementId::WinNumberEnabled
-                    | ElementId::OverlayEnabled
-            );
+            let toggle = is_toggle_element(id);
             let class = HSTRING::from(if slider { TRACKBAR_CLASS } else { BUTTON_CLASS });
             let style = if slider {
                 WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | TBS_NOTICKS
+            } else if toggle {
+                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_AUTOCHECKBOX
             } else {
-                WS_CHILD.0
-                    | WS_VISIBLE.0
-                    | WS_TABSTOP.0
-                    | BS_OWNERDRAW
-                    | if toggle { BS_AUTOCHECKBOX } else { 0 }
+                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW
             };
             let hwnd = unsafe {
                 CreateWindowExW(
@@ -260,7 +261,19 @@ impl SettingsAccessibility {
             };
             let clipped = clip_rect(element.rect, layout.content_clip, element.scrolls);
             let visible = clipped.is_some();
-            let rect = physical_rect(clipped.unwrap_or(element.rect), dpi as f32 / 96.0);
+            let clipped_rect = clipped.unwrap_or(element.rect);
+            let semantic_rect = if control.toggle {
+                let width = clipped_rect.w.clamp(1.0, 34.0);
+                UiRect::new(
+                    clipped_rect.right() - width,
+                    clipped_rect.y,
+                    width,
+                    clipped_rect.h,
+                )
+            } else {
+                clipped_rect
+            };
+            let rect = physical_rect(semantic_rect, dpi as f32 / 96.0);
             let text = HSTRING::from(format!(
                 "{}: {}. {}",
                 element.label, value, element.description
@@ -381,5 +394,18 @@ mod tests {
                 .y,
             20.0
         );
+    }
+}
+
+#[cfg(test)]
+mod semantic_tests {
+    use super::*;
+
+    #[test]
+    fn toggle_elements_use_real_checkbox_semantics() {
+        assert!(is_toggle_element(ElementId::StartWithWindows));
+        assert!(is_toggle_element(ElementId::OverlayEnabled));
+        assert!(!is_toggle_element(ElementId::InputDevice));
+        assert!(!is_toggle_element(ElementId::OverlayDuration));
     }
 }

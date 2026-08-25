@@ -4,17 +4,20 @@
 //! in the painted Settings row. The native list supplies selection semantics to
 //! UI Automation/Narrator while the surrounding Settings surface remains D2D.
 
-use std::sync::OnceLock;
-
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    OnceLock,
+};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, IsChild, SetForegroundWindow, ShowWindow, CREATESTRUCTW,
-    MA_ACTIVATE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_KEYDOWN,
-    WM_KILLFOCUS, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WS_BORDER, WS_CHILD,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    CreateWindowExW, DestroyWindow, IsChild, PostMessageW, SetForegroundWindow, ShowWindow,
+    CREATESTRUCTW, MA_ACTIVATE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE,
+    WM_COMMAND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCCREATE,
+    WM_NCDESTROY, WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::config::model::{DeviceSelection, EndpointRole, MonitorChoice, OverlayPosition};
@@ -35,6 +38,8 @@ pub const fn hiword(value: usize) -> u16 {
 }
 const LBN_DBLCLK: u16 = 2;
 const SUBCLASS_ID: usize = 1;
+const WM_APP_PICKER_FOCUS_LOST: u32 = WM_APP + 4;
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +115,7 @@ pub struct PickerPopup {
 }
 
 struct PickerUi {
+    generation: u64,
     kind: PickerKind,
     choices: Vec<PickerChoice>,
     list: HWND,
@@ -127,6 +133,7 @@ impl PickerPopup {
             win::register_class(CLASS_NAME, Some(picker_wndproc)).expect("register picker class")
         });
         let state = Box::new(PickerUi {
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
             kind,
             choices,
             list: HWND::default(),
@@ -221,6 +228,32 @@ impl Drop for PickerPopup {
     }
 }
 
+fn defer_focus_loss(parent: HWND, next: HWND) {
+    let Some(cell) = (unsafe { win::state_cell::<PickerUi>(parent) }) else {
+        return;
+    };
+    let ui = cell.borrow();
+    let inside = next == parent || next == ui.list || unsafe { IsChild(parent, next).as_bool() };
+    if inside {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(
+            Some(parent),
+            WM_APP_PICKER_FOCUS_LOST,
+            WPARAM(next.0 as usize),
+            LPARAM(ui.generation as isize),
+        );
+    }
+}
+
+fn should_close_after_focus_loss(
+    current_generation: u64,
+    message_generation: u64,
+    focus_is_internal: bool,
+) -> bool {
+    current_generation == message_generation && !focus_is_internal
+}
 unsafe extern "system" fn picker_list_subclass(
     hwnd: HWND,
     msg: u32,
@@ -251,10 +284,8 @@ unsafe extern "system" fn picker_list_subclass(
             result
         }
         WM_KILLFOCUS => {
-            let next = HWND(lparam.0 as *mut _);
-            if next != parent && next != hwnd && !unsafe { IsChild(parent, next).as_bool() } {
-                cancel_picker(parent);
-            }
+            let next = HWND(wparam.0 as *mut _);
+            defer_focus_loss(parent, next);
             unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
         WM_NCDESTROY => unsafe {
@@ -301,12 +332,24 @@ unsafe extern "system" fn picker_wndproc(
                     win::def_proc(hwnd, msg, wparam, lparam)
                 }
             }
-            WM_KILLFOCUS => {
-                let next = HWND(lparam.0 as *mut _);
-                let list = cell.borrow().list;
-                if next != list && !IsChild(hwnd, next).as_bool() {
+            WM_APP_PICKER_FOCUS_LOST => {
+                let generation = lparam.0 as u64;
+                let next = HWND(wparam.0 as *mut _);
+                let (current_generation, list) = {
+                    let ui = cell.borrow();
+                    (ui.generation, ui.list)
+                };
+                let focus_is_internal =
+                    next == hwnd || next == list || IsChild(hwnd, next).as_bool();
+                if should_close_after_focus_loss(current_generation, generation, focus_is_internal)
+                {
                     cancel_picker(hwnd);
                 }
+                LRESULT(0)
+            }
+            WM_KILLFOCUS => {
+                let next = HWND(wparam.0 as *mut _);
+                defer_focus_loss(hwnd, next);
                 LRESULT(0)
             }
             WM_CLOSE => {
@@ -377,5 +420,21 @@ mod wm_command_tests {
         let packed = (0x1234usize << 16) | 0x0056;
         assert_eq!(loword(packed), 0x0056);
         assert_eq!(hiword(packed), 0x1234);
+    }
+}
+
+#[cfg(test)]
+mod focus_loss_tests {
+    use super::should_close_after_focus_loss;
+
+    #[test]
+    fn internal_focus_does_not_request_close() {
+        assert!(!should_close_after_focus_loss(4, 4, true));
+    }
+
+    #[test]
+    fn external_focus_closes_only_current_generation() {
+        assert!(should_close_after_focus_loss(4, 4, false));
+        assert!(!should_close_after_focus_loss(5, 4, false));
     }
 }

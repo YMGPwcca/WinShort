@@ -109,6 +109,11 @@ Picker close restores the originating row's child HWND. Accessibility child rect
 same scroll-viewport intersection as D2D rows, so native hit regions cannot overlap the fixed
 footer/header.
 
+Picker focus-loss handlers read `WM_KILLFOCUS.wParam` and only post a
+generation-tagged deferred-close message. They do not destroy the popup or refocus another
+window inside the focus callback. Commit/Escape/Tab teardown is idempotent through the owning
+popup HWND check.
+
 ## Startup sequence
 
 single-instance check (named mutex) -> DPI awareness (PerMonitorV2) -> logging init ->
