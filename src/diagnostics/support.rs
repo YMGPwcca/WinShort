@@ -149,8 +149,7 @@ fn path_match_at(input: &str, index: usize) -> Option<(usize, usize, usize, usiz
             return None;
         }
         let quote = bytes[index];
-        let path_end = input[path_start..]
-            .as_bytes()
+        let path_end = bytes[path_start..]
             .iter()
             .position(|value| *value == quote)
             .map(|offset| path_start + offset)?;
@@ -1237,7 +1236,7 @@ safe=1"#,
 
         let null = HWND(std::ptr::null_mut());
         assert!(validate_clipboard_owner(null).is_err());
-        let valid = HWND(1usize as *mut _);
+        let valid = HWND(std::ptr::dangling_mut());
         assert!(validate_clipboard_owner(valid).is_ok());
     }
     fn sample_snapshot(root: &Path) -> DiagnosticsSnapshot {
