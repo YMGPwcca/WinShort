@@ -58,6 +58,7 @@ Automated coverage:
 Manual matrix:
 
 - Input/output picker: Default, available explicit device, disconnected explicit device.
+- Hover/focus non-obvious controls and verify delayed native help text closes on pointer/focus change.
 - Role rows enable only for Default and announce the reason when disabled.
 - Overlay position and monitor picker: Foreground, Primary, each `Device(String)`, disconnected
   configured monitor, long labels, popup above/below and DPI changes.

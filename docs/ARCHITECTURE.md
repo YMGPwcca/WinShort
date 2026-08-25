@@ -103,6 +103,12 @@ names/current values/help descriptions, while native trackbars expose range sema
 Settings WndProc routes child notifications back into the same draft/validation state; no
 worker-thread or COM interface is touched by a picker.
 
+Child-control `WM_KEYDOWN(VK_TAB)` is intercepted by a subclass and routed to
+`SettingsUi::focus_next`; this avoids relying on `IsDialogMessageW` for the modeless window.
+Picker close restores the originating row's child HWND. Accessibility child rectangles use the
+same scroll-viewport intersection as D2D rows, so native hit regions cannot overlap the fixed
+footer/header.
+
 ## Startup sequence
 
 single-instance check (named mutex) -> DPI awareness (PerMonitorV2) -> logging init ->
