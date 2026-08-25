@@ -1,5 +1,7 @@
 # WinShort Architecture
 
+**Status: Implemented** (this document describes current `main`; forward-looking ideas live in the issue tracker, not here).
+
 Native Windows tray utility: audio hotkeys, status overlay, virtual desktop switching.
 Pure Rust against Win32/COM via the Microsoft `windows` crate. No GUI framework, no WebView,
 no other-language components.
@@ -7,11 +9,11 @@ no other-language components.
 ## Subsystems
 
 ```
-App Runtime (main thread)
+App Runtime (main thread, STA)
 ├── message loop + hidden main window (event pump)
 ├── Tray (Shell_NotifyIconW, NOTIFYICON_VERSION_4)
-├── Settings window (Direct2D + DirectWrite + DXGI flip swapchain + DWM attrs)
-├── Overlay window (WS_EX_NOACTIVATE/TRANSPARENT, premultiplied DComp visual)
+├── Settings window (Direct2D HwndRenderTarget + DirectWrite + DWM chrome)
+├── Overlay window (WS_EX_NOACTIVATE/TRANSPARENT/LAYERED, WIC→DIB→UpdateLayeredWindow)
 └── Action router: AppEvent -> worker threads
 
 Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
@@ -25,51 +27,83 @@ Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 
 | Thread | COM apartment | Owns |
 |---|---|---|
-| Main/UI | none required | all HWNDs, D2D/DWrite/DXGI objects, tray, WinEvent hook (foreground tracking), timers |
-| Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, key state, binding table lookup |
-| Audio | MTA | all Core Audio interfaces and callbacks |
-| Desktop | STA (`CoInitializeEx STA`) | undocumented Shell COM pointers |
-| Instance watcher | none | waits on named activation event |
+| Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), timers |
+| Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
+| Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
+| Desktop | STA | undocumented Shell COM pointers (`winshort-desktop` worker) |
+| Instance watcher | none | waits on named activate/shutdown events |
 
 Rules:
 
-* The keyboard hook callback does O(1) table lookups on prebuilt state and posts one message.
-  No COM, no allocation beyond a small stack struct, no file/registry access, no locks held by slow producers.
-* Core Audio callbacks fire on the audio thread; they post typed events to the main window and never touch UI.
+* The keyboard hook callback does O(1) table lookups against a lock-free `ArcSwap<BindingTable>`
+  snapshot and posts one window message. It takes no Mutex/RwLock, no COM, no file/registry
+  access. The only heap allocation on the callback path is one small bounded `Vec` in the
+  digit-first chord completion arm (see KEYBOARD_HOOK_DESIGN.md).
+* Core Audio callbacks fire on the audio thread; they post typed events to the main window and
+  never touch UI. Notification bursts are coalesced into a single rebuild (#19).
 * Raw COM interfaces never cross threads. Cross-thread communication is `AppEvent` messages and
   `std::sync::mpsc` command channels.
+* The desktop controller runs one bounded recovery attempt per user command; policy errors are
+  classified by `DesktopError::permits_fallback` (VIRTUAL_DESKTOP_COMPAT.md).
 
 ## Events
 
-Strongly typed (`src/event.rs`). Keyboard thread -> main: `WM_APP_ACTION` with a packed tag.
-Audio/desktop workers -> main: `PostMessageW` of boxed `AppEvent` payloads (leak/send/reconstruct;
-main thread reclaims the box). Main -> workers: mpsc channels. No string events anywhere.
+Strongly typed (`src/event.rs`). Two transports:
+
+* **Keyboard → main:** `PostMessageW(hwnd, WM_APP_ACTION, packed_action, dirty_flag)` — the
+  action packs into a 32-bit WPARAM (`kind << 16 | arg`); the LPARAM carries the
+  `dirty_win_chord` flag that triggers the Start-menu countermeasure injection.
+* **Workers ↔ main:** a process-wide `EventQueue` (`Mutex<VecDeque<AppEvent>>`) drained by the
+  main loop; producers push events then post a wake-only `WM_APP_EVENT`. Main → workers:
+  mpsc command channels (`AudioCommand`, `DesktopCommand`). No string events anywhere.
 
 ```rust
 enum AppEvent { ToggleMicrophone, ToggleOutput, ToggleForegroundAppAudio, SwitchDesktop(u8),
   MicrophoneStateChanged(AudioState), OutputStateChanged(OutputState),
-  ForegroundAudioChanged(AppAudioState), ConfigApplied(u64), ShowSettings, Exit, ... }
+  ForegroundAudioChanged(AppAudioState), DesktopBackendChanged(BackendStatus),
+  ConfigApplied(u64), ShowSettings, Exit, ... }
 ```
 
 ## State separation
 
 | Layer | Type | Mutability |
 |---|---|---|
-| Desired config | `Arc<ConfigSnapshot>` behind `RwLock` | replaced atomically on Save |
-| Runtime state | suspended flag, overlay model, foreground pid slot | event-driven updates |
+| Desired config | `ConfigHandle`: `RwLock<Arc<Config>>` value + `revision: AtomicU64` | replaced atomically on Save |
+| Hotkey bindings | `arc_swap::ArcSwap<BindingTable>` inside `ConfigHandle` | swapped on Save; wait-free reads in the hook |
+| Runtime state | suspended flag, overlay model, foreground pid slot, desktop status | event-driven updates |
 | Observed Windows state | audio endpoint states, desktop backend status | owned by worker threads, published as events |
 | UI draft | `Config` clone inside settings window | user edits only |
 
-The live hotkey bindings used by the keyboard engine are read from an `Arc` snapshot cloned at
-recognition time. Saving swaps the `Arc`; the hook is never reinstalled for config changes.
+Saving rebuilds the `BindingTable` and swaps the `ArcSwap` pointer; the hook is never
+reinstalled for config changes. Suspension selects a shared empty table.
 
 ## Startup sequence
 
-single-instance check -> DPI awareness -> logging -> load/validate config -> COM init ->
-main hidden window -> render resources -> overlay HWND -> tray icon -> audio subsystem ->
-keyboard hook -> desktop backend detection -> message loop.
+single-instance check (named mutex) -> DPI awareness (PerMonitorV2) -> logging init ->
+load/validate config -> COM init (STA on UI thread) -> hidden main window -> tray icon ->
+overlay surface -> foreground tracker -> audio subsystem -> keyboard hook thread -> desktop
+backend detection -> second-instance watcher -> message loop. Each subsystem install degrades
+independently on failure (logged, surfaced in Settings → Advanced).
 
 ## Shutdown sequence
 
-disable dispatch -> unhook keyboard -> unregister audio callbacks -> release COM -> remove tray icon ->
-destroy windows/render resources -> exit. Ordered explicitly in `app.rs::shutdown`.
+`App::begin_shutdown` (src/app.rs), in order:
+
+1. `shutting_down = true` — dispatch gate for queued/stale events
+2. signal the second-instance watcher shutdown event before any window goes away (#24)
+3. keyboard service: suspend + shutdown (unhook happens on the keyboard thread)
+4. audio service shutdown (unregister callbacks, join)
+5. desktop service shutdown (release COM, join)
+6. foreground tracker dropped
+7. overlay: hide + `DestroyWindow`
+8. tray: `Shell_NotifyIconW(NIM_DELETE)`
+9. settings window destroyed
+10. `PostMessageW(main_hwnd, WM_CLOSE)` — main window destruction happens outside any `App`
+    borrow (reentrancy-safe; see WIN32_LIFETIME.md)
+
+## Verification infrastructure
+
+GitHub Actions (`.github/workflows/ci.yml`) independently verifies every push/PR on Windows
+hosted runners: fmt, clippy `-D warnings`, full test suite, x86_64 release build with manifest
+byte-check, i686/aarch64 compile checks, MSRV job (Rust 1.85), cargo-deny dependency/security
+gate. Tag-driven `release.yml` packages signed-ready x86_64/i686 ZIPs with SHA256SUMS.
