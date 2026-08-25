@@ -275,7 +275,7 @@ unsafe extern "system" fn picker_list_subclass(
         WM_KEYDOWN if wparam.0 as u16 == 0x09 => {
             let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
             cancel_picker(parent);
-            crate::app::with_app(|app| app.focus_settings_from_child(reverse));
+            crate::event::post_main(crate::event::AppEvent::FocusSettingsFromChild { reverse });
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 as u16 == 0x0D => {
@@ -384,12 +384,14 @@ fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)>
 
 fn commit_selected(parent: HWND, list: HWND) {
     if let Some((kind, value)) = selected_value(parent, list) {
-        crate::app::with_app(|app| app.commit_settings_picker(kind, value));
+        crate::event::post_main(crate::event::AppEvent::CommitSettingsPicker { kind, value });
     }
 }
 
 fn cancel_picker(hwnd: HWND) {
-    crate::app::with_app(|app| app.cancel_settings_picker(hwnd));
+    crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+        popup_hwnd: hwnd.0 as isize,
+    });
 }
 
 #[cfg(test)]

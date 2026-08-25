@@ -270,22 +270,27 @@ impl App {
         crate::info!("keyboard engine state reset (lifecycle transition)");
     }
 
-    fn ensure_settings(&mut self) -> Result<&mut SettingsWindow> {
+    fn ensure_settings(
+        &mut self,
+        devices: crate::audio::devices::DeviceLists,
+    ) -> Result<&mut SettingsWindow> {
         if self.settings.is_none() {
-            self.settings = Some(SettingsWindow::create()?);
+            self.settings = Some(SettingsWindow::create(devices)?);
             info!("settings window created");
         }
         Ok(self.settings.as_mut().expect("just created"))
     }
 
     pub fn show_settings(&mut self) {
-        match self.ensure_settings() {
-            Ok(s) => {
-                if let Err(e) = s.show() {
-                    error_!("show settings failed: {e}");
+        let devices = self.audio_devices();
+        match self.ensure_settings(devices.clone()) {
+            Ok(settings) => {
+                settings.refresh_devices(devices);
+                if let Err(error) = settings.show() {
+                    error_!("show settings failed: {error}");
                 }
             }
-            Err(e) => error_!("create settings failed: {e}"),
+            Err(error) => error_!("create settings failed: {error}"),
         }
     }
 
@@ -632,6 +637,19 @@ impl App {
             AppEvent::OpenSettingsPicker(kind) => self.open_settings_picker(kind),
             AppEvent::ShowStatusOverlay => self.show_status_overlay(),
             AppEvent::PreviewOverlay { config } => self.show_preview_overlay(config),
+            AppEvent::FocusSettingsFromChild { reverse } => {
+                self.focus_settings_from_child(reverse);
+            }
+            AppEvent::CommitSettingsPicker { kind, value } => {
+                self.commit_settings_picker(kind, value);
+            }
+            AppEvent::CancelSettingsPicker { popup_hwnd } => {
+                self.cancel_settings_picker(HWND(popup_hwnd as *mut _));
+            }
+            AppEvent::SettingsWindowClosed => {
+                self.close_settings_picker();
+                self.remember_settings_position();
+            }
             AppEvent::RunDiagnosticsSelfTest => self.run_diagnostics_self_test(),
             AppEvent::CopyDiagnostics => self.copy_diagnostics(),
             AppEvent::OpenDiagnosticsLogs => self.open_diagnostics_logs(),
@@ -695,8 +713,9 @@ impl App {
                 self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
             }
             AppEvent::DevicesChanged => {
-                if let Some(settings) = &self.settings {
-                    settings.refresh();
+                let devices = self.audio_devices();
+                if let Some(settings) = &mut self.settings {
+                    settings.refresh_devices(devices);
                 }
             }
             AppEvent::ForegroundAudioChanged { state, origin } => {

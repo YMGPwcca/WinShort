@@ -60,6 +60,7 @@ pub struct SettingsUi {
     renderer: Option<Renderer>,
     layout: SettingsLayout,
     draft: Config,
+    devices: crate::audio::devices::DeviceLists,
     validation: Vec<Violation>,
     hovered: Option<ElementId>,
     pressed: Option<ElementId>,
@@ -76,13 +77,14 @@ pub struct SettingsUi {
 }
 
 impl SettingsUi {
-    fn new(dpi: u32) -> Self {
+    fn new(dpi: u32, devices: crate::audio::devices::DeviceLists) -> Self {
         let draft = (*crate::app::config()).clone();
         Self {
             dpi,
             renderer: None,
             layout: SettingsLayout::build(DESIGN_WIDTH, DESIGN_HEIGHT, 0.0),
             draft,
+            devices,
             validation: Vec::new(),
             hovered: None,
             pressed: None,
@@ -296,22 +298,14 @@ impl SettingsUi {
             ElementId::ForegroundHotkey => {
                 self.hotkey_value(id, self.draft.hotkeys.toggle_foreground_audio)
             }
-            ElementId::InputDevice => {
-                let devices =
-                    crate::app::with_app(|app| app.audio_devices().inputs).unwrap_or_default();
-                ControlValue::Text(Cow::Owned(device_label(
-                    &self.draft.audio.input_device,
-                    &devices,
-                )))
-            }
-            ElementId::OutputDevice => {
-                let devices =
-                    crate::app::with_app(|app| app.audio_devices().outputs).unwrap_or_default();
-                ControlValue::Text(Cow::Owned(device_label(
-                    &self.draft.audio.output_device,
-                    &devices,
-                )))
-            }
+            ElementId::InputDevice => ControlValue::Text(Cow::Owned(device_label(
+                &self.draft.audio.input_device,
+                &self.devices.inputs,
+            ))),
+            ElementId::OutputDevice => ControlValue::Text(Cow::Owned(device_label(
+                &self.draft.audio.output_device,
+                &self.devices.outputs,
+            ))),
             ElementId::InputRole => {
                 ControlValue::Text(Cow::Borrowed(self.draft.audio.input_role.label()))
             }
@@ -929,7 +923,7 @@ pub struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    pub fn create() -> Result<Self> {
+    pub fn create(devices: crate::audio::devices::DeviceLists) -> Result<Self> {
         let _atom = *REGISTERED.get_or_init(|| {
             win::register_class(CLASS_NAME, Some(settings_wndproc))
                 .expect("register settings class")
@@ -949,7 +943,7 @@ impl SettingsWindow {
             default_height,
         );
 
-        let state = Box::new(SettingsUi::new(dpi));
+        let state = Box::new(SettingsUi::new(dpi, devices));
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -1000,8 +994,11 @@ impl SettingsWindow {
         Ok(())
     }
 
-    pub fn refresh(&self) {
-        invalidate(self.hwnd);
+    pub fn refresh_devices(&mut self, devices: crate::audio::devices::DeviceLists) {
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().devices = devices;
+            invalidate(self.hwnd);
+        }
     }
 
     pub fn remember_position(&mut self) {
@@ -1509,10 +1506,7 @@ unsafe extern "system" fn settings_wndproc(
                 win::def_proc(hwnd, msg, wparam, lparam)
             }
             WM_CLOSE => {
-                crate::app::with_app(|app| {
-                    app.close_settings_picker();
-                    app.remember_settings_position();
-                });
+                crate::event::post_main(crate::event::AppEvent::SettingsWindowClosed);
                 let mut ui = cell.borrow_mut();
                 if ui.recording.is_some() || ui.capture_armed {
                     crate::keyboard::hook::end_capture();
@@ -1698,10 +1692,7 @@ unsafe extern "system" fn settings_wndproc(
                             cell.borrow_mut().reset_confirm = false;
                             invalidate(hwnd);
                         } else {
-                            crate::app::with_app(|app| {
-                                app.close_settings_picker();
-                                app.remember_settings_position();
-                            });
+                            crate::event::post_main(crate::event::AppEvent::SettingsWindowClosed);
                             let _ = ShowWindow(hwnd, SW_HIDE);
                         }
                         LRESULT(0)
@@ -2013,5 +2004,26 @@ mod interaction_tests {
         assert_eq!(scaled_saved_size(rect, 96, 144), (900, 600));
         assert_eq!(scaled_saved_size(rect, 144, 96), (400, 267));
         assert_eq!(scaled_saved_size(rect, 0, 144), (900, 600));
+    }
+
+    #[test]
+    fn value_for_uses_cached_devices_without_reacquiring_app() {
+        let devices = crate::audio::devices::DeviceLists {
+            inputs: vec![crate::audio::DeviceId {
+                endpoint: "input".into(),
+                name: "Cached microphone".into(),
+            }],
+            outputs: vec![crate::audio::DeviceId {
+                endpoint: "output".into(),
+                name: "Cached speakers".into(),
+            }],
+            warnings: Vec::new(),
+        };
+        let mut ui = SettingsUi::new(96, devices);
+        ui.draft.audio.input_device = DeviceSelection::Endpoint("input".into());
+        match ui.value_for(ElementId::InputDevice) {
+            ControlValue::Text(value) => assert_eq!(value, "Cached microphone"),
+            _ => panic!("unexpected control value variant"),
+        }
     }
 }

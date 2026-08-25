@@ -64,7 +64,7 @@ unsafe extern "system" fn accessibility_child_subclass(
     let parent = HWND(ref_data as *mut _);
     if msg == WM_KEYDOWN && wparam.0 as u16 == 0x09 {
         let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
-        crate::app::with_app(|app| app.focus_settings_from_child(reverse));
+        crate::event::post_main(crate::event::AppEvent::FocusSettingsFromChild { reverse });
         return windows::Win32::Foundation::LRESULT(0);
     }
     if matches!(msg, WM_SETFOCUS | WM_KILLFOCUS) {

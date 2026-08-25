@@ -80,6 +80,17 @@ pub enum AppEvent {
     PreviewOverlay {
         config: crate::config::model::OverlayCfg,
     },
+    FocusSettingsFromChild {
+        reverse: bool,
+    },
+    CommitSettingsPicker {
+        kind: crate::ui::picker::PickerKind,
+        value: crate::ui::picker::PickerValue,
+    },
+    CancelSettingsPicker {
+        popup_hwnd: isize,
+    },
+    SettingsWindowClosed,
     RunDiagnosticsSelfTest,
     CopyDiagnostics,
     OpenDiagnosticsLogs,
@@ -157,6 +168,14 @@ pub unsafe fn post_event(hwnd: windows::Win32::Foundation::HWND, ev: AppEvent) -
     events().push(ev);
     // SAFETY: hwnd contract documented above; wake-only message.
     unsafe { PostMessageW(Some(hwnd), WM_APP_EVENT, WPARAM(0), LPARAM(0)).is_ok() }
+}
+
+pub(crate) fn post_main(ev: AppEvent) {
+    if let Some(hwnd) = crate::app::main_hwnd() {
+        unsafe {
+            let _ = post_event(hwnd, ev);
+        }
+    }
 }
 
 #[cfg(test)]
