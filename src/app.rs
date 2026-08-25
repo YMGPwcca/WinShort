@@ -600,13 +600,17 @@ impl App {
 
     fn show_status_overlay(&mut self) {
         let request_id = self.next_audio_request_id();
-        self.status_request_id = Some(request_id);
         let pid = self
             .foreground
             .as_ref()
             .and_then(|tracker| tracker.target_pid());
-        if let Some(audio) = &self.audio {
-            audio.send(crate::audio::AudioCommand::QueryForeground { pid, request_id });
+        if self.audio.is_some() {
+            self.status_request_id = Some(request_id);
+            if let Some(audio) = &self.audio {
+                audio.send(crate::audio::AudioCommand::QueryForeground { pid, request_id });
+            }
+        } else {
+            self.status_request_id = None;
         }
         // Cached rows show immediately; a matching delayed query result
         // refreshes this same multi-row presentation (#18, #72).
@@ -703,6 +707,10 @@ impl App {
                     }
                     _ => false,
                 };
+                if is_status_request && !status_request_matches {
+                    crate::log_debug!("dropping stale foreground status result");
+                    return;
+                }
                 let should_show = Self::should_show_audio_overlay(
                     origin,
                     self.foreground_seen,
@@ -712,13 +720,7 @@ impl App {
                 );
                 self.foreground_state = state;
                 self.foreground_seen = true;
-                if is_status_request {
-                    if status_request_matches {
-                        self.status_request_id = None;
-                    }
-                } else {
-                    self.status_request_id = None;
-                }
+                self.status_request_id = None;
                 if should_show {
                     if is_status_request {
                         self.show_overlay_model(self.status_overlay_model());
@@ -1393,9 +1395,11 @@ mod shutdown_gate_tests {
     }
 
     #[test]
-    fn stale_status_request_does_not_replace_current_request() {
+    fn stale_status_request_has_no_observable_effect() {
         let mut app = test_app();
         app.status_request_id = Some(8);
+        let before = app.foreground_state.clone();
+        let before_seen = app.foreground_seen;
         app.route_event(AppEvent::ForegroundAudioChanged {
             state: crate::audio::AppAudioState {
                 app_name: Some("Stale app".into()),
@@ -1405,6 +1409,35 @@ mod shutdown_gate_tests {
             },
             origin: AudioEventOrigin::StatusRequest(7),
         });
+        assert_eq!(app.foreground_state, before);
+        assert_eq!(app.foreground_seen, before_seen);
         assert_eq!(app.status_request_id, Some(8));
+        app.route_event(AppEvent::ShowStatusOverlay);
+        assert_eq!(app.status_request_id, None);
+        assert_eq!(app.status_overlay_model().rows.len(), 2);
+    }
+
+    #[test]
+    fn non_status_foreground_result_invalidates_pending_status_request() {
+        let mut app = test_app();
+        app.status_request_id = Some(8);
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            state: crate::audio::AppAudioState {
+                app_name: Some("Action app".into()),
+                aggregate: crate::audio::Aggregate::AllActive,
+                sessions: 1,
+                error: None,
+            },
+            origin: AudioEventOrigin::WinShortAction(9),
+        });
+        assert_eq!(app.status_request_id, None);
+        assert_eq!(app.foreground_state.app_name.as_deref(), Some("Action app"));
+    }
+
+    #[test]
+    fn status_without_audio_does_not_leave_phantom_request() {
+        let mut app = test_app();
+        app.show_status_overlay();
+        assert_eq!(app.status_request_id, None);
     }
 }
