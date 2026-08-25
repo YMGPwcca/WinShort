@@ -31,6 +31,8 @@ Every OS handle/interface has exactly one owner thread or struct.
 | Diagnostics HWND | main thread | `DiagnosticsWindow` / main thread | hidden on close; destroyed during `App::begin_shutdown` |
 | Support worker | one-shot filesystem thread | `App::support_bundle: Option<JoinHandle<()>>` | completion posts an event; App joins it before diagnostics HWND teardown |
 | Clipboard HGLOBAL | main thread during Copy Diagnostics | Windows after successful `SetClipboardData(CF_UNICODETEXT, ...)` | WinShort frees it only when allocation/clipboard transfer fails |
+| Settings picker HWND + LISTBOX | main thread | `PickerPopup` | focus loss/Escape/commit drops popup; Settings shutdown drops it before process exit |
+| Settings semantic child HWNDs | main thread | `SettingsAccessibility` inside `SettingsUi` | destroyed with `SettingsUi` at `WM_NCDESTROY`; they hold no worker pointers |
 | WinEvent hook (foreground) | main thread | foreground tracker | unhooked when tracker drops in shutdown |
 
 ## COM interfaces

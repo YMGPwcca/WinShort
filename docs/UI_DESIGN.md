@@ -42,21 +42,44 @@ only while motion or recording is active; idle UI has no render loop.
 * Toggle row — animated knob
 * Hotkey recorder row — capture-mode box with inline conflict/validation error; Esc cancels;
   modifier-only rejected (#35)
-* Value rows (device pickers, position, monitor) — click **cycles** values in place; no popup
-* Slider rows — duration / opacity / scale, mouse drag with capture
-* Buttons — footer Cancel / Save (Save disabled until draft differs from live config)
+* Picker rows — explicit native LISTBOX popup for input/output device, endpoint role, overlay
+  position, and monitor; current selection is visible, keyboard navigable, Escape cancels,
+  Enter/click commits, focus loss closes
+* Slider rows — duration / opacity / scale, mouse drag plus native trackbar keyboard semantics
+* Buttons — footer Cancel / Save (Save disabled until draft differs from live)
 * Scrollable content column — wheel scrolling with slim custom scrollbar
 * Status row (Advanced) — composed virtual-desktop backend text
 
-Keyboard accessibility actually implemented: Tab / Shift-Tab cycles a fixed focus order
-(skipping disabled rows), Space/Enter activate the focused row, focus ring drawn, focused row
-scrolled into view.
+Keyboard accessibility is implemented through native child HWND semantics layered over the
+owner-drawn rows. Buttons expose names/current values/help descriptions; sliders use native
+trackbars with range semantics. Tab/Shift-Tab, Space/Enter, arrows, Home/End, Page Up/Down,
+focus visibility, and focus-following scroll are supported. The hotkey recorder deliberately
+returns focus to the Settings window before capture so global capture remains generation-safe.
+
+## Settings interaction — current
+
+**Status: Implemented.** Audio device pickers show Default, current inventory, and a synthetic
+`Selected device unavailable` choice when an explicit opaque endpoint is missing. The missing
+selection is preserved until the user chooses another value. Endpoint role rows remain visible
+but disabled with explanatory help when an explicit endpoint is selected.
+
+Monitor choices are Foreground, Primary, and stable `Device(String)` names with current
+resolution/work-area labels. A disconnected configured device remains as an unavailable choice;
+`index:N` is never reintroduced into the UI.
+
+Reset Settings requires a second explicit `Confirm reset` activation. It changes only the draft;
+Save is still required, and the registry-authoritative Start with Windows state is untouched.
+
+Settings position is persisted in the separate WinShort-owned `settings-window.txt` UI-state file
+when the window closes or the app shuts down. Restored rectangles scale from their saved DPI,
+select the nearest current monitor, and clamp enough of the window/title area into the work area.
+
+Help uses inline row descriptions, native accessibility names, and delayed native
+`TOOLTIPS_CLASS` popups for non-obvious settings. Global high-contrast/reduced-motion behavior
+remains outside this issue's implemented scope (#30).
 
 ## Widget set — planned (NOT implemented)
 
-* Real dropdown popup list windows for device/enum pickers (#29)
-* Native `TOOLTIPS_CLASS` tooltips (#29)
-* Arrow-key slider control and richer keyboard interaction model (#29)
 * Reduced-motion / high-contrast respect and calmer overlay motion (#30)
 
 ## Settings layout — current

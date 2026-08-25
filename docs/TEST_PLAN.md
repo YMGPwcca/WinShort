@@ -12,9 +12,9 @@ Every behavior in this plan is classified as one of:
   or shell state; must be verified by hand per release.
 
 Current verified hosted baseline: Windows runners execute fmt, clippy `-D warnings`, the full
-`cargo test` suite (115 tests at the time of writing — a moving number, check CI for the live
-count), x86_64 release build with embedded-manifest byte-check, i686 and aarch64 compile
-checks, an MSRV 1.85 job, and cargo-deny. See `.github/workflows/ci.yml`.
+`cargo test` suite (moving count; check CI for the live count), x86_64 release build with
+embedded-manifest byte-check, i686 and aarch64 compile checks, an MSRV 1.85 job, and cargo-deny.
+See `.github/workflows/ci.yml`.
 
 ## Diagnostics & support (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
 
@@ -42,6 +42,34 @@ Manual checks:
 - Close Diagnostics or exit WinShort while a bundle is being created.
 
 No automatic upload, telemetry, raw config attachment, or raw log attachment is implemented.
+## Settings interaction and accessibility (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
+
+Automated coverage:
+
+- Picker geometry chooses below/above placement and clamps to work areas, including negative
+  coordinates.
+- Explicit unavailable devices remain in picker choices; their opaque selection is not rewritten.
+- Endpoint roles are disabled when an explicit device is selected.
+- Reset requires two activations and changes draft state only.
+- Restored Settings rectangles keep a title-area slice reachable.
+- Native picker/listbox and semantic child-control construction remains wired to the fixed
+  focus order; sliders use the coded validation ranges and keyboard step quantization.
+
+Manual matrix:
+
+- Input/output picker: Default, available explicit device, disconnected explicit device.
+- Role rows enable only for Default and announce the reason when disabled.
+- Overlay position and monitor picker: Foreground, Primary, each `Device(String)`, disconnected
+  configured monitor, long labels, popup above/below and DPI changes.
+- Mouse and keyboard: Tab/Shift-Tab, Enter, Space, Escape, arrows, Home/End, Page Up/Down,
+  picker focus loss, hotkey recorder transitions, Save, Cancel, and reset confirmation.
+- Settings restore after restart, removed monitor, negative coordinates, 100/125/150/200% DPI.
+- Narrator or Accessibility Insights: Settings window, toggle names/values, picker selection,
+  disabled role help, slider range/value, Save/Cancel, and sensible focus order.
+- Dark/light themes, large DPI, focus visibility, and disconnected-device presentation.
+
+If an interactive desktop is unavailable, GUI and Narrator results remain unverified; automated
+geometry/state tests must not be described as live accessibility evidence.
 
 ## A. Keyboard engine (AUTOMATED IN CI + PROPERTY TEST)
 

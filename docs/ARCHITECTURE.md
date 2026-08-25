@@ -90,6 +90,19 @@ the worker receives only the copied snapshot, reads a bounded set of recent logs
 local ZIP, posts completion through `EventQueue`, and is joined during shutdown. It owns no
 HWND/App references and performs no network operation.
 
+## Settings interaction
+
+**Status: Implemented.** Settings remains a single D2D/DirectWrite owner-drawn HWND. A
+main-thread-owned native picker popup hosts a real LISTBOX for enumerated choices; its state is
+copied from the current draft and commits back only on click/Enter. Escape/focus loss destroys
+the popup without changing the draft. Picker geometry is computed in screen pixels, prefers
+below-then-above placement, and clamps to the nearest monitor work area.
+
+Native child semantic controls are layered over the painted rows: owner-drawn buttons expose
+names/current values/help descriptions, while native trackbars expose range semantics. The
+Settings WndProc routes child notifications back into the same draft/validation state; no
+worker-thread or COM interface is touched by a picker.
+
 ## Startup sequence
 
 single-instance check (named mutex) -> DPI awareness (PerMonitorV2) -> logging init ->
