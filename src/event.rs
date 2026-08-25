@@ -66,6 +66,7 @@ pub enum AppEvent {
     // Commands executed on the main thread.
     ShowSettings,
     ShowDiagnostics,
+    OpenSettingsPicker(crate::ui::picker::PickerKind),
     ShowStatusOverlay,
     RunDiagnosticsSelfTest,
     CopyDiagnostics,

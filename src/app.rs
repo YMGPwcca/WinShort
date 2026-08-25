@@ -291,6 +291,43 @@ impl App {
             Err(error) => error_!("create diagnostics failed: {error}"),
         }
     }
+    fn open_settings_picker(&mut self, kind: crate::ui::picker::PickerKind) {
+        let devices = self.audio_devices();
+        let monitors = crate::platform::monitor::all();
+        if let Some(settings) = &mut self.settings {
+            if let Err(error) = settings.open_picker(kind, devices, monitors) {
+                error_!("open settings picker failed: {error}");
+            }
+        }
+    }
+
+    pub(crate) fn commit_settings_picker(
+        &mut self,
+        kind: crate::ui::picker::PickerKind,
+        value: crate::ui::picker::PickerValue,
+    ) {
+        if let Some(settings) = &mut self.settings {
+            settings.commit_picker(kind, value);
+        }
+    }
+
+    pub(crate) fn cancel_settings_picker(&mut self, popup_hwnd: windows::Win32::Foundation::HWND) {
+        if let Some(settings) = &mut self.settings {
+            if settings.picker_hwnd() == Some(popup_hwnd) {
+                settings.cancel_picker();
+            }
+        }
+    }
+    pub(crate) fn close_settings_picker(&mut self) {
+        if let Some(settings) = &mut self.settings {
+            settings.cancel_picker();
+        }
+    }
+    pub(crate) fn remember_settings_position(&mut self) {
+        if let Some(settings) = &mut self.settings {
+            settings.persist_position();
+        }
+    }
 
     fn copy_diagnostics(&mut self) {
         let snapshot = self.diagnostics_snapshot();
@@ -528,6 +565,7 @@ impl App {
         match ev {
             AppEvent::ShowSettings => self.show_settings(),
             AppEvent::ShowDiagnostics => self.show_diagnostics(),
+            AppEvent::OpenSettingsPicker(kind) => self.open_settings_picker(kind),
             AppEvent::ShowStatusOverlay => self.show_status_overlay(),
             AppEvent::RunDiagnosticsSelfTest => self.run_diagnostics_self_test(),
             AppEvent::CopyDiagnostics => self.copy_diagnostics(),
@@ -897,7 +935,8 @@ impl App {
         if let Some(t) = self.tray.take() {
             t.remove();
         }
-        if let Some(s) = self.settings.take() {
+        if let Some(mut s) = self.settings.take() {
+            s.persist_position();
             unsafe {
                 let _ = DestroyWindow(s.hwnd);
             }

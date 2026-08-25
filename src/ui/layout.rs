@@ -239,13 +239,13 @@ impl SettingsLayout {
                     ElementId::InputRole,
                     ElementKind::Value,
                     "Input role",
-                    "Endpoint role used for the microphone",
+                    "Only applies when following the Windows default device",
                 ),
                 row(
                     ElementId::OutputRole,
                     ElementKind::Value,
                     "Output role",
-                    "Endpoint role used for speakers",
+                    "Only applies when following the Windows default device",
                 ),
             ],
         );
