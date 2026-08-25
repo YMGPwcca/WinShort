@@ -71,9 +71,9 @@ impl fmt::Display for ModifierMask {
     }
 }
 
-/// A named virtual key the binder understands. Newtype over the platform VK code
-/// (normalized: side-specific codes collapse to their generic value; numpad digits
-/// normalize to top-row digits so Win+Numpad3 behaves like Win+3).
+/// A named virtual key the binder understands. Newtype over the platform VK
+/// code (side-specific codes collapse to their generic value during raw-input
+/// normalization; numpad keys stay DISTINCT from top-row digits, #11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VirtualKey(pub u16);
 
