@@ -10,6 +10,17 @@ pub struct DeviceId {
     pub name: String,
 }
 
+/// Worker-published endpoint binding identity for diagnostics. This is the
+/// result of `GetDefaultAudioEndpoint` or explicit endpoint resolution; it is
+/// never inferred from the sorted inventory.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioRuntimeSnapshot {
+    pub capture: Option<DeviceId>,
+    pub render: Option<DeviceId>,
+    pub capture_error: Option<String>,
+    pub render_error: Option<String>,
+}
+
 /// Microphone / capture state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioState {

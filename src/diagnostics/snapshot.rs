@@ -64,6 +64,33 @@ pub struct AudioEndpointDiagnostics {
     pub description: Option<String>,
 }
 
+/// Map configured selection plus the worker's resolved binding into the
+/// read-only diagnostics representation. Inventory ordering is intentionally
+/// absent from this function.
+pub fn endpoint_diagnostic(
+    selection: &crate::config::model::DeviceSelection,
+    role: &str,
+    resolved: Option<&crate::audio::state::DeviceId>,
+    error: Option<&str>,
+) -> AudioEndpointDiagnostics {
+    let selector = match selection {
+        crate::config::model::DeviceSelection::Default => "default".into(),
+        crate::config::model::DeviceSelection::Endpoint(value) => value.clone(),
+    };
+    AudioEndpointDiagnostics {
+        selector,
+        role: role.into(),
+        health: if resolved.is_some() {
+            Health::Healthy
+        } else {
+            Health::Unavailable
+        },
+        description: resolved
+            .map(|device| device.name.clone())
+            .or_else(|| error.map(|value| format!("Unavailable — {value}"))),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ForegroundAudioDiagnostics {
     pub health: Health,
@@ -281,5 +308,72 @@ pub fn aggregate_label(aggregate: Aggregate) -> &'static str {
         Aggregate::Mixed => "Mixed",
         Aggregate::NoExternalApp => "No external app",
         Aggregate::Error => "Error",
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+    use crate::audio::state::DeviceId;
+    use crate::config::model::{DeviceSelection, EndpointRole};
+
+    fn device(name: &str, endpoint: &str) -> DeviceId {
+        DeviceId {
+            name: name.into(),
+            endpoint: endpoint.into(),
+        }
+    }
+
+    #[test]
+    fn default_uses_actual_binding_not_inventory_order() {
+        let resolved = device("Zowie Monitor", "actual-default");
+        let result = endpoint_diagnostic(
+            &DeviceSelection::Default,
+            EndpointRole::Multimedia.label(),
+            Some(&resolved),
+            None,
+        );
+        assert_eq!(result.selector, "default");
+        assert_eq!(result.health, Health::Healthy);
+        assert_eq!(result.description.as_deref(), Some("Zowie Monitor"));
+    }
+
+    #[test]
+    fn default_with_nonempty_inventory_but_no_binding_is_unavailable() {
+        let _alphabetical_inventory = [device("AirPods", "first"), device("Speakers", "second")];
+        let result = endpoint_diagnostic(
+            &DeviceSelection::Default,
+            EndpointRole::Console.label(),
+            None,
+            Some("default endpoint unresolved"),
+        );
+        assert_eq!(result.health, Health::Unavailable);
+        assert_eq!(
+            result.description.as_deref(),
+            Some("Unavailable — default endpoint unresolved")
+        );
+    }
+
+    #[test]
+    fn explicit_resolved_and_missing_cases_are_independent() {
+        let resolved = device("USB DAC", "explicit-id");
+        let healthy = endpoint_diagnostic(
+            &DeviceSelection::Endpoint("explicit-id".into()),
+            EndpointRole::Console.label(),
+            Some(&resolved),
+            None,
+        );
+        let missing = endpoint_diagnostic(
+            &DeviceSelection::Endpoint("missing-id".into()),
+            EndpointRole::Console.label(),
+            None,
+            None,
+        );
+        assert_eq!(healthy.selector, "explicit-id");
+        assert_eq!(healthy.health, Health::Healthy);
+        assert_eq!(healthy.description.as_deref(), Some("USB DAC"));
+        assert_eq!(missing.selector, "missing-id");
+        assert_eq!(missing.health, Health::Unavailable);
+        assert_eq!(missing.description, None);
     }
 }

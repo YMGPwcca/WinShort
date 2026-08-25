@@ -7,4 +7,6 @@ pub mod sessions;
 pub mod state;
 
 pub use controller::{AudioCommand, AudioService};
-pub use state::{Aggregate, AppAudioState, AudioState, DeviceId, OutputState};
+pub use state::{
+    Aggregate, AppAudioState, AudioRuntimeSnapshot, AudioState, DeviceId, OutputState,
+};

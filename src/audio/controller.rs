@@ -11,7 +11,7 @@ use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
 use crate::audio::devices::EndpointBinding;
 use crate::audio::notifications::DeviceNotificationClient;
-use crate::audio::state::{AudioState, OutputState};
+use crate::audio::state::{AudioRuntimeSnapshot, AudioState, OutputState};
 use crate::config::ConfigHandle;
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
@@ -38,21 +38,23 @@ pub enum AudioCommand {
 pub struct AudioService {
     sender: Sender<AudioCommand>,
     devices: Arc<std::sync::RwLock<crate::audio::devices::DeviceLists>>,
+    runtime: Arc<std::sync::RwLock<AudioRuntimeSnapshot>>,
     join: Option<std::thread::JoinHandle<()>>,
 }
-
 impl AudioService {
     pub fn start(
         main_hwnd: windows::Win32::Foundation::HWND,
         config: Arc<ConfigHandle>,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
+        let hwnd_raw = main_hwnd.0 as isize;
         let worker_sender = sender.clone();
         let devices = Arc::new(std::sync::RwLock::new(
             crate::audio::devices::DeviceLists::default(),
         ));
+        let runtime = Arc::new(std::sync::RwLock::new(AudioRuntimeSnapshot::default()));
         let worker_devices = Arc::clone(&devices);
-        let hwnd_raw = main_hwnd.0 as isize;
+        let worker_runtime = Arc::clone(&runtime);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let join = std::thread::Builder::new()
             .name("winshort-audio".into())
@@ -62,6 +64,7 @@ impl AudioService {
                     config,
                     worker_sender,
                     worker_devices,
+                    worker_runtime,
                     receiver,
                     ready_tx,
                 )
@@ -81,6 +84,7 @@ impl AudioService {
         Ok(Self {
             sender,
             devices,
+            runtime,
             join: Some(join),
         })
     }
@@ -91,6 +95,10 @@ impl AudioService {
 
     pub fn devices(&self) -> crate::audio::devices::DeviceLists {
         self.devices.read().expect("audio device list").clone()
+    }
+
+    pub fn runtime_snapshot(&self) -> AudioRuntimeSnapshot {
+        self.runtime.read().expect("audio runtime snapshot").clone()
     }
 
     pub fn shutdown(&mut self) {
@@ -113,10 +121,13 @@ struct AudioController {
     config_revision: u64,
     sender: Sender<AudioCommand>,
     devices: Arc<std::sync::RwLock<crate::audio::devices::DeviceLists>>,
+    runtime: Arc<std::sync::RwLock<AudioRuntimeSnapshot>>,
     enumerator: IMMDeviceEnumerator,
     device_callback: IMMNotificationClient,
     capture: Option<EndpointBinding>,
     render: Option<EndpointBinding>,
+    capture_error: Option<String>,
+    render_error: Option<String>,
 }
 
 impl AudioController {
@@ -125,6 +136,7 @@ impl AudioController {
         config: Arc<ConfigHandle>,
         sender: Sender<AudioCommand>,
         devices: Arc<std::sync::RwLock<crate::audio::devices::DeviceLists>>,
+        runtime: Arc<std::sync::RwLock<AudioRuntimeSnapshot>>,
     ) -> Result<Self> {
         let enumerator: IMMDeviceEnumerator = unsafe {
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
@@ -143,10 +155,13 @@ impl AudioController {
             config_revision: revision,
             sender,
             devices,
+            runtime,
             enumerator,
             device_callback,
             capture: None,
             render: None,
+            capture_error: None,
+            render_error: None,
         };
         controller.rebuild_all(true);
         Ok(controller)
@@ -246,12 +261,16 @@ impl AudioController {
     }
 
     fn rebuild(&mut self, flow: EndpointFlow) {
-        let slot = match flow {
-            EndpointFlow::Capture => &mut self.capture,
-            EndpointFlow::Render => &mut self.render,
-        };
-        // Registration is dropped with the binding (#36).
-        let _ = slot.take();
+        match flow {
+            EndpointFlow::Capture => {
+                let _ = self.capture.take();
+                self.capture_error = None;
+            }
+            EndpointFlow::Render => {
+                let _ = self.render.take();
+                self.render_error = None;
+            }
+        }
         let config = self.config.get();
         let (selection, role) = match flow {
             EndpointFlow::Capture => (&config.audio.input_device, config.audio.input_role),
@@ -261,12 +280,38 @@ impl AudioController {
         {
             Ok(endpoint) => {
                 crate::info!("audio {:?} endpoint: {}", flow, endpoint.identity.name);
-                *slot = Some(endpoint);
+                match flow {
+                    EndpointFlow::Capture => self.capture = Some(endpoint),
+                    EndpointFlow::Render => self.render = Some(endpoint),
+                }
             }
-            Err(e) => {
-                crate::warn_!("audio {:?} unavailable: {e}", flow);
-                *slot = None;
+            Err(error) => {
+                crate::warn_!("audio {:?} unavailable: {error}", flow);
+                match flow {
+                    EndpointFlow::Capture => self.capture_error = Some(error.to_string()),
+                    EndpointFlow::Render => self.render_error = Some(error.to_string()),
+                }
             }
+        }
+        self.publish_runtime();
+    }
+
+    fn publish_runtime(&self) {
+        let snapshot = AudioRuntimeSnapshot {
+            capture: self
+                .capture
+                .as_ref()
+                .map(|endpoint| endpoint.identity.clone()),
+            render: self
+                .render
+                .as_ref()
+                .map(|endpoint| endpoint.identity.clone()),
+            capture_error: self.capture_error.clone(),
+            render_error: self.render_error.clone(),
+        };
+        match self.runtime.write() {
+            Ok(mut current) => *current = snapshot,
+            Err(poisoned) => *poisoned.into_inner() = snapshot,
         }
     }
 
@@ -342,6 +387,7 @@ fn audio_thread(
     config: Arc<ConfigHandle>,
     sender: Sender<AudioCommand>,
     devices: Arc<std::sync::RwLock<crate::audio::devices::DeviceLists>>,
+    runtime: Arc<std::sync::RwLock<AudioRuntimeSnapshot>>,
     receiver: Receiver<AudioCommand>,
     ready: mpsc::SyncSender<std::result::Result<(), Error>>,
 ) {
@@ -353,7 +399,7 @@ fn audio_thread(
         return;
     }
 
-    let mut controller = match AudioController::create(hwnd_raw, config, sender, devices) {
+    let mut controller = match AudioController::create(hwnd_raw, config, sender, devices, runtime) {
         Ok(controller) => controller,
         Err(e) => {
             let _ = ready.send(Err(e));

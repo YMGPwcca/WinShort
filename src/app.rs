@@ -625,16 +625,22 @@ impl App {
             Health::Healthy
         };
 
-        let devices = self.audio_devices();
-        let input = diagnostics_endpoint(
+        let runtime = self
+            .audio
+            .as_ref()
+            .map(crate::audio::AudioService::runtime_snapshot)
+            .unwrap_or_default();
+        let input = crate::diagnostics::snapshot::endpoint_diagnostic(
             &raw_config.audio.input_device,
             raw_config.audio.input_role.label(),
-            &devices.inputs,
+            runtime.capture.as_ref(),
+            runtime.capture_error.as_deref(),
         );
-        let output = diagnostics_endpoint(
+        let output = crate::diagnostics::snapshot::endpoint_diagnostic(
             &raw_config.audio.output_device,
             raw_config.audio.output_role.label(),
-            &devices.outputs,
+            runtime.render.as_ref(),
+            runtime.render_error.as_deref(),
         );
         let foreground_health = match self.foreground_state.aggregate {
             Aggregate::Error => Health::Error,
@@ -906,33 +912,6 @@ impl App {
                 windows::Win32::Foundation::LPARAM(0),
             );
         }
-    }
-}
-
-fn diagnostics_endpoint(
-    selection: &crate::config::model::DeviceSelection,
-    role: &str,
-    devices: &[crate::audio::state::DeviceId],
-) -> crate::diagnostics::snapshot::AudioEndpointDiagnostics {
-    use crate::config::model::DeviceSelection;
-    use crate::diagnostics::snapshot::{AudioEndpointDiagnostics, Health};
-
-    let (selector, device) = match selection {
-        DeviceSelection::Default => ("default".into(), devices.first()),
-        DeviceSelection::Endpoint(endpoint) => (
-            endpoint.clone(),
-            devices.iter().find(|device| device.endpoint == *endpoint),
-        ),
-    };
-    AudioEndpointDiagnostics {
-        selector,
-        role: role.into(),
-        health: if device.is_some() {
-            Health::Healthy
-        } else {
-            Health::Unavailable
-        },
-        description: device.map(|value| value.name.clone()),
     }
 }
 
