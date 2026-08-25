@@ -90,6 +90,22 @@ the worker receives only the copied snapshot, reads a bounded set of recent logs
 local ZIP, posts completion through `EventQueue`, and is joined during shutdown. It owns no
 HWND/App references and performs no network operation.
 
+## Logging lifecycle
+
+Logging is native and process-local: an atomic runtime threshold protects a
+mutex-owned `BufWriter<File>` for the current local civil date. Release builds
+start at Info; debug builds start at Debug. Advanced Settings can enable or
+disable temporary Debug logging without changing the config draft or schema.
+Normal records flush on a five-second dirty timer, Warn/Error, Open Logs,
+support-bundle creation, and orderly shutdown. Daily rollover flushes the old
+writer, opens the new local-day file, and runs the fixed 14-day exact-name
+retention cleanup.
+
+Each record takes one `GetLocalTime` snapshot for both filename date and
+timestamp, so timezone/DST changes apply to the next record without restart.
+The panic hook writes a synchronous `[PANIC]` record through an independent
+append handle because the release profile uses `panic = "abort"`.
+
 ## Settings interaction
 
 **Status: Implemented.** Settings remains a single D2D/DirectWrite owner-drawn HWND. A
@@ -126,7 +142,7 @@ independently on failure (logged, surfaced in Settings → Advanced).
 
 `App::begin_shutdown` (src/app.rs), in order:
 
-1. `shutting_down = true` — dispatch gate for queued/stale events
+1. `shutting_down = true` and stop the logging flush timer
 2. signal the second-instance watcher shutdown event before any window goes away (#24)
 3. keyboard service: suspend + shutdown (unhook happens on the keyboard thread)
 4. audio service shutdown (unregister callbacks, join)
@@ -135,7 +151,8 @@ independently on failure (logged, surfaced in Settings → Advanced).
 7. overlay: hide + `DestroyWindow`
 8. tray: `Shell_NotifyIconW(NIM_DELETE)`
 9. settings window destroyed
-10. `PostMessageW(main_hwnd, WM_CLOSE)` — main window destruction happens outside any `App`
+10. flush the buffered logger
+11. `PostMessageW(main_hwnd, WM_CLOSE)` — main window destruction happens outside any `App`
     borrow (reentrancy-safe; see WIN32_LIFETIME.md)
 
 ## Verification infrastructure

@@ -127,6 +127,13 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 
 Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
+## Logging policy
+
+Runtime logging level is operational state, not configuration. Release builds
+start at Info; debug builds start at Debug. Advanced Settings can enable
+temporary Debug logging until restart, but no logging level field is persisted
+in `config.toml` and #32 does not require a schema bump.
+
 ## Migration
 
 Schema v1 files, including versionless legacy files, load with the v2 defaults for

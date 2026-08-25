@@ -42,6 +42,16 @@ Manual checks:
 - Close Diagnostics or exit WinShort while a bundle is being created.
 
 No automatic upload, telemetry, raw config attachment, or raw log attachment is implemented.
+
+## Production logging (AUTOMATED)
+
+Automated coverage verifies release/debug default levels, immediate runtime
+level transitions, buffered Info/Debug writes, Warn/Error flush behavior,
+dirty periodic flush state, exact-name 14-day retention, rollover, local
+date/time formatting, future/malformed file preservation, support-bundle
+flush integration, panic emergency persistence, and panic-path sanitization.
+The panic acceptance uses a deterministic child test process; no machine
+timezone mutation or production crash flag is used.
 ## Settings interaction and accessibility (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
 
 Automated coverage:

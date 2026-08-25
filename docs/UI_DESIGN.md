@@ -88,8 +88,8 @@ of the native Settings surface remains tracked separately in #29.
 ## Settings layout — current
 
 Width 610 logical dip; height fits content up to work area − 48. Sections top-to-bottom:
-General, Hotkeys, Audio, Virtual Desktops, Overlay, Advanced (Diagnostics & support entry,
-config folder, reset draft).
+General, Hotkeys, Audio, Virtual Desktops, Overlay, Advanced (temporary Debug logging,
+Diagnostics & support entry, config folder, reset draft).
 Dirty-state: Save enabled only when draft ≠ live; Cancel restores the live snapshot.
 
 ## Diagnostics & Support — current
@@ -100,9 +100,9 @@ DirectWrite, theme tokens, rounded DWM chrome, and PMv2 DPI handling.
 
 The page is a dense read-only operator view: application/Windows build, keyboard hook and
 bindings, audio endpoint availability and foreground aggregate, desktop backend/count/last
-served, config path/schema/latch/warnings, overlay target/DPI, startup registration, logs, and
-degraded startup reasons. It also exposes Copy Diagnostics, Open Logs, Create Support Bundle,
-Run Self-Test, and Close.
+served, config path/schema/latch/warnings, overlay target/DPI, startup registration, runtime log
+level/default/retention/buffering, and degraded startup reasons. It also exposes Copy Diagnostics,
+Open Logs, Create Support Bundle, Run Self-Test, and Close.
 
 Self-Test is passive: it observes current cached services, endpoint inventory, config metadata,
 desktop status, overlay availability, logging directory metadata, and startup readability. It

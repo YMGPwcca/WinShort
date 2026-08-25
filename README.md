@@ -75,6 +75,10 @@ The binary lands at `target/release/winshort.exe` (GUI subsystem, no console win
 
 Configuration lives at `%LOCALAPPDATA%\WinShort\config.toml`; logs in
 `%LOCALAPPDATA%\WinShort\logs\`. See [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md).
+Logging defaults to **Info** in release builds and **Debug** in debug builds. Advanced
+Settings exposes temporary Debug logging until restart; it is not persisted in
+`config.toml`. Daily logs use a 14-day retention window, buffered normal writes,
+Warn/Error flushes, a bounded five-second dirty flush, and synchronous panic records.
 
 ## Virtual desktop compatibility
 
