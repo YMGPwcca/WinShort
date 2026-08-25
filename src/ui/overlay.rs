@@ -57,6 +57,43 @@ const BASE_WIDTH: f32 = 372.0;
 const ROW_HEIGHT: f32 = 62.0;
 const PAD: f32 = 16.0;
 const SHADOW_PAD: f32 = 14.0;
+const BORDER_PAD: f32 = 1.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SurfaceGeometry {
+    width: f32,
+    height: f32,
+    body_left: f32,
+    body_top: f32,
+    body_right: f32,
+    body_bottom: f32,
+}
+
+impl SurfaceGeometry {
+    fn pixel_size(self, dpi: u32) -> SIZE {
+        let scale = dpi as f32 / 96.0;
+        SIZE {
+            cx: (self.width * scale).ceil() as i32,
+            cy: (self.height * scale).ceil() as i32,
+        }
+    }
+}
+
+fn surface_geometry(scale: f32, row_count: usize, shadow_enabled: bool) -> SurfaceGeometry {
+    let scale = scale.clamp(0.7, 1.6);
+    let body_width = BASE_WIDTH * scale;
+    let body_height = (PAD * 2.0 + ROW_HEIGHT * row_count as f32) * scale;
+    let shadow_padding = if shadow_enabled { SHADOW_PAD } else { 0.0 };
+    let edge_padding = shadow_padding + BORDER_PAD;
+    SurfaceGeometry {
+        width: body_width + edge_padding * 2.0,
+        height: body_height + edge_padding * 2.0,
+        body_left: edge_padding,
+        body_top: edge_padding,
+        body_right: edge_padding + body_width,
+        body_bottom: edge_padding + body_height,
+    }
+}
 
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 
@@ -787,17 +824,10 @@ impl OverlayGraphics {
         palette: OverlayPalette,
     ) -> Result<LayeredSurface> {
         let scale = scale.clamp(0.7, 1.6);
-        let logical_w = BASE_WIDTH * scale;
-        let shadow_pad = if palette.shadow_enabled {
-            SHADOW_PAD
-        } else {
-            0.0
-        };
-        let logical_h =
-            (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale + shadow_pad * 2.0;
-        let px_scale = dpi as f32 / 96.0;
-        let width = (logical_w * px_scale).ceil() as u32;
-        let height = (logical_h * px_scale).ceil() as u32;
+        let geometry = surface_geometry(scale, model.rows.len(), palette.shadow_enabled);
+        let size = geometry.pixel_size(dpi);
+        let width = size.cx as u32;
+        let height = size.cy as u32;
 
         unsafe {
             let bitmap: IWICBitmap = self
@@ -878,21 +908,16 @@ fn draw_overlay(
     palette: OverlayPalette,
 ) -> Result<()> {
     unsafe {
-        let width = BASE_WIDTH * scale;
-        let shadow_pad = if palette.shadow_enabled {
-            SHADOW_PAD
-        } else {
-            0.0
-        };
-        let body_h = (PAD * 2.0 + ROW_HEIGHT * model.rows.len() as f32) * scale;
-        let left = shadow_pad;
-        let top = shadow_pad;
+        let scale = scale.clamp(0.7, 1.6);
+        let geometry = surface_geometry(scale, model.rows.len(), palette.shadow_enabled);
         let body = D2D_RECT_F {
-            left,
-            top,
-            right: left + width,
-            bottom: top + body_h,
+            left: geometry.body_left,
+            top: geometry.body_top,
+            right: geometry.body_right,
+            bottom: geometry.body_bottom,
         };
+        let left = geometry.body_left;
+        let top = geometry.body_top;
 
         if palette.shadow_enabled {
             for (spread, alpha) in [(8.0, 18u8), (5.0, 26u8), (2.0, 34u8)] {
@@ -1534,5 +1559,35 @@ mod tests {
         assert_eq!(fresh.phase, Phase::Appearing);
         assert!(fresh.restart_phase);
         assert_eq!(fresh.hold_after_now_ms, 1440);
+    }
+
+    #[test]
+    fn surface_geometry_keeps_body_inside_final_surface() {
+        for scale in [0.7, 1.0, 1.6] {
+            for dpi in [96, 144, 192] {
+                for shadow_enabled in [false, true] {
+                    let geometry = surface_geometry(scale, 3, shadow_enabled);
+                    let right_padding = geometry.width - geometry.body_right;
+                    let bottom_padding = geometry.height - geometry.body_bottom;
+                    assert!(geometry.body_left >= 0.0);
+                    assert!(geometry.body_top >= 0.0);
+                    assert!(geometry.body_right <= geometry.width);
+                    assert!(geometry.body_bottom <= geometry.height);
+                    assert!((geometry.body_left - right_padding).abs() < f32::EPSILON);
+                    assert!((geometry.body_top - bottom_padding).abs() < f32::EPSILON);
+                    if shadow_enabled {
+                        assert!(
+                            (geometry.body_left - (SHADOW_PAD + BORDER_PAD)).abs() < f32::EPSILON
+                        );
+                    } else {
+                        assert!((geometry.body_left - BORDER_PAD).abs() < f32::EPSILON);
+                    }
+                    let pixels = geometry.pixel_size(dpi);
+                    let dpi_scale = dpi as f32 / 96.0;
+                    assert!(geometry.body_right * dpi_scale <= pixels.cx as f32);
+                    assert!(geometry.body_bottom * dpi_scale <= pixels.cy as f32);
+                }
+            }
+        }
     }
 }
