@@ -1,80 +1,96 @@
 # UI Design
 
-## Stack
+**Status: Implemented** sections describe current `main`; **Planned** sections are design
+intent only (tracked in #29/#30/#31) and must not be read as existing behavior.
 
-| Layer | Technology |
-|---|---|
-| Window chrome | User32; `DwmSetWindowAttribute`: dark titlebar (`DWMWA_USE_IMMERSIVE_DARK_MODE`), `DWMWA_WINDOW_CORNER_PREFERENCE = ROUND`, backdrop probe with graceful fallback |
-| Rendering | Direct2D (ID2D1DeviceContext) onto DXGI flip-model swapchain |
-| Text | DirectWrite, Segoe UI Variable (falls back Segoe UI) |
-| Overlay compositing | DirectComposition premultiplied-alpha visual; opacity/offset animations run in DWM |
+## Stack — current
 
-Both windows share one renderer abstraction (`ui/renderer.rs`): device creation, swapchain
-resize, BeginDraw/EndDraw, device-lost recovery (full re-create once per occurrence).
+| Layer | Technology | Status |
+|---|---|---|
+| Window chrome | User32; DWM: dark titlebar, corner preference ROUND, caption color | **Implemented** |
+| Settings rendering | Direct2D `ID2D1HwndRenderTarget` + DirectWrite (`ui/renderer.rs`); BGRA8, per-target `SetDpi` | **Implemented** |
+| Overlay compositing | WIC software render target → `CopyPixels` → `CreateDIBSection` → `UpdateLayeredWindow` | **Implemented** |
+| Text | DirectWrite, "Segoe UI Variable Text" with "Segoe UI" fallback | **Implemented** |
 
-## Design tokens
+There is no DXGI swapchain, no `ID2D1DeviceContext`, no DirectComposition anywhere in the
+codebase. The two windows do not share a renderer object: `renderer.rs` serves settings only;
+the overlay owns an independent WIC/DIB stack.
 
-Logical px at 96 DPI; everything multiplies by the window's current DPI scale.
+Device-loss recovery is implicit: any `EndDraw` failure drops the whole settings Renderer and
+the next paint rebuilds factory/target/brushes from scratch. The overlay re-creates its surface
+per `show()`.
 
-```
-radius.card 8   radius.control 6
-space.xs 4  sm 8  md 12  lg 16  xl 24
-font.caption 12  font.body 14  font.title 20
+## Design tokens — current (`ui/theme.rs`)
 
-dark:  bg #202020  card #2b2b2b  card-hover #313131  stroke #383838
-       text #ffffff  text-dim rgba(255,255,255,.62)
-       accent #60cdff  accent-dim #0078d4? no → #4cc2ff hover #99e0ff
-danger muted #e5795e  ok #6cccb5
-light: bg #f3f3f3 card #fbfbfb ... mirrored
-```
+Logical px at 96 DPI; all layout math happens in 96-DIP space and scales by target DPI.
+Dark theme: bg `#1f1f1f`, card `#2b2b2b`, card-hover `#313131`, border `#393939`,
+text `#ffffff`, text-dim `rgb(191,191,191)`, accent `#60cdff`, hover `#99e0ff`,
+pressed `#0078d4`, danger `#e5795e`, ok `#6cccb5`. Light theme mirrors (`bg #f3f3f3`,
+card `#ffffff`, …). Spacing/radius values are inline literals in `controls.rs`/`layout.rs`
+(8 px grid), not named constants.
 
-Theme follows `AppsUseLightTheme` (HKCU Themes\Personalize), re-read on `WM_SETTINGCHANGE`.
+Theme follows `AppsUseLightTheme` (`HKCU\…\Themes\Personalize`) via `RegGetValueW`,
+re-read on `WM_SETTINGCHANGE` — **settings window only**; the overlay always renders dark
+(planned: follow system there too).
 
-State colors (overlay): Muted `#e5795e` (muted red/orange), Active `#6cccb5`, Changed accent,
-Unavailable gray. No saturation abuse.
+## Widget set — current (`ui/layout.rs`, `ui/controls.rs`)
 
-## Widget set
+Retained-lite: a deterministic layout pass produces `Element { id, rect, kind }`; paint walks
+it, input hit-tests it. Animation tweens (cubic ease-out) tick on a 16 ms WM_TIMER that runs
+only while motion or recording is active; idle UI has no render loop.
 
-Retained-lite: layout pass produces `Vec<Element { id, rect, kind }>`, paint walks it,
-input hit-tests it. Animation state keyed by element id. Event-driven — a timer runs only while
-animations are active (~120–220 ms transitions, ease-out cubic).
+* Toggle row — animated knob
+* Hotkey recorder row — capture-mode box with inline conflict/validation error; Esc cancels;
+  modifier-only rejected (#35)
+* Value rows (device pickers, position, monitor) — click **cycles** values in place; no popup
+* Slider rows — duration / opacity / scale, mouse drag with capture
+* Buttons — footer Cancel / Save (Save disabled until draft differs from live config)
+* Scrollable content column — wheel scrolling with slim custom scrollbar
+* Status row (Advanced) — composed virtual-desktop backend text
 
-* `Section` header + rounded card container
-* `ToggleRow` label + animated toggle (knob slides 140 ms)
-* `HotkeyRow` label + recorder box ("Press a shortcut…" capture mode, conflict inline error)
-* `DropdownRow` custom popup list window (device pickers, position/monitor/role enums)
-* `SliderRow` duration / opacity / scale
-* `Button` primary (Save) / secondary (Cancel); disabled state when draft == live config
-* Scrollable content column with smooth wheel scrolling and slim scrollbar
-* Footer bar: validation message slot · Cancel · Save · transient "✓ Applied"
+Keyboard accessibility actually implemented: Tab / Shift-Tab cycles a fixed focus order
+(skipping disabled rows), Space/Enter activate the focused row, focus ring drawn, focused row
+scrolled into view.
 
-Focus ring: 2 px accent outline; Tab cycles focusables; Space/Enter activate; arrows move sliders.
-Tooltips via native `TOOLTIPS_CLASS` where useful (backend status rows).
+## Widget set — planned (NOT implemented)
 
-## Settings layout
+* Real dropdown popup list windows for device/enum pickers (#29)
+* Native `TOOLTIPS_CLASS` tooltips (#29)
+* Arrow-key slider control and richer keyboard interaction model (#29)
+* Reduced-motion / high-contrast respect and calmer overlay motion (#30)
 
-Width 580 logical px, height fits content up to work area − 48. Sections top-to-bottom:
-General, Hotkeys, Audio, Virtual Desktops, Overlay, Advanced. Dirty-state: Save enabled only when
-draft ≠ live; Cancel restores live snapshot into draft.
+## Settings layout — current
 
-## Overlay
+Width 610 logical dip; height fits content up to work area − 48. Sections top-to-bottom:
+General, Hotkeys, Audio, Virtual Desktops, Overlay, Advanced (read-only backend status).
+Dirty-state: Save enabled only when draft ≠ live; Cancel restores the live snapshot.
 
-Card sized to content (icon + two-line rows), max ~3 rows. Entrance: fade 0→1 + slide-up 12 px,
-120 ms. Hold: `overlay.duration_ms`. Exit: fade + slide-down 180 ms. Repeat actions reset the
-timer and morph content in place. Rendered on its own premultiplied swapchain; DComp visual
-opacity animation performs fades without CPU frames.
+## Overlay — current
 
-Window styles: `WS_POPUP`, `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
-WS_EX_TRANSPARENT | WS_EX_NOREDIRECTIONBITMAP`. Never activates, never taskbar/Alt-Tab,
-click-through. Positioned per config within the target monitor's work area
-(`MonitorFromWindow` of foreground window / primary / specific HMONITOR).
+Window: `WS_POPUP` with `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+WS_EX_TRANSPARENT`. Never activates, never taskbar/Alt-Tab, click-through. Positioned per config
+within the selected monitor's work area (foreground / primary / device match with fallback).
 
-Icons: hand-authored D2D path geometry (microphone, speaker, app window, desktop grid, warning).
-Vector at every DPI; no emoji fonts, no bitmaps.
+Rendering: one persistent layered HWND; each `show()` renders the card bitmap once at the
+target monitor's effective DPI (#49), then a Phase state machine (`Appearing` 140 ms →
+`Holding` → `Leaving` 180 ms) ticks a 16 ms timer varying layer alpha (ease curves) and slide
+offset — CPU-composited frames through `UpdateLayeredWindow`, no GPU swapchain. `WM_DPICHANGED`
+is deliberately ignored for the overlay: it owns its own size/position and re-renders at the
+new monitor's DPI on next show.
+
+Icons: hand-authored D2D path geometry (microphone, speaker, app window, desktop grid,
+warning). Vector at every DPI; no emoji fonts, no bitmaps.
+
+## DPI — current (#49)
+
+Process-wide PerMonitorV2 before any window creation. Settings sizes itself to the primary
+monitor's DPI and handles `WM_DPICHANGED` (clamp ≥ 96, retarget + rebuild formats, resize to
+suggested rect, relayout). Overlay uses `effective_render_dpi(target_monitor)` — the selected
+monitor's effective DPI, never maxed across monitors.
 
 ## Quality gate
 
-Before calling any screen "done": spacing consistent, alignment on the 8 px grid, text renders
-crisp at 100/125/150/175/200 %, hover/press/focus states all present, dark+light both checked,
-window resize keeps footer pinned, animations ≥ 50 fps during motion only, error/disabled/empty
-states designed (device missing, backend unsupported, invalid hotkey).
+Applies to changes under `src/ui/`: spacing consistent on the 8 px grid, text crisp at
+100–200 %, hover/press/focus/disabled states present, dark+light checked, error/empty states
+designed (device missing, backend unsupported, invalid hotkey). Screenshot automation does not
+exist yet (planned; see TEST_PLAN.md).

@@ -1,5 +1,6 @@
 # Virtual Desktop Compatibility
 
+**Status: Implemented** (native backend on whitelisted builds; bounded fallback elsewhere).
 The public `IVirtualDesktopManager` cannot switch desktops (spec §19). Absolute switching uses
 undocumented Shell COM interfaces whose layout changes between builds. This file records exactly
 what WinShort supports and why.
@@ -82,28 +83,54 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 
 ## Runtime behavior
 
-* `desktop/internal_api/detect.rs` reads the build number (registry `CurrentBuildNumber`).
-* Whitelisted build → internal backend available; `SwitchDesktop(n)` resolves index n−1 through
-  `GetDesktops` ordering and calls `SwitchDesktop`.
-* Unknown build or any COM failure during setup → status becomes `Unsupported { build }`,
-  diagnostics logged with reason, engine transparently routes switches to the keyboard fallback.
-* Explorer restart kills the STA proxies (`RPC_S_SERVER_UNAVAILABLE`); the desktop thread rebuilds
-  the provider chain lazily on next command instead of failing permanently.
+* `desktop/detect.rs` reads the build number from registry (`CurrentBuildNumber`; UBR is read
+  for display only and plays no role in allow/deny).
+* Whitelisted build → native backend available; `SwitchDesktop(n)` resolves index n−1 through
+  `GetDesktops` ordering and calls `SwitchDesktop`. A request equal to the current desktop is
+  an early no-op.
+* Unknown build or setup failure → status `UnsupportedBuild { build }`, diagnostics logged,
+  switches route to the keyboard fallback.
+* Explorer restart kills the STA proxies (RPC-class error); the controller performs one inline
+  proxy rebuild + retry, and if that fails it re-probes lazily once per subsequent command —
+  never permanently disabled, never infinitely retried within one command.
+
+## Error taxonomy and fallback policy
+
+`DesktopError` variants (`desktop/backend.rs`), partitioned by `permits_fallback()`:
+
+| Transient — may retry/fallback | Semantic — never fall back |
+|---|---|
+| `RpcDisconnected` (Explorer RPC gone) | `TargetOutOfRange { requested, count }` — target doesn't exist |
+| `BackendUnavailable` (not activated / safety limit) | `UnsupportedBuild` — fail closed |
+| | `AbiMismatch` — retained for typed matching; currently surfaced via BackendUnavailable |
+| | `SwitchFailed(hr)` — Shell rejected the switch |
+
+The exact partition is proptested (`policy_props.rs`, #37). `index >= count` refuses **before**
+any input injection (#20): a too-large target never triggers SendInput keys.
 
 ## Fallback backend guarantees
 
-The SendInput fallback synthesizes `Ctrl+Win+Left` **32 times** to saturate at desktop 1, then
-`Ctrl+Win+Right` *index* times. It does NOT track the current index — the saturate-left walk
-makes tracking unnecessary and self-correcting every invocation. It is **best effort**: another
-app or user moving desktops during the walk can shift the landing point. A partial `SendInput`
-aborts the remaining chords immediately (keys are released best effort) and diagnostics report
-"target not verified". An elevated foreground window blocks synthesized input entirely (UIPI);
-the log names this possibility. The settings Advanced page shows which backend is active,
-the reason, and the last-served backend (#21/#22).
+`KeyboardFallback::switch_to` (src/desktop/keyboard_fallback.rs):
 
-**Whitelist scope:** membership is decided by build family only (`26100`,
-`26200..=26299`). The registry UBR (revision) value shown in diagnostics is informational and
-plays no part in allow/deny decisions.
+* Saturate-left then move-right: exactly **32 `Ctrl+Win+Left` chords**, then `index`
+  `Ctrl+Win+Right` chords. No current-index tracking — the walk self-corrects every invocation.
+* Per-chord order: Ctrl down → LWin down (only if Win isn't already physically held) → extended
+  Arrow down/up → LWin up (if injected) → Ctrl up. Every event carries a `dwExtraInfo` tag so
+  WinShort can identify its own injections downstream.
+* Timing: ~18 ms pause per Left chord, ~28 ms per Right chord.
+* Guard: targets above index 31 are refused (`TargetOutOfRange`) without injecting anything.
+* Partial `SendInput`: remaining chords abort immediately, best-effort key-up cleanup is sent
+  for any key possibly left down, error reports "target not verified". An elevated foreground
+  window blocks synthesized input entirely (UIPI); the log names this possibility.
+* The fallback cannot enumerate: `desktop_count()`/`current_desktop()` report unavailable.
+
+## Status surface
+
+Settings → Advanced shows one composed read-only row ("Virtual desktop engine"): active
+backend label, desktop count when known, native availability/reason (`Unsupported build N`),
+and last served. `last_served` (#21/#22) records the backend that actually completed the most
+recent switch — native success updates it even after a rebuild; a failed fallback walk leaves
+it unchanged.
 
 ## Tested results (this machine)
 
