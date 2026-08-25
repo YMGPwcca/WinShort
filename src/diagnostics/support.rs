@@ -41,25 +41,25 @@ impl Sanitizer {
     }
 
     fn path_token(&mut self, raw: &str) -> String {
+        let normalized = normalize_path(raw);
         if let Some((_, token)) = self
             .paths
             .iter()
-            .find(|(value, _)| value.eq_ignore_ascii_case(raw))
+            .find(|(value, _)| value.eq_ignore_ascii_case(&normalized))
         {
             return token.clone();
         }
-        let basename = raw
-            .rsplit(['\\', '/'])
+        let basename = normalized
+            .rsplit('\\')
             .find(|part| !part.is_empty())
-            .unwrap_or("path")
-            .trim_matches(['"', '\'']);
+            .unwrap_or("path");
         let basename = if basename.is_empty() {
             "path"
         } else {
             basename
         };
         let token = format!("{} [path#{:02}]", basename, self.paths.len() + 1);
-        self.paths.push((raw.into(), token.clone()));
+        self.paths.push((normalized, token.clone()));
         token
     }
 
@@ -95,42 +95,165 @@ impl Sanitizer {
     }
 }
 
+fn normalize_path(raw: &str) -> String {
+    let mut value = raw.trim_matches(['"', '\'']).replace('/', "\\");
+    if value
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
+    {
+        value.replace_range(..8, r"\\");
+    } else if value
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\"))
+    {
+        value.replace_range(..4, "");
+    }
+    value
+}
+
 fn replace_absolute_paths(input: &str, sanitizer: &mut Sanitizer) -> String {
     let bytes = input.as_bytes();
     let mut output = String::with_capacity(input.len());
     let mut last = 0usize;
     let mut index = 0usize;
-    while index + 2 < bytes.len() {
-        let drive = bytes[index].is_ascii_alphabetic()
-            && bytes[index + 1] == b':'
-            && matches!(bytes[index + 2], b'\\' | b'/');
-        if !drive {
+    while index < bytes.len() {
+        let Some((replace_start, replace_end, path_start, path_end, quote)) =
+            path_match_at(input, index)
+        else {
             index += 1;
             continue;
+        };
+        output.push_str(&input[last..replace_start]);
+        if let Some(quote) = quote {
+            output.push(quote as char);
         }
-        let start = index;
-        let mut end = index + 3;
-        while end < bytes.len()
-            && !bytes[end].is_ascii_whitespace()
-            && !matches!(bytes[end], b'"' | b'\'' | b',' | b';' | b')' | b']' | b'}')
-        {
-            end += 1;
+        output.push_str(&sanitizer.path_token(&input[path_start..path_end]));
+        if let Some(quote) = quote {
+            output.push(quote as char);
         }
-        let mut value_end = end;
-        while value_end > start && matches!(bytes[value_end - 1], b'.' | b':' | b'!' | b'?') {
-            value_end -= 1;
-        }
-        if value_end <= start + 3 {
-            index += 1;
-            continue;
-        }
-        output.push_str(&input[last..start]);
-        output.push_str(&sanitizer.path_token(&input[start..value_end]));
-        last = value_end;
-        index = value_end;
+        last = replace_end;
+        index = replace_end;
     }
     output.push_str(&input[last..]);
     output
+}
+
+fn path_match_at(input: &str, index: usize) -> Option<(usize, usize, usize, usize, Option<u8>)> {
+    let bytes = input.as_bytes();
+    if index >= bytes.len() {
+        return None;
+    }
+    if matches!(bytes[index], b'"' | b'\'') {
+        let path_start = index + 1;
+        if !is_absolute_path_start(bytes, path_start) {
+            return None;
+        }
+        let quote = bytes[index];
+        let path_end = input[path_start..]
+            .as_bytes()
+            .iter()
+            .position(|value| *value == quote)
+            .map(|offset| path_start + offset)?;
+        return (path_end > path_start).then_some((
+            index,
+            path_end + 1,
+            path_start,
+            path_end,
+            Some(quote),
+        ));
+    }
+    if !is_absolute_path_start(bytes, index) {
+        return None;
+    }
+    let context = path_context(input, index);
+    let mut path_end = scan_path_end(bytes, index, context);
+    while path_end > index && bytes[path_end - 1].is_ascii_whitespace() {
+        path_end -= 1;
+    }
+    while path_end > index && matches!(bytes[path_end - 1], b'.' | b',' | b';' | b':' | b'!' | b'?')
+    {
+        path_end -= 1;
+    }
+    (path_end > index + 2).then_some((index, path_end, index, path_end, None))
+}
+
+fn is_absolute_path_start(bytes: &[u8], index: usize) -> bool {
+    if index + 2 < bytes.len()
+        && bytes[index].is_ascii_alphabetic()
+        && bytes[index + 1] == b':'
+        && matches!(bytes[index + 2], b'\\' | b'/')
+    {
+        return true;
+    }
+    if index + 3 >= bytes.len() || bytes[index] != b'\\' || bytes[index + 1] != b'\\' {
+        return false;
+    }
+    !(bytes[index + 2] == b'.' && bytes[index + 3] == b'\\')
+}
+
+fn path_context(input: &str, index: usize) -> bool {
+    let line_start = input[..index].rfind('\n').map_or(0, |offset| offset + 1);
+    let prefix = input[line_start..index].to_ascii_lowercase();
+    [
+        "path:",
+        "command_line",
+        "command line",
+        "registered command",
+        "current command",
+    ]
+    .iter()
+    .any(|marker| prefix.contains(marker))
+}
+
+fn scan_path_end(bytes: &[u8], start: usize, context: bool) -> usize {
+    let mut end = start;
+    while end < bytes.len() {
+        let value = bytes[end];
+        if value == b'\n'
+            || value == b'\r'
+            || value == b'"'
+            || value == b'\''
+            || value == b'|'
+            || value == b';'
+        {
+            break;
+        }
+        if !context
+            && (value.is_ascii_whitespace() || matches!(value, b',' | b';' | b')' | b']' | b'}'))
+        {
+            break;
+        }
+        end += 1;
+    }
+    if context {
+        return end;
+    }
+    loop {
+        let mut probe = end;
+        while probe < bytes.len() && bytes[probe].is_ascii_whitespace() {
+            probe += 1;
+        }
+        if is_absolute_path_start(bytes, probe) {
+            break;
+        }
+        let mut component_end = probe;
+        while component_end < bytes.len()
+            && !bytes[component_end].is_ascii_whitespace()
+            && !matches!(bytes[component_end], b',' | b';' | b')' | b']' | b'}')
+        {
+            component_end += 1;
+        }
+        if probe < component_end
+            && bytes[probe..component_end]
+                .iter()
+                .any(|value| matches!(value, b'\\' | b'/'))
+        {
+            end = component_end;
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 #[derive(Debug, Clone)]
@@ -1044,6 +1167,36 @@ mod tests {
     }
 
     #[test]
+    fn path_recognizer_covers_unc_extended_quoted_and_forward_slash_forms() {
+        let mut sanitizer = Sanitizer::default();
+        let value = sanitizer.sanitize_text(
+            r#""C:\Users\Alice\Projects\Secret Client\foo.exe" | \\corp-server\clients\SecretClient\tool.exe | \\?\C:\Users\Alice\foo.exe | \\?\UNC\server\share\Private\foo.exe | Path: C:\Users\Alice\Projects\Secret Client\foo.exe | C:/Users/Alice/Secret Client/foo.exe | \\.\DISPLAY1"#,
+        );
+        for private_component in [
+            "Alice",
+            "Secret Client",
+            "corp-server",
+            "clients",
+            "SecretClient",
+            "server",
+            "share",
+            "Private",
+        ] {
+            assert!(
+                !value.contains(private_component),
+                "sanitized output leaked {private_component}: {value}"
+            );
+        }
+        assert!(value.contains("foo.exe [path#"));
+        assert!(value.contains(r"\\.\DISPLAY1"));
+
+        let mut repeated_sanitizer = Sanitizer::default();
+        let repeated =
+            repeated_sanitizer.sanitize_text(r#"C:\Private\foo.exe C:\Private\foo.exe."#);
+        assert_eq!(repeated.matches("foo.exe [path#01]").count(), 2);
+    }
+
+    #[test]
     fn endpoint_pseudonyms_are_stable_within_report() {
         let mut sanitizer = Sanitizer::default();
         assert_eq!(sanitizer.endpoint_token("opaque-A"), "endpoint#01");
@@ -1181,7 +1334,7 @@ safe=1"#,
                 health: Health::Healthy,
                 state: "Disabled".into(),
                 registered_command: None,
-                current_command: Some(r#"\"C:\\Users\\Alice\\WinShort.exe\""#.into()),
+                current_command: Some(r#""\\?\C:\Users\Alice\Secret Client\WinShort.exe""#.into()),
                 error: None,
             },
             logging: LoggingDiagnostics {
@@ -1192,7 +1345,7 @@ safe=1"#,
             },
             degraded: vec![DegradedSubsystem {
                 name: "test".into(),
-                reason: "C:\\Users\\Alice\\Projects\\SecretClient\\app.exe".into(),
+                reason: r#"\\corp-server\clients\SecretClient\tool.exe"#.into(),
             }],
         }
     }
@@ -1211,7 +1364,14 @@ safe=1"#,
         fs::create_dir_all(&log_dir).unwrap();
         fs::write(
             log_dir.join("winshort-20260825.log"),
-            "safe=1\\nlast_key=VK_A\\nwindow_title=Secret\\npath=C:\\\\Users\\\\Alice\\\\Projects\\\\SecretClient\\\\app.exe\\nendpoint=opaque-endpoint-secret\\n",
+            r#"safe=1
+last_key=VK_A
+window_title=Secret
+path="C:\Users\Alice\Projects\Secret Client\foo.exe"
+unc=\\corp-server\clients\SecretClient\tool.exe
+extended=\\?\UNC\server\share\Private\foo.exe
+endpoint=opaque-endpoint-secret
+"#,
         )
         .unwrap();
         let snapshot = sample_snapshot(&root);
@@ -1235,6 +1395,9 @@ safe=1"#,
         assert!(!diagnostics.contains("opaque-endpoint-secret"));
         assert!(!diagnostics.contains("Alice"));
         assert!(!diagnostics.contains("SecretClient"));
+        assert!(!diagnostics.contains("corp-server"));
+        assert!(!diagnostics.contains("Secret Client"));
+        assert!(!diagnostics.contains("Private"));
 
         let mut config = String::new();
         archive
@@ -1259,6 +1422,9 @@ safe=1"#,
         assert!(!log.contains("window_title="));
         assert!(!log.contains("Alice"));
         assert!(!log.contains("SecretClient"));
+        assert!(!log.contains("corp-server"));
+        assert!(!log.contains("Secret Client"));
+        assert!(!log.contains("Private"));
         assert!(!log.contains("opaque-endpoint-secret"));
         drop(archive);
         fs::remove_dir_all(root).unwrap();
