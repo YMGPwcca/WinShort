@@ -6,7 +6,7 @@
 
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::InvalidateRect;
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::UI::Controls::{
     TOOLTIPS_CLASSW, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTTOOLINFOW,
 };
@@ -14,8 +14,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, GetKey
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, SetWindowPos, SetWindowTextW, ShowWindow, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_KEYDOWN, WM_KILLFOCUS,
-    WM_NCDESTROY, WM_SETFOCUS, WS_CHILD, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WM_PRINT, WM_PRINTCLIENT, WM_SETFOCUS, WS_CHILD,
+    WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
@@ -52,6 +53,20 @@ struct AccessibleControl {
 }
 
 const ACCESSIBILITY_SUBCLASS_ID: usize = 2;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccessibilityPaintDisposition {
+    SuppressAndValidate,
+    Delegate,
+}
+
+pub(crate) fn accessibility_paint_disposition(msg: u32) -> AccessibilityPaintDisposition {
+    match msg {
+        WM_ERASEBKGND | WM_PAINT | WM_PRINT | WM_PRINTCLIENT => {
+            AccessibilityPaintDisposition::SuppressAndValidate
+        }
+        _ => AccessibilityPaintDisposition::Delegate,
+    }
+}
 
 unsafe extern "system" fn accessibility_child_subclass(
     hwnd: HWND,
@@ -61,6 +76,17 @@ unsafe extern "system" fn accessibility_child_subclass(
     _subclass_id: usize,
     ref_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
+    if accessibility_paint_disposition(msg) == AccessibilityPaintDisposition::SuppressAndValidate {
+        if msg == WM_PAINT {
+            unsafe {
+                let mut paint = PAINTSTRUCT::default();
+                let _ = BeginPaint(hwnd, &mut paint);
+                let _ = EndPaint(hwnd, &paint);
+            }
+            return windows::Win32::Foundation::LRESULT(0);
+        }
+        return windows::Win32::Foundation::LRESULT(1);
+    }
     let parent = HWND(ref_data as *mut _);
     if msg == WM_KEYDOWN && wparam.0 as u16 == 0x09 {
         let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
@@ -426,5 +452,33 @@ mod semantic_tests {
     #[test]
     fn debug_logging_setting_is_a_toggle() {
         assert!(is_toggle_element(ElementId::DebugLogging));
+    }
+
+    #[test]
+    fn accessibility_child_paint_policy_suppresses_visual_messages_only() {
+        assert_eq!(
+            accessibility_paint_disposition(WM_PAINT),
+            AccessibilityPaintDisposition::SuppressAndValidate
+        );
+        assert_eq!(
+            accessibility_paint_disposition(WM_ERASEBKGND),
+            AccessibilityPaintDisposition::SuppressAndValidate
+        );
+        assert_eq!(
+            accessibility_paint_disposition(WM_PRINTCLIENT),
+            AccessibilityPaintDisposition::SuppressAndValidate
+        );
+        assert_eq!(
+            accessibility_paint_disposition(WM_SETFOCUS),
+            AccessibilityPaintDisposition::Delegate
+        );
+        assert_eq!(
+            accessibility_paint_disposition(WM_KILLFOCUS),
+            AccessibilityPaintDisposition::Delegate
+        );
+        assert_eq!(
+            accessibility_paint_disposition(WM_KEYDOWN),
+            AccessibilityPaintDisposition::Delegate
+        );
     }
 }
