@@ -4,6 +4,19 @@ All notable changes to WinShort are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Hardened the custom Settings UI Automation provider: unsupported patterns,
+  navigation boundaries, outside point queries, and logical child host providers
+  now return successful null results where required; RuntimeIds and root host
+  ownership follow Win32 fragment contracts.
+- Exposed picker and hotkey rows as Button/Invoke actions with a read-only current
+  ValuePattern; read-only writes return `UIA_E_INVALIDOPERATION`.
+- Tracked Settings, native picker, and outside focus ownership and filtered UIA
+  property/focus events to actual state changes.
+
 ## [0.1.0] - 2026-08-24
 
 Initial release.
