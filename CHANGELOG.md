@@ -16,6 +16,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   ValuePattern; read-only writes return `UIA_E_INVALIDOPERATION`.
 - Tracked Settings, native picker, and outside focus ownership and filtered UIA
   property/focus events to actual state changes.
+- Deferred UIA event delivery beyond the SettingsUi borrow, coalesced typed
+  notifications, split root/node provider identities, raised Invoke events, and
+  staged native picker activation after HWND registration.
 
 ## [0.1.0] - 2026-08-24
 

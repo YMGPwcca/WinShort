@@ -495,12 +495,17 @@ impl PickerPopup {
                 SUBCLASS_ID,
                 hwnd.0 as usize,
             );
-            let _ = ShowWindow(list, SW_SHOWNA);
-            let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(hwnd);
-            let _ = SetFocus(Some(list));
         }
         Ok(Self { hwnd, list })
+    }
+
+    pub fn activate(&self) {
+        unsafe {
+            let _ = ShowWindow(self.list, SW_SHOWNA);
+            let _ = ShowWindow(self.hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(self.hwnd);
+            let _ = SetFocus(Some(self.list));
+        }
     }
 }
 

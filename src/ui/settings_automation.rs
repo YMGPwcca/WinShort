@@ -1,14 +1,16 @@
 //! Custom UI Automation surface for the owner-drawn Settings window.
 //!
 //! The provider never reaches into SettingsUi. Reads use the last published
-//! immutable snapshot; actions are queued back to the Settings HWND.
+//! immutable snapshot; actions are queued back to the Settings HWND. Snapshot
+//! changes queue typed notifications, and only a later Settings HWND flush
+//! crosses the external UI Automation boundary.
 
 #![allow(non_upper_case_globals)]
 
 use std::mem::ManuallyDrop;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
-use windows::core::{implement, IUnknown, Interface, BSTR};
+use windows::core::{implement, IUnknown, IUnknownImpl, Interface, BSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::SAFEARRAY;
@@ -27,8 +29,8 @@ use windows::Win32::UI::Accessibility::{
     ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId, UIA_AutomationIdPropertyId,
     UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
     UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_HasKeyboardFocusPropertyId,
-    UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_IsContentElementPropertyId,
-    UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId,
+    UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_Invoke_InvokedEventId,
+    UIA_IsContentElementPropertyId, UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId,
     UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_IsInvokePatternAvailablePropertyId,
     UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
     UIA_IsRangeValuePatternAvailablePropertyId, UIA_IsTogglePatternAvailablePropertyId,
@@ -39,13 +41,14 @@ use windows::Win32::UI::Accessibility::{
     UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
     UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaRect, UiaReturnRawElementProvider, UiaRootObjectId,
-    UIA_E_INVALIDOPERATION, UIA_PROPERTY_ID,
+    UIA_E_ELEMENTNOTAVAILABLE, UIA_E_INVALIDOPERATION, UIA_PROPERTY_ID,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::ui::layout::{ElementId, ElementKind, Rect as UiRect, SettingsLayout};
 
 pub(crate) const WM_APP_SETTINGS_AUTOMATION: u32 = WM_APP + 6;
+pub(crate) const WM_APP_SETTINGS_AUTOMATION_EVENTS: u32 = WM_APP + 7;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AutomationRect {
@@ -137,6 +140,98 @@ pub(crate) struct SettingsAutomationSnapshot {
     pub focus_owner: AutomationFocusOwner,
     pub picker_open_for: Option<ElementId>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutomationTarget {
+    Root,
+    Node(ElementId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutomationNotificationKind {
+    FocusChanged,
+    Invoked,
+    Property(i32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum AutomationValue {
+    Empty,
+    Bool(bool),
+    I32(i32),
+    F64(f64),
+    String(String),
+    Rect(AutomationRect),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AutomationNotification {
+    target: AutomationTarget,
+    kind: AutomationNotificationKind,
+    old_value: AutomationValue,
+    new_value: AutomationValue,
+}
+
+impl AutomationNotification {
+    fn focus(target: AutomationTarget) -> Self {
+        Self {
+            target,
+            kind: AutomationNotificationKind::FocusChanged,
+            old_value: AutomationValue::Empty,
+            new_value: AutomationValue::Empty,
+        }
+    }
+
+    fn invoked(id: ElementId) -> Self {
+        Self {
+            target: AutomationTarget::Node(id),
+            kind: AutomationNotificationKind::Invoked,
+            old_value: AutomationValue::Empty,
+            new_value: AutomationValue::Empty,
+        }
+    }
+
+    fn property(
+        target: AutomationTarget,
+        property: UIA_PROPERTY_ID,
+        old_value: AutomationValue,
+        new_value: AutomationValue,
+    ) -> Self {
+        Self {
+            target,
+            kind: AutomationNotificationKind::Property(property.0),
+            old_value,
+            new_value,
+        }
+    }
+}
+
+#[derive(Default)]
+struct PendingAutomationEvents {
+    notifications: Vec<AutomationNotification>,
+    flush_posted: bool,
+}
+
+struct AutomationState {
+    snapshot: RwLock<SettingsAutomationSnapshot>,
+    actions: Mutex<Vec<SettingsAutomationAction>>,
+    pending: Mutex<PendingAutomationEvents>,
+    hwnd: isize,
+    root: OnceLock<usize>,
+}
+
+impl Drop for AutomationState {
+    fn drop(&mut self) {
+        if let Some(raw) = self.root.get().copied() {
+            // Keep the cached root identity alive for the state's lifetime,
+            // then release that one retained COM reference during teardown.
+            unsafe {
+                drop(IRawElementProviderFragmentRoot::from_raw(
+                    raw as *mut core::ffi::c_void,
+                ));
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum SettingsAutomationAction {
@@ -149,23 +244,28 @@ pub(crate) enum SettingsAutomationAction {
 
 #[derive(Clone)]
 pub(crate) struct SettingsAutomation {
-    snapshot: Arc<RwLock<SettingsAutomationSnapshot>>,
-    actions: Arc<Mutex<Vec<SettingsAutomationAction>>>,
-    hwnd: isize,
+    state: Arc<AutomationState>,
 }
 
 impl SettingsAutomation {
     pub(crate) fn new(hwnd: HWND) -> Self {
         Self {
-            snapshot: Arc::new(RwLock::new(SettingsAutomationSnapshot::default())),
-            actions: Arc::new(Mutex::new(Vec::new())),
-            hwnd: hwnd.0 as isize,
+            state: Arc::new(AutomationState {
+                snapshot: RwLock::new(SettingsAutomationSnapshot::default()),
+                actions: Mutex::new(Vec::new()),
+                pending: Mutex::new(PendingAutomationEvents::default()),
+                hwnd: hwnd.0 as isize,
+                root: OnceLock::new(),
+            }),
         }
     }
 
     pub(crate) fn publish(&self, snapshot: SettingsAutomationSnapshot) {
+        // Phase 1: commit state and queue owned, typed notifications only.
+        // UIA calls belong exclusively to flush_pending_events below.
         let previous = {
             let mut current = self
+                .state
                 .snapshot
                 .write()
                 .unwrap_or_else(|error| error.into_inner());
@@ -176,89 +276,145 @@ impl SettingsAutomation {
             *current = snapshot.clone();
             previous
         };
-        // UIA callbacks may synchronously query this provider; never hold the
-        // snapshot lock across the UIA boundary.
-        self.raise_snapshot_changes(&previous, &snapshot);
-    }
-    fn raise_property_changed(
-        &self,
-        provider: &IRawElementProviderSimple,
-        property: UIA_PROPERTY_ID,
-        old_value: VARIANT,
-        new_value: VARIANT,
-    ) {
-        let mut old_value = old_value;
-        let mut new_value = new_value;
-        unsafe {
-            let _ =
-                UiaRaiseAutomationPropertyChangedEvent(provider, property, &old_value, &new_value);
-            let _ = VariantClear(&mut old_value);
-            let _ = VariantClear(&mut new_value);
-        }
+        let first_snapshot = previous.nodes.is_empty() && !snapshot.nodes.is_empty();
+        self.queue_notifications(snapshot_notifications(&previous, &snapshot, first_snapshot));
     }
 
-    fn raise_snapshot_changes(
-        &self,
-        previous: &SettingsAutomationSnapshot,
-        current: &SettingsAutomationSnapshot,
-    ) {
-        if (previous.focused != current.focused || previous.focus_owner != current.focus_owner)
-            && current.focus_owner == AutomationFocusOwner::Settings
+    pub(crate) fn queue_invoked(&self, id: ElementId) {
+        self.queue_notifications([AutomationNotification::invoked(id)]);
+    }
+
+    fn queue_notifications<I>(&self, notifications: I)
+    where
+        I: IntoIterator<Item = AutomationNotification>,
+    {
+        let mut should_post = false;
         {
-            let provider = current
-                .focused
-                .map_or_else(|| self.root_provider(), |id| self.provider_for(id));
-            unsafe {
-                let _ = UiaRaiseAutomationEvent(&provider, UIA_AutomationFocusChangedEventId);
+            let mut pending = self
+                .state
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for notification in notifications {
+                if matches!(notification.kind, AutomationNotificationKind::Property(_)) {
+                    if let Some(index) = pending.notifications.iter().position(|existing| {
+                        existing.target == notification.target && existing.kind == notification.kind
+                    }) {
+                        pending.notifications[index].new_value = notification.new_value;
+                        if pending.notifications[index].old_value
+                            == pending.notifications[index].new_value
+                        {
+                            pending.notifications.remove(index);
+                        }
+                        continue;
+                    }
+                }
+                pending.notifications.push(notification);
+            }
+            if !pending.notifications.is_empty() && !pending.flush_posted {
+                pending.flush_posted = true;
+                should_post = true;
             }
         }
-        let previous_root_focus =
-            previous.focus_owner == AutomationFocusOwner::Settings && previous.focused.is_none();
-        let current_root_focus =
-            current.focus_owner == AutomationFocusOwner::Settings && current.focused.is_none();
-        if previous_root_focus != current_root_focus {
-            let provider = self.root_provider();
-            let old_value = bool_variant(previous_root_focus);
-            let new_value = bool_variant(current_root_focus);
-            self.raise_property_changed(
-                &provider,
-                UIA_HasKeyboardFocusPropertyId,
-                old_value,
-                new_value,
-            );
-        }
-
-        if previous.window != current.window {
-            if let (Ok(old_value), Ok(new_value)) =
-                (rect_variant(previous.window), rect_variant(current.window))
-            {
-                let provider = self.root_provider();
-                self.raise_property_changed(
-                    &provider,
-                    UIA_BoundingRectanglePropertyId,
-                    old_value,
-                    new_value,
-                );
-            }
-        }
-
-        for node in &current.nodes {
-            let Some(previous_node) = previous.nodes.iter().find(|item| item.id == node.id) else {
-                continue;
+        if should_post {
+            let result = unsafe {
+                PostMessageW(
+                    Some(self.hwnd()),
+                    WM_APP_SETTINGS_AUTOMATION_EVENTS,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
             };
-            for property in changed_property_ids(previous_node, node) {
-                let Some((old_value, new_value)) = property_values(property, previous_node, node)
-                else {
-                    continue;
-                };
-                let provider = self.provider_for(node.id);
-                self.raise_property_changed(&provider, property, old_value, new_value);
+            if result.is_err() {
+                let mut pending = self
+                    .state
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                pending.flush_posted = false;
             }
         }
     }
 
+    fn take_pending_notifications(&self) -> Vec<AutomationNotification> {
+        let mut pending = self
+            .state
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        pending.flush_posted = false;
+        std::mem::take(&mut pending.notifications)
+    }
+    /// Phase 2: deliver notifications after the owning SettingsUi borrow is gone.
+    pub(crate) fn flush_pending_events(&self) {
+        for notification in self.take_pending_notifications() {
+            self.emit_notification(notification);
+        }
+    }
+
+    #[cfg(test)]
+    fn flush_pending_events_with<F>(&self, mut sink: F)
+    where
+        F: FnMut(&Self, &AutomationNotification),
+    {
+        for notification in self.take_pending_notifications() {
+            sink(self, &notification);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn flush_pending_events_for_test<F>(&self, mut sink: F)
+    where
+        F: FnMut(&Self),
+    {
+        for _notification in self.take_pending_notifications() {
+            sink(self);
+        }
+    }
+
+    fn emit_notification(&self, notification: AutomationNotification) {
+        let provider = match notification.target {
+            AutomationTarget::Root => self.root_provider(),
+            AutomationTarget::Node(id) => self.provider_for(id),
+        };
+        match notification.kind {
+            AutomationNotificationKind::FocusChanged => unsafe {
+                let _ = UiaRaiseAutomationEvent(&provider, UIA_AutomationFocusChangedEventId);
+            },
+            AutomationNotificationKind::Invoked => unsafe {
+                let _ = UiaRaiseAutomationEvent(&provider, UIA_Invoke_InvokedEventId);
+            },
+            AutomationNotificationKind::Property(property) => {
+                let mut old_value = match notification.old_value.to_variant() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let mut new_value = match notification.new_value.to_variant() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        unsafe {
+                            let _ = VariantClear(&mut old_value);
+                        }
+                        return;
+                    }
+                };
+                unsafe {
+                    let _ = UiaRaiseAutomationPropertyChangedEvent(
+                        &provider,
+                        UIA_PROPERTY_ID(property),
+                        &old_value,
+                        &new_value,
+                    );
+                    let _ = VariantClear(&mut old_value);
+                    let _ = VariantClear(&mut new_value);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> SettingsAutomationSnapshot {
-        self.snapshot
+        self.state
+            .snapshot
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
@@ -266,6 +422,7 @@ impl SettingsAutomation {
 
     pub(crate) fn drain_actions(&self) -> Vec<SettingsAutomationAction> {
         let mut actions = self
+            .state
             .actions
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -273,13 +430,14 @@ impl SettingsAutomation {
     }
 
     pub(crate) fn enqueue(&self, action: SettingsAutomationAction) -> windows::core::Result<()> {
-        self.actions
+        self.state
+            .actions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(action);
         unsafe {
             PostMessageW(
-                Some(HWND(self.hwnd as *mut _)),
+                Some(self.hwnd()),
                 WM_APP_SETTINGS_AUTOMATION,
                 WPARAM(0),
                 LPARAM(0),
@@ -287,18 +445,40 @@ impl SettingsAutomation {
         }
     }
 
+    fn hwnd(&self) -> HWND {
+        HWND(self.state.hwnd as *mut _)
+    }
+
     pub(crate) fn root_provider(&self) -> IRawElementProviderSimple {
-        SettingsAutomationProvider {
-            automation: self.clone(),
-            node: None,
-        }
-        .into()
+        self.root_fragment()
+            .cast()
+            .expect("root provider implements IRawElementProviderSimple")
+    }
+
+    fn root_identity(&self) -> usize {
+        *self.state.root.get_or_init(|| {
+            let root: IRawElementProviderFragmentRoot = SettingsAutomationRootProvider {
+                state: Arc::downgrade(&self.state),
+            }
+            .into();
+            let raw = root.as_raw() as usize;
+            std::mem::forget(root);
+            raw
+        })
+    }
+
+    fn root_fragment(&self) -> IRawElementProviderFragmentRoot {
+        let raw = self.root_identity() as *mut core::ffi::c_void;
+        let cached = unsafe { IRawElementProviderFragmentRoot::from_raw(raw) };
+        let result = cached.clone();
+        std::mem::forget(cached);
+        result
     }
 
     pub(crate) fn provider_for(&self, id: ElementId) -> IRawElementProviderSimple {
-        SettingsAutomationProvider {
-            automation: self.clone(),
-            node: Some(id),
+        SettingsAutomationNodeProvider {
+            state: Arc::downgrade(&self.state),
+            node: id,
         }
         .into()
     }
@@ -443,6 +623,18 @@ fn f64_variant(value: f64) -> VARIANT {
 fn rect_variant(rect: AutomationRect) -> windows::core::Result<VARIANT> {
     unsafe { InitVariantFromDoubleArray(&[rect.left, rect.top, rect.width, rect.height]) }
 }
+impl AutomationValue {
+    fn to_variant(&self) -> windows::core::Result<VARIANT> {
+        match self {
+            Self::Empty => Ok(VARIANT::default()),
+            Self::Bool(value) => Ok(bool_variant(*value)),
+            Self::I32(value) => Ok(i32_variant(*value)),
+            Self::F64(value) => Ok(f64_variant(*value)),
+            Self::String(value) => Ok(string_variant(value)),
+            Self::Rect(value) => rect_variant(*value),
+        }
+    }
+}
 
 fn runtime_id_variant(values: &[i32]) -> windows::core::Result<*mut SAFEARRAY> {
     let variant = unsafe { InitVariantFromInt32Array(values)? };
@@ -450,8 +642,8 @@ fn runtime_id_variant(values: &[i32]) -> windows::core::Result<*mut SAFEARRAY> {
     let array = unsafe { variant.Anonymous.Anonymous.Anonymous.parray };
     Ok(array)
 }
-fn optional_i32_variant(value: Option<i32>) -> VARIANT {
-    value.map_or_else(VARIANT::default, i32_variant)
+fn optional_i32_value(value: Option<i32>) -> AutomationValue {
+    value.map_or(AutomationValue::Empty, AutomationValue::I32)
 }
 
 pub(crate) fn changed_property_ids(
@@ -489,41 +681,41 @@ pub(crate) fn changed_property_ids(
     changed
 }
 
-fn property_values(
+fn typed_property_values(
     property: UIA_PROPERTY_ID,
     previous: &SettingsAutomationNode,
     current: &SettingsAutomationNode,
-) -> Option<(VARIANT, VARIANT)> {
+) -> Option<(AutomationValue, AutomationValue)> {
     match property {
         UIA_NamePropertyId => Some((
-            string_variant(&previous.name),
-            string_variant(&current.name),
+            AutomationValue::String(previous.name.clone()),
+            AutomationValue::String(current.name.clone()),
         )),
         UIA_IsEnabledPropertyId | UIA_IsKeyboardFocusablePropertyId => Some((
-            bool_variant(previous.enabled),
-            bool_variant(current.enabled),
+            AutomationValue::Bool(previous.enabled),
+            AutomationValue::Bool(current.enabled),
         )),
         UIA_HasKeyboardFocusPropertyId => Some((
-            bool_variant(previous.focused),
-            bool_variant(current.focused),
+            AutomationValue::Bool(previous.focused),
+            AutomationValue::Bool(current.focused),
         )),
         UIA_IsOffscreenPropertyId => Some((
-            bool_variant(previous.offscreen),
-            bool_variant(current.offscreen),
+            AutomationValue::Bool(previous.offscreen),
+            AutomationValue::Bool(current.offscreen),
         )),
         UIA_BoundingRectanglePropertyId => Some((
-            rect_variant(previous.bounds).ok()?,
-            rect_variant(current.bounds).ok()?,
+            AutomationValue::Rect(previous.bounds),
+            AutomationValue::Rect(current.bounds),
         )),
         UIA_ToggleToggleStatePropertyId => Some((
-            optional_i32_variant(previous.toggle.map(|value| {
+            optional_i32_value(previous.toggle.map(|value| {
                 if value {
                     ToggleState_On.0
                 } else {
                     ToggleState_Off.0
                 }
             })),
-            optional_i32_variant(current.toggle.map(|value| {
+            optional_i32_value(current.toggle.map(|value| {
                 if value {
                     ToggleState_On.0
                 } else {
@@ -532,30 +724,89 @@ fn property_values(
             })),
         )),
         UIA_RangeValueValuePropertyId => Some((
-            previous
-                .range
-                .map_or_else(VARIANT::default, |range| f64_variant(range.value)),
-            current
-                .range
-                .map_or_else(VARIANT::default, |range| f64_variant(range.value)),
+            previous.range.map_or(AutomationValue::Empty, |range| {
+                AutomationValue::F64(range.value)
+            }),
+            current.range.map_or(AutomationValue::Empty, |range| {
+                AutomationValue::F64(range.value)
+            }),
         )),
         UIA_ValueValuePropertyId => Some((
             if node_has_value(previous.kind) {
-                string_variant(&previous.value)
+                AutomationValue::String(previous.value.clone())
             } else {
-                VARIANT::default()
+                AutomationValue::Empty
             },
             if node_has_value(current.kind) {
-                string_variant(&current.value)
+                AutomationValue::String(current.value.clone())
             } else {
-                VARIANT::default()
+                AutomationValue::Empty
             },
         )),
         _ => None,
     }
 }
 
-fn node_has_invoke(kind: ElementKind) -> bool {
+fn snapshot_notifications(
+    previous: &SettingsAutomationSnapshot,
+    current: &SettingsAutomationSnapshot,
+    suppress_initial: bool,
+) -> Vec<AutomationNotification> {
+    let mut notifications = Vec::new();
+    if !suppress_initial
+        && (previous.focused != current.focused || previous.focus_owner != current.focus_owner)
+        && current.focus_owner == AutomationFocusOwner::Settings
+    {
+        let target = current
+            .focused
+            .map_or(AutomationTarget::Root, AutomationTarget::Node);
+        notifications.push(AutomationNotification::focus(target));
+    }
+
+    if !suppress_initial {
+        let previous_root_focus =
+            previous.focus_owner == AutomationFocusOwner::Settings && previous.focused.is_none();
+        let current_root_focus =
+            current.focus_owner == AutomationFocusOwner::Settings && current.focused.is_none();
+        if previous_root_focus != current_root_focus {
+            notifications.push(AutomationNotification::property(
+                AutomationTarget::Root,
+                UIA_HasKeyboardFocusPropertyId,
+                AutomationValue::Bool(previous_root_focus),
+                AutomationValue::Bool(current_root_focus),
+            ));
+        }
+        if previous.window != current.window {
+            notifications.push(AutomationNotification::property(
+                AutomationTarget::Root,
+                UIA_BoundingRectanglePropertyId,
+                AutomationValue::Rect(previous.window),
+                AutomationValue::Rect(current.window),
+            ));
+        }
+    }
+
+    for node in &current.nodes {
+        let Some(previous_node) = previous.nodes.iter().find(|item| item.id == node.id) else {
+            continue;
+        };
+        for property in changed_property_ids(previous_node, node) {
+            let Some((old_value, new_value)) = typed_property_values(property, previous_node, node)
+            else {
+                continue;
+            };
+            notifications.push(AutomationNotification::property(
+                AutomationTarget::Node(node.id),
+                property,
+                old_value,
+                new_value,
+            ));
+        }
+    }
+    notifications
+}
+
+pub(crate) fn node_has_invoke(kind: ElementKind) -> bool {
     matches!(
         kind,
         ElementKind::Value
@@ -588,77 +839,318 @@ fn automation_id(id: ElementId) -> String {
     format!("WinShort.Settings.{id:?}")
 }
 
+fn element_unavailable<T>() -> windows::core::Result<T> {
+    Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+        UIA_E_ELEMENTNOTAVAILABLE as i32,
+    )))
+}
+
+fn upgrade_state(state: &Weak<AutomationState>) -> windows::core::Result<Arc<AutomationState>> {
+    state.upgrade().ok_or_else(|| {
+        windows::core::Error::from_hresult(windows::core::HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32))
+    })
+}
+
+fn root_property_value(
+    snapshot: &SettingsAutomationSnapshot,
+    propertyid: UIA_PROPERTY_ID,
+) -> windows::core::Result<VARIANT> {
+    match propertyid {
+        UIA_IsInvokePatternAvailablePropertyId
+        | UIA_IsTogglePatternAvailablePropertyId
+        | UIA_IsRangeValuePatternAvailablePropertyId
+        | UIA_IsValuePatternAvailablePropertyId
+        | UIA_IsExpandCollapsePatternAvailablePropertyId => Ok(bool_variant(false)),
+        UIA_NamePropertyId => Ok(string_variant("WinShort Settings")),
+        UIA_HelpTextPropertyId => Ok(string_variant("WinShort Settings")),
+        UIA_ControlTypePropertyId => Ok(i32_variant(
+            windows::Win32::UI::Accessibility::UIA_WindowControlTypeId.0,
+        )),
+        UIA_IsEnabledPropertyId
+        | UIA_IsKeyboardFocusablePropertyId
+        | UIA_IsContentElementPropertyId
+        | UIA_IsControlElementPropertyId => Ok(bool_variant(true)),
+        UIA_HasKeyboardFocusPropertyId => Ok(bool_variant(
+            snapshot.focus_owner == AutomationFocusOwner::Settings && snapshot.focused.is_none(),
+        )),
+        UIA_IsOffscreenPropertyId => Ok(bool_variant(false)),
+        UIA_BoundingRectanglePropertyId => rect_variant(snapshot.window),
+        UIA_AutomationIdPropertyId => Ok(string_variant("WinShort.Settings")),
+        UIA_ClassNamePropertyId => Ok(string_variant("WinShort.Settings")),
+        UIA_ProviderDescriptionPropertyId => Ok(string_variant(
+            "WinShort custom Settings UI Automation provider",
+        )),
+        _ => Ok(VARIANT::default()),
+    }
+}
+
+fn node_property_value(
+    node: &SettingsAutomationNode,
+    propertyid: UIA_PROPERTY_ID,
+) -> windows::core::Result<VARIANT> {
+    match propertyid {
+        UIA_NamePropertyId => Ok(string_variant(&node.name)),
+        UIA_HelpTextPropertyId => Ok(string_variant(&node.help_text)),
+        UIA_ControlTypePropertyId => Ok(i32_variant(control_type(node.kind))),
+        UIA_IsEnabledPropertyId => Ok(bool_variant(node.enabled)),
+        UIA_IsKeyboardFocusablePropertyId => Ok(bool_variant(node.enabled)),
+        UIA_HasKeyboardFocusPropertyId => Ok(bool_variant(node.focused)),
+        UIA_IsOffscreenPropertyId => Ok(bool_variant(node.offscreen)),
+        UIA_IsContentElementPropertyId | UIA_IsControlElementPropertyId => Ok(bool_variant(true)),
+        UIA_BoundingRectanglePropertyId => rect_variant(node.bounds),
+        UIA_AutomationIdPropertyId => Ok(string_variant(&automation_id(node.id))),
+        UIA_ClassNamePropertyId => Ok(string_variant("WinShort.Settings.Item")),
+        UIA_ProviderDescriptionPropertyId => Ok(string_variant(
+            "WinShort custom Settings UI Automation provider",
+        )),
+        UIA_IsInvokePatternAvailablePropertyId => Ok(bool_variant(node_has_invoke(node.kind))),
+        UIA_IsTogglePatternAvailablePropertyId => Ok(bool_variant(node.toggle.is_some())),
+        UIA_IsRangeValuePatternAvailablePropertyId => Ok(bool_variant(node.range.is_some())),
+        UIA_IsValuePatternAvailablePropertyId => Ok(bool_variant(node_has_value(node.kind))),
+        UIA_IsExpandCollapsePatternAvailablePropertyId => Ok(bool_variant(false)),
+        UIA_ToggleToggleStatePropertyId => Ok(node.toggle.map_or_else(VARIANT::default, |value| {
+            i32_variant(if value {
+                ToggleState_On.0
+            } else {
+                ToggleState_Off.0
+            })
+        })),
+        UIA_RangeValueValuePropertyId
+        | UIA_RangeValueMinimumPropertyId
+        | UIA_RangeValueMaximumPropertyId
+        | UIA_RangeValueSmallChangePropertyId
+        | UIA_RangeValueLargeChangePropertyId => {
+            Ok(node
+                .range
+                .map_or_else(VARIANT::default, |range| match propertyid {
+                    UIA_RangeValueValuePropertyId => f64_variant(range.value),
+                    UIA_RangeValueMinimumPropertyId => f64_variant(range.minimum),
+                    UIA_RangeValueMaximumPropertyId => f64_variant(range.maximum),
+                    UIA_RangeValueSmallChangePropertyId => f64_variant(range.small_change),
+                    UIA_RangeValueLargeChangePropertyId => f64_variant(range.large_change),
+                    _ => VARIANT::default(),
+                }))
+        }
+        UIA_ValueValuePropertyId => Ok(if node.is_value_pattern_available() {
+            string_variant(&node.value)
+        } else {
+            VARIANT::default()
+        }),
+        UIA_ValueIsReadOnlyPropertyId => Ok(if node.is_value_pattern_available() {
+            bool_variant(true)
+        } else {
+            VARIANT::default()
+        }),
+        _ => Ok(VARIANT::default()),
+    }
+}
+
+impl SettingsAutomationNode {
+    fn is_value_pattern_available(&self) -> bool {
+        node_has_value(self.kind)
+    }
+}
+
 #[derive(Clone)]
 #[implement(
     IRawElementProviderSimple,
     IRawElementProviderFragment,
-    IRawElementProviderFragmentRoot,
+    IRawElementProviderFragmentRoot
+)]
+struct SettingsAutomationRootProvider {
+    state: Weak<AutomationState>,
+}
+
+#[derive(Clone)]
+#[implement(
+    IRawElementProviderSimple,
+    IRawElementProviderFragment,
     IInvokeProvider,
     IToggleProvider,
     IRangeValueProvider,
     IValueProvider
 )]
-struct SettingsAutomationProvider {
-    automation: SettingsAutomation,
-    node: Option<ElementId>,
+struct SettingsAutomationNodeProvider {
+    state: Weak<AutomationState>,
+    node: ElementId,
 }
 
-impl SettingsAutomationProvider {
-    fn snapshot(&self) -> SettingsAutomationSnapshot {
-        self.automation.snapshot()
+impl SettingsAutomationRootProvider_Impl {
+    fn snapshot(&self) -> windows::core::Result<SettingsAutomationSnapshot> {
+        Ok(upgrade_state(&self.state)?
+            .snapshot
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone())
+    }
+
+    fn automation(&self) -> windows::core::Result<SettingsAutomation> {
+        Ok(SettingsAutomation {
+            state: upgrade_state(&self.state)?,
+        })
+    }
+
+    fn hwnd(&self) -> windows::core::Result<HWND> {
+        Ok(HWND(upgrade_state(&self.state)?.hwnd as *mut _))
+    }
+
+    fn child_fragment(&self, id: ElementId) -> windows::core::Result<IRawElementProviderFragment> {
+        let _ = upgrade_state(&self.state)?;
+        Ok(SettingsAutomationNodeProvider {
+            state: self.state.clone(),
+            node: id,
+        }
+        .into())
+    }
+}
+
+impl SettingsAutomationNodeProvider_Impl {
+    fn snapshot(&self) -> windows::core::Result<SettingsAutomationSnapshot> {
+        Ok(upgrade_state(&self.state)?
+            .snapshot
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone())
+    }
+
+    fn automation(&self) -> windows::core::Result<SettingsAutomation> {
+        Ok(SettingsAutomation {
+            state: upgrade_state(&self.state)?,
+        })
     }
 
     fn node(&self) -> Option<SettingsAutomationNode> {
-        let id = self.node?;
-        self.snapshot().nodes.into_iter().find(|node| node.id == id)
+        self.snapshot()
+            .ok()?
+            .nodes
+            .into_iter()
+            .find(|node| node.id == self.node)
     }
 
     fn node_index(&self) -> Option<usize> {
-        let id = self.node?;
-        self.snapshot().nodes.iter().position(|node| node.id == id)
-    }
-
-    fn hwnd(&self) -> HWND {
-        HWND(self.automation.hwnd as *mut _)
+        self.snapshot()
+            .ok()?
+            .nodes
+            .iter()
+            .position(|node| node.id == self.node)
     }
 
     fn self_simple(&self) -> IRawElementProviderSimple {
-        Self {
-            automation: self.automation.clone(),
+        SettingsAutomationNodeProvider {
+            state: self.state.clone(),
             node: self.node,
         }
         .into()
     }
 
     fn child_fragment(&self, id: ElementId) -> IRawElementProviderFragment {
-        Self {
-            automation: self.automation.clone(),
-            node: Some(id),
+        SettingsAutomationNodeProvider {
+            state: self.state.clone(),
+            node: id,
         }
         .into()
-    }
-
-    fn root_fragment(&self) -> IRawElementProviderFragmentRoot {
-        Self {
-            automation: self.automation.clone(),
-            node: None,
-        }
-        .into()
-    }
-    fn root_fragment_node(&self) -> IRawElementProviderFragment {
-        Self {
-            automation: self.automation.clone(),
-            node: None,
-        }
-        .into()
-    }
-
-    fn enqueue(&self, action: SettingsAutomationAction) -> windows::core::Result<()> {
-        self.automation.enqueue(action)
     }
 }
 
-impl IRawElementProviderSimple_Impl for SettingsAutomationProvider_Impl {
+impl IRawElementProviderSimple_Impl for SettingsAutomationRootProvider_Impl {
+    fn ProviderOptions(&self) -> windows::core::Result<ProviderOptions> {
+        Ok(ProviderOptions_ServerSideProvider | ProviderOptions_ProviderOwnsSetFocus)
+    }
+
+    fn GetPatternProvider(
+        &self,
+        _patternid: windows::Win32::UI::Accessibility::UIA_PATTERN_ID,
+    ) -> windows::core::Result<IUnknown> {
+        Ok(null_interface())
+    }
+
+    fn GetPropertyValue(
+        &self,
+        propertyid: windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+    ) -> windows::core::Result<VARIANT> {
+        root_property_value(&self.snapshot()?, propertyid)
+    }
+
+    fn HostRawElementProvider(&self) -> windows::core::Result<IRawElementProviderSimple> {
+        unsafe { windows::Win32::UI::Accessibility::UiaHostProviderFromHwnd(self.hwnd()?) }
+    }
+}
+
+impl IRawElementProviderFragment_Impl for SettingsAutomationRootProvider_Impl {
+    fn Navigate(
+        &self,
+        direction: NavigateDirection,
+    ) -> windows::core::Result<IRawElementProviderFragment> {
+        let snapshot = self.snapshot()?;
+        let next = match direction {
+            NavigateDirection_FirstChild => snapshot.nodes.first().map(|node| node.id),
+            NavigateDirection_LastChild => snapshot.nodes.last().map(|node| node.id),
+            _ => None,
+        };
+        next.map_or_else(|| Ok(null_interface()), |id| self.child_fragment(id))
+    }
+
+    fn GetRuntimeId(&self) -> windows::core::Result<*mut SAFEARRAY> {
+        Ok(std::ptr::null_mut())
+    }
+
+    fn BoundingRectangle(&self) -> windows::core::Result<UiaRect> {
+        let bounds = self.snapshot()?.window;
+        Ok(UiaRect {
+            left: bounds.left,
+            top: bounds.top,
+            width: bounds.width,
+            height: bounds.height,
+        })
+    }
+
+    fn GetEmbeddedFragmentRoots(&self) -> windows::core::Result<*mut SAFEARRAY> {
+        Ok(std::ptr::null_mut())
+    }
+
+    fn SetFocus(&self) -> windows::core::Result<()> {
+        self.automation()?
+            .enqueue(SettingsAutomationAction::SetWindowFocus)
+    }
+
+    fn FragmentRoot(&self) -> windows::core::Result<IRawElementProviderFragmentRoot> {
+        Ok(self.to_interface())
+    }
+}
+
+impl IRawElementProviderFragmentRoot_Impl for SettingsAutomationRootProvider_Impl {
+    fn ElementProviderFromPoint(
+        &self,
+        x: f64,
+        y: f64,
+    ) -> windows::core::Result<IRawElementProviderFragment> {
+        let snapshot = self.snapshot()?;
+        if let Some(node) = snapshot
+            .nodes
+            .into_iter()
+            .find(|node| !node.offscreen && node.bounds.contains(x, y))
+        {
+            return self.child_fragment(node.id);
+        }
+        if snapshot.window.contains(x, y) {
+            Ok(self.to_interface())
+        } else {
+            Ok(null_interface())
+        }
+    }
+
+    fn GetFocus(&self) -> windows::core::Result<IRawElementProviderFragment> {
+        let snapshot = self.snapshot()?;
+        if snapshot.focus_owner != AutomationFocusOwner::Settings {
+            return Ok(null_interface());
+        }
+        snapshot
+            .focused
+            .map_or_else(|| Ok(self.to_interface()), |id| self.child_fragment(id))
+    }
+}
+
+impl IRawElementProviderSimple_Impl for SettingsAutomationNodeProvider_Impl {
     fn ProviderOptions(&self) -> windows::core::Result<ProviderOptions> {
         Ok(ProviderOptions_ServerSideProvider | ProviderOptions_ProviderOwnsSetFocus)
     }
@@ -687,159 +1179,61 @@ impl IRawElementProviderSimple_Impl for SettingsAutomationProvider_Impl {
         &self,
         propertyid: windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
     ) -> windows::core::Result<VARIANT> {
-        let snapshot = self.snapshot();
         let Some(node) = self.node() else {
-            return match propertyid {
-                UIA_NamePropertyId => Ok(string_variant("WinShort Settings")),
-                UIA_HelpTextPropertyId => Ok(string_variant("WinShort Settings")),
-                UIA_ControlTypePropertyId => Ok(i32_variant(
-                    windows::Win32::UI::Accessibility::UIA_WindowControlTypeId.0,
-                )),
-                UIA_IsEnabledPropertyId
-                | UIA_IsKeyboardFocusablePropertyId
-                | UIA_IsContentElementPropertyId
-                | UIA_IsControlElementPropertyId => Ok(bool_variant(true)),
-                UIA_HasKeyboardFocusPropertyId => Ok(bool_variant(
-                    snapshot.focus_owner == AutomationFocusOwner::Settings
-                        && snapshot.focused.is_none(),
-                )),
-                UIA_IsOffscreenPropertyId => Ok(bool_variant(false)),
-                UIA_BoundingRectanglePropertyId => rect_variant(snapshot.window),
-                UIA_AutomationIdPropertyId => Ok(string_variant("WinShort.Settings")),
-                UIA_ClassNamePropertyId => Ok(string_variant("WinShort.Settings")),
-                UIA_ProviderDescriptionPropertyId => Ok(string_variant(
-                    "WinShort custom Settings UI Automation provider",
-                )),
-                _ => Ok(VARIANT::default()),
-            };
+            return Ok(VARIANT::default());
         };
-        match propertyid {
-            UIA_NamePropertyId => Ok(string_variant(&node.name)),
-            UIA_HelpTextPropertyId => Ok(string_variant(&node.help_text)),
-            UIA_ControlTypePropertyId => Ok(i32_variant(control_type(node.kind))),
-            UIA_IsEnabledPropertyId => Ok(bool_variant(node.enabled)),
-            UIA_IsKeyboardFocusablePropertyId => Ok(bool_variant(node.enabled)),
-            UIA_HasKeyboardFocusPropertyId => Ok(bool_variant(node.focused)),
-            UIA_IsOffscreenPropertyId => Ok(bool_variant(node.offscreen)),
-            UIA_IsContentElementPropertyId | UIA_IsControlElementPropertyId => {
-                Ok(bool_variant(true))
-            }
-            UIA_BoundingRectanglePropertyId => rect_variant(node.bounds),
-            UIA_AutomationIdPropertyId => Ok(string_variant(&automation_id(node.id))),
-            UIA_ClassNamePropertyId => Ok(string_variant("WinShort.Settings.Item")),
-            UIA_ProviderDescriptionPropertyId => Ok(string_variant(
-                "WinShort custom Settings UI Automation provider",
-            )),
-            UIA_IsInvokePatternAvailablePropertyId => Ok(bool_variant(node_has_invoke(node.kind))),
-            UIA_IsTogglePatternAvailablePropertyId => Ok(bool_variant(node.toggle.is_some())),
-            UIA_IsRangeValuePatternAvailablePropertyId => Ok(bool_variant(node.range.is_some())),
-            UIA_IsValuePatternAvailablePropertyId => Ok(bool_variant(node_has_value(node.kind))),
-            UIA_IsExpandCollapsePatternAvailablePropertyId => Ok(bool_variant(false)),
-            UIA_ToggleToggleStatePropertyId => node
-                .toggle
-                .map(|value| {
-                    i32_variant(if value {
-                        ToggleState_On.0
-                    } else {
-                        ToggleState_Off.0
-                    })
-                })
-                .ok_or_else(|| {
-                    windows::core::Error::from_hresult(windows::core::HRESULT(0x80004002u32 as i32))
-                }),
-            UIA_RangeValueValuePropertyId => node
-                .range
-                .map(|range| f64_variant(range.value))
-                .ok_or_else(|| {
-                    windows::core::Error::from_hresult(windows::core::HRESULT(0x80004002u32 as i32))
-                }),
-            UIA_RangeValueMinimumPropertyId => node
-                .range
-                .map(|range| f64_variant(range.minimum))
-                .ok_or_else(|| {
-                    windows::core::Error::from_hresult(windows::core::HRESULT(0x80004002u32 as i32))
-                }),
-            UIA_RangeValueMaximumPropertyId => node
-                .range
-                .map(|range| f64_variant(range.maximum))
-                .ok_or_else(|| {
-                    windows::core::Error::from_hresult(windows::core::HRESULT(0x80004002u32 as i32))
-                }),
-            UIA_RangeValueSmallChangePropertyId => node
-                .range
-                .map(|range| f64_variant(range.small_change))
-                .ok_or_else(|| {
-                    windows::core::Error::from_hresult(windows::core::HRESULT(0x80004002u32 as i32))
-                }),
-            UIA_RangeValueLargeChangePropertyId => node
-                .range
-                .map(|range| f64_variant(range.large_change))
-                .ok_or_else(|| {
-                    windows::core::Error::from_hresult(windows::core::HRESULT(0x80004002u32 as i32))
-                }),
-            UIA_ValueValuePropertyId => {
-                if node_has_value(node.kind) {
-                    Ok(string_variant(&node.value))
-                } else {
-                    Ok(VARIANT::default())
-                }
-            }
-            UIA_ValueIsReadOnlyPropertyId => Ok(bool_variant(node_has_value(node.kind))),
-            _ => Ok(VARIANT::default()),
-        }
+        node_property_value(&node, propertyid)
     }
 
     fn HostRawElementProvider(&self) -> windows::core::Result<IRawElementProviderSimple> {
-        if self.node.is_some() {
-            return Ok(null_interface());
-        }
-        unsafe { windows::Win32::UI::Accessibility::UiaHostProviderFromHwnd(self.hwnd()) }
+        Ok(null_interface())
     }
 }
 
-impl IRawElementProviderFragment_Impl for SettingsAutomationProvider_Impl {
+impl IRawElementProviderFragment_Impl for SettingsAutomationNodeProvider_Impl {
     fn Navigate(
         &self,
         direction: NavigateDirection,
     ) -> windows::core::Result<IRawElementProviderFragment> {
-        let snapshot = self.snapshot();
-        let next = match (self.node, direction) {
-            (None, NavigateDirection_FirstChild) => snapshot.nodes.first().map(|node| node.id),
-            (None, NavigateDirection_LastChild) => snapshot.nodes.last().map(|node| node.id),
-            (Some(_), NavigateDirection_Parent) => return Ok(self.root_fragment_node()),
-            (Some(_), NavigateDirection_NextSibling) => self
+        let snapshot = self.snapshot()?;
+        let next = match direction {
+            NavigateDirection_Parent => {
+                return Ok(self
+                    .automation()?
+                    .root_fragment()
+                    .cast()
+                    .expect("root fragment"));
+            }
+            NavigateDirection_NextSibling => self
                 .node_index()
                 .and_then(|index| snapshot.nodes.get(index + 1))
                 .map(|node| node.id),
-            (Some(_), NavigateDirection_PreviousSibling) => self
+            NavigateDirection_PreviousSibling => self
                 .node_index()
                 .and_then(|index| index.checked_sub(1))
                 .and_then(|index| snapshot.nodes.get(index))
                 .map(|node| node.id),
             _ => None,
         };
-        match next {
-            Some(id) => Ok(self.child_fragment(id)),
-            None => Ok(null_interface()),
-        }
+        next.map_or_else(|| Ok(null_interface()), |id| Ok(self.child_fragment(id)))
     }
 
     fn GetRuntimeId(&self) -> windows::core::Result<*mut SAFEARRAY> {
         let Some(index) = self.node_index() else {
-            return Ok(std::ptr::null_mut());
+            return element_unavailable();
         };
         runtime_id_variant(&[UiaAppendRuntimeId as i32, index as i32 + 1])
     }
 
     fn BoundingRectangle(&self) -> windows::core::Result<UiaRect> {
-        let bounds = self
-            .node()
-            .map_or_else(|| self.snapshot().window, |node| node.bounds);
+        let Some(node) = self.node() else {
+            return element_unavailable();
+        };
         Ok(UiaRect {
-            left: bounds.left,
-            top: bounds.top,
-            width: bounds.width,
-            height: bounds.height,
+            left: node.bounds.left,
+            top: node.bounds.top,
+            width: node.bounds.width,
+            height: node.bounds.height,
         })
     }
 
@@ -848,52 +1242,16 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationProvider_Impl {
     }
 
     fn SetFocus(&self) -> windows::core::Result<()> {
-        let action = self.node.map_or(
-            SettingsAutomationAction::SetWindowFocus,
-            SettingsAutomationAction::SetFocus,
-        );
-        self.enqueue(action)
+        self.automation()?
+            .enqueue(SettingsAutomationAction::SetFocus(self.node))
     }
 
     fn FragmentRoot(&self) -> windows::core::Result<IRawElementProviderFragmentRoot> {
-        Ok(self.root_fragment())
+        Ok(self.automation()?.root_fragment())
     }
 }
 
-impl IRawElementProviderFragmentRoot_Impl for SettingsAutomationProvider_Impl {
-    fn ElementProviderFromPoint(
-        &self,
-        x: f64,
-        y: f64,
-    ) -> windows::core::Result<IRawElementProviderFragment> {
-        let snapshot = self.snapshot();
-        if let Some(node) = snapshot
-            .nodes
-            .into_iter()
-            .find(|node| !node.offscreen && node.bounds.contains(x, y))
-        {
-            return Ok(self.child_fragment(node.id));
-        }
-        if snapshot.window.contains(x, y) {
-            Ok(self.root_fragment_node())
-        } else {
-            Ok(null_interface())
-        }
-    }
-
-    fn GetFocus(&self) -> windows::core::Result<IRawElementProviderFragment> {
-        let snapshot = self.snapshot();
-        if snapshot.focus_owner != AutomationFocusOwner::Settings {
-            return Ok(null_interface());
-        }
-        snapshot.focused.map_or_else(
-            || Ok(self.root_fragment_node()),
-            |id| Ok(self.child_fragment(id)),
-        )
-    }
-}
-
-impl IInvokeProvider_Impl for SettingsAutomationProvider_Impl {
+impl IInvokeProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn Invoke(&self) -> windows::core::Result<()> {
         let Some(node) = self.node() else {
             return no_interface();
@@ -901,11 +1259,12 @@ impl IInvokeProvider_Impl for SettingsAutomationProvider_Impl {
         if !node.enabled || !node_has_invoke(node.kind) {
             return invalid_argument();
         }
-        self.enqueue(SettingsAutomationAction::Invoke(node.id))
+        self.automation()?
+            .enqueue(SettingsAutomationAction::Invoke(node.id))
     }
 }
 
-impl IToggleProvider_Impl for SettingsAutomationProvider_Impl {
+impl IToggleProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn Toggle(&self) -> windows::core::Result<()> {
         let Some(node) = self.node() else {
             return no_interface();
@@ -913,7 +1272,8 @@ impl IToggleProvider_Impl for SettingsAutomationProvider_Impl {
         if !node.enabled || node.toggle.is_none() {
             return invalid_argument();
         }
-        self.enqueue(SettingsAutomationAction::Toggle(node.id))
+        self.automation()?
+            .enqueue(SettingsAutomationAction::Toggle(node.id))
     }
 
     fn ToggleState(&self) -> windows::core::Result<ToggleState> {
@@ -929,7 +1289,7 @@ impl IToggleProvider_Impl for SettingsAutomationProvider_Impl {
     }
 }
 
-impl IRangeValueProvider_Impl for SettingsAutomationProvider_Impl {
+impl IRangeValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn SetValue(&self, val: f64) -> windows::core::Result<()> {
         let Some(node) = self.node() else {
             return no_interface();
@@ -940,10 +1300,11 @@ impl IRangeValueProvider_Impl for SettingsAutomationProvider_Impl {
         if !node.enabled || !val.is_finite() || val < range.minimum || val > range.maximum {
             return invalid_argument();
         }
-        self.enqueue(SettingsAutomationAction::SetSlider {
-            id: node.id,
-            value: val,
-        })
+        self.automation()?
+            .enqueue(SettingsAutomationAction::SetSlider {
+                id: node.id,
+                value: val,
+            })
     }
 
     fn Value(&self) -> windows::core::Result<f64> {
@@ -985,7 +1346,7 @@ impl IRangeValueProvider_Impl for SettingsAutomationProvider_Impl {
     }
 }
 
-impl IValueProvider_Impl for SettingsAutomationProvider_Impl {
+impl IValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn SetValue(&self, _val: &windows::core::PCWSTR) -> windows::core::Result<()> {
         let Some(node) = self.node() else {
             return no_interface();
@@ -1019,6 +1380,7 @@ mod tests {
         SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetLBound,
         SafeArrayGetUBound,
     };
+    use windows::Win32::System::Variant::{VT_BOOL, VT_BSTR, VT_EMPTY};
     use windows::Win32::UI::Accessibility::UIA_PATTERN_ID;
     use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
 
@@ -1083,6 +1445,38 @@ mod tests {
         }
         unsafe { SafeArrayDestroy(array).expect("runtime array destroy") };
         values
+    }
+    fn raw_property(
+        provider: &IRawElementProviderSimple,
+        property: UIA_PROPERTY_ID,
+    ) -> (windows::core::HRESULT, VARIANT) {
+        let mut value = VARIANT::default();
+        let hr = unsafe {
+            (provider.vtable().GetPropertyValue)(provider.as_raw(), property, &mut value)
+        };
+        (hr, value)
+    }
+
+    fn assert_raw_empty_property(provider: &IRawElementProviderSimple, property: UIA_PROPERTY_ID) {
+        let (hr, value) = raw_property(provider, property);
+        assert_eq!(hr, windows::core::HRESULT(0));
+        assert_eq!(unsafe { value.Anonymous.Anonymous.vt }, VT_EMPTY);
+    }
+
+    fn assert_raw_variant_type(
+        provider: &IRawElementProviderSimple,
+        property: UIA_PROPERTY_ID,
+        expected: windows::Win32::System::Variant::VARENUM,
+    ) -> VARIANT {
+        let (hr, value) = raw_property(provider, property);
+        assert_eq!(hr, windows::core::HRESULT(0));
+        assert_eq!(unsafe { value.Anonymous.Anonymous.vt }, expected);
+        value
+    }
+
+    fn iunknown_identity<T: Interface>(interface: &T) -> *mut core::ffi::c_void {
+        let unknown: IUnknown = interface.cast().expect("IUnknown");
+        unknown.as_raw()
     }
 
     fn layout() -> SettingsLayout {
@@ -1149,6 +1543,7 @@ mod tests {
         assert_eq!(control_type(ElementKind::Slider), UIA_SliderControlTypeId.0);
         assert!(node_has_invoke(ElementKind::Value));
         assert!(!node_has_invoke(ElementKind::Toggle));
+        assert!(!node_has_invoke(ElementKind::Slider));
         let ranges = values();
         let snapshot =
             snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &ranges, None, 96);
@@ -1192,12 +1587,10 @@ mod tests {
 
     #[test]
     fn automation_actions_are_queued_for_later_window_dispatch() {
-        let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
+        let automation = SettingsAutomation::new(unsafe { GetDesktopWindow() });
         automation
-            .actions
-            .lock()
-            .expect("action queue")
-            .push(SettingsAutomationAction::Toggle(ElementId::OverlayEnabled));
+            .enqueue(SettingsAutomationAction::Toggle(ElementId::OverlayEnabled))
+            .expect("post action");
         let actions = automation.drain_actions();
         assert!(matches!(
             actions.as_slice(),
@@ -1276,11 +1669,7 @@ mod tests {
             96,
         );
         snapshot.focused = Some(ElementId::OverlayEnabled);
-        automation
-            .snapshot
-            .write()
-            .expect("snapshot")
-            .clone_from(&snapshot);
+        automation.publish(snapshot);
         let root_simple = automation.root_provider();
         let root: IRawElementProviderFragmentRoot = root_simple.cast().expect("root fragment");
         let focused = unsafe { root.GetFocus().expect("logical focus") };
@@ -1444,11 +1833,7 @@ mod tests {
         let mut snapshot = automation.snapshot();
         snapshot.focused = Some(ElementId::OverlayEnabled);
         snapshot.set_focus_state(AutomationFocusOwner::Settings, None);
-        automation
-            .snapshot
-            .write()
-            .expect("snapshot")
-            .clone_from(&snapshot);
+        automation.publish(snapshot.clone());
         let focused = unsafe { root.GetFocus().expect("settings focus") };
         let focused_simple: IRawElementProviderSimple = focused.cast().expect("focused child");
         let focused_value = unsafe {
@@ -1462,11 +1847,7 @@ mod tests {
             AutomationFocusOwner::Picker,
             Some(ElementId::OverlayEnabled),
         );
-        automation
-            .snapshot
-            .write()
-            .expect("snapshot")
-            .clone_from(&snapshot);
+        automation.publish(snapshot.clone());
         assert_raw_null_focus(&root);
         let picker_value = unsafe {
             automation
@@ -1477,11 +1858,7 @@ mod tests {
         assert!(!bool::try_from(&picker_value).expect("BOOL variant"));
 
         snapshot.set_focus_state(AutomationFocusOwner::Outside, None);
-        automation
-            .snapshot
-            .write()
-            .expect("snapshot")
-            .clone_from(&snapshot);
+        automation.publish(snapshot);
         assert_raw_null_focus(&root);
     }
 
@@ -1550,5 +1927,197 @@ mod tests {
         let changed_properties = changed_property_ids(&slider, &changed);
         assert!(changed_properties.contains(&UIA_IsOffscreenPropertyId));
         assert!(changed_properties.contains(&UIA_BoundingRectanglePropertyId));
+    }
+    #[test]
+    fn unsupported_properties_return_s_ok_and_vt_empty() {
+        let automation = published_automation();
+        let root = automation.root_provider();
+        let mut availability =
+            assert_raw_variant_type(&root, UIA_IsInvokePatternAvailablePropertyId, VT_BOOL);
+        assert!(!bool::try_from(&availability).expect("BOOL variant"));
+        unsafe {
+            VariantClear(&mut availability).expect("clear availability value");
+        }
+        let checkbox = automation.provider_for(ElementId::OverlayEnabled);
+        assert_raw_empty_property(&checkbox, UIA_RangeValueValuePropertyId);
+
+        let slider = automation.provider_for(ElementId::OverlayDuration);
+        assert_raw_empty_property(&slider, UIA_ToggleToggleStatePropertyId);
+
+        let button = automation.provider_for(ElementId::OpenConfigFolder);
+        assert_raw_empty_property(&button, UIA_ToggleToggleStatePropertyId);
+        assert_raw_empty_property(&button, UIA_RangeValueValuePropertyId);
+        assert_raw_empty_property(&button, UIA_ValueValuePropertyId);
+        assert_raw_empty_property(&button, UIA_ValueIsReadOnlyPropertyId);
+        assert_raw_empty_property(&button, UIA_PROPERTY_ID(99_998));
+    }
+
+    #[test]
+    fn value_pattern_properties_use_bstr_and_bool_variants() {
+        let automation = published_automation();
+        let provider = automation.provider_for(ElementId::InputDevice);
+        let mut value = assert_raw_variant_type(&provider, UIA_ValueValuePropertyId, VT_BSTR);
+        unsafe {
+            VariantClear(&mut value).expect("clear BSTR value");
+        }
+        let mut read_only =
+            assert_raw_variant_type(&provider, UIA_ValueIsReadOnlyPropertyId, VT_BOOL);
+        assert!(bool::try_from(&read_only).expect("BOOL variant"));
+        unsafe {
+            VariantClear(&mut read_only).expect("clear BOOL value");
+        }
+    }
+
+    #[test]
+    fn root_and_child_provider_com_identities_are_distinct_and_stable() {
+        let automation = published_automation();
+        let root_simple = automation.root_provider();
+        let root_fragment: IRawElementProviderFragment = root_simple.cast().expect("root fragment");
+        let root: IRawElementProviderFragmentRoot = root_simple.cast().expect("root fragment root");
+        let queried_root: IRawElementProviderFragmentRoot =
+            root_simple.cast().expect("root QueryInterface");
+        assert_eq!(iunknown_identity(&root), iunknown_identity(&queried_root));
+        let returned_root = unsafe { root_fragment.FragmentRoot().expect("root FragmentRoot") };
+        assert_eq!(iunknown_identity(&root), iunknown_identity(&returned_root));
+
+        let child_simple = automation.provider_for(ElementId::OverlayEnabled);
+        let error = child_simple
+            .cast::<IRawElementProviderFragmentRoot>()
+            .expect_err("child must not expose FragmentRoot");
+        assert_eq!(error.code(), windows::core::HRESULT(0x80004002u32 as i32));
+        let child: IRawElementProviderFragment = child_simple.cast().expect("child fragment");
+        let returned_root = unsafe { child.FragmentRoot().expect("child FragmentRoot") };
+        assert_eq!(iunknown_identity(&root), iunknown_identity(&returned_root));
+
+        let first = unsafe {
+            root_fragment
+                .Navigate(NavigateDirection_FirstChild)
+                .expect("first child")
+        };
+        let next = unsafe {
+            first
+                .Navigate(NavigateDirection_NextSibling)
+                .expect("next sibling")
+        };
+        let previous = unsafe {
+            next.Navigate(NavigateDirection_PreviousSibling)
+                .expect("previous sibling")
+        };
+        assert_eq!(read_runtime_id(&first), read_runtime_id(&previous));
+    }
+
+    #[test]
+    fn snapshot_commit_defers_requerying_event_delivery_past_refcell_borrow() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let automation = published_automation();
+        let mut changed_snapshot = automation.snapshot();
+        changed_snapshot
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == ElementId::OverlayEnabled)
+            .expect("toggle node")
+            .toggle = Some(true);
+
+        let settings_borrow = RefCell::new(());
+        let borrowed = settings_borrow.borrow_mut();
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        automation.publish(changed_snapshot);
+        assert!(delivered.borrow().is_empty());
+        drop(borrowed);
+
+        let delivered_for_sink = Rc::clone(&delivered);
+        automation.flush_pending_events_with(|automation, notification| {
+            let provider = automation.provider_for(ElementId::OverlayEnabled);
+            let _ = unsafe {
+                provider
+                    .GetPropertyValue(UIA_ToggleToggleStatePropertyId)
+                    .expect("re-query provider during delivery")
+            };
+            delivered_for_sink.borrow_mut().push(notification.clone());
+        });
+        let delivered = delivered.borrow();
+        assert_eq!(delivered.len(), 1);
+        assert!(matches!(
+            delivered[0].kind,
+            AutomationNotificationKind::Property(property)
+                if property == UIA_ToggleToggleStatePropertyId.0
+        ));
+        assert_eq!(
+            delivered[0].old_value,
+            AutomationValue::I32(ToggleState_Off.0)
+        );
+        assert_eq!(
+            delivered[0].new_value,
+            AutomationValue::I32(ToggleState_On.0)
+        );
+    }
+    #[test]
+    fn invoke_notifications_are_deferred_once_per_accepted_invocation() {
+        let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
+        automation.queue_invoked(ElementId::InputDevice);
+        let mut delivered = Vec::new();
+        automation
+            .flush_pending_events_with(|_, notification| delivered.push(notification.clone()));
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0].target,
+            AutomationTarget::Node(ElementId::InputDevice)
+        );
+        assert_eq!(delivered[0].kind, AutomationNotificationKind::Invoked);
+    }
+    #[test]
+    fn initial_snapshot_does_not_queue_synthetic_notifications() {
+        let automation = published_automation();
+        let mut delivered = Vec::new();
+        automation
+            .flush_pending_events_with(|_, notification| delivered.push(notification.clone()));
+        assert!(delivered.is_empty());
+    }
+
+    #[test]
+    fn property_notifications_preserve_first_old_and_latest_new_values() {
+        let automation = published_automation();
+        let mut first = automation.snapshot();
+        first
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == ElementId::OverlayOpacity)
+            .expect("opacity slider")
+            .range
+            .as_mut()
+            .expect("opacity range")
+            .value = 0.7;
+        automation.publish(first);
+
+        let mut latest = automation.snapshot();
+        latest
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == ElementId::OverlayOpacity)
+            .expect("opacity slider")
+            .range
+            .as_mut()
+            .expect("opacity range")
+            .value = 0.8;
+        automation.publish(latest);
+
+        let mut delivered = Vec::new();
+        automation
+            .flush_pending_events_with(|_, notification| delivered.push(notification.clone()));
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0].kind,
+            AutomationNotificationKind::Property(UIA_RangeValueValuePropertyId.0)
+        );
+        match &delivered[0].old_value {
+            AutomationValue::F64(value) => assert!((*value - 0.65).abs() < 1e-12),
+            value => panic!("unexpected old value: {value:?}"),
+        }
+        match &delivered[0].new_value {
+            AutomationValue::F64(value) => assert!((*value - 0.8).abs() < 1e-12),
+            value => panic!("unexpected new value: {value:?}"),
+        }
     }
 }

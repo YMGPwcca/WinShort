@@ -121,6 +121,21 @@ Invoke, Toggle, Slider, and logical-focus operations post actions to the Setting
 main-thread `SettingsUi` applies them. The Direct2D/DirectWrite Settings HWND therefore remains
 the only visual and pointer-interaction surface, including wheel scrolling across every row.
 
+Snapshot publication is deliberately two-phase. `SettingsUi` commits the immutable snapshot and
+queues typed notifications, then posts `WM_APP_SETTINGS_AUTOMATION_EVENTS`; it never calls
+`UiaRaise*` while its `RefCell` guard is alive. The Settings WndProc clones the automation handle
+in a short borrow, drops that borrow, and only then flushes notifications. Property notifications
+coalesce by target and property, preserving the first old value and latest new value. Runtime
+`VARIANT`s are created and cleared only during the borrow-free flush.
+
+The COM surface is split between `SettingsAutomationRootProvider` and
+`SettingsAutomationNodeProvider`. Only the root implements `IRawElementProviderFragmentRoot`.
+The root caches one COM identity and returns that identity from `FragmentRoot`; children return
+the same cached root. Accepted Invoke actions queue one deferred `Invoked` event through the same
+notification path.
+For picker and hotkey controls, the Invoked event means the trigger was accepted and dispatched;
+it does not claim that a later picker selection or recorded chord has completed.
+
 UIA nodes expose names, help text, enabled/offscreen state, screen-space bounds, control types,
 truthful toggle state, slider range/value semantics, and logical focus. The native picker remains
 a separate real LISTBOX popup; it retains native selection/keyboard behavior and generation-safe,
@@ -138,6 +153,11 @@ children use `UiaAppendRuntimeId` plus a stable focus-order value, and only the 
 returns the Settings HWND host provider. Point queries return the logical child, root, or null
 according to screen-space hit testing.
 
+
+Picker construction is staged: popup and LISTBOX HWNDs are configured hidden, registered in the
+Settings snapshot, and only then shown/foregrounded/focused. This makes the internal
+Settings-to-picker focus transition resolve directly to `Picker`, never through a false
+`Outside` state. External focus loss still closes without forcing Settings focus.
 Focus state distinguishes the Settings HWND, the native picker LISTBOX, and outside ownership.
 Logical children report keyboard focus only while the Settings HWND owns focus; UIA `SetFocus`
 is queued to the Settings window and published after the Win32 focus result is observed. Snapshot
@@ -151,6 +171,11 @@ Contract audit references: [GetPatternProvider](https://learn.microsoft.com/en-u
 [GetRuntimeId](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-getruntimeid),
 [HostRawElementProvider](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementprovidersimple-get_hostrawelementprovider),
 and [server-side provider guidance](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-serversideprovider).
+The final audit also follows [GetPropertyValue](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementprovidersimple-getpropertyvalue),
+[FragmentRoot](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-get_fragmentroot),
+[IRawElementProviderFragmentRoot](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nn-uiautomationcore-irawelementproviderfragmentroot),
+[UiaRaiseAutomationEvent](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcoreapi/nf-uiautomationcoreapi-uiaraiseautomationevent),
+and [Value control pattern](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-implementingvalue).
 
 Picker focus-loss handlers read `WM_KILLFOCUS.wParam` and only post a
 generation-tagged deferred-close message. They do not destroy the popup or refocus another

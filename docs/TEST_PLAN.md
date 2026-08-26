@@ -76,6 +76,15 @@ Automated coverage:
 - Native picker/listbox retains fixed-order keyboard navigation, generation-checked close, and
   idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are pure-tested.
 
+- UIA publication is two-phase: a SettingsUi `RefCell` may commit and queue state changes, but
+  only the later borrow-free Settings HWND flush may simulate UIA delivery. Tests cover provider
+  re-query during flush, initial-notification suppression, and target/property coalescing.
+- Raw property tests verify `VT_EMPTY` for inapplicable values, BSTR/BOOL values for ValuePattern,
+  and normal Boolean pattern-availability properties. COM identity tests verify root-only
+  FragmentRoot support, shared root identity, and stable child navigation.
+- Invoke event tests verify one deferred Invoked notification per accepted Button action; picker
+  construction tests verify HWND registration before activation and direct Settings-to-Picker focus.
+
 Manual matrix:
 
 - Input/output picker: Default, available explicit device, disconnected explicit device.

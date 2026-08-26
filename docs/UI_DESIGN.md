@@ -70,6 +70,10 @@ logical child focus is never advertised while the picker LISTBOX owns keyboard f
 updates raise UIA property events only when focus, toggle, slider value, enabled, offscreen,
 bounds, name, or displayed value actually changes.
 
+Snapshot publication only commits state and queues typed notifications; UIA delivery is deferred
+to a Settings HWND message after the `SettingsUi` borrow is dropped. Duplicate target/property
+changes coalesce. Picker and hotkey Invoke actions raise one deferred Invoked event when accepted.
+
 ## Settings interaction — current
 
 **Status: Implemented.** Audio device pickers show Default, current inventory, and a synthetic
