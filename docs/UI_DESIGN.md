@@ -59,6 +59,17 @@ are not created. The separate native LISTBOX picker remains keyboard navigable w
 Escape, and Enter/click behavior. The hotkey recorder returns focus to the Settings window before
 capture so global capture remains generation-safe.
 
+UI Automation contract policy: picker and hotkey rows are Button controls with Invoke; they do not
+claim ComboBox or Edit semantics. Their displayed text is exposed read-only through ValuePattern,
+and `SetValue` returns `UIA_E_INVALIDOPERATION`. The fragment root returns the Settings HWND host
+provider; logical children return no host provider. Unsupported patterns, missing navigation
+boundaries, and outside point queries complete successfully with null results. Runtime IDs are
+null for the hosted root and use `UiaAppendRuntimeId` plus a stable child index for descendants.
+The provider tracks whether focus belongs to Settings, the native picker, or outside WinShort, so
+logical child focus is never advertised while the picker LISTBOX owns keyboard focus. Snapshot
+updates raise UIA property events only when focus, toggle, slider value, enabled, offscreen,
+bounds, name, or displayed value actually changes.
+
 ## Settings interaction — current
 
 **Status: Implemented.** Audio device pickers show Default, current inventory, and a synthetic

@@ -65,6 +65,12 @@ Automated coverage:
   scaling.
 - Custom Settings UIA snapshot nodes expose logical control types, names/help, bounds, offscreen,
   enabled/focus state, toggle state, and slider range/value semantics without child HWND creation.
+- Direct provider ABI tests verify S_OK/null unsupported patterns, navigation boundaries, hosted-root
+  and child RuntimeIds, root-only host providers, truthful Button/Invoke mappings, read-only
+  ValuePattern failure, and root/child/outside point queries.
+- UIA focus tests distinguish Settings HWND, native picker LISTBOX, and outside focus; focus actions
+  are queued to the Settings HWND. Snapshot publication filters property events to actual focus,
+  toggle, slider value, enabled, offscreen, bounds, name, and displayed-value changes.
 - UIA actions are queued to the Settings HWND; logical focus keeps actual HWND focus on Settings.
 - Native picker/listbox retains fixed-order keyboard navigation, generation-checked close, and
   idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are pure-tested.

@@ -126,6 +126,30 @@ truthful toggle state, slider range/value semantics, and logical focus. The nati
 a separate real LISTBOX popup; it retains native selection/keyboard behavior and generation-safe,
 idempotent focus-loss teardown.
 
+The picker and hotkey rows are exposed as Button controls with Invoke semantics. A picker is a
+button-like trigger for a separate native LISTBOX, not a UIA ComboBox: it does not expose a
+selection subtree or ExpandCollapse provider. Picker and hotkey rows retain a read-only Value
+pattern only for their current displayed text; `SetValue` reports
+`UIA_E_INVALIDOPERATION`.
+
+The provider follows the Win32 fragment contracts: unsupported patterns and navigation
+boundaries return `S_OK` with a null interface, the fragment root returns a null RuntimeId while
+children use `UiaAppendRuntimeId` plus a stable focus-order value, and only the fragment root
+returns the Settings HWND host provider. Point queries return the logical child, root, or null
+according to screen-space hit testing.
+
+Focus state distinguishes the Settings HWND, the native picker LISTBOX, and outside ownership.
+Logical children report keyboard focus only while the Settings HWND owns focus; UIA `SetFocus`
+is queued to the Settings window and published after the Win32 focus result is observed. Snapshot
+publication compares old/new nodes and raises only changed focus, toggle, slider value, enabled,
+offscreen, bounds, name, and displayed-value properties.
+
+Contract audit references: [GetPatternProvider](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementprovidersimple-getpatternprovider),
+[Navigate](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-navigate),
+[GetRuntimeId](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-getruntimeid),
+[HostRawElementProvider](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementprovidersimple-get_hostrawelementprovider),
+and [server-side provider guidance](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-serversideprovider).
+
 Picker focus-loss handlers read `WM_KILLFOCUS.wParam` and only post a
 generation-tagged deferred-close message. They do not destroy the popup or refocus another
 window inside the focus callback. Commit/Escape/Tab teardown is idempotent through the owning

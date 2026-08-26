@@ -20,14 +20,15 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetFocus, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
     WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
-    WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_OVERLAPPEDWINDOW,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
+    WM_NCDESTROY, WM_PAINT, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_TIMER, WS_OVERLAPPEDWINDOW,
 };
 
 use crate::config::model::{
@@ -44,7 +45,7 @@ use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
 use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
 use crate::ui::settings_automation::{
-    snapshot_from_settings, SettingsAutomation, SettingsAutomationAction,
+    snapshot_from_settings, AutomationFocusOwner, SettingsAutomation, SettingsAutomationAction,
     WM_APP_SETTINGS_AUTOMATION,
 };
 use crate::ui::theme::{Color, Theme, ThemeMode};
@@ -123,6 +124,9 @@ pub struct SettingsUi {
     pressed: Option<ElementId>,
     recording_modifiers: ModifierMask,
     focused: Option<ElementId>,
+    focus_owner: AutomationFocusOwner,
+    picker_owner: Option<ElementId>,
+    picker_hwnd: Option<HWND>,
     recording: Option<ElementId>,
     capture_armed: bool,
     reset_confirm: bool,
@@ -145,8 +149,11 @@ impl SettingsUi {
             validation: Vec::new(),
             hovered: None,
             pressed: None,
-            focused: None,
             recording_modifiers: ModifierMask::NONE,
+            focused: None,
+            focus_owner: AutomationFocusOwner::Outside,
+            picker_owner: None,
+            picker_hwnd: None,
             recording: None,
             capture_armed: false,
             reset_confirm: false,
@@ -964,14 +971,68 @@ impl SettingsUi {
             })
             .collect();
         if let Some(automation) = &self.automation {
-            automation.publish(snapshot_from_settings(
-                hwnd,
-                &self.layout,
-                &values,
-                self.focused,
-                self.dpi,
-            ));
+            let mut snapshot =
+                snapshot_from_settings(hwnd, &self.layout, &values, self.focused, self.dpi);
+            snapshot.set_focus_state(self.focus_owner, self.picker_owner);
+            automation.publish(snapshot);
         }
+    }
+    fn sync_focus_after_set_focus(&mut self, hwnd: HWND) {
+        let actual = unsafe { GetFocus() };
+        self.focus_owner = if actual == hwnd {
+            AutomationFocusOwner::Settings
+        } else if self.picker_hwnd == Some(actual) {
+            AutomationFocusOwner::Picker
+        } else {
+            AutomationFocusOwner::Outside
+        };
+        self.publish_automation_snapshot(hwnd);
+    }
+
+    fn on_window_focus(&mut self, hwnd: HWND, focused: bool, next: HWND) {
+        self.focus_owner = if focused {
+            AutomationFocusOwner::Settings
+        } else if self.picker_hwnd == Some(next) {
+            AutomationFocusOwner::Picker
+        } else {
+            AutomationFocusOwner::Outside
+        };
+        self.publish_automation_snapshot(hwnd);
+    }
+
+    fn set_picker_open(&mut self, hwnd: HWND, owner: ElementId) {
+        self.picker_owner = Some(owner);
+        self.picker_hwnd = None;
+        self.focused = Some(owner);
+        self.focus_owner = AutomationFocusOwner::Outside;
+        self.publish_automation_snapshot(hwnd);
+    }
+
+    fn set_picker_hwnd(&mut self, hwnd: HWND, picker_hwnd: HWND) {
+        self.picker_hwnd = Some(picker_hwnd);
+        let actual = unsafe { GetFocus() };
+        self.focus_owner = if actual == picker_hwnd {
+            AutomationFocusOwner::Picker
+        } else if actual == hwnd {
+            AutomationFocusOwner::Settings
+        } else {
+            AutomationFocusOwner::Outside
+        };
+        self.publish_automation_snapshot(hwnd);
+    }
+
+    fn set_picker_closed(&mut self, hwnd: HWND, owner: Option<ElementId>) {
+        self.picker_owner = None;
+        self.picker_hwnd = None;
+        if let Some(owner) = owner {
+            self.focused = Some(owner);
+        }
+        self.focus_owner = if unsafe { GetFocus() } == hwnd {
+            AutomationFocusOwner::Settings
+        } else {
+            AutomationFocusOwner::Outside
+        };
+        self.publish_automation_snapshot(hwnd);
     }
 
     fn drain_automation_actions(&mut self, hwnd: HWND) -> bool {
@@ -1095,6 +1156,9 @@ impl SettingsWindow {
             let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(self.hwnd);
             let _ = SetFocus(Some(self.hwnd));
         }
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().sync_focus_after_set_focus(self.hwnd);
+        }
         Ok(())
     }
 
@@ -1175,10 +1239,24 @@ impl SettingsWindow {
         let width = (picker_width_dip(control_rect.w, &choices) * scale).round() as i32;
         let height = ((choices.len().min(10) as f32 * 30.0 + 8.0) * scale).round() as i32;
         let geometry = crate::ui::picker::place_popup(anchor, work, width, height);
-        self.picker = Some(PickerPopup::create(
-            self.hwnd, kind, choices, current, geometry,
-        )?);
-        self.picker_owner = picker_element(kind);
+        let owner =
+            picker_element(kind).ok_or_else(|| Error::internal("settings picker row missing"))?;
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().set_picker_open(self.hwnd, owner);
+        }
+        let picker = match PickerPopup::create(self.hwnd, kind, choices, current, geometry) {
+            Ok(picker) => picker,
+            Err(error) => {
+                self.cancel_picker();
+                return Err(error);
+            }
+        };
+        let picker_hwnd = picker.hwnd;
+        self.picker = Some(picker);
+        self.picker_owner = Some(owner);
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().set_picker_hwnd(self.hwnd, picker_hwnd);
+        }
         Ok(())
     }
 
@@ -1196,25 +1274,25 @@ impl SettingsWindow {
     pub fn cancel_picker(&mut self) {
         let owner = self.picker_owner.take();
         let _ = self.picker.take();
-        if let Some(owner) = owner {
-            if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-                let mut ui = cell.borrow_mut();
-                ui.focused = Some(owner);
-                ui.publish_automation_snapshot(self.hwnd);
-            }
-        }
         unsafe {
-            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.hwnd));
+            let _ = SetFocus(Some(self.hwnd));
+        }
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            let mut ui = cell.borrow_mut();
+            let owner = owner.or(ui.picker_owner);
+            ui.set_picker_closed(self.hwnd, owner);
         }
     }
 
     pub fn focus_next_from_picker(&mut self, reverse: bool) {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            let mut ui = cell.borrow_mut();
-            ui.focus_next(self.hwnd, reverse);
+            cell.borrow_mut().focus_next(self.hwnd, reverse);
         }
         unsafe {
-            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.hwnd));
+            let _ = SetFocus(Some(self.hwnd));
+        }
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().sync_focus_after_set_focus(self.hwnd);
         }
     }
 
@@ -1603,17 +1681,32 @@ unsafe extern "system" fn settings_wndproc(
                 let focus_requested = cell.borrow_mut().drain_automation_actions(hwnd);
                 if focus_requested {
                     let _ = SetFocus(Some(hwnd));
+                    cell.borrow_mut().sync_focus_after_set_focus(hwnd);
                 }
+                LRESULT(0)
+            }
+            WM_SETFOCUS => {
+                cell.borrow_mut()
+                    .on_window_focus(hwnd, true, HWND::default());
+                LRESULT(0)
+            }
+            WM_KILLFOCUS => {
+                let next = HWND(wparam.0 as *mut _);
+                cell.borrow_mut().on_window_focus(hwnd, false, next);
                 LRESULT(0)
             }
             WM_CLOSE => {
                 crate::event::post_main(crate::event::AppEvent::SettingsWindowClosed);
-                let mut ui = cell.borrow_mut();
-                if ui.recording.is_some() || ui.capture_armed {
+                let capture_armed = {
+                    let mut ui = cell.borrow_mut();
+                    let capture_armed = ui.recording.is_some() || ui.capture_armed;
+                    ui.capture_armed = false;
+                    ui.recording = None;
+                    capture_armed
+                };
+                if capture_armed {
                     crate::keyboard::hook::end_capture();
                 }
-                ui.capture_armed = false;
-                ui.recording = None;
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 LRESULT(0)
             }
@@ -1711,26 +1804,35 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
-                let mut ui = cell.borrow_mut();
-                let (x, y) = mouse_point(lparam, ui.dpi);
-                ui.rebuild_layout(hwnd);
-                if let Some(id) = ui.layout.hit_test(x, y) {
-                    if !ui.is_disabled(id) {
-                        ui.pressed = Some(id);
-                        ui.focused = Some(id);
-                        let _ = SetCapture(hwnd);
-                        if matches!(
-                            id,
-                            ElementId::OverlayDuration
-                                | ElementId::OverlayOpacity
-                                | ElementId::OverlayScale
-                        ) {
-                            ui.set_slider_from_x(id, x);
+                let focus_requested = {
+                    let mut ui = cell.borrow_mut();
+                    let (x, y) = mouse_point(lparam, ui.dpi);
+                    ui.rebuild_layout(hwnd);
+                    let mut focus_requested = false;
+                    if let Some(id) = ui.layout.hit_test(x, y) {
+                        if !ui.is_disabled(id) {
+                            focus_requested = true;
+                            ui.pressed = Some(id);
+                            ui.focused = Some(id);
+                            let _ = SetCapture(hwnd);
+                            if matches!(
+                                id,
+                                ElementId::OverlayDuration
+                                    | ElementId::OverlayOpacity
+                                    | ElementId::OverlayScale
+                            ) {
+                                ui.set_slider_from_x(id, x);
+                            }
+                            invalidate(hwnd);
                         }
-                        invalidate(hwnd);
                     }
+                    ui.publish_automation_snapshot(hwnd);
+                    focus_requested
+                };
+                if focus_requested {
+                    let _ = SetFocus(Some(hwnd));
+                    cell.borrow_mut().sync_focus_after_set_focus(hwnd);
                 }
-                ui.publish_automation_snapshot(hwnd);
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
@@ -1774,6 +1876,7 @@ unsafe extern "system" fn settings_wndproc(
                         let reverse = key_down(0x10);
                         cell.borrow_mut().focus_next(hwnd, reverse);
                         let _ = SetFocus(Some(hwnd));
+                        cell.borrow_mut().sync_focus_after_set_focus(hwnd);
                         invalidate(hwnd);
                         LRESULT(0)
                     }
@@ -2215,6 +2318,26 @@ mod interaction_tests {
                 warnings: Vec::new(),
             },
         )
+    }
+    #[test]
+    fn picker_focus_state_suppresses_logical_child_focus() {
+        let hwnd = HWND(2usize as *mut _);
+        let mut ui = empty_settings_ui();
+        ui.install_automation(hwnd);
+        ui.focused = Some(ElementId::InputDevice);
+        ui.set_picker_open(hwnd, ElementId::InputDevice);
+        let picker_hwnd = HWND(std::ptr::dangling_mut());
+        ui.picker_hwnd = Some(picker_hwnd);
+        ui.on_window_focus(hwnd, false, picker_hwnd);
+        let snapshot = ui.automation.as_ref().expect("automation").snapshot();
+        assert_eq!(snapshot.focus_owner, AutomationFocusOwner::Picker);
+        assert_eq!(snapshot.picker_open_for, Some(ElementId::InputDevice));
+        assert!(snapshot.nodes.iter().all(|node| !node.focused));
+        ui.set_picker_closed(hwnd, Some(ElementId::InputDevice));
+        let snapshot = ui.automation.as_ref().expect("automation").snapshot();
+        assert_eq!(snapshot.focus_owner, AutomationFocusOwner::Outside);
+        assert_eq!(snapshot.picker_open_for, None);
+        assert_eq!(snapshot.focused, Some(ElementId::InputDevice));
     }
 
     #[test]
