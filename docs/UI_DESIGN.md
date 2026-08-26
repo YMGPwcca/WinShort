@@ -45,17 +45,18 @@ only while motion or recording is active; idle UI has no render loop.
 * Picker rows — explicit native LISTBOX popup for input/output device, endpoint role, overlay
   appearance, position, and monitor; current selection is visible, keyboard navigable, Escape
   cancels, Enter/click commits, focus loss closes
-* Slider rows — duration / opacity / scale, mouse drag plus native trackbar keyboard semantics
+* Slider rows — duration / opacity / scale, mouse drag plus logical UI Automation RangeValue semantics
 * Buttons — footer Cancel / Save (Save disabled until draft differs from live)
 * Scrollable content column — wheel scrolling with slim custom scrollbar
 * Status row (Advanced) — composed virtual-desktop backend text
 
-Keyboard accessibility is implemented through native child HWND semantics layered over the
-owner-drawn rows. Toggle rows use real `BS_AUTOCHECKBOX` controls with `BM_SETCHECK`
-synchronization; non-toggle actions use owner-drawn BUTTON controls; sliders use native
-trackbars with range semantics. Buttons expose names/current values/help descriptions. Tab/Shift-
-Tab, Space/Enter, arrows, Home/End, Page Up/Down, focus visibility, and focus-following scroll
-are supported. The hotkey recorder deliberately returns focus to the Settings window before
+Keyboard accessibility is implemented by a custom UI Automation provider in `ui/settings_automation.rs`.
+The Settings HWND owns the only visual and pointer surface; `WM_GETOBJECT` returns a fragment root
+whose logical children are derived from the same layout and values used for Direct2D rendering.
+Provider reads consume an `Arc<RwLock<SettingsAutomationSnapshot>>`; Invoke, Toggle, Slider, and
+focus actions are queued back to the Settings HWND. Native child BUTTON/TRACKBAR semantic overlays
+are not created. The separate native LISTBOX picker remains keyboard navigable with focus-loss,
+Escape, and Enter/click behavior. The hotkey recorder returns focus to the Settings window before
 capture so global capture remains generation-safe.
 
 ## Settings interaction — current

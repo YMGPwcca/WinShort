@@ -352,9 +352,9 @@ impl App {
             settings.persist_position();
         }
     }
-    pub(crate) fn focus_settings_from_child(&mut self, reverse: bool) {
+    pub(crate) fn focus_settings_from_picker(&mut self, reverse: bool) {
         if let Some(settings) = &mut self.settings {
-            settings.focus_next_from_child(reverse);
+            settings.focus_next_from_picker(reverse);
         }
     }
 
@@ -637,8 +637,8 @@ impl App {
             AppEvent::OpenSettingsPicker(kind) => self.open_settings_picker(kind),
             AppEvent::ShowStatusOverlay => self.show_status_overlay(),
             AppEvent::PreviewOverlay { config } => self.show_preview_overlay(config),
-            AppEvent::FocusSettingsFromChild { reverse } => {
-                self.focus_settings_from_child(reverse);
+            AppEvent::FocusSettingsFromPicker { reverse } => {
+                self.focus_settings_from_picker(reverse);
             }
             AppEvent::CommitSettingsPicker { kind, value } => {
                 self.commit_settings_picker(kind, value);

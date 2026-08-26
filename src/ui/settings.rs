@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -24,8 +24,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND,
-    WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_HSCROLL, WM_KEYDOWN, WM_KEYUP,
+    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
     WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_OVERLAPPEDWINDOW,
 };
@@ -43,9 +43,9 @@ use crate::ui::controls::{self, ControlValue, Interaction};
 use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
 use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
-use crate::ui::settings_accessibility::{
-    accessibility_pointer_event, AccessibilityPointerEvent, SettingsAccessibility,
-    WM_APP_SETTINGS_CHILD_POINTER,
+use crate::ui::settings_automation::{
+    snapshot_from_settings, SettingsAutomation, SettingsAutomationAction,
+    WM_APP_SETTINGS_AUTOMATION,
 };
 use crate::ui::theme::{Color, Theme, ThemeMode};
 
@@ -92,6 +92,8 @@ fn settings_theme_for(theme: Theme, visual: SystemVisualPreferences) -> Theme {
         bg_subtle: background,
         card: background,
         card_hover: background,
+        control_hover: background,
+        picker_hover: background,
         card_pressed: background,
         border: foreground,
         border_strong: foreground,
@@ -128,7 +130,7 @@ pub struct SettingsUi {
     motion: Motion,
     applied_until: Option<Instant>,
     mouse_tracking: bool,
-    accessibility: Option<SettingsAccessibility>,
+    automation: Option<SettingsAutomation>,
 }
 
 impl SettingsUi {
@@ -152,7 +154,7 @@ impl SettingsUi {
             motion: Motion::default(),
             applied_until: None,
             mouse_tracking: false,
-            accessibility: None,
+            automation: None,
         }
     }
 
@@ -176,10 +178,6 @@ impl SettingsUi {
 
     fn paint(&mut self, hwnd: HWND) -> Result<()> {
         self.rebuild_layout(hwnd);
-        if self.accessibility.is_none() {
-            self.install_accessibility(hwnd);
-        }
-        self.refresh_focused_state();
         let dirty = self.dirty();
         let now = Instant::now();
         if self.applied_until.is_some_and(|until| now >= until) {
@@ -339,7 +337,7 @@ impl SettingsUi {
         let result = renderer.end();
         if result.is_ok() {
             self.renderer = Some(renderer);
-            self.sync_accessibility();
+            self.publish_automation_snapshot(hwnd);
         }
         result
     }
@@ -508,43 +506,6 @@ impl SettingsUi {
         self.set_hover(hwnd, self.layout.hit_test(x, y));
     }
 
-    fn update_child_pointer(
-        &mut self,
-        hwnd: HWND,
-        child: HWND,
-        event: AccessibilityPointerEvent,
-        cursor: Option<(f32, f32)>,
-    ) {
-        let Some(id) = self.accessibility_id_for(child) else {
-            return;
-        };
-        let cursor_target = cursor.map(|(x, y)| self.layout.hit_test(x, y));
-        let target = child_pointer_target(self.hovered, id, event, cursor_target);
-        match event {
-            AccessibilityPointerEvent::Move | AccessibilityPointerEvent::Leave => {
-                self.set_hover(hwnd, target);
-            }
-            AccessibilityPointerEvent::Press => {
-                if target == Some(id) {
-                    self.set_hover(hwnd, Some(id));
-                    if self.pressed != Some(id) {
-                        self.pressed = Some(id);
-                        invalidate(hwnd);
-                    }
-                }
-            }
-            AccessibilityPointerEvent::Release => {
-                if cursor.is_some() {
-                    self.set_hover(hwnd, target);
-                }
-                if self.pressed == Some(id) {
-                    self.pressed = None;
-                    invalidate(hwnd);
-                }
-            }
-        }
-    }
-
     fn set_slider_from_ratio(&mut self, id: ElementId, ratio: f32) {
         let ratio = ratio.clamp(0.0, 1.0);
         match id {
@@ -561,6 +522,16 @@ impl SettingsUi {
             _ => return,
         }
         self.validation.clear();
+    }
+    fn set_slider_from_value(&mut self, id: ElementId, value: f64) -> bool {
+        let ratio = match id {
+            ElementId::OverlayDuration => (value - 500.0) / 9500.0,
+            ElementId::OverlayOpacity => (value - 0.3) / 0.7,
+            ElementId::OverlayScale => (value - 0.7) / 0.9,
+            _ => return false,
+        };
+        self.set_slider_from_ratio(id, ratio as f32);
+        true
     }
 
     fn set_slider_from_x(&mut self, id: ElementId, x: f32) {
@@ -761,6 +732,7 @@ impl SettingsUi {
         }
         self.validation.clear();
         invalidate(hwnd);
+        self.publish_automation_snapshot(hwnd);
     }
 
     fn animate_toggle(&mut self, hwnd: HWND, id: ElementId, value: bool) {
@@ -908,15 +880,13 @@ impl SettingsUi {
         order[current_index]
     }
 
-    fn focus_next(&mut self, hwnd: HWND, reverse: bool) -> Option<HWND> {
+    fn focus_next(&mut self, hwnd: HWND, reverse: bool) {
         let order = ElementId::FOCUS_ORDER;
         let next = Self::next_focus_index(&order, self.focused, reverse, |id| self.is_disabled(id));
         self.scroll_focus_into_view(next);
         self.rebuild_layout(hwnd);
         self.focused = Some(next);
-        self.accessibility
-            .as_ref()
-            .and_then(|accessibility| accessibility.focus_hwnd(next))
+        self.publish_automation_snapshot(hwnd);
     }
 
     fn scroll_focus_into_view(&mut self, id: ElementId) {
@@ -963,21 +933,14 @@ impl SettingsUi {
         self.reset_confirm = false;
         self.validation.clear();
     }
-    fn install_accessibility(&mut self, hwnd: HWND) {
-        if self.accessibility.is_none() {
-            self.accessibility = Some(SettingsAccessibility::create(hwnd));
+    fn install_automation(&mut self, hwnd: HWND) {
+        if self.automation.is_none() {
+            self.automation = Some(SettingsAutomation::new(hwnd));
+            self.publish_automation_snapshot(hwnd);
         }
     }
 
-    fn refresh_focused_state(&mut self) {
-        if let Some(accessibility) = &self.accessibility {
-            if let Some(focused) = accessibility.focused_id() {
-                self.focused = Some(focused);
-            }
-        }
-    }
-
-    fn sync_accessibility(&mut self) {
+    fn publish_automation_snapshot(&self, hwnd: HWND) {
         let values: Vec<(ElementId, String, bool, f32)> = ElementId::FOCUS_ORDER
             .into_iter()
             .map(|id| {
@@ -1000,23 +963,52 @@ impl SettingsUi {
                 (id, value, !self.is_disabled(id), ratio)
             })
             .collect();
-        if let Some(accessibility) = &mut self.accessibility {
-            accessibility.sync(&self.layout, &values, self.dpi);
-            if let Some(focused) = accessibility.focused_id() {
-                self.focused = Some(focused);
-            }
+        if let Some(automation) = &self.automation {
+            automation.publish(snapshot_from_settings(
+                hwnd,
+                &self.layout,
+                &values,
+                self.focused,
+                self.dpi,
+            ));
         }
     }
 
-    fn accessibility_id_for(&self, hwnd: HWND) -> Option<ElementId> {
-        self.accessibility.as_ref()?.id_for(hwnd)
-    }
-
-    fn accessibility_slider_ratio(&self, hwnd: HWND) -> Option<f32> {
-        self.accessibility.as_ref()?.slider_ratio(hwnd)
-    }
-    fn accessibility_focus_hwnd(&self, id: ElementId) -> Option<HWND> {
-        self.accessibility.as_ref()?.focus_hwnd(id)
+    fn drain_automation_actions(&mut self, hwnd: HWND) -> bool {
+        let actions = self
+            .automation
+            .as_ref()
+            .map(SettingsAutomation::drain_actions)
+            .unwrap_or_default();
+        let mut focus_requested = false;
+        for action in actions {
+            match action {
+                SettingsAutomationAction::Invoke(id) | SettingsAutomationAction::Toggle(id) => {
+                    self.focused = Some(id);
+                    self.activate(hwnd, id);
+                }
+                SettingsAutomationAction::SetSlider { id, value } => {
+                    if !self.is_disabled(id) && self.set_slider_from_value(id, value) {
+                        self.focused = Some(id);
+                        invalidate(hwnd);
+                    }
+                }
+                SettingsAutomationAction::SetWindowFocus => {
+                    focus_requested = true;
+                }
+                SettingsAutomationAction::SetFocus(id) => {
+                    if self.layout.element(id).is_some() && !self.is_disabled(id) {
+                        self.focused = Some(id);
+                        self.scroll_focus_into_view(id);
+                        self.rebuild_layout(hwnd);
+                        invalidate(hwnd);
+                        focus_requested = true;
+                    }
+                }
+            }
+        }
+        self.publish_automation_snapshot(hwnd);
+        focus_requested
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -1096,17 +1088,21 @@ impl SettingsWindow {
             }
             ui.validation.clear();
             invalidate(self.hwnd);
+            ui.publish_automation_snapshot(self.hwnd);
         }
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(self.hwnd);
+            let _ = SetFocus(Some(self.hwnd));
         }
         Ok(())
     }
 
     pub fn refresh_devices(&mut self, devices: crate::audio::devices::DeviceLists) {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            cell.borrow_mut().devices = devices;
+            let mut ui = cell.borrow_mut();
+            ui.devices = devices;
+            ui.publish_automation_snapshot(self.hwnd);
         }
         invalidate(self.hwnd);
     }
@@ -1147,14 +1143,18 @@ impl SettingsWindow {
         let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(self.hwnd) }) else {
             return Err(Error::internal("settings state missing"));
         };
-        let (draft, element_rect, dpi) = {
+        let (draft, control_rect, dpi) = {
             let ui = cell.borrow();
             let element = picker_element(kind)
                 .and_then(|id| ui.layout.element(id))
                 .ok_or_else(|| Error::internal("settings picker row missing"))?;
-            (ui.draft.clone(), element.rect, ui.dpi)
+            (
+                ui.draft.clone(),
+                controls::value_control_rect(element.rect, element.kind),
+                ui.dpi,
+            )
         };
-        let anchor = screen_rect(self.hwnd, element_rect, dpi)?;
+        let anchor = screen_rect(self.hwnd, control_rect, dpi)?;
         let (choices, current) = picker_choices(kind, &draft, &devices, &monitors);
         if choices.is_empty() {
             return Err(Error::config("no choices available"));
@@ -1172,7 +1172,7 @@ impl SettingsWindow {
                 .unwrap_or(PopupRect::new(0, 0, 1920, 1080));
         let anchor = PopupRect::new(anchor.left, anchor.top, anchor.right, anchor.bottom);
         let scale = dpi.max(96) as f32 / 96.0;
-        let width = (300.0 * scale).round() as i32;
+        let width = (picker_width_dip(control_rect.w, &choices) * scale).round() as i32;
         let height = ((choices.len().min(10) as f32 * 30.0 + 8.0) * scale).round() as i32;
         let geometry = crate::ui::picker::place_popup(anchor, work, width, height);
         self.picker = Some(PickerPopup::create(
@@ -1187,37 +1187,34 @@ impl SettingsWindow {
             cell.borrow_mut().apply_picker(kind, value);
         }
         invalidate(self.hwnd);
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow().publish_automation_snapshot(self.hwnd);
+        }
         self.cancel_picker();
     }
 
     pub fn cancel_picker(&mut self) {
         let owner = self.picker_owner.take();
         let _ = self.picker.take();
-        let focus_target = owner.and_then(|owner| {
-            let cell = unsafe { win::state_cell::<SettingsUi>(self.hwnd) }?;
-            let mut ui = cell.borrow_mut();
-            ui.focused = Some(owner);
-            ui.accessibility_focus_hwnd(owner)
-        });
-        if let Some(child) = focus_target {
-            unsafe {
-                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(child));
+        if let Some(owner) = owner {
+            if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+                let mut ui = cell.borrow_mut();
+                ui.focused = Some(owner);
+                ui.publish_automation_snapshot(self.hwnd);
             }
-            return;
         }
         unsafe {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.hwnd));
         }
     }
 
-    pub fn focus_next_from_child(&mut self, reverse: bool) {
-        let focus_target = unsafe { win::state_cell::<SettingsUi>(self.hwnd) }
-            .and_then(|cell| cell.borrow_mut().focus_next(self.hwnd, reverse));
-        invalidate(self.hwnd);
-        if let Some(child) = focus_target {
-            unsafe {
-                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(child));
-            }
+    pub fn focus_next_from_picker(&mut self, reverse: bool) {
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            let mut ui = cell.borrow_mut();
+            ui.focus_next(self.hwnd, reverse);
+        }
+        unsafe {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.hwnd));
         }
     }
 
@@ -1381,6 +1378,18 @@ fn screen_rect(hwnd: HWND, rect: UiRect, dpi: u32) -> Result<RECT> {
         right: bottom_right.x,
         bottom: bottom_right.y,
     })
+}
+fn picker_width_dip(control_width: f32, choices: &[PickerChoice]) -> f32 {
+    const LABEL_ADVANCE_DIP: f32 = 7.5;
+    const HORIZONTAL_PADDING_DIP: f32 = 36.0;
+    const MAX_WIDTH_DIP: f32 = 440.0;
+    let longest = choices
+        .iter()
+        .map(|choice| choice.label.chars().count() as f32)
+        .fold(0.0, f32::max);
+    control_width
+        .max(longest * LABEL_ADVANCE_DIP + HORIZONTAL_PADDING_DIP)
+        .min(MAX_WIDTH_DIP)
 }
 
 fn picker_choices(
@@ -1569,7 +1578,7 @@ unsafe extern "system" fn settings_wndproc(
             let ui = Box::from_raw(cs.lpCreateParams as *mut SettingsUi);
             win::store_state_ptr(hwnd, win::WindowState::new(*ui));
             if let Some(cell) = win::state_cell::<SettingsUi>(hwnd) {
-                cell.borrow_mut().install_accessibility(hwnd);
+                cell.borrow_mut().install_automation(hwnd);
             }
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
@@ -1584,52 +1593,18 @@ unsafe extern "system" fn settings_wndproc(
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
         match msg {
-            WM_APP_SETTINGS_CHILD_POINTER => {
-                let child = HWND(wparam.0 as *mut _);
-                let Some(event) = accessibility_pointer_event(lparam.0) else {
-                    return LRESULT(0);
-                };
-                let dpi = cell.borrow().dpi;
-                let cursor = cursor_point(hwnd, dpi);
-                cell.borrow_mut()
-                    .update_child_pointer(hwnd, child, event, cursor);
-                LRESULT(0)
+            WM_GETOBJECT => {
+                let automation = { cell.borrow().automation.clone() };
+                automation
+                    .and_then(|automation| automation.handle_get_object(hwnd, wparam, lparam))
+                    .unwrap_or_else(|| win::def_proc(hwnd, msg, wparam, lparam))
             }
-            WM_DRAWITEM => LRESULT(1),
-            WM_COMMAND => {
-                let source = HWND(lparam.0 as *mut _);
-                let _control_id = crate::ui::picker::loword(wparam.0);
-                let notification = crate::ui::picker::hiword(wparam.0);
-                let handled = if notification == 0 {
-                    let mut ui = cell.borrow_mut();
-                    if let Some(id) = ui.accessibility_id_for(source) {
-                        ui.focused = Some(id);
-                        ui.activate(hwnd, id);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-                if handled {
+            WM_APP_SETTINGS_AUTOMATION => {
+                let focus_requested = cell.borrow_mut().drain_automation_actions(hwnd);
+                if focus_requested {
                     let _ = SetFocus(Some(hwnd));
-                    return LRESULT(0);
                 }
-                win::def_proc(hwnd, msg, wparam, lparam)
-            }
-            WM_HSCROLL => {
-                let source = HWND(lparam.0 as *mut _);
-                let mut ui = cell.borrow_mut();
-                if let Some(id) = ui.accessibility_id_for(source) {
-                    if let Some(ratio) = ui.accessibility_slider_ratio(source) {
-                        ui.focused = Some(id);
-                        ui.set_slider_from_ratio(id, ratio);
-                        invalidate(hwnd);
-                        return LRESULT(0);
-                    }
-                }
-                win::def_proc(hwnd, msg, wparam, lparam)
+                LRESULT(0)
             }
             WM_CLOSE => {
                 crate::event::post_main(crate::event::AppEvent::SettingsWindowClosed);
@@ -1658,7 +1633,7 @@ unsafe extern "system" fn settings_wndproc(
                     let _ = renderer.resize();
                 }
                 ui.rebuild_layout(hwnd);
-                ui.sync_accessibility();
+                ui.publish_automation_snapshot(hwnd);
                 invalidate(hwnd);
                 LRESULT(0)
             }
@@ -1685,7 +1660,7 @@ unsafe extern "system" fn settings_wndproc(
                 );
                 let mut ui = cell.borrow_mut();
                 ui.rebuild_layout(hwnd);
-                ui.sync_accessibility();
+                ui.publish_automation_snapshot(hwnd);
                 invalidate(hwnd);
                 LRESULT(0)
             }
@@ -1720,6 +1695,7 @@ unsafe extern "system" fn settings_wndproc(
                 ) = ui.pressed
                 {
                     ui.set_slider_from_x(id, x);
+                    ui.publish_automation_snapshot(hwnd);
                     invalidate(hwnd);
                 }
                 LRESULT(0)
@@ -1754,6 +1730,7 @@ unsafe extern "system" fn settings_wndproc(
                         invalidate(hwnd);
                     }
                 }
+                ui.publish_automation_snapshot(hwnd);
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
@@ -1767,13 +1744,15 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
                 invalidate(hwnd);
+                ui.publish_automation_snapshot(hwnd);
                 LRESULT(0)
             }
             WM_MOUSEWHEEL => {
                 let mut ui = cell.borrow_mut();
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
-                ui.scroll = (ui.scroll - delta / 120.0 * 64.0).clamp(0.0, ui.layout.max_scroll);
+                ui.scroll = scroll_after_wheel(ui.scroll, delta, ui.layout.max_scroll);
                 ui.rebuild_layout(hwnd);
+                ui.publish_automation_snapshot(hwnd);
                 invalidate(hwnd);
                 LRESULT(0)
             }
@@ -1782,18 +1761,19 @@ unsafe extern "system" fn settings_wndproc(
                 {
                     let mut ui = cell.borrow_mut();
                     if ui.record_key(hwnd, vk, true) {
+                        ui.publish_automation_snapshot(hwnd);
                         return LRESULT(0);
                     }
                     if ui.adjust_focused_slider(hwnd, vk) {
+                        ui.publish_automation_snapshot(hwnd);
                         return LRESULT(0);
                     }
                 }
                 match vk {
                     0x09 => {
-                        let focus_target = cell.borrow_mut().focus_next(hwnd, key_down(0x10));
-                        if let Some(child) = focus_target {
-                            let _ = SetFocus(Some(child));
-                        }
+                        let reverse = key_down(0x10);
+                        cell.borrow_mut().focus_next(hwnd, reverse);
+                        let _ = SetFocus(Some(hwnd));
                         invalidate(hwnd);
                         LRESULT(0)
                     }
@@ -1813,6 +1793,7 @@ unsafe extern "system" fn settings_wndproc(
                             (ui.scroll + page).min(ui.layout.max_scroll)
                         };
                         ui.rebuild_layout(hwnd);
+                        ui.publish_automation_snapshot(hwnd);
                         invalidate(hwnd);
                         LRESULT(0)
                     }
@@ -1891,38 +1872,9 @@ fn mouse_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
     let scale = 96.0 / dpi.max(96) as f32;
     (x * scale, y * scale)
 }
-fn child_pointer_target(
-    current: Option<ElementId>,
-    child: ElementId,
-    event: AccessibilityPointerEvent,
-    cursor_target: Option<Option<ElementId>>,
-) -> Option<ElementId> {
-    match event {
-        AccessibilityPointerEvent::Move | AccessibilityPointerEvent::Press => {
-            cursor_target.unwrap_or(Some(child))
-        }
-        AccessibilityPointerEvent::Leave => cursor_target.unwrap_or_else(|| {
-            if current == Some(child) {
-                None
-            } else {
-                current
-            }
-        }),
-        AccessibilityPointerEvent::Release => cursor_target.unwrap_or(current),
-    }
+fn scroll_after_wheel(scroll: f32, delta: f32, max_scroll: f32) -> f32 {
+    (scroll - delta / 120.0 * 64.0).clamp(0.0, max_scroll)
 }
-fn cursor_point(hwnd: HWND, dpi: u32) -> Option<(f32, f32)> {
-    let mut point = POINT::default();
-    unsafe {
-        windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point).ok()?;
-        if !windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point).as_bool() {
-            return None;
-        }
-    }
-    let scale = 96.0 / dpi.max(96) as f32;
-    Some((point.x as f32 * scale, point.y as f32 * scale))
-}
-
 fn invalidate(hwnd: HWND) {
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -2188,51 +2140,6 @@ mod interaction_tests {
         }
     }
     #[test]
-    fn child_pointer_crossing_keeps_hover_target_coherent() {
-        let first = ElementId::InputDevice;
-        let second = ElementId::OutputDevice;
-        assert_eq!(
-            child_pointer_target(
-                Some(first),
-                second,
-                AccessibilityPointerEvent::Leave,
-                Some(Some(second)),
-            ),
-            Some(second)
-        );
-        assert_eq!(
-            child_pointer_target(
-                Some(second),
-                second,
-                AccessibilityPointerEvent::Leave,
-                Some(None),
-            ),
-            None
-        );
-        assert_eq!(
-            child_pointer_target(Some(second), first, AccessibilityPointerEvent::Leave, None,),
-            Some(second)
-        );
-    }
-
-    #[test]
-    fn child_pointer_press_and_release_do_not_change_hover_fallback() {
-        let id = ElementId::OverlayEnabled;
-        assert_eq!(
-            child_pointer_target(None, id, AccessibilityPointerEvent::Press, None),
-            Some(id)
-        );
-        assert_eq!(
-            child_pointer_target(
-                Some(id),
-                id,
-                AccessibilityPointerEvent::Release,
-                Some(Some(id)),
-            ),
-            Some(id)
-        );
-    }
-    #[test]
     fn high_contrast_settings_theme_uses_system_pairs_for_hover_and_focus() {
         let visual = SystemVisualPreferences {
             high_contrast: true,
@@ -2257,10 +2164,47 @@ mod interaction_tests {
         let theme = settings_theme_for(Theme::dark(), visual);
         assert_eq!(theme.card, Color::rgb(8, 16, 24));
         assert_eq!(theme.card_hover, theme.card);
+        assert_eq!(theme.control_hover, theme.card);
+        assert_eq!(theme.picker_hover, theme.card);
         assert_eq!(theme.border_strong, Color::rgb(240, 232, 224));
         assert_eq!(theme.focus, theme.border_strong);
         assert_eq!(theme.accent, Color::rgb(32, 96, 160));
         assert_eq!(theme.accent_text, Color::rgb(255, 255, 255));
+    }
+    #[test]
+    fn picker_anchor_uses_the_value_control_rect() {
+        let row = UiRect::new(24.0, 300.0, 560.0, 58.0);
+        let control = controls::value_control_rect(row, crate::ui::layout::ElementKind::Value);
+        assert!(control.x > row.x);
+        let anchor = PopupRect::new(
+            control.x as i32,
+            control.y as i32,
+            control.right() as i32,
+            control.bottom() as i32,
+        );
+        let popup = crate::ui::picker::place_popup(
+            anchor,
+            PopupRect::new(0, 0, 1200, 900),
+            anchor.width(),
+            180,
+        );
+        assert_eq!(popup.left, anchor.left);
+        assert_eq!(popup.top, anchor.bottom);
+    }
+
+    #[test]
+    fn long_picker_labels_expand_width_without_exceeding_cap() {
+        let short = vec![PickerChoice {
+            label: "Top Left".into(),
+            value: PickerValue::Position(OverlayPosition::TopLeft),
+        }];
+        let long = vec![PickerChoice {
+            label: "A deliberately long endpoint name for the default device".into(),
+            value: PickerValue::Position(OverlayPosition::TopLeft),
+        }];
+        assert_eq!(picker_width_dip(190.0, &short), 190.0);
+        assert!(picker_width_dip(190.0, &long) > 190.0);
+        assert!(picker_width_dip(190.0, &long) <= 440.0);
     }
     fn empty_settings_ui() -> SettingsUi {
         SettingsUi::new(
@@ -2315,5 +2259,12 @@ mod interaction_tests {
         replacement.overlay.enabled = false;
         ui.replace_draft(replacement);
         assert_eq!(ui.motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+    }
+    #[test]
+    fn wheel_scroll_policy_is_independent_of_control_region() {
+        assert_eq!(scroll_after_wheel(128.0, 120.0, 512.0), 64.0);
+        assert_eq!(scroll_after_wheel(128.0, 120.0, 512.0), 64.0);
+        assert_eq!(scroll_after_wheel(0.0, 120.0, 512.0), 0.0);
+        assert_eq!(scroll_after_wheel(512.0, -120.0, 512.0), 512.0);
     }
 }

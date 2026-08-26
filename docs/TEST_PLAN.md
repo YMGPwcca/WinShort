@@ -63,9 +63,11 @@ Automated coverage:
 - Reset requires two activations and changes draft state only.
 - Restored Settings rectangles are fully contained in the selected work area and use target-DPI
   scaling.
-- Native picker/listbox and semantic child-control construction remains wired to the fixed
-  focus order; child Tab routing, deferred generation-checked picker close, and picker owner
-  focus restoration are covered; sliders use coded validation ranges and keyboard quantization.
+- Custom Settings UIA snapshot nodes expose logical control types, names/help, bounds, offscreen,
+  enabled/focus state, toggle state, and slider range/value semantics without child HWND creation.
+- UIA actions are queued to the Settings HWND; logical focus keeps actual HWND focus on Settings.
+- Native picker/listbox retains fixed-order keyboard navigation, generation-checked close, and
+  idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are pure-tested.
 
 Manual matrix:
 

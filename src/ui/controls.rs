@@ -57,7 +57,7 @@ pub fn draw_row(
     let state = interaction_state(interaction);
     let bg = match state {
         InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
-        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Hovered => BrushRole::ControlHover,
         InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
     };
 
@@ -118,7 +118,7 @@ pub fn draw_button(r: &Renderer, rect: Rect, label: &str, primary: bool, interac
         (true, InteractionState::Hovered) => BrushRole::AccentHover,
         (true, _) => BrushRole::Accent,
         (false, InteractionState::Pressed) => BrushRole::CardPressed,
-        (false, InteractionState::Hovered) => BrushRole::CardHover,
+        (false, InteractionState::Hovered) => BrushRole::ControlHover,
         (false, _) => BrushRole::Card,
     };
     let text = if interaction.disabled {
@@ -202,6 +202,13 @@ fn control_rect(row: Rect, width: f32) -> Rect {
         34.0,
     )
 }
+pub(crate) fn value_control_rect(row: Rect, kind: ElementKind) -> Rect {
+    let width = match kind {
+        ElementKind::Hotkey => 178.0,
+        _ => 190.0,
+    };
+    control_rect(row, width)
+}
 
 fn draw_toggle(r: &Renderer, row: Rect, value: bool, interaction: Interaction) {
     let rect = control_rect(row, 46.0);
@@ -219,7 +226,7 @@ fn draw_toggle(r: &Renderer, row: Rect, value: bool, interaction: Interaction) {
             if value {
                 BrushRole::AccentHover
             } else {
-                BrushRole::CardHover
+                BrushRole::ControlHover
             }
         }
         InteractionState::Focused | InteractionState::Idle => {
@@ -269,15 +276,11 @@ fn draw_value_box(
     kind: ElementKind,
     interaction: Interaction,
 ) {
-    let width = match kind {
-        ElementKind::Hotkey => 178.0,
-        _ => 190.0,
-    };
-    let rect = control_rect(row, width);
+    let rect = value_control_rect(row, kind);
     let state = interaction_state(interaction);
     let bg = match state {
         InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
-        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Hovered => BrushRole::ControlHover,
         InteractionState::Focused | InteractionState::Idle => BrushRole::BackgroundSubtle,
     };
     let border = match state {
@@ -308,7 +311,7 @@ fn draw_value_box(
     } else {
         BrushRole::Text
     };
-    r.text(text, rect.inset(8.0).d2d(), TextStyle::ButtonSmall, role);
+    r.text(text, rect.inset(8.0).d2d(), TextStyle::Value, role);
 
     // Dropdown chevron for value fields.
     if matches!(kind, ElementKind::Value) {
@@ -398,7 +401,7 @@ fn draw_action(r: &Renderer, row: Rect, label: &str, interaction: Interaction) {
     let state = interaction_state(interaction);
     let bg = match state {
         InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
-        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Hovered => BrushRole::ControlHover,
         InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
     };
     let border = match state {
@@ -437,7 +440,8 @@ fn draw_action(r: &Renderer, row: Rect, label: &str, interaction: Interaction) {
 }
 #[cfg(test)]
 mod tests {
-    use super::{interaction_state, Interaction, InteractionState};
+    use super::{interaction_state, value_control_rect, Interaction, InteractionState};
+    use crate::ui::layout::{ElementKind, Rect};
 
     fn interaction() -> Interaction {
         Interaction {
@@ -473,5 +477,16 @@ mod tests {
         let mut value = interaction();
         value.hover_t = 0.5;
         assert_eq!(interaction_state(value), InteractionState::Hovered);
+    }
+
+    #[test]
+    fn value_control_geometry_is_right_aligned_and_kind_aware() {
+        let row = Rect::new(24.0, 100.0, 560.0, 58.0);
+        let value = value_control_rect(row, ElementKind::Value);
+        let hotkey = value_control_rect(row, ElementKind::Hotkey);
+        assert_eq!(value.w, 190.0);
+        assert_eq!(hotkey.w, 178.0);
+        assert!(value.x > row.x);
+        assert_eq!(value.right(), row.right() - 18.0);
     }
 }

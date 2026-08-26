@@ -43,6 +43,8 @@ pub struct Theme {
     pub bg_subtle: Color,
     pub card: Color,
     pub card_hover: Color,
+    pub control_hover: Color,
+    pub picker_hover: Color,
     pub card_pressed: Color,
     pub border: Color,
     pub border_strong: Color,
@@ -75,6 +77,8 @@ impl Theme {
             bg_subtle: Color::rgb(36, 36, 36),
             card: Color::rgb(43, 43, 43),
             card_hover: Color::rgb(49, 49, 49),
+            control_hover: Color::rgb(59, 59, 59),
+            picker_hover: Color::rgb(64, 64, 64),
             card_pressed: Color::rgb(38, 38, 38),
             border: Color::rgb(57, 57, 57),
             border_strong: Color::rgb(72, 72, 72),
@@ -100,6 +104,8 @@ impl Theme {
             bg_subtle: Color::rgb(238, 238, 238),
             card: Color::rgb(255, 255, 255),
             card_hover: Color::rgb(249, 249, 249),
+            control_hover: Color::rgb(244, 244, 244),
+            picker_hover: Color::rgb(238, 238, 238),
             card_pressed: Color::rgb(238, 238, 238),
             border: Color::rgb(229, 229, 229),
             border_strong: Color::rgb(204, 204, 204),
@@ -148,6 +154,18 @@ pub fn system_theme_mode() -> ThemeMode {
             ThemeMode::Light
         } else {
             ThemeMode::Dark
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::Theme;
+
+    #[test]
+    fn control_and_picker_hover_surfaces_are_distinct_in_both_themes() {
+        for theme in [Theme::dark(), Theme::light()] {
+            assert_ne!(theme.control_hover, theme.card);
+            assert_ne!(theme.picker_hover, theme.card);
         }
     }
 }

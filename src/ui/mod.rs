@@ -8,5 +8,5 @@ pub mod overlay;
 pub mod picker;
 pub mod renderer;
 pub mod settings;
-pub mod settings_accessibility;
+pub mod settings_automation;
 pub mod theme;

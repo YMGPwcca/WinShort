@@ -114,16 +114,17 @@ copied from the current draft and commits back only on click/Enter. Escape/focus
 the popup without changing the draft. Picker geometry is computed in screen pixels, prefers
 below-then-above placement, and clamps to the nearest monitor work area.
 
-Native child semantic controls are layered over the painted rows: owner-drawn buttons expose
-names/current values/help descriptions, while native trackbars expose range semantics. The
-Settings WndProc routes child notifications back into the same draft/validation state; no
-worker-thread or COM interface is touched by a picker.
+The Settings surface exposes logical controls through a custom Windows UI Automation provider
+(`ui/settings_automation.rs`) rather than semantic child HWNDs. The provider publishes an
+`Arc<RwLock<SettingsAutomationSnapshot>>`; COM reads consume only that immutable snapshot.
+Invoke, Toggle, Slider, and logical-focus operations post actions to the Settings HWND, where the
+main-thread `SettingsUi` applies them. The Direct2D/DirectWrite Settings HWND therefore remains
+the only visual and pointer-interaction surface, including wheel scrolling across every row.
 
-Child-control `WM_KEYDOWN(VK_TAB)` is intercepted by a subclass and routed to
-`SettingsUi::focus_next`; this avoids relying on `IsDialogMessageW` for the modeless window.
-Picker close restores the originating row's child HWND. Accessibility child rectangles use the
-same scroll-viewport intersection as D2D rows, so native hit regions cannot overlap the fixed
-footer/header.
+UIA nodes expose names, help text, enabled/offscreen state, screen-space bounds, control types,
+truthful toggle state, slider range/value semantics, and logical focus. The native picker remains
+a separate real LISTBOX popup; it retains native selection/keyboard behavior and generation-safe,
+idempotent focus-loss teardown.
 
 Picker focus-loss handlers read `WM_KILLFOCUS.wParam` and only post a
 generation-tagged deferred-close message. They do not destroy the popup or refocus another

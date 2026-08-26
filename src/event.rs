@@ -80,7 +80,7 @@ pub enum AppEvent {
     PreviewOverlay {
         config: crate::config::model::OverlayCfg,
     },
-    FocusSettingsFromChild {
+    FocusSettingsFromPicker {
         reverse: bool,
     },
     CommitSettingsPicker {

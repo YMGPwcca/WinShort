@@ -11,9 +11,11 @@ use std::sync::{
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
-    InvalidateRect, SetBkMode, SetTextColor, BACKGROUND_MODE, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
-    HDC, HGDIOBJ, PAINTSTRUCT,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
+    FrameRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, BACKGROUND_MODE,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_END_ELLIPSIS,
+    DT_LEFT, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_NORMAL, HDC, HFONT, HGDIOBJ,
+    OUT_DEFAULT_PRECIS, PAINTSTRUCT,
 };
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
@@ -25,9 +27,9 @@ use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindow
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, IsChild, PostMessageW, SetForegroundWindow, ShowWindow,
     CREATESTRUCTW, MA_ACTIVATE, SW_SHOW, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_CLOSE, WM_COMMAND, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONUP,
-    WM_MEASUREITEM, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VSCROLL,
+    WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONUP, WM_MEASUREITEM, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY,
+    WM_PAINT, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VSCROLL,
 };
 
 use crate::config::model::{
@@ -117,7 +119,13 @@ impl PopupRect {
 pub fn place_popup(anchor: PopupRect, work: PopupRect, width: i32, height: i32) -> PopupRect {
     let width = width.min(work.width()).max(1);
     let height = height.min(work.height()).max(1);
-    let mut left = anchor.left;
+    // Keep the attachment edge on the control when a wider popup cannot fit
+    // to its right; final clamping still handles monitor edges.
+    let mut left = if anchor.left + width <= work.right {
+        anchor.left
+    } else {
+        anchor.right - width
+    };
     let mut top = if work.bottom - anchor.bottom >= height {
         anchor.bottom
     } else {
@@ -154,6 +162,56 @@ struct PickerUi {
     list: HWND,
     close_action: Option<PickerCloseAction>,
     hovered_index: Option<usize>,
+    font: HFONT,
+}
+
+impl Drop for PickerUi {
+    fn drop(&mut self) {
+        if !self.font.is_invalid() {
+            unsafe {
+                let _ = DeleteObject(self.font.into());
+            }
+        }
+    }
+}
+
+const PICKER_FONT_SIZE_DIP: f32 = 14.0;
+const PICKER_FONT_FAMILY: &str = "Segoe UI Variable Text";
+const PICKER_FONT_FALLBACK: &str = "Segoe UI";
+
+fn picker_font_height(dpi: u32) -> i32 {
+    -((PICKER_FONT_SIZE_DIP * dpi.max(96) as f32 / 96.0).round() as i32).max(1)
+}
+
+fn create_picker_font(dpi: u32) -> HFONT {
+    let height = picker_font_height(dpi);
+    let create = |family: &str| {
+        let family = HSTRING::from(family);
+        unsafe {
+            CreateFontW(
+                height,
+                0,
+                0,
+                0,
+                FW_NORMAL.0 as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+                PCWSTR(family.as_ptr()),
+            )
+        }
+    };
+    let font = create(PICKER_FONT_FAMILY);
+    if font.is_invalid() {
+        create(PICKER_FONT_FALLBACK)
+    } else {
+        font
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PickerColors {
@@ -242,7 +300,7 @@ fn picker_colors_for_state(
             border: theme.border_strong,
         },
         PickerItemState::Hovered => PickerColors {
-            background: theme.card_hover,
+            background: theme.picker_hover,
             foreground: theme.text,
             border: theme.border_strong,
         },
@@ -277,7 +335,12 @@ unsafe fn draw_picker_surface(hwnd: HWND, hdc: HDC) {
     }
 }
 
-unsafe fn draw_picker_item(item: &DRAWITEMSTRUCT, label: &str, hovered: bool) -> LRESULT {
+unsafe fn draw_picker_item(
+    item: &DRAWITEMSTRUCT,
+    label: &str,
+    hovered: bool,
+    font: HFONT,
+) -> LRESULT {
     let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
     let focus = item.itemState.0 & ODS_FOCUS.0 != 0;
     let state = picker_item_state(selected, hovered, false);
@@ -289,6 +352,11 @@ unsafe fn draw_picker_item(item: &DRAWITEMSTRUCT, label: &str, hovered: bool) ->
     text_rect.left += 12;
     text_rect.right -= 12;
     let mut text = label.encode_utf16().collect::<Vec<_>>();
+    let old_font = if !font.is_invalid() {
+        unsafe { SelectObject(item.hDC, font.into()) }
+    } else {
+        HGDIOBJ::default()
+    };
     unsafe {
         let _ = SetBkMode(item.hDC, BACKGROUND_MODE(1));
         let _ = SetTextColor(item.hDC, to_colorref(colors.foreground));
@@ -296,10 +364,13 @@ unsafe fn draw_picker_item(item: &DRAWITEMSTRUCT, label: &str, hovered: bool) ->
             item.hDC,
             &mut text,
             &mut text_rect,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            DT_END_ELLIPSIS | DT_LEFT | DT_SINGLELINE | DT_VCENTER,
         );
-        if focus || matches!(state, PickerItemState::Hovered) {
+        if focus || hovered {
             let _ = FrameRect(item.hDC, &item.rcItem, border);
+        }
+        if !old_font.is_invalid() {
+            let _ = SelectObject(item.hDC, old_font);
         }
         let _ = DeleteObject(HGDIOBJ(background.0));
         let _ = DeleteObject(HGDIOBJ(border.0));
@@ -325,6 +396,7 @@ impl PickerPopup {
             list: HWND::default(),
             close_action: None,
             hovered_index: None,
+            font: HFONT::default(),
         });
         let hwnd = unsafe {
             CreateWindowExW(
@@ -370,8 +442,15 @@ impl PickerPopup {
         }
         .map_err(|error| Error::win("CreateWindowExW(settings picker list)", &error))?;
 
+        let font =
+            create_picker_font(unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96));
         let (labels, selected) = {
             let Some(cell) = (unsafe { win::state_cell::<PickerUi>(hwnd) }) else {
+                if !font.is_invalid() {
+                    unsafe {
+                        let _ = DeleteObject(font.into());
+                    }
+                }
                 unsafe {
                     let _ = DestroyWindow(hwnd);
                 }
@@ -379,6 +458,7 @@ impl PickerPopup {
             };
             let mut ui = cell.borrow_mut();
             ui.list = list;
+            ui.font = font;
             let labels = ui
                 .choices
                 .iter()
@@ -534,7 +614,7 @@ unsafe extern "system" fn picker_list_subclass(
         WM_KEYDOWN if wparam.0 as u16 == 0x09 => {
             let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
             cancel_picker(parent);
-            crate::event::post_main(crate::event::AppEvent::FocusSettingsFromChild { reverse });
+            crate::event::post_main(crate::event::AppEvent::FocusSettingsFromPicker { reverse });
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 as u16 == 0x0D => {
@@ -581,6 +661,24 @@ unsafe extern "system" fn picker_wndproc(
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
         match msg {
+            WM_DPICHANGED => {
+                let font =
+                    create_picker_font(windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96));
+                if font.is_invalid() {
+                    return win::def_proc(hwnd, msg, wparam, lparam);
+                }
+                let (old, list) = {
+                    let mut ui = cell.borrow_mut();
+                    let old = ui.font;
+                    ui.font = font;
+                    (old, ui.list)
+                };
+                if !old.is_invalid() {
+                    let _ = DeleteObject(old.into());
+                }
+                let _ = InvalidateRect(Some(list), None, false);
+                LRESULT(0)
+            }
             WM_MOUSEACTIVATE => LRESULT(MA_ACTIVATE as isize),
             WM_ERASEBKGND => {
                 let hdc = HDC(wparam.0 as *mut _);
@@ -609,7 +707,7 @@ unsafe extern "system" fn picker_wndproc(
                 if item.CtlType != ODT_LISTBOX {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
-                let (list, hovered, label) = {
+                let (list, hovered, label, font) = {
                     let ui = cell.borrow();
                     (
                         ui.list,
@@ -617,12 +715,15 @@ unsafe extern "system" fn picker_wndproc(
                         ui.choices
                             .get(item.itemID as usize)
                             .map(|choice| choice.label.clone()),
+                        ui.font,
                     )
                 };
                 if item.hwndItem != list {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
-                label.map_or(LRESULT(1), |value| draw_picker_item(item, &value, hovered))
+                label.map_or(LRESULT(1), |value| {
+                    draw_picker_item(item, &value, hovered, font)
+                })
             }
             WM_COMMAND => {
                 let _control_id = loword(wparam.0);
@@ -731,11 +832,18 @@ mod tests {
     fn popup_clamps_negative_and_right_edges() {
         let work = PopupRect::new(-500, -200, 500, 600);
         let rect = place_popup(PopupRect::new(450, 100, 480, 140), work, 300, 200);
-        assert_eq!(rect.right, 500);
+        assert_eq!(rect.right, 480);
         assert!(rect.left >= work.left);
         assert!(rect.top >= work.top);
     }
 
+    #[test]
+    fn wider_popup_preserves_control_attachment_at_right_edge() {
+        let anchor = PopupRect::new(700, 100, 800, 140);
+        let popup = place_popup(anchor, PopupRect::new(0, 0, 900, 800), 300, 180);
+        assert_eq!(popup.right, anchor.right);
+        assert_eq!(popup.top, anchor.bottom);
+    }
     #[test]
     fn picker_palette_uses_shared_dark_light_theme_colors() {
         let visual = SystemVisualPreferences::default();
@@ -803,7 +911,7 @@ mod tests {
         let visual = SystemVisualPreferences::default();
         for theme in [Theme::dark(), Theme::light()] {
             let colors = picker_colors_for_state(PickerItemState::Hovered, visual, theme);
-            assert_eq!(colors.background, theme.card_hover);
+            assert_eq!(colors.background, theme.picker_hover);
             assert_eq!(colors.foreground, theme.text);
         }
     }
@@ -841,6 +949,13 @@ mod tests {
         assert_eq!(colors.foreground, Color::rgb(240, 200, 160));
         assert_eq!(colors.border, colors.foreground);
     }
+    #[test]
+    fn picker_font_policy_is_dpi_scaled_and_explicit() {
+        assert_eq!(picker_font_height(96), -14);
+        assert_eq!(picker_font_height(144), -21);
+        assert_eq!(PICKER_FONT_FAMILY, "Segoe UI Variable Text");
+        assert_eq!(PICKER_FONT_FALLBACK, "Segoe UI");
+    }
 }
 
 #[cfg(test)]
@@ -862,6 +977,7 @@ mod focus_loss_tests {
         PickerKind, PickerUi,
     };
     use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::HFONT;
 
     #[test]
     fn internal_focus_does_not_request_close() {
@@ -883,6 +999,7 @@ mod focus_loss_tests {
             list: HWND(std::ptr::null_mut()),
             close_action: None,
             hovered_index: None,
+            font: HFONT::default(),
         });
         let (list, generation) = picker_focus_snapshot(&cell);
         assert!(list.0.is_null());
@@ -899,6 +1016,7 @@ mod focus_loss_tests {
             list: HWND(std::ptr::null_mut()),
             close_action: None,
             hovered_index: None,
+            font: HFONT::default(),
         });
         assert!(claim_close(&cell, PickerCloseAction::Commit));
         assert!(!claim_close(&cell, PickerCloseAction::Cancel));

@@ -36,6 +36,8 @@ pub enum BrushRole {
     BackgroundSubtle,
     Card,
     CardHover,
+    ControlHover,
+    PickerHover,
     CardPressed,
     Border,
     BorderStrong,
@@ -64,6 +66,7 @@ pub enum TextStyle {
     CaptionRight,
     Button,
     ButtonSmall,
+    Value,
 }
 
 pub struct Renderer {
@@ -344,6 +347,12 @@ impl Renderer {
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             ),
+            (
+                TextStyle::Value,
+                12.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
         ];
         for (style, size, weight, alignment) in entries {
             let format = self.create_format(size, weight, alignment)?;
@@ -411,12 +420,14 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
     )
 }
 
-fn brush_colors(theme: Theme) -> [(BrushRole, Color); 19] {
+fn brush_colors(theme: Theme) -> [(BrushRole, Color); 21] {
     [
         (BrushRole::Background, theme.bg),
         (BrushRole::BackgroundSubtle, theme.bg_subtle),
         (BrushRole::Card, theme.card),
         (BrushRole::CardHover, theme.card_hover),
+        (BrushRole::ControlHover, theme.control_hover),
+        (BrushRole::PickerHover, theme.picker_hover),
         (BrushRole::CardPressed, theme.card_pressed),
         (BrushRole::Border, theme.border),
         (BrushRole::BorderStrong, theme.border_strong),
