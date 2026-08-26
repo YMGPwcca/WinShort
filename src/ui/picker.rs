@@ -127,12 +127,28 @@ pub fn place_popup(anchor: PopupRect, work: PopupRect, width: i32, height: i32) 
 pub struct PickerPopup {
     pub hwnd: HWND,
 }
+impl Drop for PickerPopup {
+    fn drop(&mut self) {
+        if !self.hwnd.0.is_null() {
+            unsafe {
+                let _ = DestroyWindow(self.hwnd);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerCloseAction {
+    Commit,
+    Cancel,
+}
 
 struct PickerUi {
     generation: u64,
     kind: PickerKind,
     choices: Vec<PickerChoice>,
     list: HWND,
+    close_action: Option<PickerCloseAction>,
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PickerColors {
@@ -255,6 +271,7 @@ impl PickerPopup {
             kind,
             choices,
             list: HWND::default(),
+            close_action: None,
         });
         let hwnd = unsafe {
             CreateWindowExW(
@@ -552,14 +569,35 @@ fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)>
         .get(index)
         .map(|choice| (ui.kind, choice.value.clone()))
 }
+fn claim_close(cell: &std::cell::RefCell<PickerUi>, action: PickerCloseAction) -> bool {
+    let mut ui = cell.borrow_mut();
+    if ui.close_action.is_some() {
+        return false;
+    }
+    ui.close_action = Some(action);
+    true
+}
 
 fn commit_selected(parent: HWND, list: HWND) {
-    if let Some((kind, value)) = selected_value(parent, list) {
-        crate::event::post_main(crate::event::AppEvent::CommitSettingsPicker { kind, value });
+    let Some((kind, value)) = selected_value(parent, list) else {
+        return;
+    };
+    let Some(cell) = (unsafe { win::state_cell::<PickerUi>(parent) }) else {
+        return;
+    };
+    if !claim_close(cell, PickerCloseAction::Commit) {
+        return;
     }
+    crate::event::post_main(crate::event::AppEvent::CommitSettingsPicker { kind, value });
 }
 
 fn cancel_picker(hwnd: HWND) {
+    let Some(cell) = (unsafe { win::state_cell::<PickerUi>(hwnd) }) else {
+        return;
+    };
+    if !claim_close(cell, PickerCloseAction::Cancel) {
+        return;
+    }
     crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
         popup_hwnd: hwnd.0 as isize,
     });
@@ -644,7 +682,10 @@ mod wm_command_tests {
 
 #[cfg(test)]
 mod focus_loss_tests {
-    use super::{picker_focus_snapshot, should_close_after_focus_loss, PickerKind, PickerUi};
+    use super::{
+        claim_close, picker_focus_snapshot, should_close_after_focus_loss, PickerCloseAction,
+        PickerKind, PickerUi,
+    };
     use windows::Win32::Foundation::HWND;
 
     #[test]
@@ -665,10 +706,25 @@ mod focus_loss_tests {
             kind: PickerKind::OverlayPosition,
             choices: Vec::new(),
             list: HWND(std::ptr::null_mut()),
+            close_action: None,
         });
         let (list, generation) = picker_focus_snapshot(&cell);
         assert!(list.0.is_null());
         assert_eq!(generation, 9);
         assert!(cell.try_borrow_mut().is_ok());
+    }
+
+    #[test]
+    fn picker_close_action_is_claimed_once() {
+        let cell = std::cell::RefCell::new(PickerUi {
+            generation: 9,
+            kind: PickerKind::OverlayPosition,
+            choices: Vec::new(),
+            list: HWND(std::ptr::null_mut()),
+            close_action: None,
+        });
+        assert!(claim_close(&cell, PickerCloseAction::Commit));
+        assert!(!claim_close(&cell, PickerCloseAction::Cancel));
+        assert_eq!(cell.borrow().close_action, Some(PickerCloseAction::Commit));
     }
 }
