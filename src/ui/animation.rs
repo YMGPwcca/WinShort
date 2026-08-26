@@ -15,23 +15,49 @@ struct Tween {
     duration: Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MotionChannel {
+    Hover,
+    ToggleState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MotionKey {
+    element: ElementId,
+    channel: MotionChannel,
+}
+
 #[derive(Default)]
 pub struct Motion {
-    tweens: HashMap<ElementId, Tween>,
+    tweens: HashMap<MotionKey, Tween>,
 }
 
 impl Motion {
-    pub fn value(&self, id: ElementId, fallback: f32) -> f32 {
-        self.tweens.get(&id).map_or(fallback, |t| t.value)
+    pub fn value(&self, id: ElementId, channel: MotionChannel, fallback: f32) -> f32 {
+        self.tweens
+            .get(&MotionKey {
+                element: id,
+                channel,
+            })
+            .map_or(fallback, |t| t.value)
     }
 
-    pub fn animate_to(&mut self, id: ElementId, target: f32, duration_ms: u64) {
-        let current = self.value(id, 1.0 - target);
+    pub fn animate_to(
+        &mut self,
+        id: ElementId,
+        channel: MotionChannel,
+        target: f32,
+        duration_ms: u64,
+    ) {
+        let current = self.value(id, channel, 1.0 - target);
         if (current - target).abs() < 0.001 {
             return;
         }
         self.tweens.insert(
-            id,
+            MotionKey {
+                element: id,
+                channel,
+            },
             Tween {
                 from: current,
                 to: target,
@@ -61,12 +87,125 @@ impl Motion {
         }
         active
     }
-
     #[allow(dead_code)] // animation API surface
     pub fn has_active(&self) -> bool {
         let now = Instant::now();
         self.tweens
             .values()
             .any(|t| now.duration_since(t.started) < t.duration)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Motion, MotionChannel, MotionKey};
+    use crate::ui::layout::ElementId;
+
+    fn key(element: ElementId, channel: MotionChannel) -> MotionKey {
+        MotionKey { element, channel }
+    }
+
+    #[test]
+    fn false_toggle_hover_enter_and_leave_keep_state_channel_at_zero() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::Hover, 1.0, 140);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+        motion.animate_to(id, MotionChannel::Hover, 0.0, 140);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+        assert!(!motion
+            .tweens
+            .contains_key(&key(id, MotionChannel::ToggleState)));
+    }
+    #[test]
+    fn false_toggle_hover_leave_keeps_state_channel_at_zero() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::Hover, 0.0, 140);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+    }
+
+    #[test]
+    fn true_toggle_hover_enter_and_leave_keep_state_channel_at_one() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::Hover, 1.0, 140);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 1.0), 1.0);
+        motion.animate_to(id, MotionChannel::Hover, 0.0, 140);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 1.0), 1.0);
+    }
+
+    #[test]
+    fn toggle_activation_animates_state_channel_from_false_to_true() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::ToggleState, 1.0, 160);
+        let tween = motion
+            .tweens
+            .get(&key(id, MotionChannel::ToggleState))
+            .expect("toggle state tween");
+        assert_eq!(tween.from, 0.0);
+        assert_eq!(tween.to, 1.0);
+    }
+
+    #[test]
+    fn hover_and_toggle_state_channels_progress_independently() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::ToggleState, 1.0, 160);
+        motion.animate_to(id, MotionChannel::Hover, 1.0, 140);
+        assert_eq!(motion.tweens.len(), 2);
+        assert_eq!(
+            motion
+                .tweens
+                .get(&key(id, MotionChannel::ToggleState))
+                .expect("toggle state tween")
+                .to,
+            1.0
+        );
+        assert_eq!(
+            motion
+                .tweens
+                .get(&key(id, MotionChannel::Hover))
+                .expect("hover tween")
+                .to,
+            1.0
+        );
+    }
+
+    #[test]
+    fn hovering_an_element_does_not_replace_active_state_tween() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::ToggleState, 1.0, 160);
+        motion.animate_to(id, MotionChannel::Hover, 1.0, 140);
+        let state = motion
+            .tweens
+            .get(&key(id, MotionChannel::ToggleState))
+            .expect("toggle state tween");
+        assert_eq!(state.from, 0.0);
+        assert_eq!(state.to, 1.0);
+    }
+
+    #[test]
+    fn hovering_many_toggles_never_creates_false_state_channels() {
+        let ids = [
+            ElementId::StartWithWindows,
+            ElementId::StartHotkeysEnabled,
+            ElementId::DesktopsEnabled,
+            ElementId::WinNumberEnabled,
+            ElementId::OverlayEnabled,
+            ElementId::OverlayExternalChanges,
+            ElementId::DebugLogging,
+        ];
+        let mut motion = Motion::default();
+        for id in ids {
+            motion.animate_to(id, MotionChannel::Hover, 1.0, 140);
+            motion.animate_to(id, MotionChannel::Hover, 0.0, 140);
+            assert_eq!(motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+            assert!(!motion
+                .tweens
+                .contains_key(&key(id, MotionChannel::ToggleState)));
+        }
     }
 }

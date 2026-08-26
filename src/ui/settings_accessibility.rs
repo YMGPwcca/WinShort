@@ -10,12 +10,15 @@ use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTS
 use windows::Win32::UI::Controls::{
     TOOLTIPS_CLASSW, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTTOOLINFOW,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, GetKeyState};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetFocus, GetKeyState, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, SetWindowPos, SetWindowTextW, ShowWindow, SWP_NOACTIVATE,
-    SWP_NOREDRAW, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WM_PRINT, WM_PRINTCLIENT, WM_SETFOCUS,
+    CreateWindowExW, DestroyWindow, PostMessageW, SetWindowPos, SetWindowTextW, ShowWindow,
+    SWP_NOACTIVATE, SWP_NOREDRAW, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_APP, WM_CAPTURECHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WM_PRINT, WM_PRINTCLIENT, WM_SETFOCUS,
     WS_CHILD, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP,
 };
 
@@ -28,6 +31,27 @@ const BS_AUTOCHECKBOX: u32 = 0x00000003;
 const BM_SETCHECK: u32 = 0x00F1;
 const BST_CHECKED: usize = 1;
 const TBS_NOTICKS: u32 = 0x00000010;
+pub(crate) const WM_APP_SETTINGS_CHILD_POINTER: u32 = WM_APP + 5;
+const WM_MOUSELEAVE: u32 = 0x02A3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(isize)]
+pub(crate) enum AccessibilityPointerEvent {
+    Move = 1,
+    Leave = 2,
+    Press = 3,
+    Release = 4,
+}
+
+pub(crate) fn accessibility_pointer_event(value: isize) -> Option<AccessibilityPointerEvent> {
+    match value {
+        1 => Some(AccessibilityPointerEvent::Move),
+        2 => Some(AccessibilityPointerEvent::Leave),
+        3 => Some(AccessibilityPointerEvent::Press),
+        4 => Some(AccessibilityPointerEvent::Release),
+        _ => None,
+    }
+}
 fn is_toggle_element(id: ElementId) -> bool {
     matches!(
         id,
@@ -91,6 +115,17 @@ pub(crate) fn accessibility_geometry_transition(
     }
 }
 
+fn post_pointer_event(parent: HWND, child: HWND, event: AccessibilityPointerEvent) {
+    unsafe {
+        let _ = PostMessageW(
+            Some(parent),
+            WM_APP_SETTINGS_CHILD_POINTER,
+            WPARAM(child.0 as usize),
+            LPARAM(event as isize),
+        );
+    }
+}
+
 unsafe extern "system" fn accessibility_child_subclass(
     hwnd: HWND,
     msg: u32,
@@ -111,6 +146,30 @@ unsafe extern "system" fn accessibility_child_subclass(
         return windows::Win32::Foundation::LRESULT(1);
     }
     let parent = HWND(ref_data as *mut _);
+    match msg {
+        WM_MOUSEMOVE => {
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            unsafe {
+                let _ = TrackMouseEvent(&mut track);
+            }
+            post_pointer_event(parent, hwnd, AccessibilityPointerEvent::Move);
+        }
+        WM_MOUSELEAVE => {
+            post_pointer_event(parent, hwnd, AccessibilityPointerEvent::Leave);
+        }
+        WM_LBUTTONDOWN => {
+            post_pointer_event(parent, hwnd, AccessibilityPointerEvent::Press);
+        }
+        WM_LBUTTONUP | WM_CAPTURECHANGED => {
+            post_pointer_event(parent, hwnd, AccessibilityPointerEvent::Release);
+        }
+        _ => {}
+    }
     if msg == WM_KEYDOWN && wparam.0 as u16 == 0x09 {
         let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
         crate::event::post_main(crate::event::AppEvent::FocusSettingsFromChild { reverse });
@@ -553,5 +612,25 @@ mod semantic_tests {
             accessibility_geometry_transition(true, true, false),
             AccessibilityGeometryTransition::Unchanged
         );
+    }
+    #[test]
+    fn child_pointer_events_decode_without_state_access() {
+        assert_eq!(
+            accessibility_pointer_event(1),
+            Some(AccessibilityPointerEvent::Move)
+        );
+        assert_eq!(
+            accessibility_pointer_event(2),
+            Some(AccessibilityPointerEvent::Leave)
+        );
+        assert_eq!(
+            accessibility_pointer_event(3),
+            Some(AccessibilityPointerEvent::Press)
+        );
+        assert_eq!(
+            accessibility_pointer_event(4),
+            Some(AccessibilityPointerEvent::Release)
+        );
+        assert_eq!(accessibility_pointer_event(99), None);
     }
 }

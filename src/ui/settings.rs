@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -36,14 +36,18 @@ use crate::config::model::{
 use crate::config::validate::Violation;
 use crate::error::{Error, Result};
 use crate::keyboard::binding::{Hotkey, ModifierMask, VirtualKey};
+use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
-use crate::ui::animation::Motion;
+use crate::ui::animation::{Motion, MotionChannel};
 use crate::ui::controls::{self, ControlValue, Interaction};
 use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
 use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
-use crate::ui::settings_accessibility::SettingsAccessibility;
-use crate::ui::theme::{Theme, ThemeMode};
+use crate::ui::settings_accessibility::{
+    accessibility_pointer_event, AccessibilityPointerEvent, SettingsAccessibility,
+    WM_APP_SETTINGS_CHILD_POINTER,
+};
+use crate::ui::theme::{Color, Theme, ThemeMode};
 
 pub const CLASS_NAME: &str = "WinShort.Settings";
 pub const DESIGN_WIDTH: f32 = 610.0;
@@ -54,6 +58,57 @@ const UI_TIMER_MS: u32 = 16;
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 const WM_MOUSELEAVE: u32 = 0x02A3;
 static CONFIG_SEQ: AtomicU64 = AtomicU64::new(1);
+fn settings_theme() -> Theme {
+    settings_theme_for(Theme::current(), SystemVisualPreferences::query())
+}
+
+fn settings_theme_for(theme: Theme, visual: SystemVisualPreferences) -> Theme {
+    if !visual.high_contrast {
+        return theme;
+    }
+    let background = Color::rgb(
+        visual.high_contrast_background.r,
+        visual.high_contrast_background.g,
+        visual.high_contrast_background.b,
+    );
+    let foreground = Color::rgb(
+        visual.high_contrast_foreground.r,
+        visual.high_contrast_foreground.g,
+        visual.high_contrast_foreground.b,
+    );
+    let highlight = Color::rgb(
+        visual.high_contrast_highlight.r,
+        visual.high_contrast_highlight.g,
+        visual.high_contrast_highlight.b,
+    );
+    let highlight_text = Color::rgb(
+        visual.high_contrast_highlight_foreground.r,
+        visual.high_contrast_highlight_foreground.g,
+        visual.high_contrast_highlight_foreground.b,
+    );
+    Theme {
+        mode: theme.mode,
+        bg: background,
+        bg_subtle: background,
+        card: background,
+        card_hover: background,
+        card_pressed: background,
+        border: foreground,
+        border_strong: foreground,
+        text: foreground,
+        text_secondary: foreground,
+        text_disabled: foreground,
+        accent: highlight,
+        accent_hover: highlight,
+        accent_pressed: highlight,
+        accent_text: highlight_text,
+        danger: foreground,
+        warning: foreground,
+        success: foreground,
+        focus: foreground,
+        shadow: Color::rgba(0, 0, 0, 0),
+    }
+}
 
 pub struct SettingsUi {
     dpi: u32,
@@ -129,7 +184,7 @@ impl SettingsUi {
 
         let renderer = match self.renderer.take() {
             Some(renderer) => renderer,
-            None => Renderer::new(hwnd, self.dpi, Theme::current())?,
+            None => Renderer::new(hwnd, self.dpi, settings_theme())?,
         };
         renderer.begin();
 
@@ -395,10 +450,16 @@ impl SettingsUi {
             pressed: self.pressed == Some(id),
             focused: self.focused == Some(id),
             disabled,
-            hover_t: self
-                .motion
-                .value(id, if self.hovered == Some(id) { 1.0 } else { 0.0 }),
-            state_t: self.motion.value(id, if toggle_value { 1.0 } else { 0.0 }),
+            hover_t: self.motion.value(
+                id,
+                MotionChannel::Hover,
+                if self.hovered == Some(id) { 1.0 } else { 0.0 },
+            ),
+            state_t: self.motion.value(
+                id,
+                MotionChannel::ToggleState,
+                if toggle_value { 1.0 } else { 0.0 },
+            ),
         }
     }
 
@@ -424,18 +485,59 @@ impl SettingsUi {
         }
     }
 
+    fn set_hover(&mut self, hwnd: HWND, next: Option<ElementId>) {
+        if next == self.hovered {
+            return;
+        }
+        if let Some(old) = self.hovered {
+            self.motion.animate_to(old, MotionChannel::Hover, 0.0, 140);
+        }
+        if let Some(new) = next {
+            self.motion.animate_to(new, MotionChannel::Hover, 1.0, 140);
+        }
+        self.hovered = next;
+        start_timer(hwnd);
+        invalidate(hwnd);
+    }
+
     fn update_hover(&mut self, hwnd: HWND, x: f32, y: f32) {
-        let next = self.layout.hit_test(x, y);
-        if next != self.hovered {
-            if let Some(old) = self.hovered {
-                self.motion.animate_to(old, 0.0, 140);
+        self.set_hover(hwnd, self.layout.hit_test(x, y));
+    }
+
+    fn update_child_pointer(
+        &mut self,
+        hwnd: HWND,
+        child: HWND,
+        event: AccessibilityPointerEvent,
+        cursor: Option<(f32, f32)>,
+    ) {
+        let Some(id) = self.accessibility_id_for(child) else {
+            return;
+        };
+        let cursor_target = cursor.map(|(x, y)| self.layout.hit_test(x, y));
+        let target = child_pointer_target(self.hovered, id, event, cursor_target);
+        match event {
+            AccessibilityPointerEvent::Move | AccessibilityPointerEvent::Leave => {
+                self.set_hover(hwnd, target);
             }
-            if let Some(new) = next {
-                self.motion.animate_to(new, 1.0, 140);
+            AccessibilityPointerEvent::Press => {
+                if target == Some(id) {
+                    self.set_hover(hwnd, Some(id));
+                    if self.pressed != Some(id) {
+                        self.pressed = Some(id);
+                        invalidate(hwnd);
+                    }
+                }
             }
-            self.hovered = next;
-            start_timer(hwnd);
-            invalidate(hwnd);
+            AccessibilityPointerEvent::Release => {
+                if cursor.is_some() {
+                    self.set_hover(hwnd, target);
+                }
+                if self.pressed == Some(id) {
+                    self.pressed = None;
+                    invalidate(hwnd);
+                }
+            }
         }
     }
 
@@ -658,8 +760,12 @@ impl SettingsUi {
     }
 
     fn animate_toggle(&mut self, hwnd: HWND, id: ElementId, value: bool) {
-        self.motion
-            .animate_to(id, if value { 1.0 } else { 0.0 }, 160);
+        self.motion.animate_to(
+            id,
+            MotionChannel::ToggleState,
+            if value { 1.0 } else { 0.0 },
+            160,
+        );
         start_timer(hwnd);
     }
 
@@ -968,7 +1074,7 @@ impl SettingsWindow {
                 cell.borrow_mut().dpi = actual_dpi;
             }
         }
-        apply_chrome(hwnd, Theme::current());
+        apply_chrome(hwnd, settings_theme());
         Ok(Self {
             hwnd,
             picker: None,
@@ -1473,8 +1579,18 @@ unsafe extern "system" fn settings_wndproc(
             drop(win::take_state::<SettingsUi>(hwnd)); // outer unsafe scope
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
-
         match msg {
+            WM_APP_SETTINGS_CHILD_POINTER => {
+                let child = HWND(wparam.0 as *mut _);
+                let Some(event) = accessibility_pointer_event(lparam.0) else {
+                    return LRESULT(0);
+                };
+                let dpi = cell.borrow().dpi;
+                let cursor = cursor_point(hwnd, dpi);
+                cell.borrow_mut()
+                    .update_child_pointer(hwnd, child, event, cursor);
+                LRESULT(0)
+            }
             WM_DRAWITEM => LRESULT(1),
             WM_COMMAND => {
                 let source = HWND(lparam.0 as *mut _);
@@ -1570,7 +1686,7 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_SETTINGCHANGE => {
-                let theme = Theme::current();
+                let theme = settings_theme();
                 let mut ui = cell.borrow_mut();
                 if let Some(renderer) = ui.renderer.as_mut() {
                     let _ = renderer.set_theme(theme);
@@ -1608,7 +1724,7 @@ unsafe extern "system" fn settings_wndproc(
                 let mut ui = cell.borrow_mut();
                 ui.mouse_tracking = false;
                 if let Some(old) = ui.hovered.take() {
-                    ui.motion.animate_to(old, 0.0, 140);
+                    ui.motion.animate_to(old, MotionChannel::Hover, 0.0, 140);
                     start_timer(hwnd);
                     invalidate(hwnd);
                 }
@@ -1770,6 +1886,37 @@ fn mouse_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
     let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
     let scale = 96.0 / dpi.max(96) as f32;
     (x * scale, y * scale)
+}
+fn child_pointer_target(
+    current: Option<ElementId>,
+    child: ElementId,
+    event: AccessibilityPointerEvent,
+    cursor_target: Option<Option<ElementId>>,
+) -> Option<ElementId> {
+    match event {
+        AccessibilityPointerEvent::Move | AccessibilityPointerEvent::Press => {
+            cursor_target.unwrap_or(Some(child))
+        }
+        AccessibilityPointerEvent::Leave => cursor_target.unwrap_or_else(|| {
+            if current == Some(child) {
+                None
+            } else {
+                current
+            }
+        }),
+        AccessibilityPointerEvent::Release => cursor_target.unwrap_or(current),
+    }
+}
+fn cursor_point(hwnd: HWND, dpi: u32) -> Option<(f32, f32)> {
+    let mut point = POINT::default();
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point).ok()?;
+        if !windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point).as_bool() {
+            return None;
+        }
+    }
+    let scale = 96.0 / dpi.max(96) as f32;
+    Some((point.x as f32 * scale, point.y as f32 * scale))
 }
 
 fn invalidate(hwnd: HWND) {
@@ -2035,5 +2182,80 @@ mod interaction_tests {
             ControlValue::Text(value) => assert_eq!(value, "Cached microphone"),
             _ => panic!("unexpected control value variant"),
         }
+    }
+    #[test]
+    fn child_pointer_crossing_keeps_hover_target_coherent() {
+        let first = ElementId::InputDevice;
+        let second = ElementId::OutputDevice;
+        assert_eq!(
+            child_pointer_target(
+                Some(first),
+                second,
+                AccessibilityPointerEvent::Leave,
+                Some(Some(second)),
+            ),
+            Some(second)
+        );
+        assert_eq!(
+            child_pointer_target(
+                Some(second),
+                second,
+                AccessibilityPointerEvent::Leave,
+                Some(None),
+            ),
+            None
+        );
+        assert_eq!(
+            child_pointer_target(Some(second), first, AccessibilityPointerEvent::Leave, None,),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn child_pointer_press_and_release_do_not_change_hover_fallback() {
+        let id = ElementId::OverlayEnabled;
+        assert_eq!(
+            child_pointer_target(None, id, AccessibilityPointerEvent::Press, None),
+            Some(id)
+        );
+        assert_eq!(
+            child_pointer_target(
+                Some(id),
+                id,
+                AccessibilityPointerEvent::Release,
+                Some(Some(id)),
+            ),
+            Some(id)
+        );
+    }
+    #[test]
+    fn high_contrast_settings_theme_uses_system_pairs_for_hover_and_focus() {
+        let visual = SystemVisualPreferences {
+            high_contrast: true,
+            high_contrast_background: crate::platform::visual::VisualRgb { r: 8, g: 16, b: 24 },
+            high_contrast_foreground: crate::platform::visual::VisualRgb {
+                r: 240,
+                g: 232,
+                b: 224,
+            },
+            high_contrast_highlight: crate::platform::visual::VisualRgb {
+                r: 32,
+                g: 96,
+                b: 160,
+            },
+            high_contrast_highlight_foreground: crate::platform::visual::VisualRgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            ..SystemVisualPreferences::default()
+        };
+        let theme = settings_theme_for(Theme::dark(), visual);
+        assert_eq!(theme.card, Color::rgb(8, 16, 24));
+        assert_eq!(theme.card_hover, theme.card);
+        assert_eq!(theme.border_strong, Color::rgb(240, 232, 224));
+        assert_eq!(theme.focus, theme.border_strong);
+        assert_eq!(theme.accent, Color::rgb(32, 96, 160));
+        assert_eq!(theme.accent_text, Color::rgb(255, 255, 255));
     }
 }

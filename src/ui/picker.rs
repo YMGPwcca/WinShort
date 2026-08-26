@@ -12,19 +12,21 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
-    SetBkMode, SetTextColor, BACKGROUND_MODE, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ,
-    PAINTSTRUCT,
+    InvalidateRect, SetBkMode, SetTextColor, BACKGROUND_MODE, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
+    HDC, HGDIOBJ, PAINTSTRUCT,
 };
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, IsChild, PostMessageW, SetForegroundWindow, ShowWindow,
     CREATESTRUCTW, MA_ACTIVATE, SW_SHOW, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
     WM_CLOSE, WM_COMMAND, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONUP,
-    WM_MEASUREITEM, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD,
+    WM_MEASUREITEM, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VSCROLL,
 };
 
@@ -51,6 +53,8 @@ pub const fn hiword(value: usize) -> u16 {
 const LBN_DBLCLK: u16 = 2;
 const SUBCLASS_ID: usize = 1;
 const WM_APP_PICKER_FOCUS_LOST: u32 = WM_APP + 4;
+const LB_ITEMFROMPOINT: u32 = 0x01A9;
+const WM_MOUSELEAVE: u32 = 0x02A3;
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 
@@ -149,6 +153,7 @@ struct PickerUi {
     choices: Vec<PickerChoice>,
     list: HWND,
     close_action: Option<PickerCloseAction>,
+    hovered_index: Option<usize>,
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PickerColors {
@@ -157,12 +162,40 @@ struct PickerColors {
     border: Color,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerItemState {
+    Idle,
+    Hovered,
+    Selected,
+    Disabled,
+}
+
+fn picker_item_state(selected: bool, hovered: bool, disabled: bool) -> PickerItemState {
+    if disabled {
+        PickerItemState::Disabled
+    } else if selected {
+        PickerItemState::Selected
+    } else if hovered {
+        PickerItemState::Hovered
+    } else {
+        PickerItemState::Idle
+    }
+}
+
 fn picker_colors(selected: bool) -> PickerColors {
     picker_colors_for(selected, SystemVisualPreferences::query(), Theme::current())
 }
 
 fn picker_colors_for(
     selected: bool,
+    visual: SystemVisualPreferences,
+    theme: Theme,
+) -> PickerColors {
+    picker_colors_for_state(picker_item_state(selected, false, false), visual, theme)
+}
+
+fn picker_colors_for_state(
+    state: PickerItemState,
     visual: SystemVisualPreferences,
     theme: Theme,
 ) -> PickerColors {
@@ -187,24 +220,42 @@ fn picker_colors_for(
             visual.high_contrast_highlight_foreground.g,
             visual.high_contrast_highlight_foreground.b,
         );
-        return PickerColors {
-            background: if selected { highlight } else { background },
-            foreground: if selected {
-                highlight_foreground
-            } else {
-                foreground
+        return match state {
+            PickerItemState::Selected => PickerColors {
+                background: highlight,
+                foreground: highlight_foreground,
+                border: foreground,
             },
-            border: foreground,
+            PickerItemState::Idle | PickerItemState::Hovered | PickerItemState::Disabled => {
+                PickerColors {
+                    background,
+                    foreground,
+                    border: foreground,
+                }
+            }
         };
     }
-    PickerColors {
-        background: if selected { theme.accent } else { theme.card },
-        foreground: if selected {
-            theme.accent_text
-        } else {
-            theme.text
+    match state {
+        PickerItemState::Idle => PickerColors {
+            background: theme.card,
+            foreground: theme.text,
+            border: theme.border_strong,
         },
-        border: theme.border_strong,
+        PickerItemState::Hovered => PickerColors {
+            background: theme.card_hover,
+            foreground: theme.text,
+            border: theme.border_strong,
+        },
+        PickerItemState::Selected => PickerColors {
+            background: theme.accent,
+            foreground: theme.accent_text,
+            border: theme.accent_hover,
+        },
+        PickerItemState::Disabled => PickerColors {
+            background: theme.card_pressed,
+            foreground: theme.text_disabled,
+            border: theme.border,
+        },
     }
 }
 
@@ -226,10 +277,11 @@ unsafe fn draw_picker_surface(hwnd: HWND, hdc: HDC) {
     }
 }
 
-unsafe fn draw_picker_item(item: &DRAWITEMSTRUCT, label: &str) -> LRESULT {
+unsafe fn draw_picker_item(item: &DRAWITEMSTRUCT, label: &str, hovered: bool) -> LRESULT {
     let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
     let focus = item.itemState.0 & ODS_FOCUS.0 != 0;
-    let colors = picker_colors(selected);
+    let state = picker_item_state(selected, hovered, false);
+    let colors = picker_colors_for_state(state, SystemVisualPreferences::query(), Theme::current());
     let background = unsafe { CreateSolidBrush(to_colorref(colors.background)) };
     let border = unsafe { CreateSolidBrush(to_colorref(colors.border)) };
     let _ = unsafe { FillRect(item.hDC, &item.rcItem, background) };
@@ -246,7 +298,7 @@ unsafe fn draw_picker_item(item: &DRAWITEMSTRUCT, label: &str) -> LRESULT {
             &mut text_rect,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER,
         );
-        if focus {
+        if focus || matches!(state, PickerItemState::Hovered) {
             let _ = FrameRect(item.hDC, &item.rcItem, border);
         }
         let _ = DeleteObject(HGDIOBJ(background.0));
@@ -272,6 +324,7 @@ impl PickerPopup {
             choices,
             list: HWND::default(),
             close_action: None,
+            hovered_index: None,
         });
         let hwnd = unsafe {
             CreateWindowExW(
@@ -399,6 +452,43 @@ fn should_close_after_focus_loss(
 ) -> bool {
     current_generation == message_generation && !focus_is_internal
 }
+fn picker_item_from_point(hwnd: HWND, lparam: LPARAM) -> Option<usize> {
+    let result = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            hwnd,
+            LB_ITEMFROMPOINT,
+            Some(WPARAM(0)),
+            Some(lparam),
+        )
+    };
+    let packed = result.0 as usize;
+    if ((packed >> 16) & 0xFFFF) != 0 {
+        None
+    } else {
+        Some(packed & 0xFFFF)
+    }
+}
+
+fn set_picker_hover(parent: HWND, list: HWND, hovered: Option<usize>) {
+    let Some(cell) = (unsafe { win::state_cell::<PickerUi>(parent) }) else {
+        return;
+    };
+    let changed = {
+        let mut ui = cell.borrow_mut();
+        let next = hovered.filter(|index| *index < ui.choices.len());
+        if ui.hovered_index == next {
+            false
+        } else {
+            ui.hovered_index = next;
+            true
+        }
+    };
+    if changed {
+        unsafe {
+            let _ = InvalidateRect(Some(list), None, false);
+        }
+    }
+}
 unsafe extern "system" fn picker_list_subclass(
     hwnd: HWND,
     msg: u32,
@@ -419,6 +509,23 @@ unsafe extern "system" fn picker_list_subclass(
             let _ = unsafe { FillRect(hdc, &rect, brush) };
             let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
             LRESULT(1)
+        }
+        WM_MOUSEMOVE => {
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            unsafe {
+                let _ = TrackMouseEvent(&mut track);
+            }
+            set_picker_hover(parent, hwnd, picker_item_from_point(hwnd, lparam));
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        WM_MOUSELEAVE => {
+            set_picker_hover(parent, hwnd, None);
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
         WM_KEYDOWN if wparam.0 as u16 == 0x1B => {
             cancel_picker(parent);
@@ -502,17 +609,20 @@ unsafe extern "system" fn picker_wndproc(
                 if item.CtlType != ODT_LISTBOX {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
-                let list = cell.borrow().list;
+                let (list, hovered, label) = {
+                    let ui = cell.borrow();
+                    (
+                        ui.list,
+                        ui.hovered_index == Some(item.itemID as usize),
+                        ui.choices
+                            .get(item.itemID as usize)
+                            .map(|choice| choice.label.clone()),
+                    )
+                };
                 if item.hwndItem != list {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
-                let label = {
-                    let ui = cell.borrow();
-                    ui.choices
-                        .get(item.itemID as usize)
-                        .map(|choice| choice.label.clone())
-                };
-                label.map_or(LRESULT(1), |value| draw_picker_item(item, &value))
+                label.map_or(LRESULT(1), |value| draw_picker_item(item, &value, hovered))
             }
             WM_COMMAND => {
                 let _control_id = loword(wparam.0);
@@ -629,12 +739,14 @@ mod tests {
     #[test]
     fn picker_palette_uses_shared_dark_light_theme_colors() {
         let visual = SystemVisualPreferences::default();
-        let dark = picker_colors_for(false, visual, Theme::dark());
-        let selected = picker_colors_for(true, visual, Theme::dark());
-        assert_eq!(dark.background, Theme::dark().card);
-        assert_eq!(dark.foreground, Theme::dark().text);
-        assert_eq!(selected.background, Theme::dark().accent);
-        assert_eq!(selected.foreground, Theme::dark().accent_text);
+        for theme in [Theme::dark(), Theme::light()] {
+            let normal = picker_colors_for(false, visual, theme);
+            let selected = picker_colors_for(true, visual, theme);
+            assert_eq!(normal.background, theme.card);
+            assert_eq!(normal.foreground, theme.text);
+            assert_eq!(selected.background, theme.accent);
+            assert_eq!(selected.foreground, theme.accent_text);
+        }
     }
 
     #[test]
@@ -665,6 +777,69 @@ mod tests {
         assert_eq!(normal.foreground, Color::rgb(240, 200, 160));
         assert_eq!(selected.background, Color::rgb(50, 100, 150));
         assert_eq!(selected.foreground, Color::rgb(1, 2, 3));
+    }
+    #[test]
+    fn picker_item_state_prioritizes_disabled_then_selected_then_hover() {
+        assert_eq!(
+            picker_item_state(false, false, false),
+            PickerItemState::Idle
+        );
+        assert_eq!(
+            picker_item_state(false, true, false),
+            PickerItemState::Hovered
+        );
+        assert_eq!(
+            picker_item_state(true, true, false),
+            PickerItemState::Selected
+        );
+        assert_eq!(
+            picker_item_state(true, true, true),
+            PickerItemState::Disabled
+        );
+    }
+
+    #[test]
+    fn picker_hover_uses_shared_light_and_dark_hover_surfaces() {
+        let visual = SystemVisualPreferences::default();
+        for theme in [Theme::dark(), Theme::light()] {
+            let colors = picker_colors_for_state(PickerItemState::Hovered, visual, theme);
+            assert_eq!(colors.background, theme.card_hover);
+            assert_eq!(colors.foreground, theme.text);
+        }
+    }
+
+    #[test]
+    fn selected_picker_item_stays_selected_when_pointer_leaves() {
+        let visual = SystemVisualPreferences::default();
+        let colors = picker_colors_for_state(
+            picker_item_state(true, false, false),
+            visual,
+            Theme::light(),
+        );
+        assert_eq!(colors.background, Theme::light().accent);
+        assert_eq!(colors.foreground, Theme::light().accent_text);
+    }
+
+    #[test]
+    fn high_contrast_hover_uses_system_pair_and_outline() {
+        let visual = SystemVisualPreferences {
+            high_contrast: true,
+            high_contrast_background: VisualRgb {
+                r: 10,
+                g: 20,
+                b: 30,
+            },
+            high_contrast_foreground: VisualRgb {
+                r: 240,
+                g: 200,
+                b: 160,
+            },
+            ..SystemVisualPreferences::default()
+        };
+        let colors = picker_colors_for_state(PickerItemState::Hovered, visual, Theme::dark());
+        assert_eq!(colors.background, Color::rgb(10, 20, 30));
+        assert_eq!(colors.foreground, Color::rgb(240, 200, 160));
+        assert_eq!(colors.border, colors.foreground);
     }
 }
 
@@ -707,6 +882,7 @@ mod focus_loss_tests {
             choices: Vec::new(),
             list: HWND(std::ptr::null_mut()),
             close_action: None,
+            hovered_index: None,
         });
         let (list, generation) = picker_focus_snapshot(&cell);
         assert!(list.0.is_null());
@@ -722,6 +898,7 @@ mod focus_loss_tests {
             choices: Vec::new(),
             list: HWND(std::ptr::null_mut()),
             close_action: None,
+            hovered_index: None,
         });
         assert!(claim_close(&cell, PickerCloseAction::Commit));
         assert!(!claim_close(&cell, PickerCloseAction::Cancel));

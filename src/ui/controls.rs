@@ -24,6 +24,28 @@ pub struct Interaction {
     /// 0→1 toggle state transition sampled from Motion.
     pub state_t: f32,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InteractionState {
+    Disabled,
+    Pressed,
+    Focused,
+    Hovered,
+    Idle,
+}
+
+pub(crate) fn interaction_state(interaction: Interaction) -> InteractionState {
+    if interaction.disabled {
+        InteractionState::Disabled
+    } else if interaction.pressed {
+        InteractionState::Pressed
+    } else if interaction.focused {
+        InteractionState::Focused
+    } else if interaction.hovered || interaction.hover_t > 0.02 {
+        InteractionState::Hovered
+    } else {
+        InteractionState::Idle
+    }
+}
 
 pub fn draw_row(
     r: &Renderer,
@@ -32,12 +54,11 @@ pub fn draw_row(
     interaction: Interaction,
 ) {
     let rect = element.rect.inset(1.0);
-    let bg = if interaction.pressed {
-        BrushRole::CardPressed
-    } else if interaction.hovered || interaction.hover_t > 0.02 {
-        BrushRole::CardHover
-    } else {
-        BrushRole::Card
+    let state = interaction_state(interaction);
+    let bg = match state {
+        InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
     };
 
     // Offset depth without a ghost border under shadow.
@@ -46,10 +67,14 @@ pub fn draw_row(
     }
     r.fill_rounded(rect.d2d(), 8.0, bg);
 
-    if interaction.focused {
-        r.stroke_rounded(rect.inset(2.0).d2d(), 6.0, BrushRole::Focus, 1.5);
-    } else if interaction.hover_t > 0.01 {
-        r.stroke_rounded(rect.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
+    match state {
+        InteractionState::Focused => {
+            r.stroke_rounded(rect.inset(2.0).d2d(), 6.0, BrushRole::Focus, 1.5);
+        }
+        InteractionState::Hovered | InteractionState::Pressed => {
+            r.stroke_rounded(rect.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
+        }
+        InteractionState::Disabled | InteractionState::Idle => {}
     }
 
     let label_role = if interaction.disabled {
@@ -86,25 +111,17 @@ pub fn draw_row(
 }
 
 pub fn draw_button(r: &Renderer, rect: Rect, label: &str, primary: bool, interaction: Interaction) {
-    let disabled = interaction.disabled;
-    let bg = if disabled {
-        BrushRole::CardPressed
-    } else if primary {
-        if interaction.pressed {
-            BrushRole::AccentPressed
-        } else if interaction.hovered {
-            BrushRole::AccentHover
-        } else {
-            BrushRole::Accent
-        }
-    } else if interaction.pressed {
-        BrushRole::CardPressed
-    } else if interaction.hovered {
-        BrushRole::CardHover
-    } else {
-        BrushRole::Card
+    let state = interaction_state(interaction);
+    let bg = match (primary, state) {
+        (_, InteractionState::Disabled) => BrushRole::CardPressed,
+        (true, InteractionState::Pressed) => BrushRole::AccentPressed,
+        (true, InteractionState::Hovered) => BrushRole::AccentHover,
+        (true, _) => BrushRole::Accent,
+        (false, InteractionState::Pressed) => BrushRole::CardPressed,
+        (false, InteractionState::Hovered) => BrushRole::CardHover,
+        (false, _) => BrushRole::Card,
     };
-    let text = if disabled {
+    let text = if interaction.disabled {
         BrushRole::TextDisabled
     } else if primary {
         BrushRole::AccentText
@@ -113,8 +130,24 @@ pub fn draw_button(r: &Renderer, rect: Rect, label: &str, primary: bool, interac
     };
 
     r.fill_rounded(rect.d2d(), 6.0, bg);
-    if !primary && !disabled {
-        r.stroke_rounded(rect.d2d(), 6.0, BrushRole::BorderStrong, 1.0);
+    if !interaction.disabled
+        && (!primary || matches!(state, InteractionState::Pressed | InteractionState::Hovered))
+    {
+        let border = match state {
+            InteractionState::Pressed => BrushRole::AccentPressed,
+            InteractionState::Hovered => BrushRole::BorderStrong,
+            _ => BrushRole::Border,
+        };
+        r.stroke_rounded(
+            rect.d2d(),
+            6.0,
+            border,
+            if matches!(state, InteractionState::Pressed | InteractionState::Hovered) {
+                1.25
+            } else {
+                1.0
+            },
+        );
     }
     if interaction.focused {
         r.stroke_rounded(rect.inset(-2.0).d2d(), 8.0, BrushRole::Focus, 1.5);
@@ -172,24 +205,51 @@ fn control_rect(row: Rect, width: f32) -> Rect {
 
 fn draw_toggle(r: &Renderer, row: Rect, value: bool, interaction: Interaction) {
     let rect = control_rect(row, 46.0);
-    let track = if interaction.disabled {
-        BrushRole::Border
-    } else if value {
-        if interaction.hovered {
-            BrushRole::AccentHover
-        } else {
-            BrushRole::Accent
+    let state = interaction_state(interaction);
+    let track = match state {
+        InteractionState::Disabled => BrushRole::Border,
+        InteractionState::Pressed => {
+            if value {
+                BrushRole::AccentPressed
+            } else {
+                BrushRole::CardPressed
+            }
         }
-    } else if interaction.hovered {
-        BrushRole::BorderStrong
-    } else {
-        BrushRole::Border
+        InteractionState::Hovered => {
+            if value {
+                BrushRole::AccentHover
+            } else {
+                BrushRole::CardHover
+            }
+        }
+        InteractionState::Focused | InteractionState::Idle => {
+            if value {
+                BrushRole::Accent
+            } else {
+                BrushRole::Border
+            }
+        }
     };
     r.fill_rounded(rect.d2d(), 17.0, track);
-    if !value {
-        r.stroke_rounded(rect.d2d(), 17.0, BrushRole::BorderStrong, 1.0);
+
+    let outline = match state {
+        InteractionState::Focused => BrushRole::Focus,
+        InteractionState::Pressed => BrushRole::AccentPressed,
+        InteractionState::Hovered => BrushRole::BorderStrong,
+        InteractionState::Disabled | InteractionState::Idle => BrushRole::BorderStrong,
+    };
+    if !value || !matches!(state, InteractionState::Idle) {
+        let width = match state {
+            InteractionState::Pressed => 1.5,
+            InteractionState::Focused => 1.5,
+            InteractionState::Hovered => 1.25,
+            InteractionState::Disabled | InteractionState::Idle => 1.0,
+        };
+        r.stroke_rounded(rect.d2d(), 17.0, outline, width);
     }
 
+    // The logical value controls this channel; pointer state only changes the
+    // surrounding track and outline.
     let t = interaction.state_t.clamp(0.0, 1.0);
     let left = rect.x + 12.0;
     let right = rect.right() - 12.0;
@@ -214,21 +274,31 @@ fn draw_value_box(
         _ => 190.0,
     };
     let rect = control_rect(row, width);
-    let bg = if interaction.pressed {
-        BrushRole::CardPressed
-    } else {
-        BrushRole::BackgroundSubtle
+    let state = interaction_state(interaction);
+    let bg = match state {
+        InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::BackgroundSubtle,
+    };
+    let border = match state {
+        InteractionState::Disabled => BrushRole::Border,
+        InteractionState::Pressed => BrushRole::AccentPressed,
+        InteractionState::Focused => BrushRole::Focus,
+        InteractionState::Hovered => BrushRole::BorderStrong,
+        InteractionState::Idle => BrushRole::Border,
     };
     r.fill_rounded(rect.d2d(), 6.0, bg);
     r.stroke_rounded(
         rect.d2d(),
         6.0,
-        if interaction.focused {
-            BrushRole::Focus
+        border,
+        if matches!(state, InteractionState::Focused) {
+            1.75
+        } else if matches!(state, InteractionState::Pressed | InteractionState::Hovered) {
+            1.25
         } else {
-            BrushRole::BorderStrong
+            1.0
         },
-        if interaction.focused { 1.5 } else { 1.0 },
     );
 
     let role = if interaction.disabled {
@@ -244,31 +314,70 @@ fn draw_value_box(
     if matches!(kind, ElementKind::Value) {
         let x = rect.right() - 15.0;
         let y = rect.y + rect.h * 0.5;
-        r.line(x - 3.0, y - 2.0, x, y + 1.0, BrushRole::TextSecondary, 1.25);
-        r.line(x, y + 1.0, x + 3.0, y - 2.0, BrushRole::TextSecondary, 1.25);
+        let chevron = match state {
+            InteractionState::Disabled => BrushRole::TextDisabled,
+            InteractionState::Focused => BrushRole::Focus,
+            InteractionState::Pressed | InteractionState::Hovered => BrushRole::Text,
+            InteractionState::Idle => BrushRole::TextSecondary,
+        };
+        r.line(x - 3.0, y - 2.0, x, y + 1.0, chevron, 1.25);
+        r.line(x, y + 1.0, x + 3.0, y - 2.0, chevron, 1.25);
     }
 }
 
 fn draw_slider(r: &Renderer, row: Rect, ratio: f32, label: &str, interaction: Interaction) {
     let rect = control_rect(row, 190.0);
+    let state = interaction_state(interaction);
     let label_w = 52.0;
     let track = Rect::new(rect.x, rect.y + 15.0, rect.w - label_w - 12.0, 4.0);
-    r.fill_rounded(track.d2d(), 2.0, BrushRole::Border);
+    let track_role = match state {
+        InteractionState::Disabled => BrushRole::Border,
+        InteractionState::Pressed | InteractionState::Hovered => BrushRole::BorderStrong,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::Border,
+    };
+    r.fill_rounded(track.d2d(), 2.0, track_role);
     let filled = Rect::new(track.x, track.y, track.w * ratio, track.h);
     if filled.w > 0.0 {
-        r.fill_rounded(filled.d2d(), 2.0, BrushRole::Accent);
+        let filled_role = match state {
+            InteractionState::Pressed => BrushRole::AccentPressed,
+            InteractionState::Hovered => BrushRole::AccentHover,
+            InteractionState::Disabled => BrushRole::BorderStrong,
+            InteractionState::Focused | InteractionState::Idle => BrushRole::Accent,
+        };
+        r.fill_rounded(filled.d2d(), 2.0, filled_role);
+    }
+    if matches!(
+        state,
+        InteractionState::Pressed | InteractionState::Focused | InteractionState::Hovered
+    ) {
+        let outline = match state {
+            InteractionState::Focused => BrushRole::Focus,
+            InteractionState::Pressed => BrushRole::AccentPressed,
+            InteractionState::Hovered => BrushRole::BorderStrong,
+            InteractionState::Disabled | InteractionState::Idle => BrushRole::Border,
+        };
+        r.stroke_rounded(track.inset(-1.5).d2d(), 3.0, outline, 1.0);
     }
     let knob_x = track.x + track.w * ratio;
+    let knob = match state {
+        InteractionState::Disabled => BrushRole::TextDisabled,
+        InteractionState::Pressed => BrushRole::AccentPressed,
+        InteractionState::Hovered => BrushRole::AccentHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::Accent,
+    };
+    let knob_radius = if matches!(state, InteractionState::Pressed) {
+        7.0
+    } else if matches!(state, InteractionState::Hovered | InteractionState::Focused) {
+        6.5
+    } else {
+        6.0
+    };
     r.ellipse(
         knob_x,
         track.y + 2.0,
-        if interaction.pressed { 7.0 } else { 6.0 },
-        if interaction.pressed { 7.0 } else { 6.0 },
-        if interaction.disabled {
-            BrushRole::TextDisabled
-        } else {
-            BrushRole::Accent
-        },
+        knob_radius,
+        knob_radius,
+        knob,
         true,
         0.0,
     );
@@ -286,23 +395,83 @@ fn draw_slider(r: &Renderer, row: Rect, ratio: f32, label: &str, interaction: In
 
 fn draw_action(r: &Renderer, row: Rect, label: &str, interaction: Interaction) {
     let rect = control_rect(row, 132.0);
-    let bg = if interaction.pressed {
-        BrushRole::CardPressed
-    } else if interaction.hovered {
-        BrushRole::BackgroundSubtle
-    } else {
-        BrushRole::Card
+    let state = interaction_state(interaction);
+    let bg = match state {
+        InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
+    };
+    let border = match state {
+        InteractionState::Disabled | InteractionState::Idle => BrushRole::Border,
+        InteractionState::Pressed => BrushRole::AccentPressed,
+        InteractionState::Focused => BrushRole::Focus,
+        InteractionState::Hovered => BrushRole::BorderStrong,
     };
     r.fill_rounded(rect.d2d(), 6.0, bg);
-    r.stroke_rounded(rect.d2d(), 6.0, BrushRole::BorderStrong, 1.0);
+    r.stroke_rounded(
+        rect.d2d(),
+        6.0,
+        border,
+        if matches!(state, InteractionState::Focused) {
+            1.75
+        } else if matches!(state, InteractionState::Pressed | InteractionState::Hovered) {
+            1.25
+        } else {
+            1.0
+        },
+    );
     r.text(
         label,
         rect.d2d(),
         TextStyle::ButtonSmall,
         if interaction.disabled {
             BrushRole::TextDisabled
+        } else if matches!(state, InteractionState::Pressed) {
+            BrushRole::AccentPressed
+        } else if matches!(state, InteractionState::Hovered) {
+            BrushRole::AccentHover
         } else {
             BrushRole::Accent
         },
     );
+}
+#[cfg(test)]
+mod tests {
+    use super::{interaction_state, Interaction, InteractionState};
+
+    fn interaction() -> Interaction {
+        Interaction {
+            hovered: false,
+            pressed: false,
+            focused: false,
+            disabled: false,
+            hover_t: 0.0,
+            state_t: 0.0,
+        }
+    }
+
+    #[test]
+    fn interaction_state_has_explicit_precedence() {
+        let mut value = interaction();
+        assert_eq!(interaction_state(value), InteractionState::Idle);
+
+        value.hovered = true;
+        assert_eq!(interaction_state(value), InteractionState::Hovered);
+
+        value.focused = true;
+        assert_eq!(interaction_state(value), InteractionState::Focused);
+
+        value.pressed = true;
+        assert_eq!(interaction_state(value), InteractionState::Pressed);
+
+        value.disabled = true;
+        assert_eq!(interaction_state(value), InteractionState::Disabled);
+    }
+
+    #[test]
+    fn active_hover_transition_is_hover_state_without_focus() {
+        let mut value = interaction();
+        value.hover_t = 0.5;
+        assert_eq!(interaction_state(value), InteractionState::Hovered);
+    }
 }
