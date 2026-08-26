@@ -71,7 +71,8 @@ Automated coverage:
 - UIA focus tests distinguish Settings HWND, native picker LISTBOX, and outside focus; focus actions
   are queued to the Settings HWND. Snapshot publication filters property events to actual focus,
   toggle, slider value, enabled, offscreen, bounds, name, and displayed-value changes.
-- UIA actions are queued to the Settings HWND; logical focus keeps actual HWND focus on Settings.
+- UIA actions are queued to the Settings HWND; UIA `SetFocus` publishes actual Settings focus
+  after Win32 confirms it, while an open picker publishes native LISTBOX focus.
 - Native picker/listbox retains fixed-order keyboard navigation, generation-checked close, and
   idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are pure-tested.
 
