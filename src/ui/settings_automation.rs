@@ -13,7 +13,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::SAFEARRAY;
 use windows::Win32::System::Variant::{
-    InitVariantFromDoubleArray, InitVariantFromInt32Array, VARIANT,
+    InitVariantFromDoubleArray, InitVariantFromInt32Array, VariantClear, VARIANT,
 };
 use windows::Win32::UI::Accessibility::{
     IInvokeProvider, IInvokeProvider_Impl, IRangeValueProvider, IRangeValueProvider_Impl,
@@ -180,6 +180,23 @@ impl SettingsAutomation {
         // snapshot lock across the UIA boundary.
         self.raise_snapshot_changes(&previous, &snapshot);
     }
+    fn raise_property_changed(
+        &self,
+        provider: &IRawElementProviderSimple,
+        property: UIA_PROPERTY_ID,
+        old_value: VARIANT,
+        new_value: VARIANT,
+    ) {
+        let mut old_value = old_value;
+        let mut new_value = new_value;
+        unsafe {
+            let _ =
+                UiaRaiseAutomationPropertyChangedEvent(provider, property, &old_value, &new_value);
+            let _ = VariantClear(&mut old_value);
+            let _ = VariantClear(&mut new_value);
+        }
+    }
+
     fn raise_snapshot_changes(
         &self,
         previous: &SettingsAutomationSnapshot,
@@ -203,14 +220,12 @@ impl SettingsAutomation {
             let provider = self.root_provider();
             let old_value = bool_variant(previous_root_focus);
             let new_value = bool_variant(current_root_focus);
-            unsafe {
-                let _ = UiaRaiseAutomationPropertyChangedEvent(
-                    &provider,
-                    UIA_HasKeyboardFocusPropertyId,
-                    &old_value,
-                    &new_value,
-                );
-            }
+            self.raise_property_changed(
+                &provider,
+                UIA_HasKeyboardFocusPropertyId,
+                old_value,
+                new_value,
+            );
         }
 
         if previous.window != current.window {
@@ -218,14 +233,12 @@ impl SettingsAutomation {
                 (rect_variant(previous.window), rect_variant(current.window))
             {
                 let provider = self.root_provider();
-                unsafe {
-                    let _ = UiaRaiseAutomationPropertyChangedEvent(
-                        &provider,
-                        UIA_BoundingRectanglePropertyId,
-                        &old_value,
-                        &new_value,
-                    );
-                }
+                self.raise_property_changed(
+                    &provider,
+                    UIA_BoundingRectanglePropertyId,
+                    old_value,
+                    new_value,
+                );
             }
         }
 
@@ -239,11 +252,7 @@ impl SettingsAutomation {
                     continue;
                 };
                 let provider = self.provider_for(node.id);
-                unsafe {
-                    let _ = UiaRaiseAutomationPropertyChangedEvent(
-                        &provider, property, &old_value, &new_value,
-                    );
-                }
+                self.raise_property_changed(&provider, property, old_value, new_value);
             }
         }
     }
