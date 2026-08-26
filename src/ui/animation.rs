@@ -34,12 +34,22 @@ pub struct Motion {
 
 impl Motion {
     pub fn value(&self, id: ElementId, channel: MotionChannel, fallback: f32) -> f32 {
-        self.tweens
-            .get(&MotionKey {
-                element: id,
-                channel,
-            })
-            .map_or(fallback, |t| t.value)
+        let key = MotionKey {
+            element: id,
+            channel,
+        };
+        let Some(tween) = self.tweens.get(&key) else {
+            return fallback;
+        };
+        // A model replacement outranks an animation aimed at the old value.
+        if (tween.to - fallback).abs() >= 0.001 {
+            return fallback;
+        }
+        if Instant::now().saturating_duration_since(tween.started) < tween.duration {
+            tween.value
+        } else {
+            fallback
+        }
     }
 
     pub fn animate_to(
@@ -68,36 +78,46 @@ impl Motion {
         );
     }
 
-    /// Advance all tweens. Returns true while any animation remains active.
+    pub fn clear_channel(&mut self, channel: MotionChannel) {
+        self.tweens.retain(|key, _| key.channel != channel);
+    }
+
+    /// Advance active tweens. Completed entries no longer shadow model state.
     pub fn tick(&mut self) -> bool {
-        let now = Instant::now();
+        self.tick_at(Instant::now())
+    }
+
+    fn tick_at(&mut self, now: Instant) -> bool {
         let mut active = false;
-        for tween in self.tweens.values_mut() {
-            let t = (now.duration_since(tween.started).as_secs_f32()
+        self.tweens.retain(|_, tween| {
+            let t = (now.saturating_duration_since(tween.started).as_secs_f32()
                 / tween.duration.as_secs_f32())
             .clamp(0.0, 1.0);
-            // Fluent-style cubic ease out.
-            let eased = 1.0 - (1.0 - t).powi(3);
-            tween.value = tween.from + (tween.to - tween.from) * eased;
             if t < 1.0 {
+                let eased = 1.0 - (1.0 - t).powi(3);
+                tween.value = tween.from + (tween.to - tween.from) * eased;
                 active = true;
+                true
             } else {
-                tween.value = tween.to;
+                false
             }
-        }
+        });
         active
     }
+
     #[allow(dead_code)] // animation API surface
     pub fn has_active(&self) -> bool {
         let now = Instant::now();
         self.tweens
             .values()
-            .any(|t| now.duration_since(t.started) < t.duration)
+            .any(|t| now.saturating_duration_since(t.started) < t.duration)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::{Motion, MotionChannel, MotionKey};
     use crate::ui::layout::ElementId;
 
@@ -207,5 +227,55 @@ mod tests {
                 .tweens
                 .contains_key(&key(id, MotionChannel::ToggleState)));
         }
+    }
+    fn complete(motion: &mut Motion, element: ElementId, channel: MotionChannel) {
+        let now = Instant::now();
+        motion
+            .tweens
+            .get_mut(&key(element, channel))
+            .expect("tween")
+            .started = now - Duration::from_secs(1);
+        assert!(!motion.tick_at(now));
+    }
+
+    #[test]
+    fn completed_toggle_tween_no_longer_overrides_fallback() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::ToggleState, 1.0, 160);
+        complete(&mut motion, id, MotionChannel::ToggleState);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+        assert!(!motion
+            .tweens
+            .contains_key(&key(id, MotionChannel::ToggleState)));
+    }
+
+    #[test]
+    fn false_fallback_wins_after_false_to_true_animation_completes() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::ToggleState, 1.0, 160);
+        complete(&mut motion, id, MotionChannel::ToggleState);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+    }
+
+    #[test]
+    fn true_fallback_wins_after_true_to_false_animation_completes() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::ToggleState, 0.0, 160);
+        complete(&mut motion, id, MotionChannel::ToggleState);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 1.0), 1.0);
+    }
+
+    #[test]
+    fn active_toggle_tween_cannot_override_replaced_model_value() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::ToggleState, 1.0, 10_000);
+        assert_eq!(motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+        assert!(motion
+            .tweens
+            .contains_key(&key(id, MotionChannel::ToggleState)));
     }
 }

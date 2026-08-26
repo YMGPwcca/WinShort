@@ -169,6 +169,10 @@ impl SettingsUi {
     fn dirty(&self) -> bool {
         self.draft != *crate::app::config()
     }
+    fn replace_draft(&mut self, draft: Config) {
+        self.draft = draft;
+        self.motion.clear_channel(MotionChannel::ToggleState);
+    }
 
     fn paint(&mut self, hwnd: HWND) -> Result<()> {
         self.rebuild_layout(hwnd);
@@ -737,7 +741,7 @@ impl SettingsUi {
             ElementId::OpenConfigFolder => open_config_folder(),
             ElementId::ResetSettings => {
                 if Self::consume_reset_confirmation(&mut self.reset_confirm) {
-                    self.draft = Config::default();
+                    self.replace_draft(Config::default());
                     self.validation.clear();
                     crate::keyboard::hook::end_capture();
                     self.capture_armed = false;
@@ -745,7 +749,7 @@ impl SettingsUi {
                 }
             }
             ElementId::Cancel => {
-                self.draft = (*crate::app::config()).clone();
+                self.replace_draft((*crate::app::config()).clone());
                 self.validation.clear();
                 crate::keyboard::hook::end_capture();
                 self.capture_armed = false;
@@ -1088,7 +1092,7 @@ impl SettingsWindow {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();
             if !ui.dirty() {
-                ui.draft = (*crate::app::config()).clone();
+                ui.replace_draft((*crate::app::config()).clone());
             }
             ui.validation.clear();
             invalidate(self.hwnd);
@@ -2257,5 +2261,59 @@ mod interaction_tests {
         assert_eq!(theme.focus, theme.border_strong);
         assert_eq!(theme.accent, Color::rgb(32, 96, 160));
         assert_eq!(theme.accent_text, Color::rgb(255, 255, 255));
+    }
+    fn empty_settings_ui() -> SettingsUi {
+        SettingsUi::new(
+            96,
+            crate::audio::devices::DeviceLists {
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                warnings: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn cancel_after_toggle_change_restores_visual_toggle_source() {
+        let id = ElementId::OverlayEnabled;
+        let mut ui = empty_settings_ui();
+        ui.motion
+            .animate_to(id, MotionChannel::ToggleState, 1.0, 160);
+        let mut live = Config::default();
+        live.overlay.enabled = false;
+        ui.replace_draft(live);
+        assert_eq!(ui.motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
+    }
+
+    #[test]
+    fn reset_after_multiple_toggle_changes_matches_default_values() {
+        let ids = [
+            ElementId::StartHotkeysEnabled,
+            ElementId::DesktopsEnabled,
+            ElementId::WinNumberEnabled,
+            ElementId::OverlayEnabled,
+            ElementId::OverlayExternalChanges,
+        ];
+        let mut ui = empty_settings_ui();
+        for id in ids {
+            ui.motion
+                .animate_to(id, MotionChannel::ToggleState, 0.0, 160);
+        }
+        ui.replace_draft(Config::default());
+        for id in ids {
+            assert_eq!(ui.motion.value(id, MotionChannel::ToggleState, 1.0), 1.0);
+        }
+    }
+
+    #[test]
+    fn active_toggle_animation_cannot_survive_model_replacement() {
+        let id = ElementId::OverlayEnabled;
+        let mut ui = empty_settings_ui();
+        ui.motion
+            .animate_to(id, MotionChannel::ToggleState, 1.0, 10_000);
+        let mut replacement = Config::default();
+        replacement.overlay.enabled = false;
+        ui.replace_draft(replacement);
+        assert_eq!(ui.motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
     }
 }
