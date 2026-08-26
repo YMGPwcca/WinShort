@@ -127,6 +127,7 @@ pub struct SettingsUi {
     focus_owner: AutomationFocusOwner,
     picker_owner: Option<ElementId>,
     picker_hwnd: Option<HWND>,
+    picker_list_hwnd: Option<HWND>,
     recording: Option<ElementId>,
     capture_armed: bool,
     reset_confirm: bool,
@@ -152,6 +153,7 @@ impl SettingsUi {
             recording_modifiers: ModifierMask::NONE,
             focused: None,
             focus_owner: AutomationFocusOwner::Outside,
+            picker_list_hwnd: None,
             picker_owner: None,
             picker_hwnd: None,
             recording: None,
@@ -981,7 +983,7 @@ impl SettingsUi {
         let actual = unsafe { GetFocus() };
         self.focus_owner = if actual == hwnd {
             AutomationFocusOwner::Settings
-        } else if self.picker_hwnd == Some(actual) {
+        } else if self.picker_hwnd == Some(actual) || self.picker_list_hwnd == Some(actual) {
             AutomationFocusOwner::Picker
         } else {
             AutomationFocusOwner::Outside
@@ -992,7 +994,7 @@ impl SettingsUi {
     fn on_window_focus(&mut self, hwnd: HWND, focused: bool, next: HWND) {
         self.focus_owner = if focused {
             AutomationFocusOwner::Settings
-        } else if self.picker_hwnd == Some(next) {
+        } else if self.picker_hwnd == Some(next) || self.picker_list_hwnd == Some(next) {
             AutomationFocusOwner::Picker
         } else {
             AutomationFocusOwner::Outside
@@ -1003,15 +1005,17 @@ impl SettingsUi {
     fn set_picker_open(&mut self, hwnd: HWND, owner: ElementId) {
         self.picker_owner = Some(owner);
         self.picker_hwnd = None;
+        self.picker_list_hwnd = None;
         self.focused = Some(owner);
         self.focus_owner = AutomationFocusOwner::Outside;
         self.publish_automation_snapshot(hwnd);
     }
 
-    fn set_picker_hwnd(&mut self, hwnd: HWND, picker_hwnd: HWND) {
+    fn set_picker_hwnd(&mut self, hwnd: HWND, picker_hwnd: HWND, picker_list_hwnd: HWND) {
         self.picker_hwnd = Some(picker_hwnd);
+        self.picker_list_hwnd = Some(picker_list_hwnd);
         let actual = unsafe { GetFocus() };
-        self.focus_owner = if actual == picker_hwnd {
+        self.focus_owner = if actual == picker_hwnd || actual == picker_list_hwnd {
             AutomationFocusOwner::Picker
         } else if actual == hwnd {
             AutomationFocusOwner::Settings
@@ -1024,6 +1028,7 @@ impl SettingsUi {
     fn set_picker_closed(&mut self, hwnd: HWND, owner: Option<ElementId>) {
         self.picker_owner = None;
         self.picker_hwnd = None;
+        self.picker_list_hwnd = None;
         if let Some(owner) = owner {
             self.focused = Some(owner);
         }
@@ -1252,10 +1257,12 @@ impl SettingsWindow {
             }
         };
         let picker_hwnd = picker.hwnd;
+        let picker_list_hwnd = picker.list;
         self.picker = Some(picker);
         self.picker_owner = Some(owner);
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            cell.borrow_mut().set_picker_hwnd(self.hwnd, picker_hwnd);
+            cell.borrow_mut()
+                .set_picker_hwnd(self.hwnd, picker_hwnd, picker_list_hwnd);
         }
         Ok(())
     }
@@ -2326,9 +2333,11 @@ mod interaction_tests {
         ui.install_automation(hwnd);
         ui.focused = Some(ElementId::InputDevice);
         ui.set_picker_open(hwnd, ElementId::InputDevice);
-        let picker_hwnd = HWND(std::ptr::dangling_mut());
+        let picker_hwnd = HWND::default();
+        let picker_list_hwnd = HWND(std::ptr::dangling_mut());
         ui.picker_hwnd = Some(picker_hwnd);
-        ui.on_window_focus(hwnd, false, picker_hwnd);
+        ui.picker_list_hwnd = Some(picker_list_hwnd);
+        ui.on_window_focus(hwnd, false, picker_list_hwnd);
         let snapshot = ui.automation.as_ref().expect("automation").snapshot();
         assert_eq!(snapshot.focus_owner, AutomationFocusOwner::Picker);
         assert_eq!(snapshot.picker_open_for, Some(ElementId::InputDevice));

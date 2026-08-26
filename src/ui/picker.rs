@@ -138,6 +138,7 @@ pub fn place_popup(anchor: PopupRect, work: PopupRect, width: i32, height: i32) 
 
 pub struct PickerPopup {
     pub hwnd: HWND,
+    pub list: HWND,
 }
 impl Drop for PickerPopup {
     fn drop(&mut self) {
@@ -497,7 +498,7 @@ impl PickerPopup {
             let _ = SetForegroundWindow(hwnd);
             let _ = SetFocus(Some(list));
         }
-        Ok(Self { hwnd })
+        Ok(Self { hwnd, list })
     }
 }
 
