@@ -119,9 +119,8 @@ impl SettingsUi {
         self.rebuild_layout(hwnd);
         if self.accessibility.is_none() {
             self.install_accessibility(hwnd);
-        } else {
-            self.sync_accessibility();
         }
+        self.refresh_focused_state();
         let dirty = self.dirty();
         let now = Instant::now();
         if self.applied_until.is_some_and(|until| now >= until) {
@@ -281,6 +280,7 @@ impl SettingsUi {
         let result = renderer.end();
         if result.is_ok() {
             self.renderer = Some(renderer);
+            self.sync_accessibility();
         }
         result
     }
@@ -798,22 +798,15 @@ impl SettingsUi {
         order[current_index]
     }
 
-    fn focus_next(&mut self, hwnd: HWND, reverse: bool) {
+    fn focus_next(&mut self, hwnd: HWND, reverse: bool) -> Option<HWND> {
         let order = ElementId::FOCUS_ORDER;
         let next = Self::next_focus_index(&order, self.focused, reverse, |id| self.is_disabled(id));
         self.scroll_focus_into_view(next);
         self.rebuild_layout(hwnd);
-        self.sync_accessibility();
         self.focused = Some(next);
-        if let Some(child) = self
-            .accessibility
+        self.accessibility
             .as_ref()
             .and_then(|accessibility| accessibility.focus_hwnd(next))
-        {
-            unsafe {
-                let _ = SetFocus(Some(child));
-            }
-        }
     }
 
     fn scroll_focus_into_view(&mut self, id: ElementId) {
@@ -864,7 +857,14 @@ impl SettingsUi {
         if self.accessibility.is_none() {
             self.accessibility = Some(SettingsAccessibility::create(hwnd));
         }
-        self.sync_accessibility();
+    }
+
+    fn refresh_focused_state(&mut self) {
+        if let Some(accessibility) = &self.accessibility {
+            if let Some(focused) = accessibility.focused_id() {
+                self.focused = Some(focused);
+            }
+        }
     }
 
     fn sync_accessibility(&mut self) {
@@ -997,8 +997,8 @@ impl SettingsWindow {
     pub fn refresh_devices(&mut self, devices: crate::audio::devices::DeviceLists) {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             cell.borrow_mut().devices = devices;
-            invalidate(self.hwnd);
         }
+        invalidate(self.hwnd);
     }
 
     pub fn remember_position(&mut self) {
@@ -1037,17 +1037,14 @@ impl SettingsWindow {
         let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(self.hwnd) }) else {
             return Err(Error::internal("settings state missing"));
         };
-        let (draft, anchor, dpi) = {
+        let (draft, element_rect, dpi) = {
             let ui = cell.borrow();
             let element = picker_element(kind)
                 .and_then(|id| ui.layout.element(id))
                 .ok_or_else(|| Error::internal("settings picker row missing"))?;
-            (
-                ui.draft.clone(),
-                screen_rect(self.hwnd, element.rect, ui.dpi)?,
-                ui.dpi,
-            )
+            (ui.draft.clone(), element.rect, ui.dpi)
         };
+        let anchor = screen_rect(self.hwnd, element_rect, dpi)?;
         let (choices, current) = picker_choices(kind, &draft, &devices, &monitors);
         if choices.is_empty() {
             return Err(Error::config("no choices available"));
@@ -1077,28 +1074,26 @@ impl SettingsWindow {
 
     pub fn commit_picker(&mut self, kind: PickerKind, value: PickerValue) {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            let mut ui = cell.borrow_mut();
-            ui.apply_picker(kind, value);
-            invalidate(self.hwnd);
+            cell.borrow_mut().apply_picker(kind, value);
         }
+        invalidate(self.hwnd);
         self.cancel_picker();
     }
 
     pub fn cancel_picker(&mut self) {
         let owner = self.picker_owner.take();
-        let picker = self.picker.take();
-        drop(picker);
-        if let Some(owner) = owner {
-            if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-                let mut ui = cell.borrow_mut();
-                ui.focused = Some(owner);
-                if let Some(child) = ui.accessibility_focus_hwnd(owner) {
-                    unsafe {
-                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(child));
-                    }
-                    return;
-                }
+        let _ = self.picker.take();
+        let focus_target = owner.and_then(|owner| {
+            let cell = unsafe { win::state_cell::<SettingsUi>(self.hwnd) }?;
+            let mut ui = cell.borrow_mut();
+            ui.focused = Some(owner);
+            ui.accessibility_focus_hwnd(owner)
+        });
+        if let Some(child) = focus_target {
+            unsafe {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(child));
             }
+            return;
         }
         unsafe {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.hwnd));
@@ -1106,9 +1101,13 @@ impl SettingsWindow {
     }
 
     pub fn focus_next_from_child(&mut self, reverse: bool) {
-        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            cell.borrow_mut().focus_next(self.hwnd, reverse);
-            invalidate(self.hwnd);
+        let focus_target = unsafe { win::state_cell::<SettingsUi>(self.hwnd) }
+            .and_then(|cell| cell.borrow_mut().focus_next(self.hwnd, reverse));
+        invalidate(self.hwnd);
+        if let Some(child) = focus_target {
+            unsafe {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(child));
+            }
         }
     }
 
@@ -1481,14 +1480,21 @@ unsafe extern "system" fn settings_wndproc(
                 let source = HWND(lparam.0 as *mut _);
                 let _control_id = crate::ui::picker::loword(wparam.0);
                 let notification = crate::ui::picker::hiword(wparam.0);
-                let mut ui = cell.borrow_mut();
-                if notification == 0 {
+                let handled = if notification == 0 {
+                    let mut ui = cell.borrow_mut();
                     if let Some(id) = ui.accessibility_id_for(source) {
                         ui.focused = Some(id);
                         ui.activate(hwnd, id);
-                        let _ = SetFocus(Some(hwnd));
-                        return LRESULT(0);
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                if handled {
+                    let _ = SetFocus(Some(hwnd));
+                    return LRESULT(0);
                 }
                 win::def_proc(hwnd, msg, wparam, lparam)
             }
@@ -1664,7 +1670,10 @@ unsafe extern "system" fn settings_wndproc(
                 }
                 match vk {
                     0x09 => {
-                        cell.borrow_mut().focus_next(hwnd, key_down(0x10));
+                        let focus_target = cell.borrow_mut().focus_next(hwnd, key_down(0x10));
+                        if let Some(child) = focus_target {
+                            let _ = SetFocus(Some(child));
+                        }
                         invalidate(hwnd);
                         LRESULT(0)
                     }
@@ -1688,7 +1697,8 @@ unsafe extern "system" fn settings_wndproc(
                         LRESULT(0)
                     }
                     0x1B => {
-                        if cell.borrow().reset_confirm {
+                        let reset_confirm = cell.borrow().reset_confirm;
+                        if reset_confirm {
                             cell.borrow_mut().reset_confirm = false;
                             invalidate(hwnd);
                         } else {

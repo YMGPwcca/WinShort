@@ -14,9 +14,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, GetKey
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, SetWindowPos, SetWindowTextW, ShowWindow, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WM_PRINT, WM_PRINTCLIENT, WM_SETFOCUS, WS_CHILD,
-    WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    SWP_NOREDRAW, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_KILLFOCUS, WM_NCDESTROY, WM_PAINT, WM_PRINT, WM_PRINTCLIENT, WM_SETFOCUS,
+    WS_CHILD, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP,
 };
 
 use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
@@ -44,14 +44,17 @@ const TBM_SETRANGE: u32 = 0x0400 + 6;
 const TBM_SETPOS: u32 = 0x0400 + 5;
 const TBM_GETPOS: u32 = 0x0400;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct AccessibleControl {
     id: ElementId,
     hwnd: HWND,
     slider: bool,
     toggle: bool,
+    visible: bool,
+    rect: Option<RECT>,
+    enabled: Option<bool>,
+    text: Option<String>,
 }
-
 const ACCESSIBILITY_SUBCLASS_ID: usize = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AccessibilityPaintDisposition {
@@ -65,6 +68,26 @@ pub(crate) fn accessibility_paint_disposition(msg: u32) -> AccessibilityPaintDis
             AccessibilityPaintDisposition::SuppressAndValidate
         }
         _ => AccessibilityPaintDisposition::Delegate,
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccessibilityGeometryTransition {
+    Unchanged,
+    Move,
+    MoveThenShow,
+    HideAfterMove,
+}
+
+pub(crate) fn accessibility_geometry_transition(
+    current_visible: bool,
+    next_visible: bool,
+    rect_changed: bool,
+) -> AccessibilityGeometryTransition {
+    match (current_visible, next_visible, rect_changed) {
+        (false, true, _) => AccessibilityGeometryTransition::MoveThenShow,
+        (true, false, _) => AccessibilityGeometryTransition::HideAfterMove,
+        (false, false, true) | (true, true, true) => AccessibilityGeometryTransition::Move,
+        _ => AccessibilityGeometryTransition::Unchanged,
     }
 }
 
@@ -229,11 +252,11 @@ impl SettingsAccessibility {
             let toggle = is_toggle_element(id);
             let class = HSTRING::from(if slider { TRACKBAR_CLASS } else { BUTTON_CLASS });
             let style = if slider {
-                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | TBS_NOTICKS
+                WS_CHILD.0 | WS_TABSTOP.0 | TBS_NOTICKS
             } else if toggle {
-                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_AUTOCHECKBOX
+                WS_CHILD.0 | WS_TABSTOP.0 | BS_AUTOCHECKBOX
             } else {
-                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW
+                WS_CHILD.0 | WS_TABSTOP.0 | BS_OWNERDRAW
             };
             let hwnd = unsafe {
                 CreateWindowExW(
@@ -265,6 +288,10 @@ impl SettingsAccessibility {
                     hwnd,
                     slider,
                     toggle,
+                    visible: false,
+                    rect: None,
+                    enabled: None,
+                    text: None,
                 });
             }
         }
@@ -285,7 +312,7 @@ impl SettingsAccessibility {
         values: &[(ElementId, String, bool, f32)],
         dpi: u32,
     ) {
-        for control in &self.controls {
+        for control in &mut self.controls {
             let Some(element) = layout.element(control.id) else {
                 continue;
             };
@@ -309,23 +336,37 @@ impl SettingsAccessibility {
                 clipped_rect
             };
             let rect = physical_rect(semantic_rect, dpi as f32 / 96.0);
-            let text = HSTRING::from(format!(
-                "{}: {}. {}",
-                element.label, value, element.description
-            ));
+            let text_value = format!("{}: {}. {}", element.label, value, element.description);
+            let rect_changed = control.rect != Some(rect);
+            let enabled_changed = control.enabled != Some(*enabled);
+            let text_changed = control.text.as_deref() != Some(text_value.as_str());
+            let transition =
+                accessibility_geometry_transition(control.visible, visible, rect_changed);
             unsafe {
-                let _ = EnableWindow(control.hwnd, *enabled);
-                let _ = SetWindowTextW(control.hwnd, PCWSTR(text.as_ptr()));
-                let _ = ShowWindow(control.hwnd, if visible { SW_SHOW } else { SW_HIDE });
-                let _ = SetWindowPos(
-                    control.hwnd,
-                    None,
-                    rect.left,
-                    rect.top,
-                    rect.right - rect.left,
-                    rect.bottom - rect.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+                // Establish geometry before visibility and suppress native
+                // redraw while the parent has just rendered its frame.
+                if !matches!(transition, AccessibilityGeometryTransition::Unchanged) && rect_changed
+                {
+                    let _ = SetWindowPos(
+                        control.hwnd,
+                        None,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+                    );
+                    control.rect = Some(rect);
+                }
+                if enabled_changed {
+                    let _ = EnableWindow(control.hwnd, *enabled);
+                    control.enabled = Some(*enabled);
+                }
+                if text_changed {
+                    let text = HSTRING::from(text_value.as_str());
+                    let _ = SetWindowTextW(control.hwnd, PCWSTR(text.as_ptr()));
+                    control.text = Some(text_value);
+                }
                 if control.toggle {
                     let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
                         control.hwnd,
@@ -347,6 +388,14 @@ impl SettingsAccessibility {
                         Some(WPARAM(1)),
                         Some(LPARAM((ratio.clamp(0.0, 1.0) * 1000.0).round() as isize)),
                     );
+                }
+                if matches!(
+                    transition,
+                    AccessibilityGeometryTransition::MoveThenShow
+                        | AccessibilityGeometryTransition::HideAfterMove
+                ) {
+                    let _ = ShowWindow(control.hwnd, if visible { SW_SHOWNA } else { SW_HIDE });
+                    control.visible = visible;
                 }
             }
         }
@@ -479,6 +528,30 @@ mod semantic_tests {
         assert_eq!(
             accessibility_paint_disposition(WM_KEYDOWN),
             AccessibilityPaintDisposition::Delegate
+        );
+    }
+
+    #[test]
+    fn accessibility_geometry_transitions_move_before_visibility_changes() {
+        assert_eq!(
+            accessibility_geometry_transition(false, true, true),
+            AccessibilityGeometryTransition::MoveThenShow
+        );
+        assert_eq!(
+            accessibility_geometry_transition(false, false, true),
+            AccessibilityGeometryTransition::Move
+        );
+        assert_eq!(
+            accessibility_geometry_transition(true, true, true),
+            AccessibilityGeometryTransition::Move
+        );
+        assert_eq!(
+            accessibility_geometry_transition(true, false, true),
+            AccessibilityGeometryTransition::HideAfterMove
+        );
+        assert_eq!(
+            accessibility_geometry_transition(true, true, false),
+            AccessibilityGeometryTransition::Unchanged
         );
     }
 }

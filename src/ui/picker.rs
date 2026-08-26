@@ -9,22 +9,32 @@ use std::sync::{
     OnceLock,
 };
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
+    SetBkMode, SetTextColor, BACKGROUND_MODE, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ,
+    PAINTSTRUCT,
+};
+use windows::Win32::UI::Controls::{
+    DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, IsChild, PostMessageW, SetForegroundWindow, ShowWindow,
-    CREATESTRUCTW, MA_ACTIVATE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE,
-    WM_COMMAND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_NCCREATE,
-    WM_NCDESTROY, WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL,
+    CREATESTRUCTW, MA_ACTIVATE, SW_SHOW, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
+    WM_CLOSE, WM_COMMAND, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONUP,
+    WM_MEASUREITEM, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VSCROLL,
 };
 
 use crate::config::model::{
     DeviceSelection, EndpointRole, MonitorChoice, OverlayAppearance, OverlayPosition,
 };
 use crate::error::{Error, Result};
+use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
+use crate::ui::theme::{Color, Theme};
 
 const CLASS_NAME: &str = "WinShort.SettingsPicker";
 const LB_ADDSTRING: u32 = 0x0180;
@@ -124,6 +134,110 @@ struct PickerUi {
     choices: Vec<PickerChoice>,
     list: HWND,
 }
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PickerColors {
+    background: Color,
+    foreground: Color,
+    border: Color,
+}
+
+fn picker_colors(selected: bool) -> PickerColors {
+    picker_colors_for(selected, SystemVisualPreferences::query(), Theme::current())
+}
+
+fn picker_colors_for(
+    selected: bool,
+    visual: SystemVisualPreferences,
+    theme: Theme,
+) -> PickerColors {
+    if visual.high_contrast {
+        let background = Color::rgb(
+            visual.high_contrast_background.r,
+            visual.high_contrast_background.g,
+            visual.high_contrast_background.b,
+        );
+        let foreground = Color::rgb(
+            visual.high_contrast_foreground.r,
+            visual.high_contrast_foreground.g,
+            visual.high_contrast_foreground.b,
+        );
+        let highlight = Color::rgb(
+            visual.high_contrast_highlight.r,
+            visual.high_contrast_highlight.g,
+            visual.high_contrast_highlight.b,
+        );
+        let highlight_foreground = Color::rgb(
+            visual.high_contrast_highlight_foreground.r,
+            visual.high_contrast_highlight_foreground.g,
+            visual.high_contrast_highlight_foreground.b,
+        );
+        return PickerColors {
+            background: if selected { highlight } else { background },
+            foreground: if selected {
+                highlight_foreground
+            } else {
+                foreground
+            },
+            border: foreground,
+        };
+    }
+    PickerColors {
+        background: if selected { theme.accent } else { theme.card },
+        foreground: if selected {
+            theme.accent_text
+        } else {
+            theme.text
+        },
+        border: theme.border_strong,
+    }
+}
+
+fn to_colorref(color: Color) -> COLORREF {
+    COLORREF(color.r as u32 | (color.g as u32) << 8 | (color.b as u32) << 16)
+}
+
+unsafe fn draw_picker_surface(hwnd: HWND, hdc: HDC) {
+    let mut rect = RECT::default();
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
+        let colors = picker_colors(false);
+        let background = CreateSolidBrush(to_colorref(colors.background));
+        let border = CreateSolidBrush(to_colorref(colors.border));
+        let _ = FillRect(hdc, &rect, background);
+        let _ = FrameRect(hdc, &rect, border);
+        let _ = DeleteObject(HGDIOBJ(background.0));
+        let _ = DeleteObject(HGDIOBJ(border.0));
+    }
+}
+
+unsafe fn draw_picker_item(item: &DRAWITEMSTRUCT, label: &str) -> LRESULT {
+    let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
+    let focus = item.itemState.0 & ODS_FOCUS.0 != 0;
+    let colors = picker_colors(selected);
+    let background = unsafe { CreateSolidBrush(to_colorref(colors.background)) };
+    let border = unsafe { CreateSolidBrush(to_colorref(colors.border)) };
+    let _ = unsafe { FillRect(item.hDC, &item.rcItem, background) };
+    let mut text_rect = item.rcItem;
+    text_rect.left += 12;
+    text_rect.right -= 12;
+    let mut text = label.encode_utf16().collect::<Vec<_>>();
+    unsafe {
+        let _ = SetBkMode(item.hDC, BACKGROUND_MODE(1));
+        let _ = SetTextColor(item.hDC, to_colorref(colors.foreground));
+        let _ = DrawTextW(
+            item.hDC,
+            &mut text,
+            &mut text_rect,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+        );
+        if focus {
+            let _ = FrameRect(item.hDC, &item.rcItem, border);
+        }
+        let _ = DeleteObject(HGDIOBJ(background.0));
+        let _ = DeleteObject(HGDIOBJ(border.0));
+    }
+    LRESULT(1)
+}
 
 impl PickerPopup {
     pub fn create(
@@ -147,7 +261,7 @@ impl PickerPopup {
                 WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0),
                 PCWSTR(HSTRING::from(CLASS_NAME).as_ptr()),
                 PCWSTR(HSTRING::from("").as_ptr()),
-                WINDOW_STYLE(WS_POPUP.0 | WS_BORDER.0),
+                WINDOW_STYLE(WS_POPUP.0),
                 geometry.left,
                 geometry.top,
                 geometry.width(),
@@ -160,18 +274,24 @@ impl PickerPopup {
         }
         .map_err(|error| Error::win("CreateWindowExW(settings picker)", &error))?;
 
-        let list_style =
-            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | WS_VSCROLL.0 | 0x0001 | 0x0040);
+        let list_style = WINDOW_STYLE(
+            WS_CHILD.0
+                | WS_TABSTOP.0
+                | WS_VSCROLL.0
+                | 0x0001 // LBS_NOTIFY
+                | 0x0010 // LBS_OWNERDRAWFIXED
+                | 0x0040, // LBS_HASSTRINGS
+        );
         let list = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(HSTRING::from("LISTBOX").as_ptr()),
                 PCWSTR(HSTRING::from("").as_ptr()),
                 list_style,
-                4,
-                4,
-                geometry.width() - 8,
-                geometry.height() - 8,
+                1,
+                1,
+                geometry.width() - 2,
+                geometry.height() - 2,
                 Some(hwnd),
                 None,
                 None,
@@ -180,64 +300,68 @@ impl PickerPopup {
         }
         .map_err(|error| Error::win("CreateWindowExW(settings picker list)", &error))?;
 
-        if let Some(cell) = unsafe { win::state_cell::<PickerUi>(hwnd) } {
+        let (labels, selected) = {
+            let Some(cell) = (unsafe { win::state_cell::<PickerUi>(hwnd) }) else {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return Err(Error::internal("settings picker state missing"));
+            };
             let mut ui = cell.borrow_mut();
             ui.list = list;
-            for choice in &ui.choices {
-                let text = HSTRING::from(choice.label.as_str());
-                unsafe {
-                    windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                        list,
-                        LB_ADDSTRING,
-                        Some(WPARAM(0)),
-                        Some(LPARAM(text.as_ptr() as isize)),
-                    );
-                }
-            }
+            let labels = ui
+                .choices
+                .iter()
+                .map(|choice| choice.label.clone())
+                .collect::<Vec<_>>();
             let selected = current.min(ui.choices.len().saturating_sub(1));
+            (labels, selected)
+        };
+
+        for label in labels {
+            let text = HSTRING::from(label);
             unsafe {
-                windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
                     list,
-                    LB_SETCURSEL,
-                    Some(WPARAM(selected)),
-                    Some(LPARAM(0)),
+                    LB_ADDSTRING,
+                    Some(WPARAM(0)),
+                    Some(LPARAM(text.as_ptr() as isize)),
                 );
-                let _ = SetWindowSubclass(
-                    list,
-                    Some(picker_list_subclass),
-                    SUBCLASS_ID,
-                    hwnd.0 as usize,
-                );
-                let _ = ShowWindow(hwnd, SW_SHOW);
-                let _ = SetForegroundWindow(hwnd);
-                let _ = SetFocus(Some(list));
             }
-        } else {
-            unsafe {
-                let _ = DestroyWindow(hwnd);
-            }
-            return Err(Error::internal("settings picker state missing"));
+        }
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                list,
+                LB_SETCURSEL,
+                Some(WPARAM(selected)),
+                Some(LPARAM(0)),
+            );
+            let _ = SetWindowSubclass(
+                list,
+                Some(picker_list_subclass),
+                SUBCLASS_ID,
+                hwnd.0 as usize,
+            );
+            let _ = ShowWindow(list, SW_SHOWNA);
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetFocus(Some(list));
         }
         Ok(Self { hwnd })
     }
 }
 
-impl Drop for PickerPopup {
-    fn drop(&mut self) {
-        if !self.hwnd.0.is_null() {
-            unsafe {
-                let _ = DestroyWindow(self.hwnd);
-            }
-        }
-    }
+fn picker_focus_snapshot(cell: &std::cell::RefCell<PickerUi>) -> (HWND, u64) {
+    let ui = cell.borrow();
+    (ui.list, ui.generation)
 }
 
 fn defer_focus_loss(parent: HWND, next: HWND) {
     let Some(cell) = (unsafe { win::state_cell::<PickerUi>(parent) }) else {
         return;
     };
-    let ui = cell.borrow();
-    let inside = next == parent || next == ui.list || unsafe { IsChild(parent, next).as_bool() };
+    let (list, generation) = picker_focus_snapshot(cell);
+    let inside = next == parent || next == list || unsafe { IsChild(parent, next).as_bool() };
     if inside {
         return;
     }
@@ -246,7 +370,7 @@ fn defer_focus_loss(parent: HWND, next: HWND) {
             Some(parent),
             WM_APP_PICKER_FOCUS_LOST,
             WPARAM(next.0 as usize),
-            LPARAM(ui.generation as isize),
+            LPARAM(generation as isize),
         );
     }
 }
@@ -268,6 +392,17 @@ unsafe extern "system" fn picker_list_subclass(
 ) -> LRESULT {
     let parent = HWND(ref_data as *mut _);
     match msg {
+        WM_ERASEBKGND => {
+            let hdc = HDC(wparam.0 as *mut _);
+            let mut rect = RECT::default();
+            let _ =
+                unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) };
+            let colors = picker_colors(false);
+            let brush = unsafe { CreateSolidBrush(to_colorref(colors.background)) };
+            let _ = unsafe { FillRect(hdc, &rect, brush) };
+            let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+            LRESULT(1)
+        }
         WM_KEYDOWN if wparam.0 as u16 == 0x1B => {
             cancel_picker(parent);
             LRESULT(0)
@@ -323,14 +458,54 @@ unsafe extern "system" fn picker_wndproc(
         }
         match msg {
             WM_MOUSEACTIVATE => LRESULT(MA_ACTIVATE as isize),
+            WM_ERASEBKGND => {
+                let hdc = HDC(wparam.0 as *mut _);
+                draw_picker_surface(hwnd, hdc);
+                LRESULT(1)
+            }
+            WM_PAINT => {
+                let mut paint = PAINTSTRUCT::default();
+                let _ = BeginPaint(hwnd, &mut paint);
+                draw_picker_surface(hwnd, paint.hdc);
+                let _ = EndPaint(hwnd, &paint);
+                LRESULT(0)
+            }
+            WM_MEASUREITEM => {
+                let measure = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
+                if measure.CtlType == ODT_LISTBOX {
+                    let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96);
+                    measure.itemHeight = (30 * dpi).div_ceil(96).max(1);
+                    LRESULT(1)
+                } else {
+                    win::def_proc(hwnd, msg, wparam, lparam)
+                }
+            }
+            WM_DRAWITEM => {
+                let item = &*(lparam.0 as *const DRAWITEMSTRUCT);
+                if item.CtlType != ODT_LISTBOX {
+                    return win::def_proc(hwnd, msg, wparam, lparam);
+                }
+                let list = cell.borrow().list;
+                if item.hwndItem != list {
+                    return win::def_proc(hwnd, msg, wparam, lparam);
+                }
+                let label = {
+                    let ui = cell.borrow();
+                    ui.choices
+                        .get(item.itemID as usize)
+                        .map(|choice| choice.label.clone())
+                };
+                label.map_or(LRESULT(1), |value| draw_picker_item(item, &value))
+            }
             WM_COMMAND => {
                 let _control_id = loword(wparam.0);
                 let notification = hiword(wparam.0);
                 let source = HWND(lparam.0 as *mut _);
-                if source == cell.borrow().list && notification == LBN_DBLCLK {
+                let list = cell.borrow().list;
+                if source == list && notification == LBN_DBLCLK {
                     commit_selected(hwnd, source);
                     LRESULT(0)
-                } else if source == cell.borrow().list && notification == LBN_SELCHANGE {
+                } else if source == list && notification == LBN_SELCHANGE {
                     LRESULT(0)
                 } else {
                     win::def_proc(hwnd, msg, wparam, lparam)
@@ -339,10 +514,7 @@ unsafe extern "system" fn picker_wndproc(
             WM_APP_PICKER_FOCUS_LOST => {
                 let generation = lparam.0 as u64;
                 let next = HWND(wparam.0 as *mut _);
-                let (current_generation, list) = {
-                    let ui = cell.borrow();
-                    (ui.generation, ui.list)
-                };
+                let (list, current_generation) = picker_focus_snapshot(cell);
                 let focus_is_internal =
                     next == hwnd || next == list || IsChild(hwnd, next).as_bool();
                 if should_close_after_focus_loss(current_generation, generation, focus_is_internal)
@@ -364,10 +536,8 @@ unsafe extern "system" fn picker_wndproc(
         }
     }
 }
-
 fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)> {
     let cell = unsafe { win::state_cell::<PickerUi>(parent) }?;
-    let ui = cell.borrow();
     let index = unsafe {
         windows::Win32::UI::WindowsAndMessaging::SendMessageW(
             list,
@@ -377,6 +547,7 @@ fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)>
         )
         .0 as usize
     };
+    let ui = cell.borrow();
     ui.choices
         .get(index)
         .map(|choice| (ui.kind, choice.value.clone()))
@@ -397,6 +568,7 @@ fn cancel_picker(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::visual::VisualRgb;
 
     #[test]
     fn popup_prefers_below_then_flips_above() {
@@ -415,6 +587,47 @@ mod tests {
         assert!(rect.left >= work.left);
         assert!(rect.top >= work.top);
     }
+
+    #[test]
+    fn picker_palette_uses_shared_dark_light_theme_colors() {
+        let visual = SystemVisualPreferences::default();
+        let dark = picker_colors_for(false, visual, Theme::dark());
+        let selected = picker_colors_for(true, visual, Theme::dark());
+        assert_eq!(dark.background, Theme::dark().card);
+        assert_eq!(dark.foreground, Theme::dark().text);
+        assert_eq!(selected.background, Theme::dark().accent);
+        assert_eq!(selected.foreground, Theme::dark().accent_text);
+    }
+
+    #[test]
+    fn picker_palette_pairs_high_contrast_colors() {
+        let visual = SystemVisualPreferences {
+            high_contrast: true,
+            high_contrast_background: VisualRgb {
+                r: 10,
+                g: 20,
+                b: 30,
+            },
+            high_contrast_foreground: VisualRgb {
+                r: 240,
+                g: 200,
+                b: 160,
+            },
+            high_contrast_highlight: VisualRgb {
+                r: 50,
+                g: 100,
+                b: 150,
+            },
+            high_contrast_highlight_foreground: VisualRgb { r: 1, g: 2, b: 3 },
+            ..SystemVisualPreferences::default()
+        };
+        let normal = picker_colors_for(false, visual, Theme::dark());
+        let selected = picker_colors_for(true, visual, Theme::dark());
+        assert_eq!(normal.background, Color::rgb(10, 20, 30));
+        assert_eq!(normal.foreground, Color::rgb(240, 200, 160));
+        assert_eq!(selected.background, Color::rgb(50, 100, 150));
+        assert_eq!(selected.foreground, Color::rgb(1, 2, 3));
+    }
 }
 
 #[cfg(test)]
@@ -431,7 +644,8 @@ mod wm_command_tests {
 
 #[cfg(test)]
 mod focus_loss_tests {
-    use super::should_close_after_focus_loss;
+    use super::{picker_focus_snapshot, should_close_after_focus_loss, PickerKind, PickerUi};
+    use windows::Win32::Foundation::HWND;
 
     #[test]
     fn internal_focus_does_not_request_close() {
@@ -442,5 +656,19 @@ mod focus_loss_tests {
     fn external_focus_closes_only_current_generation() {
         assert!(should_close_after_focus_loss(4, 4, false));
         assert!(!should_close_after_focus_loss(5, 4, false));
+    }
+
+    #[test]
+    fn focus_snapshot_releases_refcell_borrow_before_win32_work() {
+        let cell = std::cell::RefCell::new(PickerUi {
+            generation: 9,
+            kind: PickerKind::OverlayPosition,
+            choices: Vec::new(),
+            list: HWND(std::ptr::null_mut()),
+        });
+        let (list, generation) = picker_focus_snapshot(&cell);
+        assert!(list.0.is_null());
+        assert_eq!(generation, 9);
+        assert!(cell.try_borrow_mut().is_ok());
     }
 }
