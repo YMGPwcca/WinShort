@@ -137,7 +137,9 @@ pub fn place_popup(anchor: PopupRect, work: PopupRect, width: i32, height: i32) 
 }
 
 pub struct PickerPopup {
+    /// Popup owner HWND used for lifecycle and deferred close routing.
     pub hwnd: HWND,
+    /// Native LISTBOX HWND that owns keyboard focus while open.
     pub list: HWND,
 }
 impl Drop for PickerPopup {
