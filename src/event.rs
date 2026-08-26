@@ -89,6 +89,7 @@ pub enum AppEvent {
     },
     CancelSettingsPicker {
         popup_hwnd: isize,
+        restore_focus: bool,
     },
     SettingsWindowClosed,
     RunDiagnosticsSelfTest,

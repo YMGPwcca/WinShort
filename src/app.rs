@@ -335,10 +335,18 @@ impl App {
         }
     }
 
-    pub(crate) fn cancel_settings_picker(&mut self, popup_hwnd: windows::Win32::Foundation::HWND) {
+    pub(crate) fn cancel_settings_picker(
+        &mut self,
+        popup_hwnd: windows::Win32::Foundation::HWND,
+        restore_focus: bool,
+    ) {
         if let Some(settings) = &mut self.settings {
             if settings.picker_hwnd() == Some(popup_hwnd) {
-                settings.cancel_picker();
+                if restore_focus {
+                    settings.cancel_picker();
+                } else {
+                    settings.cancel_picker_without_focus();
+                }
             }
         }
     }
@@ -643,8 +651,11 @@ impl App {
             AppEvent::CommitSettingsPicker { kind, value } => {
                 self.commit_settings_picker(kind, value);
             }
-            AppEvent::CancelSettingsPicker { popup_hwnd } => {
-                self.cancel_settings_picker(HWND(popup_hwnd as *mut _));
+            AppEvent::CancelSettingsPicker {
+                popup_hwnd,
+                restore_focus,
+            } => {
+                self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus);
             }
             AppEvent::SettingsWindowClosed => {
                 self.close_settings_picker();

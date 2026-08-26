@@ -611,12 +611,12 @@ unsafe extern "system" fn picker_list_subclass(
             unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
         WM_KEYDOWN if wparam.0 as u16 == 0x1B => {
-            cancel_picker(parent);
+            cancel_picker(parent, true);
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 as u16 == 0x09 => {
             let reverse = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
-            cancel_picker(parent);
+            cancel_picker(parent, true);
             crate::event::post_main(crate::event::AppEvent::FocusSettingsFromPicker { reverse });
             LRESULT(0)
         }
@@ -750,7 +750,7 @@ unsafe extern "system" fn picker_wndproc(
                     next == hwnd || next == list || IsChild(hwnd, next).as_bool();
                 if should_close_after_focus_loss(current_generation, generation, focus_is_internal)
                 {
-                    cancel_picker(hwnd);
+                    cancel_picker(hwnd, false);
                 }
                 LRESULT(0)
             }
@@ -760,7 +760,7 @@ unsafe extern "system" fn picker_wndproc(
                 LRESULT(0)
             }
             WM_CLOSE => {
-                cancel_picker(hwnd);
+                cancel_picker(hwnd, true);
                 LRESULT(0)
             }
             _ => win::def_proc(hwnd, msg, wparam, lparam),
@@ -805,7 +805,7 @@ fn commit_selected(parent: HWND, list: HWND) {
     crate::event::post_main(crate::event::AppEvent::CommitSettingsPicker { kind, value });
 }
 
-fn cancel_picker(hwnd: HWND) {
+fn cancel_picker(hwnd: HWND, restore_focus: bool) {
     let Some(cell) = (unsafe { win::state_cell::<PickerUi>(hwnd) }) else {
         return;
     };
@@ -814,6 +814,7 @@ fn cancel_picker(hwnd: HWND) {
     }
     crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
         popup_hwnd: hwnd.0 as isize,
+        restore_focus,
     });
 }
 

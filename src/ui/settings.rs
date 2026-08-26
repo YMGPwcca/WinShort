@@ -1279,10 +1279,20 @@ impl SettingsWindow {
     }
 
     pub fn cancel_picker(&mut self) {
+        self.cancel_picker_impl(true);
+    }
+
+    pub(crate) fn cancel_picker_without_focus(&mut self) {
+        self.cancel_picker_impl(false);
+    }
+
+    fn cancel_picker_impl(&mut self, restore_focus: bool) {
         let owner = self.picker_owner.take();
         let _ = self.picker.take();
-        unsafe {
-            let _ = SetFocus(Some(self.hwnd));
+        if restore_focus {
+            unsafe {
+                let _ = SetFocus(Some(self.hwnd));
+            }
         }
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();

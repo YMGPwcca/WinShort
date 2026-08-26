@@ -143,6 +143,8 @@ Logical children report keyboard focus only while the Settings HWND owns focus; 
 is queued to the Settings window and published after the Win32 focus result is observed. Snapshot
 publication compares old/new nodes and raises only changed focus, toggle, slider value, enabled,
 offscreen, bounds, name, and displayed-value properties.
+External focus loss closes the picker without forcing focus back to Settings; Escape, commit,
+and picker Tab navigation explicitly return focus to the Settings HWND.
 
 Contract audit references: [GetPatternProvider](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementprovidersimple-getpatternprovider),
 [Navigate](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-navigate),
