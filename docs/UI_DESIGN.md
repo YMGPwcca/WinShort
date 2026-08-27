@@ -74,6 +74,11 @@ Snapshot publication only commits state and queues typed notifications; UIA deli
 to a Settings HWND message after the `SettingsUi` borrow is dropped. Duplicate target/property
 changes coalesce. Picker and hotkey Invoke actions raise one deferred Invoked event when accepted.
 
+Provider action errors remain state-specific: disabled controls return
+`UIA_E_ELEMENTNOTENABLED`, invalid slider values return `E_INVALIDARG`, unsupported
+direct pattern calls return `UIA_E_NOTSUPPORTED`, and retained providers after
+teardown return `UIA_E_ELEMENTNOTAVAILABLE`.
+
 ## Settings interaction — current
 
 **Status: Implemented.** Audio device pickers show Default, current inventory, and a synthetic

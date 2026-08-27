@@ -85,6 +85,10 @@ Automated coverage:
 - Invoke event tests verify one deferred Invoked notification per accepted Button action; picker
   construction tests verify HWND registration before activation and direct Settings-to-Picker focus.
 
+- Direct provider HRESULT tests distinguish disabled (`UIA_E_ELEMENTNOTENABLED`), stale
+  (`UIA_E_ELEMENTNOTAVAILABLE`), unsupported (`UIA_E_NOTSUPPORTED`), and invalid argument
+  (`E_INVALIDARG`) paths without changing the live unsupported-property `VT_EMPTY` contract.
+
 Manual matrix:
 
 - Input/output picker: Default, available explicit device, disconnected explicit device.

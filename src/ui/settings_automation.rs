@@ -41,7 +41,8 @@ use windows::Win32::UI::Accessibility::{
     UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
     UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaRect, UiaReturnRawElementProvider, UiaRootObjectId,
-    UIA_E_ELEMENTNOTAVAILABLE, UIA_E_INVALIDOPERATION, UIA_PROPERTY_ID,
+    UIA_E_ELEMENTNOTAVAILABLE, UIA_E_ELEMENTNOTENABLED, UIA_E_INVALIDOPERATION, UIA_E_NOTSUPPORTED,
+    UIA_PROPERTY_ID,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
@@ -585,16 +586,17 @@ fn slider_range(id: ElementId, kind: ElementKind, ratio: f32) -> Option<Automati
     })
 }
 
-fn no_interface<T>() -> windows::core::Result<T> {
-    Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-        0x80004002u32 as i32,
-    )))
-}
-
 fn invalid_argument<T>() -> windows::core::Result<T> {
     Err(windows::core::Error::from_hresult(windows::core::HRESULT(
         0x80070057u32 as i32,
     )))
+}
+fn element_not_enabled<T>() -> windows::core::Result<T> {
+    Err(element_not_enabled_error())
+}
+
+fn unsupported<T>() -> windows::core::Result<T> {
+    Err(unsupported_error())
 }
 
 fn null_interface<T: Interface>() -> T {
@@ -839,18 +841,21 @@ fn automation_id(id: ElementId) -> String {
     format!("WinShort.Settings.{id:?}")
 }
 
-fn element_unavailable<T>() -> windows::core::Result<T> {
-    Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-        UIA_E_ELEMENTNOTAVAILABLE as i32,
-    )))
+fn element_unavailable_error() -> windows::core::Error {
+    windows::core::Error::from_hresult(windows::core::HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32))
+}
+
+fn element_not_enabled_error() -> windows::core::Error {
+    windows::core::Error::from_hresult(windows::core::HRESULT(UIA_E_ELEMENTNOTENABLED as i32))
+}
+
+fn unsupported_error() -> windows::core::Error {
+    windows::core::Error::from_hresult(windows::core::HRESULT(UIA_E_NOTSUPPORTED as i32))
 }
 
 fn upgrade_state(state: &Weak<AutomationState>) -> windows::core::Result<Arc<AutomationState>> {
-    state.upgrade().ok_or_else(|| {
-        windows::core::Error::from_hresult(windows::core::HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32))
-    })
+    state.upgrade().ok_or_else(element_unavailable_error)
 }
-
 fn root_property_value(
     snapshot: &SettingsAutomationSnapshot,
     propertyid: UIA_PROPERTY_ID,
@@ -1018,21 +1023,20 @@ impl SettingsAutomationNodeProvider_Impl {
             state: upgrade_state(&self.state)?,
         })
     }
-
-    fn node(&self) -> Option<SettingsAutomationNode> {
-        self.snapshot()
-            .ok()?
+    fn node(&self) -> windows::core::Result<SettingsAutomationNode> {
+        self.snapshot()?
             .nodes
             .into_iter()
             .find(|node| node.id == self.node)
+            .ok_or_else(element_unavailable_error)
     }
 
-    fn node_index(&self) -> Option<usize> {
-        self.snapshot()
-            .ok()?
+    fn node_index(&self) -> windows::core::Result<usize> {
+        self.snapshot()?
             .nodes
             .iter()
             .position(|node| node.id == self.node)
+            .ok_or_else(element_unavailable_error)
     }
 
     fn self_simple(&self) -> IRawElementProviderSimple {
@@ -1152,6 +1156,7 @@ impl IRawElementProviderFragmentRoot_Impl for SettingsAutomationRootProvider_Imp
 
 impl IRawElementProviderSimple_Impl for SettingsAutomationNodeProvider_Impl {
     fn ProviderOptions(&self) -> windows::core::Result<ProviderOptions> {
+        let _ = self.node()?;
         Ok(ProviderOptions_ServerSideProvider | ProviderOptions_ProviderOwnsSetFocus)
     }
 
@@ -1159,9 +1164,7 @@ impl IRawElementProviderSimple_Impl for SettingsAutomationNodeProvider_Impl {
         &self,
         patternid: windows::Win32::UI::Accessibility::UIA_PATTERN_ID,
     ) -> windows::core::Result<IUnknown> {
-        let Some(node) = self.node() else {
-            return Ok(null_interface());
-        };
+        let node = self.node()?;
         let available = match patternid {
             UIA_InvokePatternId => node_has_invoke(node.kind),
             UIA_TogglePatternId => node.toggle.is_some(),
@@ -1179,13 +1182,12 @@ impl IRawElementProviderSimple_Impl for SettingsAutomationNodeProvider_Impl {
         &self,
         propertyid: windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
     ) -> windows::core::Result<VARIANT> {
-        let Some(node) = self.node() else {
-            return Ok(VARIANT::default());
-        };
+        let node = self.node()?;
         node_property_value(&node, propertyid)
     }
 
     fn HostRawElementProvider(&self) -> windows::core::Result<IRawElementProviderSimple> {
+        let _ = self.node()?;
         Ok(null_interface())
     }
 }
@@ -1195,7 +1197,9 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationNodeProvider_Impl {
         &self,
         direction: NavigateDirection,
     ) -> windows::core::Result<IRawElementProviderFragment> {
+        let _ = self.node()?;
         let snapshot = self.snapshot()?;
+        let index = self.node_index()?;
         let next = match direction {
             NavigateDirection_Parent => {
                 return Ok(self
@@ -1204,13 +1208,9 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationNodeProvider_Impl {
                     .cast()
                     .expect("root fragment"));
             }
-            NavigateDirection_NextSibling => self
-                .node_index()
-                .and_then(|index| snapshot.nodes.get(index + 1))
-                .map(|node| node.id),
-            NavigateDirection_PreviousSibling => self
-                .node_index()
-                .and_then(|index| index.checked_sub(1))
+            NavigateDirection_NextSibling => snapshot.nodes.get(index + 1).map(|node| node.id),
+            NavigateDirection_PreviousSibling => index
+                .checked_sub(1)
                 .and_then(|index| snapshot.nodes.get(index))
                 .map(|node| node.id),
             _ => None,
@@ -1219,16 +1219,12 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationNodeProvider_Impl {
     }
 
     fn GetRuntimeId(&self) -> windows::core::Result<*mut SAFEARRAY> {
-        let Some(index) = self.node_index() else {
-            return element_unavailable();
-        };
+        let index = self.node_index()?;
         runtime_id_variant(&[UiaAppendRuntimeId as i32, index as i32 + 1])
     }
 
     fn BoundingRectangle(&self) -> windows::core::Result<UiaRect> {
-        let Some(node) = self.node() else {
-            return element_unavailable();
-        };
+        let node = self.node()?;
         Ok(UiaRect {
             left: node.bounds.left,
             top: node.bounds.top,
@@ -1238,26 +1234,32 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationNodeProvider_Impl {
     }
 
     fn GetEmbeddedFragmentRoots(&self) -> windows::core::Result<*mut SAFEARRAY> {
+        let _ = self.node()?;
         Ok(std::ptr::null_mut())
     }
 
     fn SetFocus(&self) -> windows::core::Result<()> {
+        let node = self.node()?;
+        if !node.enabled {
+            return element_not_enabled();
+        }
         self.automation()?
             .enqueue(SettingsAutomationAction::SetFocus(self.node))
     }
 
     fn FragmentRoot(&self) -> windows::core::Result<IRawElementProviderFragmentRoot> {
+        let _ = self.node()?;
         Ok(self.automation()?.root_fragment())
     }
 }
-
 impl IInvokeProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn Invoke(&self) -> windows::core::Result<()> {
-        let Some(node) = self.node() else {
-            return no_interface();
-        };
-        if !node.enabled || !node_has_invoke(node.kind) {
-            return invalid_argument();
+        let node = self.node()?;
+        if !node_has_invoke(node.kind) {
+            return unsupported();
+        }
+        if !node.enabled {
+            return element_not_enabled();
         }
         self.automation()?
             .enqueue(SettingsAutomationAction::Invoke(node.id))
@@ -1266,38 +1268,37 @@ impl IInvokeProvider_Impl for SettingsAutomationNodeProvider_Impl {
 
 impl IToggleProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn Toggle(&self) -> windows::core::Result<()> {
-        let Some(node) = self.node() else {
-            return no_interface();
-        };
-        if !node.enabled || node.toggle.is_none() {
-            return invalid_argument();
+        let node = self.node()?;
+        if node.toggle.is_none() {
+            return unsupported();
+        }
+        if !node.enabled {
+            return element_not_enabled();
         }
         self.automation()?
             .enqueue(SettingsAutomationAction::Toggle(node.id))
     }
 
     fn ToggleState(&self) -> windows::core::Result<ToggleState> {
-        self.node()
-            .and_then(|node| node.toggle)
-            .map_or_else(no_interface, |value| {
-                Ok(if value {
-                    ToggleState_On
-                } else {
-                    ToggleState_Off
-                })
-            })
+        let node = self.node()?;
+        node.toggle.ok_or_else(unsupported_error).map(|value| {
+            if value {
+                ToggleState_On
+            } else {
+                ToggleState_Off
+            }
+        })
     }
 }
 
 impl IRangeValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn SetValue(&self, val: f64) -> windows::core::Result<()> {
-        let Some(node) = self.node() else {
-            return no_interface();
-        };
-        let Some(range) = node.range else {
-            return no_interface();
-        };
-        if !node.enabled || !val.is_finite() || val < range.minimum || val > range.maximum {
+        let node = self.node()?;
+        let range = node.range.ok_or_else(unsupported_error)?;
+        if !node.enabled {
+            return element_not_enabled();
+        }
+        if !val.is_finite() || val < range.minimum || val > range.maximum {
             return invalid_argument();
         }
         self.automation()?
@@ -1308,51 +1309,53 @@ impl IRangeValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
     }
 
     fn Value(&self) -> windows::core::Result<f64> {
-        self.node()
-            .and_then(|node| node.range)
-            .map_or_else(no_interface, |range| Ok(range.value))
+        let node = self.node()?;
+        node.range
+            .ok_or_else(unsupported_error)
+            .map(|range| range.value)
     }
 
     fn IsReadOnly(&self) -> windows::core::Result<windows::core::BOOL> {
-        Ok(self
-            .node()
-            .and_then(|node| node.range)
-            .is_none_or(|range| range.read_only)
-            .into())
+        let node = self.node()?;
+        node.range
+            .ok_or_else(unsupported_error)
+            .map(|range| range.read_only.into())
     }
 
     fn Maximum(&self) -> windows::core::Result<f64> {
-        self.node()
-            .and_then(|node| node.range)
-            .map_or_else(no_interface, |range| Ok(range.maximum))
+        let node = self.node()?;
+        node.range
+            .ok_or_else(unsupported_error)
+            .map(|range| range.maximum)
     }
 
     fn Minimum(&self) -> windows::core::Result<f64> {
-        self.node()
-            .and_then(|node| node.range)
-            .map_or_else(no_interface, |range| Ok(range.minimum))
+        let node = self.node()?;
+        node.range
+            .ok_or_else(unsupported_error)
+            .map(|range| range.minimum)
     }
 
     fn LargeChange(&self) -> windows::core::Result<f64> {
-        self.node()
-            .and_then(|node| node.range)
-            .map_or_else(no_interface, |range| Ok(range.large_change))
+        let node = self.node()?;
+        node.range
+            .ok_or_else(unsupported_error)
+            .map(|range| range.large_change)
     }
 
     fn SmallChange(&self) -> windows::core::Result<f64> {
-        self.node()
-            .and_then(|node| node.range)
-            .map_or_else(no_interface, |range| Ok(range.small_change))
+        let node = self.node()?;
+        node.range
+            .ok_or_else(unsupported_error)
+            .map(|range| range.small_change)
     }
 }
 
 impl IValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
     fn SetValue(&self, _val: &windows::core::PCWSTR) -> windows::core::Result<()> {
-        let Some(node) = self.node() else {
-            return no_interface();
-        };
+        let node = self.node()?;
         if !node_has_value(node.kind) {
-            return no_interface();
+            return unsupported();
         }
         Err(windows::core::Error::from_hresult(windows::core::HRESULT(
             UIA_E_INVALIDOPERATION as i32,
@@ -1360,15 +1363,19 @@ impl IValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
     }
 
     fn Value(&self) -> windows::core::Result<BSTR> {
-        self.node()
-            .filter(|node| node_has_value(node.kind))
-            .map_or_else(no_interface, |node| Ok(BSTR::from(node.value.as_str())))
+        let node = self.node()?;
+        if !node_has_value(node.kind) {
+            return unsupported();
+        }
+        Ok(BSTR::from(node.value.as_str()))
     }
 
     fn IsReadOnly(&self) -> windows::core::Result<windows::core::BOOL> {
-        self.node()
-            .filter(|node| node_has_value(node.kind))
-            .map_or_else(no_interface, |_| Ok(true.into()))
+        let node = self.node()?;
+        if !node_has_value(node.kind) {
+            return unsupported();
+        }
+        Ok(true.into())
     }
 }
 
@@ -1490,15 +1497,41 @@ mod tests {
             .collect()
     }
 
+    fn automation_with_disabled(id: ElementId) -> SettingsAutomation {
+        let automation = published_automation();
+        let mut snapshot = automation.snapshot();
+        snapshot
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == id)
+            .expect("node")
+            .enabled = false;
+        automation.publish(snapshot);
+        automation
+    }
+
+    fn stale_provider(id: ElementId) -> IRawElementProviderSimple {
+        let automation = published_automation();
+        let provider = automation.provider_for(id);
+        drop(automation);
+        provider
+    }
+
+    fn assert_hresult(error: windows::core::Error, expected: u32) {
+        assert_eq!(
+            error.code(),
+            windows::core::HRESULT(expected as i32),
+            "unexpected HRESULT"
+        );
+    }
+
     fn published_automation() -> SettingsAutomation {
-        let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
-        automation.publish(snapshot_from_settings(
-            HWND(std::ptr::null_mut()),
-            &layout(),
-            &values(),
-            None,
-            96,
-        ));
+        published_automation_for(HWND(std::ptr::null_mut()))
+    }
+
+    fn published_automation_for(hwnd: HWND) -> SettingsAutomation {
+        let automation = SettingsAutomation::new(hwnd);
+        automation.publish(snapshot_from_settings(hwnd, &layout(), &values(), None, 96));
         automation
     }
 
@@ -1729,7 +1762,7 @@ mod tests {
 
     #[test]
     fn host_provider_is_only_returned_for_fragment_root() {
-        let automation = SettingsAutomation::new(unsafe { GetDesktopWindow() });
+        let automation = published_automation_for(unsafe { GetDesktopWindow() });
         let root = automation.root_provider();
         let host = unsafe { root.HostRawElementProvider() }.expect("root host provider");
         assert!(!host.as_raw().is_null());
@@ -1864,7 +1897,7 @@ mod tests {
 
     #[test]
     fn ui_automation_set_focus_is_queued_for_window_dispatch() {
-        let automation = SettingsAutomation::new(unsafe { GetDesktopWindow() });
+        let automation = published_automation_for(unsafe { GetDesktopWindow() });
         let provider = automation.provider_for(ElementId::OverlayEnabled);
         let fragment: IRawElementProviderFragment = provider.cast().expect("fragment provider");
         unsafe { fragment.SetFocus().expect("queue focus") };
@@ -2119,5 +2152,176 @@ mod tests {
             AutomationValue::F64(value) => assert!((*value - 0.8).abs() < 1e-12),
             value => panic!("unexpected new value: {value:?}"),
         }
+    }
+    #[test]
+    fn disabled_invoke_returns_element_not_enabled() {
+        let automation = automation_with_disabled(ElementId::OpenConfigFolder);
+        let provider = automation.provider_for(ElementId::OpenConfigFolder);
+        let unknown = unsafe {
+            provider
+                .GetPatternProvider(UIA_InvokePatternId)
+                .expect("Invoke pattern")
+        };
+        let invoke: IInvokeProvider = unknown.cast().expect("Invoke interface");
+        assert_hresult(
+            unsafe { invoke.Invoke() }.expect_err("disabled Invoke"),
+            UIA_E_ELEMENTNOTENABLED,
+        );
+    }
+
+    #[test]
+    fn disabled_toggle_returns_element_not_enabled() {
+        let automation = automation_with_disabled(ElementId::OverlayEnabled);
+        let provider = automation.provider_for(ElementId::OverlayEnabled);
+        let unknown = unsafe {
+            provider
+                .GetPatternProvider(UIA_TogglePatternId)
+                .expect("Toggle pattern")
+        };
+        let toggle: IToggleProvider = unknown.cast().expect("Toggle interface");
+        assert_hresult(
+            unsafe { toggle.Toggle() }.expect_err("disabled Toggle"),
+            UIA_E_ELEMENTNOTENABLED,
+        );
+    }
+
+    #[test]
+    fn disabled_range_value_returns_element_not_enabled() {
+        let automation = automation_with_disabled(ElementId::OverlayOpacity);
+        let provider = automation.provider_for(ElementId::OverlayOpacity);
+        let unknown = unsafe {
+            provider
+                .GetPatternProvider(UIA_RangeValuePatternId)
+                .expect("RangeValue pattern")
+        };
+        let range: IRangeValueProvider = unknown.cast().expect("RangeValue interface");
+        assert_hresult(
+            unsafe { range.SetValue(0.7) }.expect_err("disabled RangeValue"),
+            UIA_E_ELEMENTNOTENABLED,
+        );
+    }
+
+    #[test]
+    fn invalid_range_value_returns_invalid_argument() {
+        let automation = published_automation();
+        let provider = automation.provider_for(ElementId::OverlayOpacity);
+        let unknown = unsafe {
+            provider
+                .GetPatternProvider(UIA_RangeValuePatternId)
+                .expect("RangeValue pattern")
+        };
+        let range: IRangeValueProvider = unknown.cast().expect("RangeValue interface");
+        assert_hresult(
+            unsafe { range.SetValue(1.1) }.expect_err("out-of-range RangeValue"),
+            0x80070057,
+        );
+    }
+
+    #[test]
+    fn disabled_set_focus_returns_element_not_enabled() {
+        let automation = automation_with_disabled(ElementId::OverlayEnabled);
+        let provider = automation.provider_for(ElementId::OverlayEnabled);
+        let fragment: IRawElementProviderFragment = provider.cast().expect("fragment interface");
+        assert_hresult(
+            unsafe { fragment.SetFocus() }.expect_err("disabled SetFocus"),
+            UIA_E_ELEMENTNOTENABLED,
+        );
+    }
+
+    #[test]
+    fn valid_set_focus_queues_exactly_one_action() {
+        let automation = SettingsAutomation::new(unsafe { GetDesktopWindow() });
+        automation.publish(snapshot_from_settings(
+            HWND(std::ptr::null_mut()),
+            &layout(),
+            &values(),
+            None,
+            96,
+        ));
+        let provider = automation.provider_for(ElementId::OverlayEnabled);
+        let fragment: IRawElementProviderFragment = provider.cast().expect("fragment interface");
+        unsafe { fragment.SetFocus().expect("valid SetFocus") };
+        assert!(matches!(
+            automation.drain_actions().as_slice(),
+            [SettingsAutomationAction::SetFocus(
+                ElementId::OverlayEnabled
+            )]
+        ));
+    }
+
+    #[test]
+    fn stale_provider_operations_return_element_not_available() {
+        let provider = stale_provider(ElementId::OpenConfigFolder);
+        let property_error = unsafe {
+            provider
+                .GetPropertyValue(UIA_NamePropertyId)
+                .expect_err("stale property")
+        };
+        assert_hresult(property_error, UIA_E_ELEMENTNOTAVAILABLE);
+        let pattern_error = unsafe {
+            provider
+                .GetPatternProvider(UIA_InvokePatternId)
+                .expect_err("stale pattern")
+        };
+        assert_hresult(pattern_error, UIA_E_ELEMENTNOTAVAILABLE);
+
+        let invoke: IInvokeProvider = provider.cast().expect("stale Invoke interface");
+        assert_hresult(
+            unsafe { invoke.Invoke() }.expect_err("stale Invoke"),
+            UIA_E_ELEMENTNOTAVAILABLE,
+        );
+        let fragment: IRawElementProviderFragment =
+            provider.cast().expect("stale fragment interface");
+        assert_hresult(
+            unsafe { fragment.SetFocus() }.expect_err("stale SetFocus"),
+            UIA_E_ELEMENTNOTAVAILABLE,
+        );
+        assert_hresult(
+            unsafe { fragment.BoundingRectangle() }.expect_err("stale bounds"),
+            UIA_E_ELEMENTNOTAVAILABLE,
+        );
+        assert_hresult(
+            unsafe { fragment.GetEmbeddedFragmentRoots() }.expect_err("stale embedded roots"),
+            UIA_E_ELEMENTNOTAVAILABLE,
+        );
+        assert_hresult(
+            unsafe { fragment.FragmentRoot() }.expect_err("stale fragment root"),
+            UIA_E_ELEMENTNOTAVAILABLE,
+        );
+        assert_hresult(
+            unsafe { provider.ProviderOptions() }.expect_err("stale provider options"),
+            UIA_E_ELEMENTNOTAVAILABLE,
+        );
+
+        let range_provider = stale_provider(ElementId::OverlayOpacity);
+        let range: IRangeValueProvider = range_provider.cast().expect("stale RangeValue");
+        assert_hresult(
+            unsafe { range.SetValue(0.7) }.expect_err("stale RangeValue"),
+            UIA_E_ELEMENTNOTAVAILABLE,
+        );
+    }
+
+    #[test]
+    fn directly_called_unsupported_patterns_return_uia_not_supported() {
+        let automation = published_automation();
+
+        let slider = automation.provider_for(ElementId::OverlayOpacity);
+        let invoke: IInvokeProvider = slider.cast().expect("Invoke interface");
+        assert_hresult(
+            unsafe { invoke.Invoke() }.expect_err("unsupported Invoke"),
+            UIA_E_NOTSUPPORTED,
+        );
+
+        let button = automation.provider_for(ElementId::OpenConfigFolder);
+        let toggle: IToggleProvider = button.cast().expect("Toggle interface");
+        assert_hresult(
+            unsafe { toggle.Toggle() }.expect_err("unsupported Toggle"),
+            UIA_E_NOTSUPPORTED,
+        );
+        let range: IRangeValueProvider = button.cast().expect("RangeValue interface");
+        assert_hresult(
+            unsafe { range.SetValue(1.0) }.expect_err("unsupported RangeValue"),
+            UIA_E_NOTSUPPORTED,
+        );
     }
 }

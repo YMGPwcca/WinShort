@@ -147,6 +147,11 @@ selection subtree or ExpandCollapse provider. Picker and hotkey rows retain a re
 pattern only for their current displayed text; `SetValue` reports
 `UIA_E_INVALIDOPERATION`.
 
+Provider operations distinguish live unsupported capabilities from unavailable elements:
+inapplicable properties return `S_OK` with `VT_EMPTY`, unsupported pattern operations return
+`UIA_E_NOTSUPPORTED`, disabled actions return `UIA_E_ELEMENTNOTENABLED`, invalid range values
+return `E_INVALIDARG`, and stale providers return `UIA_E_ELEMENTNOTAVAILABLE`.
+
 The provider follows the Win32 fragment contracts: unsupported patterns and navigation
 boundaries return `S_OK` with a null interface, the fragment root returns a null RuntimeId while
 children use `UiaAppendRuntimeId` plus a stable focus-order value, and only the fragment root
@@ -175,7 +180,10 @@ The final audit also follows [GetPropertyValue](https://learn.microsoft.com/en-u
 [FragmentRoot](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-get_fragmentroot),
 [IRawElementProviderFragmentRoot](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nn-uiautomationcore-irawelementproviderfragmentroot),
 [UiaRaiseAutomationEvent](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcoreapi/nf-uiautomationcoreapi-uiaraiseautomationevent),
-and [Value control pattern](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-implementingvalue).
+and [Value control pattern](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-implementingvalue),
+[UIA error codes](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-error-codes),
+[IInvokeProvider::Invoke](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iinvokeprovider-invoke),
+and [IRawElementProviderFragment::SetFocus](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-setfocus).
 
 Picker focus-loss handlers read `WM_KILLFOCUS.wParam` and only post a
 generation-tagged deferred-close message. They do not destroy the popup or refocus another

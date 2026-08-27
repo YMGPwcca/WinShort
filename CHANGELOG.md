@@ -19,6 +19,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Deferred UIA event delivery beyond the SettingsUi borrow, coalesced typed
   notifications, split root/node provider identities, raised Invoke events, and
   staged native picker activation after HWND registration.
+- Distinguished disabled, stale, unsupported, and invalid-argument provider
+  operations using their dedicated UI Automation HRESULTs.
 
 ## [0.1.0] - 2026-08-24
 
