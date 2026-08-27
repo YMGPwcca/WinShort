@@ -10,7 +10,7 @@
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
-use windows::core::{implement, IUnknown, IUnknownImpl, Interface, BSTR};
+use windows::core::{implement, IUnknown, IUnknownImpl, IUnknown_Vtbl, Interface, BSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::SAFEARRAY;
@@ -20,8 +20,9 @@ use windows::Win32::System::Variant::{
 use windows::Win32::UI::Accessibility::{
     IInvokeProvider, IInvokeProvider_Impl, IRangeValueProvider, IRangeValueProvider_Impl,
     IRawElementProviderFragment, IRawElementProviderFragmentRoot,
-    IRawElementProviderFragmentRoot_Impl, IRawElementProviderFragment_Impl,
-    IRawElementProviderSimple, IRawElementProviderSimple_Impl, IToggleProvider,
+    IRawElementProviderFragmentRoot_Impl, IRawElementProviderFragmentRoot_Vtbl,
+    IRawElementProviderFragment_Impl, IRawElementProviderFragment_Vtbl, IRawElementProviderSimple,
+    IRawElementProviderSimple_Impl, IRawElementProviderSimple_Vtbl, IToggleProvider,
     IToggleProvider_Impl, IValueProvider, IValueProvider_Impl, NavigateDirection,
     NavigateDirection_FirstChild, NavigateDirection_LastChild, NavigateDirection_NextSibling,
     NavigateDirection_Parent, NavigateDirection_PreviousSibling, ProviderOptions,
@@ -42,7 +43,7 @@ use windows::Win32::UI::Accessibility::{
     UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaRect, UiaReturnRawElementProvider, UiaRootObjectId,
     UIA_E_ELEMENTNOTAVAILABLE, UIA_E_ELEMENTNOTENABLED, UIA_E_INVALIDOPERATION, UIA_E_NOTSUPPORTED,
-    UIA_PROPERTY_ID,
+    UIA_PATTERN_ID, UIA_PROPERTY_ID,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
@@ -462,6 +463,7 @@ impl SettingsAutomation {
                 state: Arc::downgrade(&self.state),
             }
             .into();
+            install_root_vtables(&root);
             let raw = root.as_raw() as usize;
             std::mem::forget(root);
             raw
@@ -477,11 +479,13 @@ impl SettingsAutomation {
     }
 
     pub(crate) fn provider_for(&self, id: ElementId) -> IRawElementProviderSimple {
-        SettingsAutomationNodeProvider {
+        let provider: IRawElementProviderSimple = SettingsAutomationNodeProvider {
             state: Arc::downgrade(&self.state),
             node: id,
         }
-        .into()
+        .into();
+        install_node_vtables(&provider);
+        provider
     }
 
     pub(crate) fn handle_get_object(
@@ -599,11 +603,42 @@ fn unsupported<T>() -> windows::core::Result<T> {
     Err(unsupported_error())
 }
 
-fn null_interface<T: Interface>() -> T {
-    // The generated UIA vtable moves successful interface return values into
-    // the ABI out-parameter. It therefore preserves a NULL COM result without
-    // dropping a null smart pointer on this Rust side.
-    unsafe { T::from_raw(std::ptr::null_mut()) }
+fn no_nullable_result_error() -> windows::core::Error {
+    // Internal sentinel for the generated high-level trait; raw nullable
+    // thunks consume None directly and never expose this HRESULT.
+    windows::core::Error::from_hresult(windows::core::HRESULT(0x80004002u32 as i32))
+}
+
+fn require_nullable_result<T>(
+    result: windows::core::Result<Option<T>>,
+) -> windows::core::Result<T> {
+    result.and_then(|value| value.ok_or_else(no_nullable_result_error))
+}
+
+unsafe fn write_nullable_interface<T, F>(
+    pretval: *mut *mut core::ffi::c_void,
+    produce: F,
+) -> windows::core::HRESULT
+where
+    T: Interface,
+    F: FnOnce() -> windows::core::Result<Option<T>>,
+{
+    if pretval.is_null() {
+        return windows::core::HRESULT(0x80004003u32 as i32);
+    }
+    unsafe {
+        pretval.write(std::ptr::null_mut());
+    }
+    match produce() {
+        Ok(Some(value)) => {
+            unsafe {
+                pretval.write(value.into_raw());
+            }
+            windows::core::HRESULT(0)
+        }
+        Ok(None) => windows::core::HRESULT(0),
+        Err(error) => error.into(),
+    }
 }
 
 fn string_variant(value: &str) -> VARIANT {
@@ -979,6 +1014,186 @@ struct SettingsAutomationNodeProvider {
     state: Weak<AutomationState>,
     node: ElementId,
 }
+static ROOT_SIMPLE_VTABLE: OnceLock<IRawElementProviderSimple_Vtbl> = OnceLock::new();
+static ROOT_FRAGMENT_VTABLE: OnceLock<IRawElementProviderFragment_Vtbl> = OnceLock::new();
+static ROOT_FRAGMENT_ROOT_VTABLE: OnceLock<IRawElementProviderFragmentRoot_Vtbl> = OnceLock::new();
+static NODE_SIMPLE_VTABLE: OnceLock<IRawElementProviderSimple_Vtbl> = OnceLock::new();
+static NODE_FRAGMENT_VTABLE: OnceLock<IRawElementProviderFragment_Vtbl> = OnceLock::new();
+
+fn copy_iunknown_vtable(source: &IUnknown_Vtbl) -> IUnknown_Vtbl {
+    IUnknown_Vtbl {
+        QueryInterface: source.QueryInterface,
+        AddRef: source.AddRef,
+        Release: source.Release,
+    }
+}
+
+unsafe fn replace_vtable<I: Interface>(interface: &I, replacement: &'static I::Vtable) {
+    unsafe {
+        (interface.as_raw() as *mut *const I::Vtable).write(replacement);
+    }
+}
+
+unsafe extern "system" fn root_simple_get_pattern_provider(
+    this: *mut core::ffi::c_void,
+    patternid: UIA_PATTERN_ID,
+    pretval: *mut *mut core::ffi::c_void,
+) -> windows::core::HRESULT {
+    let this = unsafe {
+        &*((this as *const *const ()).offset(-1) as *const SettingsAutomationRootProvider_Impl)
+    };
+    unsafe { write_nullable_interface(pretval, || this.pattern_provider_result(patternid)) }
+}
+
+unsafe extern "system" fn root_fragment_navigate(
+    this: *mut core::ffi::c_void,
+    direction: NavigateDirection,
+    pretval: *mut *mut core::ffi::c_void,
+) -> windows::core::HRESULT {
+    let this = unsafe {
+        &*((this as *const *const ()).offset(-2) as *const SettingsAutomationRootProvider_Impl)
+    };
+    unsafe { write_nullable_interface(pretval, || this.navigate_result(direction)) }
+}
+
+unsafe extern "system" fn root_element_provider_from_point(
+    this: *mut core::ffi::c_void,
+    x: f64,
+    y: f64,
+    pretval: *mut *mut core::ffi::c_void,
+) -> windows::core::HRESULT {
+    let this = unsafe {
+        &*((this as *const *const ()).offset(-3) as *const SettingsAutomationRootProvider_Impl)
+    };
+    unsafe { write_nullable_interface(pretval, || this.element_provider_from_point_result(x, y)) }
+}
+
+unsafe extern "system" fn root_get_focus(
+    this: *mut core::ffi::c_void,
+    pretval: *mut *mut core::ffi::c_void,
+) -> windows::core::HRESULT {
+    let this = unsafe {
+        &*((this as *const *const ()).offset(-3) as *const SettingsAutomationRootProvider_Impl)
+    };
+    unsafe { write_nullable_interface(pretval, || this.focus_result()) }
+}
+
+unsafe extern "system" fn node_simple_get_pattern_provider(
+    this: *mut core::ffi::c_void,
+    patternid: UIA_PATTERN_ID,
+    pretval: *mut *mut core::ffi::c_void,
+) -> windows::core::HRESULT {
+    let this = unsafe {
+        &*((this as *const *const ()).offset(-1) as *const SettingsAutomationNodeProvider_Impl)
+    };
+    unsafe { write_nullable_interface(pretval, || this.pattern_provider_result(patternid)) }
+}
+
+unsafe extern "system" fn node_simple_host_raw_element_provider(
+    this: *mut core::ffi::c_void,
+    pretval: *mut *mut core::ffi::c_void,
+) -> windows::core::HRESULT {
+    let this = unsafe {
+        &*((this as *const *const ()).offset(-1) as *const SettingsAutomationNodeProvider_Impl)
+    };
+    unsafe { write_nullable_interface(pretval, || this.host_raw_element_provider_result()) }
+}
+
+unsafe extern "system" fn node_fragment_navigate(
+    this: *mut core::ffi::c_void,
+    direction: NavigateDirection,
+    pretval: *mut *mut core::ffi::c_void,
+) -> windows::core::HRESULT {
+    let this = unsafe {
+        &*((this as *const *const ()).offset(-2) as *const SettingsAutomationNodeProvider_Impl)
+    };
+    unsafe { write_nullable_interface(pretval, || this.navigate_result(direction)) }
+}
+
+fn root_simple_vtable(
+    original: &IRawElementProviderSimple_Vtbl,
+) -> &'static IRawElementProviderSimple_Vtbl {
+    ROOT_SIMPLE_VTABLE.get_or_init(|| IRawElementProviderSimple_Vtbl {
+        base__: copy_iunknown_vtable(&original.base__),
+        ProviderOptions: original.ProviderOptions,
+        GetPatternProvider: root_simple_get_pattern_provider,
+        GetPropertyValue: original.GetPropertyValue,
+        HostRawElementProvider: original.HostRawElementProvider,
+    })
+}
+
+fn root_fragment_vtable(
+    original: &IRawElementProviderFragment_Vtbl,
+) -> &'static IRawElementProviderFragment_Vtbl {
+    ROOT_FRAGMENT_VTABLE.get_or_init(|| IRawElementProviderFragment_Vtbl {
+        base__: copy_iunknown_vtable(&original.base__),
+        Navigate: root_fragment_navigate,
+        GetRuntimeId: original.GetRuntimeId,
+        BoundingRectangle: original.BoundingRectangle,
+        GetEmbeddedFragmentRoots: original.GetEmbeddedFragmentRoots,
+        SetFocus: original.SetFocus,
+        FragmentRoot: original.FragmentRoot,
+    })
+}
+
+fn root_fragment_root_vtable(
+    original: &IRawElementProviderFragmentRoot_Vtbl,
+) -> &'static IRawElementProviderFragmentRoot_Vtbl {
+    ROOT_FRAGMENT_ROOT_VTABLE.get_or_init(|| IRawElementProviderFragmentRoot_Vtbl {
+        base__: copy_iunknown_vtable(&original.base__),
+        ElementProviderFromPoint: root_element_provider_from_point,
+        GetFocus: root_get_focus,
+    })
+}
+
+fn node_simple_vtable(
+    original: &IRawElementProviderSimple_Vtbl,
+) -> &'static IRawElementProviderSimple_Vtbl {
+    NODE_SIMPLE_VTABLE.get_or_init(|| IRawElementProviderSimple_Vtbl {
+        base__: copy_iunknown_vtable(&original.base__),
+        ProviderOptions: original.ProviderOptions,
+        GetPatternProvider: node_simple_get_pattern_provider,
+        GetPropertyValue: original.GetPropertyValue,
+        HostRawElementProvider: node_simple_host_raw_element_provider,
+    })
+}
+
+fn node_fragment_vtable(
+    original: &IRawElementProviderFragment_Vtbl,
+) -> &'static IRawElementProviderFragment_Vtbl {
+    NODE_FRAGMENT_VTABLE.get_or_init(|| IRawElementProviderFragment_Vtbl {
+        base__: copy_iunknown_vtable(&original.base__),
+        Navigate: node_fragment_navigate,
+        GetRuntimeId: original.GetRuntimeId,
+        BoundingRectangle: original.BoundingRectangle,
+        GetEmbeddedFragmentRoots: original.GetEmbeddedFragmentRoots,
+        SetFocus: original.SetFocus,
+        FragmentRoot: original.FragmentRoot,
+    })
+}
+
+fn install_root_vtables(root: &IRawElementProviderFragmentRoot) {
+    let simple: IRawElementProviderSimple = root.cast().expect("root simple provider");
+    let fragment: IRawElementProviderFragment = root.cast().expect("root fragment provider");
+    let simple_vtable = root_simple_vtable(simple.vtable());
+    let fragment_vtable = root_fragment_vtable(fragment.vtable());
+    let root_vtable = root_fragment_root_vtable(root.vtable());
+    unsafe {
+        replace_vtable(&simple, simple_vtable);
+        replace_vtable(&fragment, fragment_vtable);
+        replace_vtable(root, root_vtable);
+    }
+}
+
+fn install_node_vtables(simple: &IRawElementProviderSimple) {
+    let fragment: IRawElementProviderFragment = simple.cast().expect("node fragment provider");
+    let simple_vtable = node_simple_vtable(simple.vtable());
+    let fragment_vtable = node_fragment_vtable(fragment.vtable());
+    unsafe {
+        replace_vtable(simple, simple_vtable);
+        replace_vtable(&fragment, fragment_vtable);
+    }
+}
 
 impl SettingsAutomationRootProvider_Impl {
     fn snapshot(&self) -> windows::core::Result<SettingsAutomationSnapshot> {
@@ -1001,11 +1216,65 @@ impl SettingsAutomationRootProvider_Impl {
 
     fn child_fragment(&self, id: ElementId) -> windows::core::Result<IRawElementProviderFragment> {
         let _ = upgrade_state(&self.state)?;
-        Ok(SettingsAutomationNodeProvider {
+        let provider: IRawElementProviderFragment = SettingsAutomationNodeProvider {
             state: self.state.clone(),
             node: id,
         }
-        .into())
+        .into();
+        let simple: IRawElementProviderSimple = provider.cast().expect("node simple provider");
+        install_node_vtables(&simple);
+        Ok(provider)
+    }
+
+    fn pattern_provider_result(
+        &self,
+        _patternid: UIA_PATTERN_ID,
+    ) -> windows::core::Result<Option<IUnknown>> {
+        let _ = self.snapshot()?;
+        Ok(None)
+    }
+
+    fn navigate_result(
+        &self,
+        direction: NavigateDirection,
+    ) -> windows::core::Result<Option<IRawElementProviderFragment>> {
+        let snapshot = self.snapshot()?;
+        let next = match direction {
+            NavigateDirection_FirstChild => snapshot.nodes.first().map(|node| node.id),
+            NavigateDirection_LastChild => snapshot.nodes.last().map(|node| node.id),
+            _ => None,
+        };
+        next.map_or_else(|| Ok(None), |id| self.child_fragment(id).map(Some))
+    }
+
+    fn element_provider_from_point_result(
+        &self,
+        x: f64,
+        y: f64,
+    ) -> windows::core::Result<Option<IRawElementProviderFragment>> {
+        let snapshot = self.snapshot()?;
+        if let Some(node) = snapshot
+            .nodes
+            .into_iter()
+            .find(|node| !node.offscreen && node.bounds.contains(x, y))
+        {
+            return self.child_fragment(node.id).map(Some);
+        }
+        if snapshot.window.contains(x, y) {
+            return Ok(Some(self.to_interface()));
+        }
+        Ok(None)
+    }
+
+    fn focus_result(&self) -> windows::core::Result<Option<IRawElementProviderFragment>> {
+        let snapshot = self.snapshot()?;
+        if snapshot.focus_owner != AutomationFocusOwner::Settings {
+            return Ok(None);
+        }
+        snapshot.focused.map_or_else(
+            || Ok(Some(self.to_interface())),
+            |id| self.child_fragment(id).map(Some),
+        )
     }
 }
 
@@ -1040,19 +1309,70 @@ impl SettingsAutomationNodeProvider_Impl {
     }
 
     fn self_simple(&self) -> IRawElementProviderSimple {
-        SettingsAutomationNodeProvider {
+        let provider: IRawElementProviderSimple = SettingsAutomationNodeProvider {
             state: self.state.clone(),
             node: self.node,
         }
-        .into()
+        .into();
+        install_node_vtables(&provider);
+        provider
     }
 
     fn child_fragment(&self, id: ElementId) -> IRawElementProviderFragment {
-        SettingsAutomationNodeProvider {
+        let provider: IRawElementProviderFragment = SettingsAutomationNodeProvider {
             state: self.state.clone(),
             node: id,
         }
-        .into()
+        .into();
+        let simple: IRawElementProviderSimple = provider.cast().expect("node simple provider");
+        install_node_vtables(&simple);
+        provider
+    }
+
+    fn pattern_provider_result(
+        &self,
+        patternid: UIA_PATTERN_ID,
+    ) -> windows::core::Result<Option<IUnknown>> {
+        let node = self.node()?;
+        let available = match patternid {
+            UIA_InvokePatternId => node_has_invoke(node.kind),
+            UIA_TogglePatternId => node.toggle.is_some(),
+            UIA_RangeValuePatternId => node.range.is_some(),
+            UIA_ValuePatternId => node_has_value(node.kind),
+            _ => false,
+        };
+        if !available {
+            return Ok(None);
+        }
+        self.self_simple().cast().map(Some)
+    }
+
+    fn host_raw_element_provider_result(
+        &self,
+    ) -> windows::core::Result<Option<IRawElementProviderSimple>> {
+        let _ = self.node()?;
+        Ok(None)
+    }
+
+    fn navigate_result(
+        &self,
+        direction: NavigateDirection,
+    ) -> windows::core::Result<Option<IRawElementProviderFragment>> {
+        let _ = self.node()?;
+        let snapshot = self.snapshot()?;
+        let index = self.node_index()?;
+        let next = match direction {
+            NavigateDirection_Parent => {
+                return self.automation()?.root_fragment().cast().map(Some);
+            }
+            NavigateDirection_NextSibling => snapshot.nodes.get(index + 1).map(|node| node.id),
+            NavigateDirection_PreviousSibling => index
+                .checked_sub(1)
+                .and_then(|index| snapshot.nodes.get(index))
+                .map(|node| node.id),
+            _ => None,
+        };
+        Ok(next.map(|id| self.child_fragment(id)))
     }
 }
 
@@ -1061,11 +1381,8 @@ impl IRawElementProviderSimple_Impl for SettingsAutomationRootProvider_Impl {
         Ok(ProviderOptions_ServerSideProvider | ProviderOptions_ProviderOwnsSetFocus)
     }
 
-    fn GetPatternProvider(
-        &self,
-        _patternid: windows::Win32::UI::Accessibility::UIA_PATTERN_ID,
-    ) -> windows::core::Result<IUnknown> {
-        Ok(null_interface())
+    fn GetPatternProvider(&self, patternid: UIA_PATTERN_ID) -> windows::core::Result<IUnknown> {
+        require_nullable_result(self.pattern_provider_result(patternid))
     }
 
     fn GetPropertyValue(
@@ -1085,13 +1402,7 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationRootProvider_Impl {
         &self,
         direction: NavigateDirection,
     ) -> windows::core::Result<IRawElementProviderFragment> {
-        let snapshot = self.snapshot()?;
-        let next = match direction {
-            NavigateDirection_FirstChild => snapshot.nodes.first().map(|node| node.id),
-            NavigateDirection_LastChild => snapshot.nodes.last().map(|node| node.id),
-            _ => None,
-        };
-        next.map_or_else(|| Ok(null_interface()), |id| self.child_fragment(id))
+        require_nullable_result(self.navigate_result(direction))
     }
 
     fn GetRuntimeId(&self) -> windows::core::Result<*mut SAFEARRAY> {
@@ -1128,29 +1439,11 @@ impl IRawElementProviderFragmentRoot_Impl for SettingsAutomationRootProvider_Imp
         x: f64,
         y: f64,
     ) -> windows::core::Result<IRawElementProviderFragment> {
-        let snapshot = self.snapshot()?;
-        if let Some(node) = snapshot
-            .nodes
-            .into_iter()
-            .find(|node| !node.offscreen && node.bounds.contains(x, y))
-        {
-            return self.child_fragment(node.id);
-        }
-        if snapshot.window.contains(x, y) {
-            Ok(self.to_interface())
-        } else {
-            Ok(null_interface())
-        }
+        require_nullable_result(self.element_provider_from_point_result(x, y))
     }
 
     fn GetFocus(&self) -> windows::core::Result<IRawElementProviderFragment> {
-        let snapshot = self.snapshot()?;
-        if snapshot.focus_owner != AutomationFocusOwner::Settings {
-            return Ok(null_interface());
-        }
-        snapshot
-            .focused
-            .map_or_else(|| Ok(self.to_interface()), |id| self.child_fragment(id))
+        require_nullable_result(self.focus_result())
     }
 }
 
@@ -1160,22 +1453,8 @@ impl IRawElementProviderSimple_Impl for SettingsAutomationNodeProvider_Impl {
         Ok(ProviderOptions_ServerSideProvider | ProviderOptions_ProviderOwnsSetFocus)
     }
 
-    fn GetPatternProvider(
-        &self,
-        patternid: windows::Win32::UI::Accessibility::UIA_PATTERN_ID,
-    ) -> windows::core::Result<IUnknown> {
-        let node = self.node()?;
-        let available = match patternid {
-            UIA_InvokePatternId => node_has_invoke(node.kind),
-            UIA_TogglePatternId => node.toggle.is_some(),
-            UIA_RangeValuePatternId => node.range.is_some(),
-            UIA_ValuePatternId => node_has_value(node.kind),
-            _ => false,
-        };
-        if !available {
-            return Ok(null_interface());
-        }
-        self.self_simple().cast()
+    fn GetPatternProvider(&self, patternid: UIA_PATTERN_ID) -> windows::core::Result<IUnknown> {
+        require_nullable_result(self.pattern_provider_result(patternid))
     }
 
     fn GetPropertyValue(
@@ -1187,8 +1466,7 @@ impl IRawElementProviderSimple_Impl for SettingsAutomationNodeProvider_Impl {
     }
 
     fn HostRawElementProvider(&self) -> windows::core::Result<IRawElementProviderSimple> {
-        let _ = self.node()?;
-        Ok(null_interface())
+        require_nullable_result(self.host_raw_element_provider_result())
     }
 }
 
@@ -1197,25 +1475,7 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationNodeProvider_Impl {
         &self,
         direction: NavigateDirection,
     ) -> windows::core::Result<IRawElementProviderFragment> {
-        let _ = self.node()?;
-        let snapshot = self.snapshot()?;
-        let index = self.node_index()?;
-        let next = match direction {
-            NavigateDirection_Parent => {
-                return Ok(self
-                    .automation()?
-                    .root_fragment()
-                    .cast()
-                    .expect("root fragment"));
-            }
-            NavigateDirection_NextSibling => snapshot.nodes.get(index + 1).map(|node| node.id),
-            NavigateDirection_PreviousSibling => index
-                .checked_sub(1)
-                .and_then(|index| snapshot.nodes.get(index))
-                .map(|node| node.id),
-            _ => None,
-        };
-        next.map_or_else(|| Ok(null_interface()), |id| Ok(self.child_fragment(id)))
+        require_nullable_result(self.navigate_result(direction))
     }
 
     fn GetRuntimeId(&self) -> windows::core::Result<*mut SAFEARRAY> {
@@ -1769,6 +2029,43 @@ mod tests {
 
         let child = automation.provider_for(ElementId::OverlayEnabled);
         assert_raw_null_host(&child);
+    }
+
+    #[test]
+    fn nullable_provider_abi_regression() {
+        let automation = published_automation_for(unsafe { GetDesktopWindow() });
+        let root_simple = automation.root_provider();
+        let root_fragment: IRawElementProviderFragment = root_simple.cast().expect("root fragment");
+        let root: IRawElementProviderFragmentRoot = root_simple.cast().expect("root fragment root");
+
+        // These assertions call the raw ABI directly. The output starts as a
+        // dangling sentinel and must be cleared to NULL without constructing
+        // or releasing a Rust Interface value.
+        assert_raw_null_pattern(&root_simple, UIA_InvokePatternId);
+        assert_raw_null_navigation(&root_fragment, NavigateDirection_Parent);
+        let child = automation.provider_for(ElementId::OverlayEnabled);
+        assert_raw_null_host(&child);
+        assert_raw_null_point(&root, -1.0, -1.0);
+        assert_raw_null_focus(&root);
+
+        let first = unsafe {
+            root_fragment
+                .Navigate(NavigateDirection_FirstChild)
+                .expect("supported Navigate")
+        };
+        assert!(!first.as_raw().is_null());
+        let host = unsafe {
+            root_simple
+                .HostRawElementProvider()
+                .expect("supported host provider")
+        };
+        assert!(!host.as_raw().is_null());
+        let supported = unsafe {
+            child
+                .GetPatternProvider(UIA_TogglePatternId)
+                .expect("supported Toggle pattern")
+        };
+        assert!(!supported.as_raw().is_null());
     }
 
     #[test]

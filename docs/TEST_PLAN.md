@@ -88,6 +88,10 @@ Automated coverage:
 - Direct provider HRESULT tests distinguish disabled (`UIA_E_ELEMENTNOTENABLED`), stale
   (`UIA_E_ELEMENTNOTAVAILABLE`), unsupported (`UIA_E_NOTSUPPORTED`), and invalid argument
   (`E_INVALIDARG`) paths without changing the live unsupported-property `VT_EMPTY` contract.
+- The `nullable_provider_abi_regression` test calls each successful-null COM
+  output path through its raw vtable and runs in both normal and release
+  profiles; hosted Windows CI runs the release-profile case in the x86_64
+  release-build job.
 
 Manual matrix:
 

@@ -21,6 +21,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   staged native picker activation after HWND registration.
 - Distinguished disabled, stale, unsupported, and invalid-argument provider
   operations using their dedicated UI Automation HRESULTs.
+- Replaced the unsound nullable `windows-rs` Interface construction in the
+  Settings UI Automation provider with raw ABI vtable overrides; optimized
+  nullable-boundary coverage now runs in both local and hosted release tests.
 
 ## [0.1.0] - 2026-08-24
 

@@ -158,6 +158,14 @@ children use `UiaAppendRuntimeId` plus a stable focus-order value, and only the 
 returns the Settings HWND host provider. Point queries return the logical child, root, or null
 according to screen-space hit testing.
 
+The windows-rs 0.62 implementation traits cannot represent a successful nullable interface:
+`IRawElementProvider*_*_Impl` methods return `Result<Interface>`, and generated success thunks
+transmute that non-null Rust interface representation into the ABI out-parameter. `Option<Interface>`
+support in `windows-core::OutParam` is for callers and does not change those server traits. The
+provider therefore installs narrow, copied vtable overrides for nullable methods. Each raw thunk
+initializes the native output pointer to NULL, writes a valid transferred COM pointer only for
+`Some`, and returns `S_OK` for `None`; no Rust interface value is ever constructed for NULL.
+
 
 Picker construction is staged: popup and LISTBOX HWNDs are configured hidden, registered in the
 Settings snapshot, and only then shown/foregrounded/focused. This makes the internal
