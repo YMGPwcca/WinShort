@@ -797,6 +797,26 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                 .toggle_foreground_audio
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
+            cycle_input_device: config
+                .hotkeys
+                .cycle_input_device
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            cycle_output_device: config
+                .hotkeys
+                .cycle_output_device
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            foreground_volume_up: config
+                .hotkeys
+                .foreground_volume_up
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            foreground_volume_down: config
+                .hotkeys
+                .foreground_volume_down
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
         },
         virtual_desktops: SafeVirtualDesktops {
             enabled: config.virtual_desktops.enabled,
@@ -862,6 +882,10 @@ struct SafeHotkeys {
     toggle_microphone: String,
     toggle_output: String,
     toggle_foreground_audio: String,
+    cycle_input_device: String,
+    cycle_output_device: String,
+    foreground_volume_up: String,
+    foreground_volume_down: String,
 }
 
 #[derive(Debug, Serialize)]

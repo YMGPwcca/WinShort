@@ -1,4 +1,5 @@
-//! Foreground application session enumeration and aggregate mute semantics.
+//! Foreground application session enumeration, aggregate mute semantics, and
+//! fixed-step volume adjustment.
 
 use windows::core::{Interface, GUID};
 use windows::Win32::Media::Audio::{
@@ -7,11 +8,67 @@ use windows::Win32::Media::Audio::{
 
 use crate::audio::controller::EndpointFlow;
 use crate::audio::devices::{data_flow, resolve_device};
-use crate::audio::state::{Aggregate, AppAudioState};
+use crate::audio::state::{Aggregate, AppAudioState, AppVolumeState};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
 const SESSION_EVENT_CONTEXT: GUID = GUID::from_u128(0x78ab818c_7b20_4737_aa73_c92ad4a879bf);
+
+pub const FOREGROUND_VOLUME_STEP: f32 = 0.05;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeAdjustment {
+    Up,
+    Down,
+}
+
+pub fn adjusted_volume(current: f32, adjustment: VolumeAdjustment) -> f32 {
+    let delta = match adjustment {
+        VolumeAdjustment::Up => FOREGROUND_VOLUME_STEP,
+        VolumeAdjustment::Down => -FOREGROUND_VOLUME_STEP,
+    };
+    (current + delta).clamp(0.0, 1.0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeSample {
+    pub volume_pct: Option<u8>,
+    pub error: Option<String>,
+}
+
+/// Reduce re-read session values without inventing an average for a range.
+pub fn reduce_volume_samples(
+    app_name: Option<String>,
+    session_count: usize,
+    samples: &[VolumeSample],
+) -> AppVolumeState {
+    if session_count == 0 {
+        return AppVolumeState::no_session(app_name);
+    }
+    let mut values: Vec<u8> = Vec::new();
+    let mut errors = Vec::new();
+    for sample in samples {
+        if let Some(value) = sample.volume_pct {
+            values.push(value);
+        }
+        if let Some(error) = &sample.error {
+            errors.push(error.clone());
+        }
+    }
+    values.sort_unstable();
+    let error = if errors.is_empty() {
+        None
+    } else {
+        Some(errors.join("; "))
+    };
+    AppVolumeState {
+        app_name,
+        sessions: session_count,
+        min_volume_pct: values.first().copied(),
+        max_volume_pct: values.last().copied(),
+        error,
+    }
+}
 
 /// Toggle every render session owned by the foreground process together
 /// (#18): exact-PID match on the configured endpoint first, then a sweep of
@@ -38,6 +95,35 @@ pub fn toggle_foreground(
                 continue;
             }
             other => other,
+        };
+    }
+}
+
+/// Adjust every render session resolved for the foreground application by a
+/// fixed five percentage points, then report only re-read values.
+pub fn adjust_foreground_volume(
+    enumerator: &IMMDeviceEnumerator,
+    config: &Config,
+    pid: Option<u32>,
+    adjustment: VolumeAdjustment,
+) -> Result<AppVolumeState> {
+    let Some(pid) = pid.filter(|pid| *pid != 0) else {
+        return Ok(AppVolumeState::no_external());
+    };
+    let app_name = crate::platform::foreground::process_name(pid);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let outcome = adjust_volume_once(enumerator, config, pid, &app_name, adjustment);
+        return match outcome {
+            Err(e) if attempt == 1 && Error::is_audio_invalidation(&e) => {
+                crate::warn_!(
+                    "audio endpoint invalidated during foreground volume adjustment; retrying once"
+                );
+                continue;
+            }
+            Err(e) => Ok(AppVolumeState::error(app_name.clone(), e.to_string())),
+            Ok(state) => Ok(state),
         };
     }
 }
@@ -163,6 +249,78 @@ fn toggle_once(
         sessions: sessions.len(),
         error: None,
     })
+}
+
+fn adjust_volume_once(
+    enumerator: &IMMDeviceEnumerator,
+    config: &Config,
+    pid: u32,
+    app_name: &Option<String>,
+    adjustment: VolumeAdjustment,
+) -> Result<AppVolumeState> {
+    let sessions = match resolve_sessions(enumerator, config, pid, app_name)? {
+        Resolved::Sessions(sessions) => sessions,
+        Resolved::Ambiguous {
+            stem,
+            ref processes,
+        } => {
+            crate::warn_!(
+                "foreground volume ambiguous ({stem:?}, {} installations): no session changed",
+                processes.len()
+            );
+            return Ok(AppVolumeState::error(
+                app_name.clone(),
+                format!(
+                    "ambiguous audio target `{stem}`: {} matching installations",
+                    processes.len()
+                ),
+            ));
+        }
+    };
+    if sessions.is_empty() {
+        return Ok(AppVolumeState::no_session(app_name.clone()));
+    }
+
+    let mut failures = Vec::new();
+    for (volume, _) in &sessions {
+        match unsafe { volume.GetMasterVolume() } {
+            Ok(current) => {
+                let target = adjusted_volume(current, adjustment);
+                if let Err(error) =
+                    unsafe { volume.SetMasterVolume(target, &SESSION_EVENT_CONTEXT) }
+                {
+                    failures.push(format!("SetMasterVolume failed: {error}"));
+                }
+            }
+            Err(error) => failures.push(format!("GetMasterVolume failed: {error}")),
+        }
+    }
+
+    let samples: Vec<VolumeSample> = sessions
+        .iter()
+        .map(|(volume, _)| match unsafe { volume.GetMasterVolume() } {
+            Ok(value) => VolumeSample {
+                volume_pct: Some((value.clamp(0.0, 1.0) * 100.0).round() as u8),
+                error: None,
+            },
+            Err(error) => VolumeSample {
+                volume_pct: None,
+                error: Some(format!("re-read volume failed: {error}")),
+            },
+        })
+        .collect();
+    let mut state = reduce_volume_samples(app_name.clone(), sessions.len(), &samples);
+    if !failures.is_empty() {
+        let failure_text = failures.join("; ");
+        state.error = Some(match state.error.take() {
+            Some(existing) => format!("{existing}; {failure_text}"),
+            None => failure_text,
+        });
+    }
+    if let Some(error) = &state.error {
+        crate::warn_!("foreground volume adjustment partially failed: {error}");
+    }
+    Ok(state)
 }
 
 fn state_from_mutes(
@@ -568,6 +726,61 @@ mod tests {
         let state = AppAudioState::no_external();
         assert_eq!(state.aggregate, Aggregate::NoExternalApp);
         assert_eq!(state.sessions, 0);
+    }
+    #[test]
+    fn no_external_volume_state_is_distinct_from_no_session() {
+        let no_external = AppVolumeState::no_external();
+        assert!(no_external.app_name.is_none());
+        assert_eq!(no_external.sessions, 0);
+        let no_session = AppVolumeState::no_session(Some("Player".into()));
+        assert_eq!(no_session.app_name.as_deref(), Some("Player"));
+        assert_eq!(no_session.error, None);
+    }
+    #[test]
+    fn volume_adjustment_uses_fixed_step_and_clamps() {
+        assert!((adjusted_volume(0.60, VolumeAdjustment::Up) - 0.65).abs() < f32::EPSILON);
+        assert!((adjusted_volume(0.60, VolumeAdjustment::Down) - 0.55).abs() < f32::EPSILON);
+        assert_eq!(adjusted_volume(0.99, VolumeAdjustment::Up), 1.0);
+        assert_eq!(adjusted_volume(0.01, VolumeAdjustment::Down), 0.0);
+        assert_eq!(adjusted_volume(1.0, VolumeAdjustment::Up), 1.0);
+        assert_eq!(adjusted_volume(0.0, VolumeAdjustment::Down), 0.0);
+    }
+
+    #[test]
+    fn volume_reduction_preserves_ranges_and_partial_errors() {
+        let state = reduce_volume_samples(
+            Some("Player".into()),
+            3,
+            &[
+                VolumeSample {
+                    volume_pct: Some(45),
+                    error: None,
+                },
+                VolumeSample {
+                    volume_pct: Some(70),
+                    error: None,
+                },
+                VolumeSample {
+                    volume_pct: None,
+                    error: Some("session disappeared".into()),
+                },
+            ],
+        );
+        assert_eq!(state.min_volume_pct, Some(45));
+        assert_eq!(state.max_volume_pct, Some(70));
+        assert_eq!(state.sessions, 3);
+        assert!(state
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("disappeared")));
+    }
+
+    #[test]
+    fn volume_reduction_distinguishes_empty_sessions() {
+        let state = reduce_volume_samples(Some("Player".into()), 0, &[]);
+        assert_eq!(state.min_volume_pct, None);
+        assert_eq!(state.max_volume_pct, None);
+        assert_eq!(state.error, None);
     }
 }
 

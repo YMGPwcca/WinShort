@@ -495,7 +495,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
         };
     }
     // Lock-free snapshot read (#10): the table is rebuilt by ConfigHandle on
-    // Save; the callback only loads it. No RwLock, no HashMap rebuild here.
+    // every main-thread config commit; the callback only loads it. No RwLock,
+    // no HashMap rebuild here.
     let table_guard = state.config.bindings();
     let table: &BindingTable = if state.suspended.load(Ordering::Acquire) {
         &state.suspended_bindings
@@ -528,14 +529,40 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
 pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
     let mut table = BindingTable::default();
-    if let Some(hotkey) = config.hotkeys.toggle_microphone {
-        table.insert(hotkey, HotkeyAction::ToggleMicrophone);
-    }
-    if let Some(hotkey) = config.hotkeys.toggle_output {
-        table.insert(hotkey, HotkeyAction::ToggleOutput);
-    }
-    if let Some(hotkey) = config.hotkeys.toggle_foreground_audio {
-        table.insert(hotkey, HotkeyAction::ToggleForegroundAppAudio);
+    let configured = [
+        (
+            config.hotkeys.toggle_microphone,
+            HotkeyAction::ToggleMicrophone,
+        ),
+        (config.hotkeys.toggle_output, HotkeyAction::ToggleOutput),
+        (
+            config.hotkeys.toggle_foreground_audio,
+            HotkeyAction::ToggleForegroundAppAudio,
+        ),
+        (
+            config.hotkeys.cycle_input_device,
+            HotkeyAction::CycleInputDevice,
+        ),
+        (
+            config.hotkeys.cycle_output_device,
+            HotkeyAction::CycleOutputDevice,
+        ),
+        (
+            config.hotkeys.foreground_volume_up,
+            HotkeyAction::ForegroundVolumeUp,
+        ),
+        (
+            config.hotkeys.foreground_volume_down,
+            HotkeyAction::ForegroundVolumeDown,
+        ),
+    ];
+    for (hotkey, action) in configured
+        .into_iter()
+        .filter_map(|(hotkey, action)| hotkey.map(|hotkey| (hotkey, action)))
+    {
+        if !table.insert(hotkey, action) {
+            crate::warn_!("duplicate hotkey binding ignored: {hotkey}");
+        }
     }
     // Reserved Win+1..9 desktop shortcuts: insert only into vacant slots.
     // A user hotkey occupying the same (mods, key) keeps priority; validate()
@@ -583,6 +610,31 @@ mod tests {
             table.lookup(ModifierMask::WIN, VirtualKey(b'9' as u16)),
             Some(HotkeyAction::SwitchDesktop(8))
         );
+    }
+
+    #[test]
+    fn assigned_phase_one_bindings_resolve_without_changing_defaults() {
+        let mut config = crate::config::Config::default();
+        config.hotkeys.cycle_input_device = Some(Hotkey::parse("Ctrl+Alt+F13").unwrap());
+        config.hotkeys.cycle_output_device = Some(Hotkey::parse("Ctrl+Alt+F14").unwrap());
+        config.hotkeys.foreground_volume_up = Some(Hotkey::parse("Ctrl+Alt+F15").unwrap());
+        config.hotkeys.foreground_volume_down = Some(Hotkey::parse("Ctrl+Alt+F16").unwrap());
+        let table = build_bindings(&config);
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x7C)
+            ),
+            Some(HotkeyAction::CycleInputDevice)
+        );
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x7F)
+            ),
+            Some(HotkeyAction::ForegroundVolumeDown)
+        );
+        assert_eq!(build_bindings(&crate::config::Config::default()).len(), 12);
     }
 
     fn test_hook_state() -> HookState {

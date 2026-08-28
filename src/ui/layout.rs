@@ -60,6 +60,10 @@ pub enum ElementId {
     MicHotkey,
     OutputHotkey,
     ForegroundHotkey,
+    CycleInputHotkey,
+    CycleOutputHotkey,
+    ForegroundVolumeUpHotkey,
+    ForegroundVolumeDownHotkey,
     InputDevice,
     OutputDevice,
     DebugLogging,
@@ -84,12 +88,16 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 25] = [
+    pub const FOCUS_ORDER: [ElementId; 29] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
         ElementId::OutputHotkey,
         ElementId::ForegroundHotkey,
+        ElementId::CycleInputHotkey,
+        ElementId::CycleOutputHotkey,
+        ElementId::ForegroundVolumeUpHotkey,
+        ElementId::ForegroundVolumeDownHotkey,
         ElementId::InputDevice,
         ElementId::OutputDevice,
         ElementId::InputRole,
@@ -218,6 +226,30 @@ impl SettingsLayout {
                     ElementKind::Hotkey,
                     "Current app",
                     "Mute all sessions owned by the foreground app",
+                ),
+                row(
+                    ElementId::CycleInputHotkey,
+                    ElementKind::Hotkey,
+                    "Cycle input device",
+                    "Switch WinShort to the next input endpoint",
+                ),
+                row(
+                    ElementId::CycleOutputHotkey,
+                    ElementKind::Hotkey,
+                    "Cycle output device",
+                    "Switch WinShort to the next output endpoint",
+                ),
+                row(
+                    ElementId::ForegroundVolumeUpHotkey,
+                    ElementKind::Hotkey,
+                    "App volume up",
+                    "Raise foreground app volume by 5%",
+                ),
+                row(
+                    ElementId::ForegroundVolumeDownHotkey,
+                    ElementKind::Hotkey,
+                    "App volume down",
+                    "Lower foreground app volume by 5%",
                 ),
             ],
         );

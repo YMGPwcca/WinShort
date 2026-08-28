@@ -58,24 +58,26 @@ Strongly typed (`src/event.rs`). Two transports:
   mpsc command channels (`AudioCommand`, `DesktopCommand`). No string events anywhere.
 
 ```rust
-enum AppEvent { ToggleMicrophone, ToggleOutput, ToggleForegroundAppAudio, SwitchDesktop(u8),
+enum AppEvent {
+  DeviceCycleResolved(DeviceCycleResult), ForegroundVolumeChanged(AppVolumeState),
   MicrophoneStateChanged(AudioState), OutputStateChanged(OutputState),
   ForegroundAudioChanged(AppAudioState), DesktopBackendChanged(BackendStatus),
-  ConfigApplied(u64), ShowSettings, Exit, ... }
+  ConfigApplied { seq: u64, origin: ConfigCommitOrigin }, ShowSettings, ...
+}
 ```
 
 ## State separation
 
 | Layer | Type | Mutability |
 |---|---|---|
-| Desired config | `ConfigHandle`: `RwLock<Arc<Config>>` value + `revision: AtomicU64` | replaced atomically on Save |
-| Hotkey bindings | `arc_swap::ArcSwap<BindingTable>` inside `ConfigHandle` | swapped on Save; wait-free reads in the hook |
+| Desired config | `ConfigHandle`: `RwLock<Arc<Config>>` value + `revision: AtomicU64` | replaced atomically after every successful main-thread commit |
 | Runtime state | suspended flag, overlay model, foreground pid slot, desktop status | event-driven updates |
 | Observed Windows state | audio endpoint states, desktop backend status | owned by worker threads, published as events |
 | UI draft | `Config` clone inside settings window | user edits only |
 
-Saving rebuilds the `BindingTable` and swaps the `ArcSwap` pointer; the hook is never
-reinstalled for config changes. Suspension selects a shared empty table.
+Each successful main-thread config commit persists atomically, rebuilds the `BindingTable`, swaps
+the `ArcSwap` pointer, and sends one typed `ConfigApplied` event; the hook is never reinstalled.
+Suspension selects a shared empty table.
 
 ## Diagnostics & support
 

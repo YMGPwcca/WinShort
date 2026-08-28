@@ -3,7 +3,8 @@
 //! Pure logic — no `windows` imports — so the engine is testable anywhere.
 //! Raw strings exist only at the parse/display boundary.
 
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
+
 use std::fmt;
 
 use crate::event::HotkeyAction;
@@ -290,8 +291,14 @@ pub struct BindingTable {
 }
 
 impl BindingTable {
-    pub fn insert(&mut self, hk: Hotkey, action: HotkeyAction) {
-        self.map.insert((hk.modifiers, hk.key), action);
+    pub fn insert(&mut self, hk: Hotkey, action: HotkeyAction) -> bool {
+        match self.map.entry((hk.modifiers, hk.key)) {
+            Entry::Vacant(entry) => {
+                entry.insert(action);
+                true
+            }
+            Entry::Occupied(_) => false,
+        }
     }
 
     pub fn lookup(&self, mods: ModifierMask, key: VirtualKey) -> Option<HotkeyAction> {
@@ -418,5 +425,16 @@ mod tests {
         assert_ne!(VirtualKey::parse("Numpad3"), VirtualKey::parse("3"));
         assert_eq!(VirtualKey(0x63).name(), "Numpad3");
         assert_eq!(VirtualKey(0x33).name(), "3");
+    }
+    #[test]
+    fn duplicate_binding_does_not_replace_existing_action() {
+        let hotkey = Hotkey::parse("Ctrl+Alt+F13").unwrap();
+        let mut table = BindingTable::default();
+        assert!(table.insert(hotkey, HotkeyAction::ToggleOutput));
+        assert!(!table.insert(hotkey, HotkeyAction::CycleInputDevice));
+        assert_eq!(
+            table.lookup(hotkey.modifiers, hotkey.key),
+            Some(HotkeyAction::ToggleOutput)
+        );
     }
 }

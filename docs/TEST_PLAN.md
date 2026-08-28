@@ -155,20 +155,24 @@ parse; canonical display ordering; numpad distinct from top row (#11).
 
 ## C. Config (AUTOMATED IN CI + PROPERTY TEST)
 
-defaults load when file missing; corrupt file → defaults + warning; validation violations and
+defaults load when file missing; corrupt file → defaults + warning; schema v2 → v3 migration
+preserves existing values and leaves the four new hotkeys unassigned; validation violations and
 repair idempotence (`config_props.rs`: endpoint-ID round-trips over generated opaque IDs,
 boundary repair idempotence); future-schema read-only latch (deterministic + arbitrary TOML
 fuzz strategy proving latched configs never enable writes); atomic save leaves no temp residue;
-round-trip serialize→parse equality; unknown-field warnings.
+round-trip serialize→parse equality; unknown-field warnings; failed persistence never publishes a
+new `ConfigHandle` snapshot and successful persistence increments its revision once.
 
 ## D. Audio matrix (MANUAL / HARDWARE-DEPENDENT)
 
 mute/unmute default mic · change default mic while running · disconnect mic (state event, no
 crash) · output device switch (overlay "Output changed") · external volume change arrives via
-callback (own events filtered) · foreground app mute · app without audio ("no audio session")
-· multi-session app (aggregate Mixed→mute-all) · app exits mid-enumeration · audio service
-restart (`net stop audiosrv`) → endpoints rebuild · same-basename different installations
-(ambiguous refusal) · same-full-path independent instances (accepted limitation).
+callback (own events filtered) · foreground app mute · foreground app volume ±5% with clamping ·
+app without audio ("no audio session") · multi-session app (aggregate Mixed→mute-all) · app exits
+mid-enumeration · audio service restart (`net stop audiosrv`) → endpoints rebuild · same-basename
+different installations (ambiguous refusal) · same-full-path independent instances (accepted
+limitation) · configured input/output cycle ring (Default → active endpoints → Default), including
+unavailable endpoint recovery and duplicate friendly names.
 
 Policy-level properties run in CI: resolver ladder grouping invariants (#37).
 
@@ -243,6 +247,9 @@ fuzz campaign is claimed or running.
 - Multi-session foreground app (browser with media)
 - Same-basename different installations (#46 ambiguous case)
 - Same-full-path independent instances (accepted limitation)
+- Configured input/output cycle hotkeys change WinShort's target, not the Windows default
+- Foreground volume up/down changes only matched application sessions by 5 percentage points
+- Long multi-session volume values show an exact percentage or truthful min–max range
 
 ### Virtual desktop
 - Win+1..9 target changes (registry CurrentVirtualDesktop verification)

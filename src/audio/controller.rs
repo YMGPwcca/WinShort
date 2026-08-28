@@ -11,7 +11,10 @@ use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
 use crate::audio::devices::EndpointBinding;
 use crate::audio::notifications::DeviceNotificationClient;
-use crate::audio::state::{AudioRuntimeSnapshot, AudioState, OutputState};
+use crate::audio::state::{
+    AppVolumeState, AudioRuntimeSnapshot, AudioState, DeviceCycleFlow, DeviceCycleResult,
+    OutputState,
+};
 use crate::config::ConfigHandle;
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
@@ -30,9 +33,20 @@ pub enum AudioCommand {
         pid: Option<u32>,
         request_id: u64,
     },
+    CycleDevice {
+        flow: DeviceCycleFlow,
+        request_id: u64,
+    },
+    AdjustForegroundVolume {
+        pid: Option<u32>,
+        adjustment: crate::audio::sessions::VolumeAdjustment,
+        request_id: u64,
+    },
     RefreshEndpoint(EndpointFlow),
     RefreshAll,
-    ConfigChanged,
+    ConfigChanged {
+        origin: crate::event::ConfigCommitOrigin,
+    },
     /// Live read-only foreground resolver for Show Status (#18).
     QueryForeground {
         pid: Option<u32>,
@@ -169,18 +183,23 @@ impl AudioController {
             capture_error: None,
             render_error: None,
         };
-        controller.rebuild_all(true);
+        controller.rebuild_all(true, crate::event::AudioEventOrigin::Initial);
         Ok(controller)
     }
 
     fn handle(&mut self, command: AudioCommand) -> bool {
         match command {
             // ConfigChanged carries the revision bump with it — rebuild here
-            // and consume the revision so one Save triggers exactly ONE
-            // rebuild (#17a).
-            AudioCommand::ConfigChanged => {
-                self.config_revision = self.config.revision();
-                self.rebuild_all(false);
+            // and consume the revision so one Save/device cycle triggers
+            // exactly ONE rebuild (#17a).
+            AudioCommand::ConfigChanged { origin } => {
+                let revision = self.config.revision();
+                if revision != self.config_revision {
+                    self.config_revision = revision;
+                    self.rebuild_all(false, config_event_origin(origin));
+                } else {
+                    crate::log_debug!("config change already consumed at revision {revision}");
+                }
             }
             other => return self.handle_other(other),
         }
@@ -213,6 +232,28 @@ impl AudioController {
                     origin: crate::event::AudioEventOrigin::WinShortAction(request_id),
                 });
             }
+            AudioCommand::CycleDevice { flow, request_id } => {
+                let result = self.cycle_device(flow);
+                self.post(AppEvent::DeviceCycleResolved { request_id, result });
+            }
+            AudioCommand::AdjustForegroundVolume {
+                pid,
+                adjustment,
+                request_id,
+            } => {
+                let config = self.config.get();
+                let state = crate::audio::sessions::adjust_foreground_volume(
+                    &self.enumerator,
+                    &config,
+                    pid,
+                    adjustment,
+                )
+                .unwrap_or_else(|error| AppVolumeState::error(None, error.to_string()));
+                self.post(AppEvent::ForegroundVolumeChanged {
+                    state,
+                    origin: crate::event::AudioEventOrigin::WinShortAction(request_id),
+                });
+            }
             AudioCommand::RefreshEndpoint(flow) => {
                 crate::log_debug!("audio {:?} endpoint notification", flow);
                 self.publish(flow, crate::event::AudioEventOrigin::External);
@@ -234,21 +275,38 @@ impl AudioController {
                     origin: crate::event::AudioEventOrigin::StatusRequest(request_id),
                 });
             }
-            AudioCommand::RefreshAll => self.rebuild_all(false),
-            AudioCommand::ConfigChanged => {}
+            AudioCommand::RefreshAll => {
+                self.rebuild_all(false, crate::event::AudioEventOrigin::External)
+            }
+            AudioCommand::ConfigChanged { .. } => {}
             AudioCommand::Shutdown => return false,
         }
         true
     }
+
+    fn cycle_device(&self, flow: DeviceCycleFlow) -> DeviceCycleResult {
+        let config = self.config.get();
+        let previous = match flow {
+            DeviceCycleFlow::Input => config.audio.input_device.clone(),
+            DeviceCycleFlow::Output => config.audio.output_device.clone(),
+        };
+        let devices = self.devices.read().expect("audio device list");
+        let active = match flow {
+            DeviceCycleFlow::Input => &devices.inputs,
+            DeviceCycleFlow::Output => &devices.outputs,
+        };
+        crate::audio::devices::device_cycle_result(flow, &previous, active)
+    }
+
     fn refresh_config_if_needed(&mut self) {
         let revision = self.config.revision();
         if revision != self.config_revision {
             self.config_revision = revision;
-            self.rebuild_all(false);
+            self.rebuild_all(false, crate::event::AudioEventOrigin::External);
         }
     }
 
-    fn rebuild_all(&mut self, startup: bool) {
+    fn rebuild_all(&mut self, startup: bool, origin: crate::event::AudioEventOrigin) {
         let old_render = self.render.as_ref().map(|e| e.identity.clone());
         self.rebuild(EndpointFlow::Capture);
         self.rebuild(EndpointFlow::Render);
@@ -268,17 +326,14 @@ impl AudioController {
             if let (Some(old), Some(new)) =
                 (old_render, self.render.as_ref().map(|e| e.identity.clone()))
             {
-                if old.endpoint != new.endpoint {
+                if matches!(origin, crate::event::AudioEventOrigin::External)
+                    && old.endpoint != new.endpoint
+                {
                     self.post(AppEvent::DefaultOutputChanged(new));
                 }
             }
             self.post(AppEvent::DevicesChanged);
         }
-        let origin = if startup {
-            crate::event::AudioEventOrigin::Initial
-        } else {
-            crate::event::AudioEventOrigin::External
-        };
         self.publish(EndpointFlow::Capture, origin);
         self.publish(EndpointFlow::Render, origin);
     }
@@ -405,6 +460,17 @@ impl AudioController {
     }
 }
 
+/// Keep existing Settings-save notifications compatible while suppressing
+/// state-card duplicates for device-cycle actions.
+fn config_event_origin(origin: crate::event::ConfigCommitOrigin) -> crate::event::AudioEventOrigin {
+    match origin {
+        crate::event::ConfigCommitOrigin::Settings => crate::event::AudioEventOrigin::External,
+        crate::event::ConfigCommitOrigin::DeviceCycle => {
+            crate::event::AudioEventOrigin::Config(origin)
+        }
+    }
+}
+
 fn audio_thread(
     hwnd_raw: isize,
     config: Arc<ConfigHandle>,
@@ -448,7 +514,7 @@ fn audio_thread(
         while let Ok(next) = receiver.try_recv() {
             backlog.push(next);
         }
-        let (needs_rebuild, rest) = coalesce_backlog(backlog);
+        let (rebuild_origin, rest) = coalesce_backlog(backlog);
         let mut stop = false;
         for pending in rest {
             // Shutdown terminates the worker like a direct handle() call.
@@ -460,8 +526,8 @@ fn audio_thread(
         if stop {
             break;
         }
-        if needs_rebuild {
-            controller.rebuild_all(false);
+        if let Some(origin) = rebuild_origin {
+            controller.rebuild_all(false, origin);
         }
     }
     controller.shutdown();
@@ -471,17 +537,27 @@ fn audio_thread(
 
 /// Collapse a command backlog (#19): any number of refresh-style commands
 /// becomes a single rebuild request; all other commands pass through in
-/// order.
-fn coalesce_backlog(backlog: Vec<AudioCommand>) -> (bool, Vec<AudioCommand>) {
-    let mut needs_rebuild = false;
+/// order. A device-cycle config origin wins over a concurrent external
+/// refresh so user-triggered changes do not produce duplicate state overlays.
+fn coalesce_backlog(
+    backlog: Vec<AudioCommand>,
+) -> (Option<crate::event::AudioEventOrigin>, Vec<AudioCommand>) {
+    let mut rebuild_origin = None;
     let mut rest = Vec::new();
     for cmd in backlog {
         match cmd {
-            AudioCommand::RefreshAll | AudioCommand::ConfigChanged => needs_rebuild = true,
+            AudioCommand::RefreshAll => {
+                if rebuild_origin.is_none() {
+                    rebuild_origin = Some(crate::event::AudioEventOrigin::External);
+                }
+            }
+            AudioCommand::ConfigChanged { origin } => {
+                rebuild_origin = Some(config_event_origin(origin));
+            }
             other => rest.push(other),
         }
     }
-    (needs_rebuild, rest)
+    (rebuild_origin, rest)
 }
 
 #[cfg(test)]
@@ -497,11 +573,13 @@ mod tests {
             AudioCommand::RefreshAll,
             AudioCommand::ToggleOutput(1),
             AudioCommand::RefreshAll,
-            AudioCommand::ConfigChanged,
+            AudioCommand::ConfigChanged {
+                origin: crate::event::ConfigCommitOrigin::Settings,
+            },
             AudioCommand::Shutdown,
         ];
         let (rebuild, rest) = coalesce_backlog(backlog);
-        assert!(rebuild, "burst requires exactly one rebuild");
+        assert_eq!(rebuild, Some(crate::event::AudioEventOrigin::External));
         assert_eq!(
             rest,
             vec![
@@ -515,6 +593,22 @@ mod tests {
 
     #[test]
     fn empty_backlog_needs_no_rebuild() {
-        assert!(!coalesce_backlog(Vec::new()).0);
+        assert!(coalesce_backlog(Vec::new()).0.is_none());
+    }
+    #[test]
+    fn device_cycle_origin_suppresses_concurrent_external_refresh() {
+        let (origin, rest) = coalesce_backlog(vec![
+            AudioCommand::RefreshAll,
+            AudioCommand::ConfigChanged {
+                origin: crate::event::ConfigCommitOrigin::DeviceCycle,
+            },
+        ]);
+        assert_eq!(
+            origin,
+            Some(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
+        );
+        assert!(rest.is_empty());
     }
 }

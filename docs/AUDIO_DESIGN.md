@@ -1,7 +1,8 @@
 # Audio Design
 
-**Status: Implemented** (endpoints, notifications, foreground resolver ladder, aggregate
-semantics). Known limitations listed at the end are accepted behavior, not gaps.
+**Status: Implemented** (endpoints, notifications, configured device cycling,
+foreground resolver, mute, and volume semantics). Known limitations listed at
+the end are accepted behavior, not gaps.
 
 All Core Audio work lives on one MTA worker thread (`winshort-audio`, `audio/controller.rs`).
 The main thread never touches COM audio interfaces; it talks via an mpsc `AudioCommand`
@@ -24,6 +25,17 @@ IMMDeviceEnumerator (CoCreateInstance MMDeviceEnumerator)
   unregister old callbacks → drop old interfaces → create new → register callbacks → publish
   state. Device enumeration failures degrade per-flow with warnings surfaced in Settings (#36),
   never aborting the whole subsystem.
+
+## Configured device cycling
+
+Phase-1 cycle hotkeys change only `Config.audio.input_device` or
+`Config.audio.output_device`; they never change the Windows system default
+endpoint. The audio worker plans the ring `Default → active endpoint list →
+Default` using opaque endpoint IDs. The plan is returned as a typed event, and
+the main thread performs validation, atomic persistence, `ConfigHandle`
+publication, and the dependent rebuild notification. Unavailable selections
+recover to `Default`; an empty list leaves an already-default selection
+unchanged and reports no active devices.
 
 ## Notifications (no polling)
 
@@ -56,6 +68,17 @@ Executed on the audio worker when the foreground action fires
 
 Aggregate semantics (`audio/state.rs::Aggregate`): `NoSession`, `AllMuted`, `AllActive`,
 `Mixed`, `NoExternalApp`, `Error` (operational failure — never masked as NoSession, #17d).
+
+### Foreground-app volume adjustment
+
+The Phase-1 volume actions reuse the same foreground session resolution ladder
+as mute toggling. Each matched `ISimpleAudioVolume` is read, adjusted by
+`±0.05`, clamped to `[0, 1]`, written with the existing session event context,
+and read again. `SetMute` is never called. Published `AppVolumeState` retains
+the number of matched sessions, the minimum and maximum successfully re-read
+percentages, and any partial-operation error; it never presents an average for
+different session levels.
+
 
 ### Session resolution ladder (#46/#18)
 

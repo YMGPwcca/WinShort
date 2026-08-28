@@ -21,7 +21,7 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
                     // Versionless documents deserialize as the legacy v1
-                    // baseline; newly serialized documents always include v2.
+                    // baseline; newly serialized documents always include v3.
                     let parsed_schema = toml.schema_version;
                     if parsed_schema > CURRENT_SCHEMA_VERSION {
                         let msg = format!(
@@ -57,8 +57,13 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     }
                     let mut migrations = Vec::new();
                     if parsed_schema < CURRENT_SCHEMA_VERSION {
+                        let detail = match parsed_schema {
+                            1 => "v2 overlay defaults and v3 hotkey fields defaulted unassigned",
+                            2 => "v3 hotkey fields defaulted unassigned",
+                            _ => "newer fields defaulted",
+                        };
                         migrations.push(format!(
-                            "schema v{parsed_schema} migrated to v{CURRENT_SCHEMA_VERSION}: missing overlay appearance/external audio policy use v2 defaults"
+                            "schema v{parsed_schema} migrated to v{CURRENT_SCHEMA_VERSION}: {detail}"
                         ));
                     }
                     if text.to_ascii_lowercase().contains("monitor = \"index:") {
@@ -214,6 +219,39 @@ mod tests {
     }
 
     #[test]
+    fn schema_v2_defaults_new_hotkeys_and_records_v3_migration() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_schema_v2_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            "schema_version = 2\n[general]\nstart_hotkeys_enabled = false\n[hotkeys]\ntoggle_microphone = \"Ctrl+Alt+F1\"\ntoggle_output = \"Ctrl+Alt+F2\"\ntoggle_foreground_audio = \"Ctrl+Alt+F3\"\n",
+        )
+        .unwrap();
+
+        let (cfg, warnings) = load(&dir);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!cfg.general.start_hotkeys_enabled);
+        assert_eq!(
+            cfg.hotkeys.toggle_microphone,
+            Some(crate::keyboard::binding::Hotkey::parse("Ctrl+Alt+F1").unwrap())
+        );
+        assert!(cfg.hotkeys.cycle_input_device.is_none());
+        assert!(cfg.hotkeys.cycle_output_device.is_none());
+        assert!(cfg.hotkeys.foreground_volume_up.is_none());
+        assert!(cfg.hotkeys.foreground_volume_down.is_none());
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.source_schema_version, Some(2));
+        assert!(diagnostics
+            .migrations
+            .iter()
+            .any(|value| value.contains("schema v2 migrated") && value.contains("v3")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn versionless_document_is_legacy_v1_with_current_effective_schema() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
@@ -276,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_migrated_config_updates_diagnostics_to_v2() {
+    fn saving_migrated_config_updates_diagnostics_to_v3() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_save_{}", std::process::id()));

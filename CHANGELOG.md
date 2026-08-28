@@ -33,6 +33,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
   the dropdown chevron area; the applied footer uses generic "Changes applied"
   status copy.
 
+### Added
+
+- Four optional Phase-1 hotkeys: cycle WinShort's configured input/output
+  targets and adjust foreground application session volume by ±5%.
+- Schema v3 persistence migrates v2 configurations without assigning new
+  global shortcuts; cycle changes persist atomically and hot-reload bindings
+  without reinstalling the keyboard hook.
+
 ## [0.1.0] - 2026-08-24
 
 Initial release.

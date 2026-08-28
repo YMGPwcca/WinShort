@@ -9,7 +9,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 No backup copies are kept.
 
 ```toml
-schema_version = 2              # u8; CURRENT value is 2 (v1 files migrate on load)
+schema_version = 3              # u8; CURRENT value is 3 (v1/v2 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -31,6 +31,14 @@ output_role = "console"
 input_device = "default"        # "default" or an opaque endpoint ID string (#7)
 output_device = "default"
 
+[hotkeys]
+toggle_microphone = "Ctrl+Alt+M"
+toggle_output = "Ctrl+Alt+O"
+toggle_foreground_audio = "Ctrl+Alt+P"
+cycle_input_device = ""         # unassigned by default
+cycle_output_device = ""
+foreground_volume_up = ""
+foreground_volume_down = ""
 
 [virtual_desktops]
 enabled = true
@@ -58,26 +66,31 @@ required — bare keys are rejected** (#35). Numpad tokens (`Numpad0`–`Numpad9
 `NumpadAdd`, …) stay distinct from top-row siblings (#11). Supported key universe:
 letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no media keys.
 
+`HotkeysCfg` retains the three existing defaulted toggle bindings and adds four
+optional fields (`cycle_input_device`, `cycle_output_device`,
+`foreground_volume_up`, `foreground_volume_down`). The new fields default to
+`None` so upgrades never claim additional global shortcuts.
+
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 2` (`config/load.rs::load`):
+Loading a document with `schema_version > 3` (`config/load.rs::load`):
 
 An absent `schema_version` is treated as legacy source schema v1. New files
-serialized by `Config::to_toml()` always write schema v2.
+serialized by `Config::to_toml()` always write schema v3.
 
 Diagnostics separates `source_schema_version` from `effective_schema_version`:
-missing/corrupt input has no source version and effective v2; v1 input has
-source v1 and effective v2; v2 input has source and effective v2. A future
-source version is retained while runtime state falls back to safe defaults and
-the read-only latch remains active.
+missing/corrupt input has no source version and effective v3; v1/v2 input has
+its source version and effective v3; v3 input has source and effective v3. A
+future source version is retained while runtime state falls back to safe defaults
+and the read-only latch remains active.
 
 * logs an error and warns "config written by a newer WinShort; not overwriting",
 * returns **default values for every section** (the future document is never partially applied),
 * sets the process-global `CONFIG_READONLY: AtomicBool` latch (`config/mod.rs`).
 
-While latched, every `save()` refuses with an error — a future-schema config can never be
-silently overwritten or downgraded through any normal Save path. The latch is memory-only and
-clears on process restart.
+While latched, every `save()` refuses with an error — a future-schema config can
+never be silently overwritten or downgraded through any normal Save path. The
+latch is memory-only and clears on process restart.
 
 ## Unknown fields
 
@@ -90,9 +103,7 @@ Serde does not deny unknown fields; instead load performs a manual double-parse 
 
 `config/validate.rs::validate` produces `Vec<Violation>` (dotted field paths):
 
-* numeric ranges: `duration_ms 500..=10000`, `scale 0.7..=1.6`, `opacity 0.3..=1.0`
-* hotkeys must parse, be pairwise distinct (conflict message names both actions), and require a
-  modifier (#35)
+* hotkeys must parse, be pairwise distinct across all seven configurable actions (conflict message names both actions), and require a modifier (#35)
 * reserved slots: when `virtual_desktops.enabled && win_number_switching`, exactly
   `Win + digit 1..9` conflicts ("conflicts with reserved virtual-desktop shortcut Win+n");
   allowed again when the reserve is off; other modifiers+digits never conflict
@@ -122,6 +133,8 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 | Field | Default |
 | overlay | enabled, 1300 ms, bottom-center, foreground monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
 | audio roles / devices | console / console, default devices |
+| existing toggle hotkeys | Ctrl+Alt+M / Ctrl+Alt+O / Ctrl+Alt+P |
+| cycle and foreground-volume hotkeys | unassigned |
 | `start_hotkeys_enabled` | true |
 | virtual desktops | enabled, `win_number_switching` true |
 
@@ -137,8 +150,10 @@ in `config.toml` and #32 does not require a schema bump.
 ## Migration
 
 Schema v1 files, including versionless legacy files, load with the v2 defaults for
-`overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`).
+`overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`)
+and v3 defaults for the four new hotkeys (unassigned). Schema v2 files preserve
+all existing values and default only the new v3 hotkey fields to unassigned.
 Load diagnostics records the source/effective transition. A successful Save
-writes schema v2 and updates active load diagnostics to source v2. Legacy
+writes schema v3 and updates active load diagnostics to source v3. Legacy
 `overlay.monitor = "index:N"` still maps to `primary`, and
 `general.start_with_windows` remains ignored because startup is registry-owned.

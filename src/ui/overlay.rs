@@ -402,6 +402,128 @@ pub fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow {
     }
 }
 
+pub fn device_cycle_row(
+    flow: crate::audio::DeviceCycleFlow,
+    selection: &crate::config::model::DeviceSelection,
+    device: Option<&crate::audio::DeviceId>,
+) -> OverlayRow {
+    let title = match flow {
+        crate::audio::DeviceCycleFlow::Input => "Input device",
+        crate::audio::DeviceCycleFlow::Output => "Output device",
+    };
+    let detail = match selection {
+        crate::config::model::DeviceSelection::Default => "Default device".into(),
+        crate::config::model::DeviceSelection::Endpoint(_) => device
+            .map(|device| concise(&device.name))
+            .unwrap_or_else(|| "Selected device unavailable".into()),
+    };
+    OverlayRow {
+        icon: match flow {
+            crate::audio::DeviceCycleFlow::Input => OverlayIcon::Microphone,
+            crate::audio::DeviceCycleFlow::Output => OverlayIcon::Output,
+        },
+        tone: OverlayTone::Changed,
+        title: title.into(),
+        detail,
+    }
+}
+
+pub fn device_cycle_no_devices_row(flow: crate::audio::DeviceCycleFlow) -> OverlayRow {
+    let input = matches!(flow, crate::audio::DeviceCycleFlow::Input);
+    OverlayRow {
+        icon: if input {
+            OverlayIcon::Microphone
+        } else {
+            OverlayIcon::Output
+        },
+        tone: OverlayTone::Unavailable,
+        title: if input {
+            "Input device".into()
+        } else {
+            "Output device".into()
+        },
+        detail: if input {
+            "No active input devices".into()
+        } else {
+            "No active output devices".into()
+        },
+    }
+}
+
+pub fn device_cycle_error_row(flow: crate::audio::DeviceCycleFlow, error: &str) -> OverlayRow {
+    let input = matches!(flow, crate::audio::DeviceCycleFlow::Input);
+    OverlayRow {
+        icon: if input {
+            OverlayIcon::Microphone
+        } else {
+            OverlayIcon::Output
+        },
+        tone: OverlayTone::Unavailable,
+        title: if input {
+            "Input device unavailable".into()
+        } else {
+            "Output device unavailable".into()
+        },
+        detail: concise(error),
+    }
+}
+
+pub fn application_volume_row(state: &crate::audio::AppVolumeState) -> OverlayRow {
+    let title = state
+        .app_name
+        .as_deref()
+        .map_or_else(|| "Current app".into(), concise);
+    let (tone, detail) = if state.app_name.is_none() {
+        (
+            OverlayTone::Unavailable,
+            state
+                .error
+                .as_deref()
+                .map_or_else(|| "No external application selected".into(), concise),
+        )
+    } else {
+        match (
+            state.min_volume_pct,
+            state.max_volume_pct,
+            state.sessions,
+            state.error.as_deref(),
+        ) {
+            (Some(min), Some(max), _, error) => {
+                let value = if min == max {
+                    format!("Volume {min}%")
+                } else {
+                    format!("Volume {min}–{max}%")
+                };
+                (
+                    if error.is_some() {
+                        OverlayTone::Unavailable
+                    } else {
+                        OverlayTone::Changed
+                    },
+                    error.map_or(value.clone(), |error| {
+                        format!("{value} • {}", concise(error))
+                    }),
+                )
+            }
+            (_, _, 0, Some(error)) => (OverlayTone::Unavailable, concise(error)),
+            (_, _, 0, None) => (OverlayTone::Unavailable, "No active audio session".into()),
+            _ => (
+                OverlayTone::Unavailable,
+                state
+                    .error
+                    .as_deref()
+                    .map_or_else(|| "Volume unavailable".into(), concise),
+            ),
+        }
+    };
+    OverlayRow {
+        icon: OverlayIcon::Application,
+        tone,
+        title,
+        detail,
+    }
+}
+
 /// Transient "output changed" card (#17b).
 pub fn output_changed_row(device: &crate::audio::state::DeviceId) -> OverlayRow {
     OverlayRow {
@@ -1589,5 +1711,54 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn device_cycle_rows_report_target_without_system_default_claim() {
+        let device = crate::audio::DeviceId {
+            endpoint: "opaque-id".into(),
+            name: "USB Microphone".into(),
+        };
+        let row = device_cycle_row(
+            crate::audio::DeviceCycleFlow::Input,
+            &crate::config::model::DeviceSelection::Endpoint("opaque-id".into()),
+            Some(&device),
+        );
+        assert_eq!(row.title, "Input device");
+        assert_eq!(row.detail, "USB Microphone");
+
+        let default_row = device_cycle_row(
+            crate::audio::DeviceCycleFlow::Output,
+            &crate::config::model::DeviceSelection::Default,
+            None,
+        );
+        assert_eq!(default_row.detail, "Default device");
+    }
+
+    #[test]
+    fn volume_rows_show_exact_values_ranges_and_no_session_state() {
+        let exact = application_volume_row(&crate::audio::AppVolumeState {
+            app_name: Some("Player".into()),
+            sessions: 1,
+            min_volume_pct: Some(65),
+            max_volume_pct: Some(65),
+            error: None,
+        });
+        assert_eq!(exact.detail, "Volume 65%");
+
+        let range = application_volume_row(&crate::audio::AppVolumeState {
+            app_name: Some("Player".into()),
+            sessions: 2,
+            min_volume_pct: Some(45),
+            max_volume_pct: Some(70),
+            error: None,
+        });
+        assert_eq!(range.detail, "Volume 45–70%");
+
+        let empty = application_volume_row(&crate::audio::AppVolumeState::no_session(Some(
+            "Player".into(),
+        )));
+        assert_eq!(empty.detail, "No active audio session");
+        let no_external = application_volume_row(&crate::audio::AppVolumeState::no_external());
+        assert_eq!(no_external.detail, "No external application selected");
     }
 }

@@ -9,7 +9,6 @@
 //! and undocumented is unfinished; this build ends with visual QA and docs.
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -59,7 +58,6 @@ const APPLIED_STATUS: &str = "Changes applied";
 
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 const WM_MOUSELEAVE: u32 = 0x02A3;
-static CONFIG_SEQ: AtomicU64 = AtomicU64::new(1);
 fn settings_theme() -> Theme {
     settings_theme_for(Theme::current(), SystemVisualPreferences::query())
 }
@@ -396,6 +394,18 @@ impl SettingsUi {
             ElementId::ForegroundHotkey => {
                 self.hotkey_value(id, self.draft.hotkeys.toggle_foreground_audio)
             }
+            ElementId::CycleInputHotkey => {
+                self.hotkey_value(id, self.draft.hotkeys.cycle_input_device)
+            }
+            ElementId::CycleOutputHotkey => {
+                self.hotkey_value(id, self.draft.hotkeys.cycle_output_device)
+            }
+            ElementId::ForegroundVolumeUpHotkey => {
+                self.hotkey_value(id, self.draft.hotkeys.foreground_volume_up)
+            }
+            ElementId::ForegroundVolumeDownHotkey => {
+                self.hotkey_value(id, self.draft.hotkeys.foreground_volume_down)
+            }
             ElementId::InputDevice => ControlValue::Text(Cow::Owned(device_label(
                 &self.draft.audio.input_device,
                 &self.devices.inputs,
@@ -686,7 +696,13 @@ impl SettingsUi {
                     !self.draft.general.start_hotkeys_enabled;
                 self.animate_toggle(hwnd, id, self.draft.general.start_hotkeys_enabled);
             }
-            ElementId::MicHotkey | ElementId::OutputHotkey | ElementId::ForegroundHotkey => {
+            ElementId::MicHotkey
+            | ElementId::OutputHotkey
+            | ElementId::ForegroundHotkey
+            | ElementId::CycleInputHotkey
+            | ElementId::CycleOutputHotkey
+            | ElementId::ForegroundVolumeUpHotkey
+            | ElementId::ForegroundVolumeDownHotkey => {
                 self.recording = Some(id);
                 self.recording_modifiers = ModifierMask::NONE;
                 self.validation.clear();
@@ -804,7 +820,10 @@ impl SettingsUi {
 
         // Startup is registry-driven and applied at toggle time (#16); Save
         // persists everything else.
-        if let Err(e) = crate::config::save::save(&crate::config::data_dir(), &self.draft) {
+        if let Err(e) = crate::app::commit_config(
+            self.draft.clone(),
+            crate::event::ConfigCommitOrigin::Settings,
+        ) {
             self.validation.push(Violation {
                 field: "config.toml".into(),
                 message: e.to_string(),
@@ -813,11 +832,6 @@ impl SettingsUi {
             return;
         }
 
-        if let Some(handle) = crate::app::CONFIG.get() {
-            handle.replace(self.draft.clone());
-        }
-        let seq = CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
-        post_main(crate::event::AppEvent::ConfigApplied(seq));
         self.applied_until = Some(Instant::now() + Duration::from_secs(2));
         start_timer(hwnd);
         invalidate(hwnd);
@@ -864,6 +878,14 @@ impl SettingsUi {
             ElementId::ForegroundHotkey => {
                 self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
             }
+            ElementId::CycleInputHotkey => self.draft.hotkeys.cycle_input_device = Some(hotkey),
+            ElementId::CycleOutputHotkey => self.draft.hotkeys.cycle_output_device = Some(hotkey),
+            ElementId::ForegroundVolumeUpHotkey => {
+                self.draft.hotkeys.foreground_volume_up = Some(hotkey)
+            }
+            ElementId::ForegroundVolumeDownHotkey => {
+                self.draft.hotkeys.foreground_volume_down = Some(hotkey)
+            }
             _ => {}
         }
         self.recording = None;
@@ -893,6 +915,18 @@ impl SettingsUi {
                         ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
                         ElementId::ForegroundHotkey => {
                             self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
+                        }
+                        ElementId::CycleInputHotkey => {
+                            self.draft.hotkeys.cycle_input_device = Some(hotkey)
+                        }
+                        ElementId::CycleOutputHotkey => {
+                            self.draft.hotkeys.cycle_output_device = Some(hotkey)
+                        }
+                        ElementId::ForegroundVolumeUpHotkey => {
+                            self.draft.hotkeys.foreground_volume_up = Some(hotkey)
+                        }
+                        ElementId::ForegroundVolumeDownHotkey => {
+                            self.draft.hotkeys.foreground_volume_down = Some(hotkey)
                         }
                         _ => {}
                     }
@@ -979,6 +1013,23 @@ impl SettingsUi {
                 self.draft.overlay.monitor = value;
             }
             _ => {}
+        }
+        self.reset_confirm = false;
+        self.validation.clear();
+    }
+
+    fn merge_external_device_cycle(
+        &mut self,
+        flow: crate::audio::DeviceCycleFlow,
+        old_live: &DeviceSelection,
+        new_live: &DeviceSelection,
+    ) {
+        let draft = match flow {
+            crate::audio::DeviceCycleFlow::Input => &mut self.draft.audio.input_device,
+            crate::audio::DeviceCycleFlow::Output => &mut self.draft.audio.output_device,
+        };
+        if draft == old_live {
+            *draft = new_live.clone();
         }
         self.reset_confirm = false;
         self.validation.clear();
@@ -1364,6 +1415,30 @@ impl SettingsWindow {
 
     pub(crate) fn cancel_picker_without_focus(&mut self) {
         self.cancel_picker_impl(false);
+    }
+
+    pub(crate) fn cancel_picker_for_device_cycle(&mut self, flow: crate::audio::DeviceCycleFlow) {
+        let owner = match flow {
+            crate::audio::DeviceCycleFlow::Input => ElementId::InputDevice,
+            crate::audio::DeviceCycleFlow::Output => ElementId::OutputDevice,
+        };
+        if self.picker_owner == Some(owner) {
+            self.cancel_picker_without_focus();
+        }
+    }
+
+    pub(crate) fn merge_external_device_cycle(
+        &mut self,
+        flow: crate::audio::DeviceCycleFlow,
+        old_live: &DeviceSelection,
+        new_live: &DeviceSelection,
+    ) {
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            let mut ui = cell.borrow_mut();
+            ui.merge_external_device_cycle(flow, old_live, new_live);
+            ui.publish_automation_snapshot(self.hwnd);
+        }
+        invalidate(self.hwnd);
     }
 
     pub(crate) fn close_for_hide(&mut self) {
@@ -2730,6 +2805,67 @@ mod interaction_tests {
         assert_eq!(second.get(), 0);
     }
 
+    #[test]
+    fn external_device_cycle_updates_clean_draft_and_preserves_unrelated_dirty_fields() {
+        let old = DeviceSelection::Default;
+        let new = DeviceSelection::Endpoint("next-input".into());
+        let mut ui = empty_settings_ui();
+        ui.draft.overlay.enabled = false;
+        ui.merge_external_device_cycle(crate::audio::DeviceCycleFlow::Input, &old, &new);
+        assert_eq!(ui.draft.audio.input_device, new);
+        assert!(!ui.draft.overlay.enabled);
+    }
+
+    #[test]
+    fn external_device_cycle_preserves_same_field_user_draft() {
+        let old = DeviceSelection::Default;
+        let new = DeviceSelection::Endpoint("live-next".into());
+        let user_draft = DeviceSelection::Endpoint("user-choice".into());
+        let mut ui = empty_settings_ui();
+        ui.draft.audio.input_device = user_draft.clone();
+        ui.merge_external_device_cycle(crate::audio::DeviceCycleFlow::Input, &old, &new);
+        assert_eq!(ui.draft.audio.input_device, user_draft);
+    }
+
+    #[test]
+    fn phase_one_hotkey_rows_are_in_focus_order_and_layout() {
+        for id in [
+            ElementId::CycleInputHotkey,
+            ElementId::CycleOutputHotkey,
+            ElementId::ForegroundVolumeUpHotkey,
+            ElementId::ForegroundVolumeDownHotkey,
+        ] {
+            assert!(ElementId::FOCUS_ORDER.contains(&id));
+            assert!(SettingsLayout::build(610.0, 720.0, 0.0)
+                .element(id)
+                .is_some());
+        }
+    }
+    #[test]
+    fn phase_one_hotkey_capture_maps_to_each_config_field() {
+        let hotkey = Hotkey {
+            modifiers: ModifierMask::CTRL.union(ModifierMask::ALT),
+            key: VirtualKey(0x7C),
+        };
+
+        let mut ui = empty_settings_ui();
+        for id in [
+            ElementId::CycleInputHotkey,
+            ElementId::CycleOutputHotkey,
+            ElementId::ForegroundVolumeUpHotkey,
+            ElementId::ForegroundVolumeDownHotkey,
+        ] {
+            ui.recording = Some(id);
+            ui.finish_recording(crate::keyboard::hook::CapturedChord {
+                modifiers: hotkey.modifiers,
+                key: Some(hotkey.key),
+            });
+        }
+        assert_eq!(ui.draft.hotkeys.cycle_input_device, Some(hotkey));
+        assert_eq!(ui.draft.hotkeys.cycle_output_device, Some(hotkey));
+        assert_eq!(ui.draft.hotkeys.foreground_volume_up, Some(hotkey));
+        assert_eq!(ui.draft.hotkeys.foreground_volume_down, Some(hotkey));
+    }
     #[test]
     fn applied_status_is_generic() {
         let status = APPLIED_STATUS.to_ascii_lowercase();

@@ -2,7 +2,9 @@
 //! to move them across thread boundaries: an owned queue woken by
 //! `PostMessageW`, plus WPARAM packing for keyboard actions.
 
-use crate::audio::state::{AppAudioState, AudioState, OutputState};
+use crate::audio::state::{
+    AppAudioState, AppVolumeState, AudioState, DeviceCycleResult, OutputState,
+};
 use crate::desktop::backend::BackendStatus;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -17,6 +19,14 @@ pub enum HotkeyAction {
     ToggleMicrophone,
     ToggleOutput,
     ToggleForegroundAppAudio,
+    /// Cycle WinShort's configured capture endpoint.
+    CycleInputDevice,
+    /// Cycle WinShort's configured render endpoint.
+    CycleOutputDevice,
+    /// Raise the foreground application's session volume by five percentage points.
+    ForegroundVolumeUp,
+    /// Lower the foreground application's session volume by five percentage points.
+    ForegroundVolumeDown,
     /// Virtual desktop index, 0-based internally (desktops are numbered 1..=9).
     SwitchDesktop(u8),
 }
@@ -33,11 +43,19 @@ impl HotkeyAction {
         const KIND_OUT: u32 = 2;
         const KIND_FG: u32 = 3;
         const KIND_DESKTOP: u32 = 4;
+        const KIND_CYCLE_INPUT: u32 = 5;
+        const KIND_CYCLE_OUTPUT: u32 = 6;
+        const KIND_FOREGROUND_VOLUME_UP: u32 = 7;
+        const KIND_FOREGROUND_VOLUME_DOWN: u32 = 8;
         match self {
             HotkeyAction::ToggleMicrophone => KIND_MIC << 16,
             HotkeyAction::ToggleOutput => KIND_OUT << 16,
             HotkeyAction::ToggleForegroundAppAudio => KIND_FG << 16,
             HotkeyAction::SwitchDesktop(n) => (KIND_DESKTOP << 16) | n as u32,
+            HotkeyAction::CycleInputDevice => KIND_CYCLE_INPUT << 16,
+            HotkeyAction::CycleOutputDevice => KIND_CYCLE_OUTPUT << 16,
+            HotkeyAction::ForegroundVolumeUp => KIND_FOREGROUND_VOLUME_UP << 16,
+            HotkeyAction::ForegroundVolumeDown => KIND_FOREGROUND_VOLUME_DOWN << 16,
         }
     }
 
@@ -54,15 +72,26 @@ impl HotkeyAction {
             2 => Some(HotkeyAction::ToggleOutput),
             3 => Some(HotkeyAction::ToggleForegroundAppAudio),
             4 => Some(HotkeyAction::SwitchDesktop(arg)),
+            5 => Some(HotkeyAction::CycleInputDevice),
+            6 => Some(HotkeyAction::CycleOutputDevice),
+            7 => Some(HotkeyAction::ForegroundVolumeUp),
+            8 => Some(HotkeyAction::ForegroundVolumeDown),
             _ => None,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigCommitOrigin {
+    Settings,
+    DeviceCycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioEventOrigin {
     Initial,
     External,
+    Config(ConfigCommitOrigin),
     WinShortAction(u64),
     StatusRequest(u64),
 }
@@ -96,7 +125,14 @@ pub enum AppEvent {
     CopyDiagnostics,
     OpenDiagnosticsLogs,
     CreateSupportBundle,
-    ConfigApplied(u64),
+    ConfigApplied {
+        seq: u64,
+        origin: ConfigCommitOrigin,
+    },
+    DeviceCycleResolved {
+        request_id: u64,
+        result: DeviceCycleResult,
+    },
     // State published by workers / callbacks.
     MicrophoneStateChanged {
         state: AudioState,
@@ -111,6 +147,10 @@ pub enum AppEvent {
     DefaultOutputChanged(crate::audio::state::DeviceId),
     ForegroundAudioChanged {
         state: AppAudioState,
+        origin: AudioEventOrigin,
+    },
+    ForegroundVolumeChanged {
+        state: AppVolumeState,
         origin: AudioEventOrigin,
     },
     /// Device list changed (added/removed/default switched): refresh pickers.
@@ -185,14 +225,25 @@ mod pack_tests {
 
     #[test]
     fn packing_is_32_bit_and_round_trips() {
-        // #28: values must fit u32 and survive a round trip on any target.
         let all = [
             HotkeyAction::ToggleMicrophone,
             HotkeyAction::ToggleOutput,
             HotkeyAction::ToggleForegroundAppAudio,
+            HotkeyAction::CycleInputDevice,
+            HotkeyAction::CycleOutputDevice,
+            HotkeyAction::ForegroundVolumeUp,
+            HotkeyAction::ForegroundVolumeDown,
             HotkeyAction::SwitchDesktop(0),
             HotkeyAction::SwitchDesktop(8),
         ];
+        assert_eq!(HotkeyAction::ToggleMicrophone.pack_u32(), 1 << 16);
+        assert_eq!(HotkeyAction::ToggleOutput.pack_u32(), 2 << 16);
+        assert_eq!(HotkeyAction::ToggleForegroundAppAudio.pack_u32(), 3 << 16);
+        assert_eq!(HotkeyAction::SwitchDesktop(8).pack_u32(), (4 << 16) | 8);
+        assert_eq!(HotkeyAction::CycleInputDevice.pack_u32(), 5 << 16);
+        assert_eq!(HotkeyAction::CycleOutputDevice.pack_u32(), 6 << 16);
+        assert_eq!(HotkeyAction::ForegroundVolumeUp.pack_u32(), 7 << 16);
+        assert_eq!(HotkeyAction::ForegroundVolumeDown.pack_u32(), 8 << 16);
         for action in all {
             let packed = action.pack();
             assert!(
@@ -219,12 +270,21 @@ mod tests {
     fn queue_drains_in_order_then_empties() {
         let q = EventQueue::new();
         q.push(AppEvent::ShowSettings);
-        q.push(AppEvent::ConfigApplied(7));
+        q.push(AppEvent::ConfigApplied {
+            seq: 7,
+            origin: ConfigCommitOrigin::Settings,
+        });
         q.push(AppEvent::DevicesChanged);
         let drained = q.drain();
         assert_eq!(drained.len(), 3);
         assert!(matches!(drained[0], AppEvent::ShowSettings));
-        assert!(matches!(drained[1], AppEvent::ConfigApplied(7)));
+        assert!(matches!(
+            drained[1],
+            AppEvent::ConfigApplied {
+                seq: 7,
+                origin: ConfigCommitOrigin::Settings
+            }
+        ));
         assert!(matches!(drained[2], AppEvent::DevicesChanged));
         assert!(q.drain().is_empty());
     }
@@ -243,7 +303,10 @@ mod tests {
             let q = Arc::clone(&q);
             handles.push(std::thread::spawn(move || {
                 for i in 0..per {
-                    q.push(AppEvent::ConfigApplied(((p * 1000 + i) + 1) as u64));
+                    q.push(AppEvent::ConfigApplied {
+                        seq: ((p * 1000 + i) + 1) as u64,
+                        origin: ConfigCommitOrigin::Settings,
+                    });
                 }
             }));
         }
@@ -255,7 +318,7 @@ mod tests {
         // Per-producer subsequences are strictly increasing.
         let mut last = [0u64; 4];
         for ev in drained {
-            if let AppEvent::ConfigApplied(seq) = ev {
+            if let AppEvent::ConfigApplied { seq, .. } = ev {
                 let p = (seq / 1000) as usize;
                 assert!(seq > last[p], "producer {p} order violated");
                 last[p] = seq;
@@ -269,7 +332,10 @@ mod tests {
         let q = EventQueue::new();
         for cycle in 0..50 {
             for i in 0..10 {
-                q.push(AppEvent::ConfigApplied(cycle * 100 + i));
+                q.push(AppEvent::ConfigApplied {
+                    seq: cycle * 100 + i,
+                    origin: ConfigCommitOrigin::Settings,
+                });
             }
             assert_eq!(q.drain().len(), 10);
             assert!(q.drain().is_empty());

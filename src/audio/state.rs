@@ -1,6 +1,7 @@
 //! Audio state types shared across threads (main thread consumes; audio
 //! worker produces). Pure data — no COM.
 
+use crate::config::model::DeviceSelection;
 /// Identity of an audio endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceId {
@@ -8,6 +9,26 @@ pub struct DeviceId {
     pub endpoint: String,
     /// Friendly name from the property store.
     pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceCycleFlow {
+    Input,
+    Output,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceCycleResult {
+    Changed {
+        flow: DeviceCycleFlow,
+        previous: DeviceSelection,
+        selection: DeviceSelection,
+        device: Option<DeviceId>,
+    },
+    NoDevices {
+        flow: DeviceCycleFlow,
+        previous: DeviceSelection,
+    },
 }
 
 /// Worker-published endpoint binding identity for diagnostics. This is the
@@ -80,6 +101,51 @@ impl AppAudioState {
             aggregate: Aggregate::NoExternalApp,
             sessions: 0,
             error: None,
+        }
+    }
+}
+
+/// Foreground application volume after a volume adjustment or query.
+///
+/// `min_volume_pct` and `max_volume_pct` are absent when no matching session
+/// volume could be read; a range is retained instead of inventing an average.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppVolumeState {
+    pub app_name: Option<String>,
+    pub sessions: usize,
+    pub min_volume_pct: Option<u8>,
+    pub max_volume_pct: Option<u8>,
+    pub error: Option<String>,
+}
+
+impl AppVolumeState {
+    pub fn no_external() -> Self {
+        Self {
+            app_name: None,
+            sessions: 0,
+            min_volume_pct: None,
+            max_volume_pct: None,
+            error: None,
+        }
+    }
+
+    pub fn no_session(app_name: Option<String>) -> Self {
+        Self {
+            app_name,
+            sessions: 0,
+            min_volume_pct: None,
+            max_volume_pct: None,
+            error: None,
+        }
+    }
+
+    pub fn error(app_name: Option<String>, reason: impl Into<String>) -> Self {
+        Self {
+            app_name,
+            sessions: 0,
+            min_volume_pct: None,
+            max_volume_pct: None,
+            error: Some(reason.into()),
         }
     }
 }

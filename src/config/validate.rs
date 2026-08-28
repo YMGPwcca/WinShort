@@ -47,6 +47,13 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
             "toggle_foreground_audio",
             &cfg.hotkeys.toggle_foreground_audio,
         ),
+        ("cycle_input_device", &cfg.hotkeys.cycle_input_device),
+        ("cycle_output_device", &cfg.hotkeys.cycle_output_device),
+        ("foreground_volume_up", &cfg.hotkeys.foreground_volume_up),
+        (
+            "foreground_volume_down",
+            &cfg.hotkeys.foreground_volume_down,
+        ),
     ] {
         if let Some(hk) = hk {
             if let Some(other) = seen.insert(*hk, name) {
@@ -69,6 +76,13 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
                 "toggle_foreground_audio",
                 &cfg.hotkeys.toggle_foreground_audio,
             ),
+            ("cycle_input_device", &cfg.hotkeys.cycle_input_device),
+            ("cycle_output_device", &cfg.hotkeys.cycle_output_device),
+            ("foreground_volume_up", &cfg.hotkeys.foreground_volume_up),
+            (
+                "foreground_volume_down",
+                &cfg.hotkeys.foreground_volume_down,
+            ),
         ] {
             if let Some(hk) = hk {
                 if hk.modifiers == crate::keyboard::binding::ModifierMask::WIN {
@@ -86,7 +100,6 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
             }
         }
     }
-
     // Endpoint IDs are opaque; only emptiness is malformed (parse already
     // routes empty to Default, so this is defense in depth) (#7).
     for (field, dev) in [
@@ -196,5 +209,27 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
             key: crate::keyboard::binding::VirtualKey(b'5' as u16),
         });
         assert!(validate(&c).is_empty());
+    }
+    #[test]
+    fn new_hotkeys_participate_in_conflict_and_reserved_validation() {
+        let mut c = Config::default();
+        c.hotkeys.cycle_input_device = c.hotkeys.toggle_microphone;
+        let conflicts = validate(&c);
+        assert!(conflicts
+            .iter()
+            .any(|violation| violation.field == "hotkeys.cycle_input_device"));
+
+        c.hotkeys.cycle_input_device = Some(Hotkey {
+            modifiers: crate::keyboard::binding::ModifierMask::WIN,
+            key: crate::keyboard::binding::VirtualKey(b'6' as u16),
+        });
+        c.hotkeys.toggle_microphone = None;
+        let reserved = validate(&c);
+        assert!(reserved.iter().any(|violation| {
+            violation.field == "hotkeys.cycle_input_device"
+                && violation
+                    .message
+                    .contains("reserved virtual-desktop shortcut Win+6")
+        }));
     }
 }

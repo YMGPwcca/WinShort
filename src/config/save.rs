@@ -62,7 +62,8 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_config() {
-        // The read-only latch is process-global (#15); another test may have
+        let _guard = crate::config::latch_guard();
+        // The read-only latch is process-global; another test may have
         // tripped it in parallel.
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("winshort-test-{}", std::process::id()));
@@ -85,6 +86,7 @@ mod tests {
 
     #[test]
     fn missing_file_yields_defaults() {
+        let _guard = crate::config::latch_guard();
         let dir = std::env::temp_dir().join(format!("winshort-missing-{}", std::process::id()));
         let (cfg, w) = load(&dir);
         assert!(w.is_empty());
@@ -93,6 +95,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_falls_back() {
+        let _guard = crate::config::latch_guard();
         let dir = std::env::temp_dir().join(format!("winshort-corrupt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.toml"), "[overlay\nduration_ms = ===").unwrap();

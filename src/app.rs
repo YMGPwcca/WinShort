@@ -1,6 +1,7 @@
 //! Application runtime: hidden main window, tray integration, event routing,
 //! startup/shutdown orchestration (spec §5–§7, §46–§47).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -17,12 +18,43 @@ use crate::ui::settings::SettingsWindow;
 pub static CONFIG: std::sync::OnceLock<std::sync::Arc<crate::config::ConfigHandle>> =
     std::sync::OnceLock::new();
 
+static CONFIG_SEQ: AtomicU64 = AtomicU64::new(1);
+
 /// Access the live config snapshot from any thread.
 pub fn config() -> std::sync::Arc<crate::config::Config> {
     CONFIG
         .get()
         .map(|h| h.get())
         .unwrap_or_else(|| std::sync::Arc::new(crate::config::Config::default()))
+}
+
+/// Commit one complete typed configuration on the main thread.
+///
+/// Persistence precedes publication: a failed or read-only save leaves the
+/// live [`ConfigHandle`] unchanged. Successful commits publish exactly one
+/// `ConfigApplied` event, which drives dependent worker refreshes.
+pub(crate) fn commit_config(
+    candidate: crate::config::Config,
+    origin: crate::event::ConfigCommitOrigin,
+) -> Result<()> {
+    let violations = crate::config::validate(&candidate);
+    if !violations.is_empty() {
+        let message = violations
+            .iter()
+            .map(|violation| format!("{}: {}", violation.field, violation.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Error::config(format!("configuration invalid: {message}")));
+    }
+    let handle = CONFIG
+        .get()
+        .ok_or_else(|| Error::config("configuration handle unavailable"))?;
+    handle.replace_after_save(candidate, |config| {
+        crate::config::save::save(&crate::config::data_dir(), config)
+    })?;
+    let seq = CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
+    event::post_main(AppEvent::ConfigApplied { seq, origin });
+    Ok(())
 }
 
 pub const CLASS_NAME: &str = "WinShort.Main";
@@ -253,7 +285,7 @@ impl App {
         status_request_matches: bool,
     ) -> bool {
         match origin {
-            AudioEventOrigin::Initial => false,
+            AudioEventOrigin::Initial | AudioEventOrigin::Config(_) => false,
             AudioEventOrigin::External => show_external && seen && changed,
             AudioEventOrigin::WinShortAction(_) => true,
             AudioEventOrigin::StatusRequest(_) => status_request_matches,
@@ -560,9 +592,142 @@ impl App {
                     });
                 }
             }
+            HotkeyAction::CycleInputDevice => {
+                self.dispatch_device_cycle(crate::audio::DeviceCycleFlow::Input);
+            }
+            HotkeyAction::CycleOutputDevice => {
+                self.dispatch_device_cycle(crate::audio::DeviceCycleFlow::Output);
+            }
+            HotkeyAction::ForegroundVolumeUp => {
+                self.dispatch_foreground_volume(crate::audio::sessions::VolumeAdjustment::Up);
+            }
+            HotkeyAction::ForegroundVolumeDown => {
+                self.dispatch_foreground_volume(crate::audio::sessions::VolumeAdjustment::Down);
+            }
             HotkeyAction::SwitchDesktop(n) => {
                 if let Some(desktop) = &self.desktop {
                     desktop.switch_to(n as usize);
+                }
+            }
+        }
+    }
+
+    fn dispatch_device_cycle(&mut self, flow: crate::audio::DeviceCycleFlow) {
+        let request_id = self.next_audio_request_id();
+        if let Some(audio) = &self.audio {
+            audio.send(crate::audio::AudioCommand::CycleDevice { flow, request_id });
+            return;
+        }
+        let result = self.plan_device_cycle(flow);
+        self.handle_device_cycle_result(request_id, result);
+    }
+
+    fn dispatch_foreground_volume(&mut self, adjustment: crate::audio::sessions::VolumeAdjustment) {
+        let request_id = self.next_audio_request_id();
+        let pid = self
+            .foreground
+            .as_ref()
+            .and_then(|tracker| tracker.target_pid());
+        if let Some(audio) = &self.audio {
+            audio.send(crate::audio::AudioCommand::AdjustForegroundVolume {
+                pid,
+                adjustment,
+                request_id,
+            });
+        } else {
+            let reason = self
+                .degraded_reason("audio")
+                .unwrap_or_else(|| "audio subsystem unavailable".into());
+            self.route_event(AppEvent::ForegroundVolumeChanged {
+                state: crate::audio::AppVolumeState::error(None, reason),
+                origin: AudioEventOrigin::WinShortAction(request_id),
+            });
+        }
+    }
+
+    fn plan_device_cycle(
+        &self,
+        flow: crate::audio::DeviceCycleFlow,
+    ) -> crate::audio::DeviceCycleResult {
+        let config = crate::app::config();
+        let previous = match flow {
+            crate::audio::DeviceCycleFlow::Input => config.audio.input_device.clone(),
+            crate::audio::DeviceCycleFlow::Output => config.audio.output_device.clone(),
+        };
+        let devices = self.audio_devices();
+        let active = match flow {
+            crate::audio::DeviceCycleFlow::Input => &devices.inputs,
+            crate::audio::DeviceCycleFlow::Output => &devices.outputs,
+        };
+        crate::audio::devices::device_cycle_result(flow, &previous, active)
+    }
+
+    fn handle_device_cycle_result(
+        &mut self,
+        request_id: u64,
+        result: crate::audio::DeviceCycleResult,
+    ) {
+        match result {
+            crate::audio::DeviceCycleResult::Changed {
+                flow,
+                previous,
+                selection,
+                device,
+            } => {
+                let live = crate::app::config();
+                let current = match flow {
+                    crate::audio::DeviceCycleFlow::Input => live.audio.input_device.clone(),
+                    crate::audio::DeviceCycleFlow::Output => live.audio.output_device.clone(),
+                };
+                if current != previous {
+                    drop(live);
+                    self.handle_device_cycle_result(request_id, self.plan_device_cycle(flow));
+                    return;
+                }
+
+                if let Some(settings) = &mut self.settings {
+                    settings.cancel_picker_for_device_cycle(flow);
+                }
+                let mut candidate = (*live).clone();
+                match flow {
+                    crate::audio::DeviceCycleFlow::Input => {
+                        candidate.audio.input_device = selection.clone();
+                    }
+                    crate::audio::DeviceCycleFlow::Output => {
+                        candidate.audio.output_device = selection.clone();
+                    }
+                }
+                match commit_config(candidate, crate::event::ConfigCommitOrigin::DeviceCycle) {
+                    Ok(()) => {
+                        if let Some(settings) = &mut self.settings {
+                            settings.merge_external_device_cycle(flow, &previous, &selection);
+                        }
+                        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                            crate::ui::overlay::device_cycle_row(flow, &selection, device.as_ref()),
+                        ));
+                        crate::log_debug!("device cycle request {request_id} applied for {flow:?}");
+                    }
+                    Err(error) => {
+                        crate::warn_!("device cycle request {request_id} failed: {error}");
+                        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                            crate::ui::overlay::device_cycle_error_row(flow, &error.to_string()),
+                        ));
+                    }
+                }
+            }
+            crate::audio::DeviceCycleResult::NoDevices { flow, previous } => {
+                let live = crate::app::config();
+                let current = match flow {
+                    crate::audio::DeviceCycleFlow::Input => live.audio.input_device.clone(),
+                    crate::audio::DeviceCycleFlow::Output => live.audio.output_device.clone(),
+                };
+                if current != previous {
+                    drop(live);
+                    self.handle_device_cycle_result(request_id, self.plan_device_cycle(flow));
+                } else {
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::device_cycle_no_devices_row(flow),
+                    ));
                 }
             }
         }
@@ -613,7 +778,6 @@ impl App {
         }
         crate::ui::overlay::OverlayModel { rows }
     }
-
     fn show_status_overlay(&mut self) {
         let request_id = self.next_audio_request_id();
         let pid = self
@@ -680,13 +844,16 @@ impl App {
                     window.set_action_status(status);
                 }
             }
-            AppEvent::ConfigApplied(seq) => {
+            AppEvent::ConfigApplied { seq, origin } => {
                 let config = crate::app::config();
                 self.set_suspended(!config.general.start_hotkeys_enabled);
                 if let Some(audio) = &self.audio {
-                    audio.send(crate::audio::AudioCommand::ConfigChanged);
+                    audio.send(crate::audio::AudioCommand::ConfigChanged { origin });
                 }
-                info!("config applied (seq {seq})");
+                info!("config applied (seq {seq}, origin {origin:?})");
+            }
+            AppEvent::DeviceCycleResolved { request_id, result } => {
+                self.handle_device_cycle_result(request_id, result);
             }
             AppEvent::MicrophoneStateChanged { state, origin } => {
                 let changed = self.microphone_state != state;
@@ -761,6 +928,13 @@ impl App {
                         let row = crate::ui::overlay::application_row(&self.foreground_state);
                         self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
                     }
+                }
+            }
+            AppEvent::ForegroundVolumeChanged { state, origin } => {
+                if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::application_volume_row(&state),
+                    ));
                 }
             }
             AppEvent::DesktopBackendChanged(status) => {
@@ -865,6 +1039,34 @@ impl App {
                 raw_config
                     .hotkeys
                     .toggle_foreground_audio
+                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
+            ),
+            (
+                "Cycle input device".into(),
+                raw_config
+                    .hotkeys
+                    .cycle_input_device
+                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
+            ),
+            (
+                "Cycle output device".into(),
+                raw_config
+                    .hotkeys
+                    .cycle_output_device
+                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
+            ),
+            (
+                "Foreground volume up".into(),
+                raw_config
+                    .hotkeys
+                    .foreground_volume_up
+                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
+            ),
+            (
+                "Foreground volume down".into(),
+                raw_config
+                    .hotkeys
+                    .foreground_volume_down
                     .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
             ),
         ];
@@ -1062,6 +1264,10 @@ impl App {
                     raw_config.hotkeys.toggle_microphone,
                     raw_config.hotkeys.toggle_output,
                     raw_config.hotkeys.toggle_foreground_audio,
+                    raw_config.hotkeys.cycle_input_device,
+                    raw_config.hotkeys.cycle_output_device,
+                    raw_config.hotkeys.foreground_volume_up,
+                    raw_config.hotkeys.foreground_volume_down,
                 ]
                 .into_iter()
                 .flatten()
@@ -1429,6 +1635,16 @@ mod shutdown_gate_tests {
         ));
     }
 
+    #[test]
+    fn config_rebuild_origin_does_not_emit_external_overlay() {
+        assert!(!App::should_show_audio_overlay(
+            AudioEventOrigin::Config(crate::event::ConfigCommitOrigin::DeviceCycle),
+            true,
+            true,
+            true,
+            false,
+        ));
+    }
     #[test]
     fn preview_event_carries_draft_presentation_without_mutating_live_config() {
         let saved = crate::config::Config::default();

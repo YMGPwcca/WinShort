@@ -8,7 +8,7 @@ use crate::keyboard::binding::Hotkey;
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 2;
+pub const CURRENT_SCHEMA_VERSION: u8 = 3;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +50,10 @@ pub struct HotkeysCfg {
     pub toggle_microphone: Option<Hotkey>,
     pub toggle_output: Option<Hotkey>,
     pub toggle_foreground_audio: Option<Hotkey>,
+    pub cycle_input_device: Option<Hotkey>,
+    pub cycle_output_device: Option<Hotkey>,
+    pub foreground_volume_up: Option<Hotkey>,
+    pub foreground_volume_down: Option<Hotkey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +272,10 @@ impl Default for Config {
                 toggle_microphone: Some(Hotkey::parse(DEFAULT_TOGGLE_MICROPHONE).unwrap()),
                 toggle_output: Some(Hotkey::parse(DEFAULT_TOGGLE_OUTPUT).unwrap()),
                 toggle_foreground_audio: Some(Hotkey::parse(DEFAULT_TOGGLE_FOREGROUND).unwrap()),
+                cycle_input_device: None,
+                cycle_output_device: None,
+                foreground_volume_up: None,
+                foreground_volume_down: None,
             },
             virtual_desktops: VdCfg {
                 enabled: true,
@@ -396,6 +404,14 @@ pub struct HotkeysToml {
     pub toggle_output: String,
     #[serde(default = "default_fg")]
     pub toggle_foreground_audio: String,
+    #[serde(default)]
+    pub cycle_input_device: String,
+    #[serde(default)]
+    pub cycle_output_device: String,
+    #[serde(default)]
+    pub foreground_volume_up: String,
+    #[serde(default)]
+    pub foreground_volume_down: String,
 }
 
 impl Default for HotkeysToml {
@@ -404,6 +420,10 @@ impl Default for HotkeysToml {
             toggle_microphone: default_mic(),
             toggle_output: default_out(),
             toggle_foreground_audio: default_fg(),
+            cycle_input_device: String::new(),
+            cycle_output_device: String::new(),
+            foreground_volume_up: String::new(),
+            foreground_volume_down: String::new(),
         }
     }
 }
@@ -506,6 +526,22 @@ impl Config {
                     .hotkeys
                     .toggle_foreground_audio
                     .map_or(String::new(), |h| h.to_string()),
+                cycle_input_device: self
+                    .hotkeys
+                    .cycle_input_device
+                    .map_or(String::new(), |h| h.to_string()),
+                cycle_output_device: self
+                    .hotkeys
+                    .cycle_output_device
+                    .map_or(String::new(), |h| h.to_string()),
+                foreground_volume_up: self
+                    .hotkeys
+                    .foreground_volume_up
+                    .map_or(String::new(), |h| h.to_string()),
+                foreground_volume_down: self
+                    .hotkeys
+                    .foreground_volume_down
+                    .map_or(String::new(), |h| h.to_string()),
             },
             virtual_desktops: VdToml {
                 enabled: self.virtual_desktops.enabled,
@@ -604,6 +640,26 @@ impl Config {
                 &t.hotkeys.toggle_foreground_audio,
                 &mut c.hotkeys.toggle_foreground_audio,
             ),
+            (
+                "cycle_input_device",
+                &t.hotkeys.cycle_input_device,
+                &mut c.hotkeys.cycle_input_device,
+            ),
+            (
+                "cycle_output_device",
+                &t.hotkeys.cycle_output_device,
+                &mut c.hotkeys.cycle_output_device,
+            ),
+            (
+                "foreground_volume_up",
+                &t.hotkeys.foreground_volume_up,
+                &mut c.hotkeys.foreground_volume_up,
+            ),
+            (
+                "foreground_volume_down",
+                &t.hotkeys.foreground_volume_down,
+                &mut c.hotkeys.foreground_volume_down,
+            ),
         ] {
             if raw.is_empty() {
                 *slot = None;
@@ -641,6 +697,10 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "toggle_microphone",
             "toggle_output",
             "toggle_foreground_audio",
+            "cycle_input_device",
+            "cycle_output_device",
+            "foreground_volume_up",
+            "foreground_volume_down",
         ]),
         "virtual_desktops" => Some(&["enabled", "win_number_switching"]),
         _ => None,
@@ -669,8 +729,90 @@ impl Config {
                 "toggle_microphone" => self.hotkeys.toggle_microphone = None,
                 "toggle_output" => self.hotkeys.toggle_output = None,
                 "toggle_foreground_audio" => self.hotkeys.toggle_foreground_audio = None,
+                "cycle_input_device" => self.hotkeys.cycle_input_device = None,
+                "cycle_output_device" => self.hotkeys.cycle_output_device = None,
+                "foreground_volume_up" => self.hotkeys.foreground_volume_up = None,
+                "foreground_volume_down" => self.hotkeys.foreground_volume_down = None,
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hotkey_schema_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_leave_phase_one_hotkeys_unassigned() {
+        let config = Config::default();
+        assert!(config.hotkeys.cycle_input_device.is_none());
+        assert!(config.hotkeys.cycle_output_device.is_none());
+        assert!(config.hotkeys.foreground_volume_up.is_none());
+        assert!(config.hotkeys.foreground_volume_down.is_none());
+    }
+
+    #[test]
+    fn schema_v2_preserves_existing_values_and_defaults_new_hotkeys() {
+        let raw = r#"
+schema_version = 2
+
+[general]
+start_hotkeys_enabled = false
+
+[overlay]
+appearance = "dark"
+show_external_audio_changes = false
+
+[audio]
+output_device = "opaque-output-id"
+
+[hotkeys]
+toggle_microphone = "Ctrl+Alt+F1"
+toggle_output = "Ctrl+Alt+F2"
+toggle_foreground_audio = "Ctrl+Alt+F3"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!config.general.start_hotkeys_enabled);
+        assert_eq!(config.overlay.appearance, OverlayAppearance::Dark);
+        assert!(!config.overlay.show_external_audio_changes);
+        assert_eq!(
+            config.audio.output_device,
+            DeviceSelection::Endpoint("opaque-output-id".into())
+        );
+        assert_eq!(
+            config.hotkeys.toggle_microphone,
+            Some(Hotkey::parse("Ctrl+Alt+F1").unwrap())
+        );
+        assert_eq!(
+            config.hotkeys.toggle_output,
+            Some(Hotkey::parse("Ctrl+Alt+F2").unwrap())
+        );
+        assert_eq!(
+            config.hotkeys.toggle_foreground_audio,
+            Some(Hotkey::parse("Ctrl+Alt+F3").unwrap())
+        );
+        assert!(config.hotkeys.cycle_input_device.is_none());
+        assert!(config.hotkeys.cycle_output_device.is_none());
+        assert!(config.hotkeys.foreground_volume_up.is_none());
+        assert!(config.hotkeys.foreground_volume_down.is_none());
+    }
+
+    #[test]
+    fn assigned_phase_one_hotkeys_round_trip_through_toml() {
+        let mut config = Config::default();
+        config.hotkeys.cycle_input_device = Some(Hotkey::parse("Ctrl+Alt+F4").unwrap());
+        config.hotkeys.cycle_output_device = Some(Hotkey::parse("Ctrl+Alt+F5").unwrap());
+        config.hotkeys.foreground_volume_up = Some(Hotkey::parse("Ctrl+Alt+F6").unwrap());
+        config.hotkeys.foreground_volume_down = Some(Hotkey::parse("Ctrl+Alt+F7").unwrap());
+
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(round_tripped, config);
     }
 }

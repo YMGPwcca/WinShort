@@ -29,6 +29,64 @@ pub struct DeviceLists {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceCyclePlan {
+    Select(DeviceSelection),
+    NoActiveEndpoints,
+}
+
+/// Plan the next configured endpoint without consulting friendly names.
+///
+/// The active inventory order is the cycle order. Endpoint IDs are opaque and
+/// remain the only identity used for matching an existing selection.
+pub fn plan_device_cycle(current: &DeviceSelection, active: &[DeviceId]) -> DeviceCyclePlan {
+    if active.is_empty() {
+        return match current {
+            DeviceSelection::Default => DeviceCyclePlan::NoActiveEndpoints,
+            DeviceSelection::Endpoint(_) => DeviceCyclePlan::Select(DeviceSelection::Default),
+        };
+    }
+    let next = match current {
+        DeviceSelection::Default => DeviceSelection::Endpoint(active[0].endpoint.clone()),
+        DeviceSelection::Endpoint(id) => {
+            match active.iter().position(|device| device.endpoint == *id) {
+                Some(index) if index + 1 < active.len() => {
+                    DeviceSelection::Endpoint(active[index + 1].endpoint.clone())
+                }
+                Some(_) | None => DeviceSelection::Default,
+            }
+        }
+    };
+    DeviceCyclePlan::Select(next)
+}
+
+pub fn device_cycle_result(
+    flow: crate::audio::DeviceCycleFlow,
+    current: &DeviceSelection,
+    active: &[DeviceId],
+) -> crate::audio::DeviceCycleResult {
+    let previous = current.clone();
+    match plan_device_cycle(current, active) {
+        DeviceCyclePlan::Select(selection) => {
+            let device = match &selection {
+                DeviceSelection::Endpoint(id) => {
+                    active.iter().find(|device| device.endpoint == *id).cloned()
+                }
+                DeviceSelection::Default => None,
+            };
+            crate::audio::DeviceCycleResult::Changed {
+                flow,
+                previous,
+                selection,
+                device,
+            }
+        }
+        DeviceCyclePlan::NoActiveEndpoints => {
+            crate::audio::DeviceCycleResult::NoDevices { flow, previous }
+        }
+    }
+}
+
 /// Enumerate active endpoints per flow. One flow failing (or one device's
 /// properties failing inside a flow) degrades to an empty list + warning
 /// rather than losing both flows (#36).
@@ -265,5 +323,76 @@ impl Drop for EndpointBinding {
         unsafe {
             let _ = self.volume.UnregisterControlChangeNotify(&self.callback);
         }
+    }
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+
+    fn device(endpoint: &str, name: &str) -> DeviceId {
+        DeviceId {
+            endpoint: endpoint.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn default_selects_first_active_endpoint() {
+        let active = [
+            device("first-id", "Same name"),
+            device("second-id", "Same name"),
+        ];
+        assert_eq!(
+            plan_device_cycle(&DeviceSelection::Default, &active),
+            DeviceCyclePlan::Select(DeviceSelection::Endpoint("first-id".into()))
+        );
+    }
+
+    #[test]
+    fn endpoint_cycles_and_wraps_to_default() {
+        let active = [device("first-id", "First"), device("second-id", "Second")];
+        assert_eq!(
+            plan_device_cycle(&DeviceSelection::Endpoint("first-id".into()), &active),
+            DeviceCyclePlan::Select(DeviceSelection::Endpoint("second-id".into()))
+        );
+        assert_eq!(
+            plan_device_cycle(&DeviceSelection::Endpoint("second-id".into()), &active),
+            DeviceCyclePlan::Select(DeviceSelection::Default)
+        );
+    }
+
+    #[test]
+    fn unavailable_endpoint_recovers_to_default() {
+        let active = [device("current-id", "Current")];
+        assert_eq!(
+            plan_device_cycle(&DeviceSelection::Endpoint("missing-id".into()), &active),
+            DeviceCyclePlan::Select(DeviceSelection::Default)
+        );
+    }
+
+    #[test]
+    fn no_active_endpoints_is_a_noop() {
+        assert_eq!(
+            plan_device_cycle(&DeviceSelection::Default, &[]),
+            DeviceCyclePlan::NoActiveEndpoints
+        );
+    }
+
+    #[test]
+    fn unavailable_endpoint_recovers_even_when_inventory_is_empty() {
+        assert_eq!(
+            plan_device_cycle(&DeviceSelection::Endpoint("missing-id".into()), &[]),
+            DeviceCyclePlan::Select(DeviceSelection::Default)
+        );
+    }
+
+    #[test]
+    fn duplicate_friendly_names_still_cycle_by_endpoint_id() {
+        let active = [device("a", "USB microphone"), device("b", "USB microphone")];
+        assert_eq!(
+            plan_device_cycle(&DeviceSelection::Endpoint("a".into()), &active),
+            DeviceCyclePlan::Select(DeviceSelection::Endpoint("b".into()))
+        );
     }
 }

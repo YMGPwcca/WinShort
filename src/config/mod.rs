@@ -54,10 +54,11 @@ pub fn load_diagnostics() -> ConfigLoadDiagnostics {
 /// Lock-free-read snapshot of the live configuration (spec §9, §10, §45).
 ///
 /// Readers clone the current `Arc` cheaply under a short read lock; the only
-/// writer is Save on the main thread. Binding lookups in the keyboard hook go
-/// through [`ConfigHandle::bindings`] — an arc-swap snapshot rebuilt here on
-/// every `replace`, so the hook never takes a lock or rebuilds a table
-/// (#10). The hook itself is never reinstalled when this swaps.
+/// writer is a main-thread config commit (Settings Save or a device-cycle
+/// hotkey). Binding lookups in the keyboard hook go through
+/// [`ConfigHandle::bindings`] — an arc-swap snapshot rebuilt here on every
+/// `replace`, so the hook never takes a lock or rebuilds a table (#10). The
+/// hook itself is never reinstalled when this swaps.
 pub struct ConfigHandle {
     value: std::sync::RwLock<std::sync::Arc<Config>>,
     bindings: arc_swap::ArcSwap<crate::keyboard::binding::BindingTable>,
@@ -101,6 +102,22 @@ impl ConfigHandle {
         self.revision
             .fetch_add(1, std::sync::atomic::Ordering::Release);
         old
+    }
+
+    /// Persist a candidate before publishing it to the live snapshot.
+    ///
+    /// The callback must perform the durable atomic write. A failed callback
+    /// leaves both the live value and its revision untouched.
+    pub fn replace_after_save<F>(
+        &self,
+        cfg: Config,
+        save: F,
+    ) -> crate::error::Result<std::sync::Arc<Config>>
+    where
+        F: FnOnce(&Config) -> crate::error::Result<()>,
+    {
+        save(&cfg)?;
+        Ok(self.replace(cfg))
     }
 }
 
@@ -198,6 +215,54 @@ mod tests {
             VirtualKey(0x7A),
         );
         assert_eq!(hit, Some(HotkeyAction::ToggleMicrophone));
+    }
+    #[test]
+    fn failed_config_persist_does_not_replace_live_snapshot() {
+        let handle = ConfigHandle::new(Config::default());
+        let mut candidate = Config::default();
+        candidate.general.start_hotkeys_enabled = false;
+        let result = handle.replace_after_save(candidate, |_| {
+            Err(crate::error::Error::config("simulated persistence failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(*handle.get(), Config::default());
+        assert_eq!(handle.revision(), 1);
+    }
+
+    #[test]
+    fn successful_config_persist_replaces_once_after_callback() {
+        use std::cell::Cell;
+
+        let handle = ConfigHandle::new(Config::default());
+        let mut candidate = Config::default();
+        candidate.general.start_hotkeys_enabled = false;
+        let writes = Cell::new(0);
+        handle
+            .replace_after_save(candidate.clone(), |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(writes.get(), 1);
+        assert_eq!(*handle.get(), candidate);
+        assert_eq!(handle.revision(), 2);
+    }
+
+    #[test]
+    fn read_only_config_rejects_transaction_before_publication() {
+        let _guard = latch_guard();
+        clear_config_readonly();
+        set_config_readonly("test future schema");
+        let handle = ConfigHandle::new(Config::default());
+        let mut candidate = Config::default();
+        candidate.general.start_hotkeys_enabled = false;
+        let dir = std::env::temp_dir().join(format!("winshort-readonly-{}", std::process::id()));
+        let result =
+            handle.replace_after_save(candidate, |config| crate::config::save::save(&dir, config));
+        assert!(result.is_err());
+        assert_eq!(*handle.get(), Config::default());
+        assert_eq!(handle.revision(), 1);
+        clear_config_readonly();
     }
 }
 

@@ -1823,6 +1823,43 @@ mod tests {
     }
 
     #[test]
+    fn phase_one_hotkey_nodes_expose_names_and_help_text() {
+        let snapshot =
+            snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 96);
+        let expected = [
+            (
+                ElementId::CycleInputHotkey,
+                "Cycle input device",
+                "Switch WinShort to the next input endpoint",
+            ),
+            (
+                ElementId::CycleOutputHotkey,
+                "Cycle output device",
+                "Switch WinShort to the next output endpoint",
+            ),
+            (
+                ElementId::ForegroundVolumeUpHotkey,
+                "App volume up",
+                "Raise foreground app volume by 5%",
+            ),
+            (
+                ElementId::ForegroundVolumeDownHotkey,
+                "App volume down",
+                "Lower foreground app volume by 5%",
+            ),
+        ];
+        for (id, name, help_text) in expected {
+            let node = snapshot
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .expect("node");
+            assert_eq!(node.name, name);
+            assert_eq!(node.help_text, help_text);
+            assert!(node.enabled);
+        }
+    }
+    #[test]
     fn snapshot_clips_scrolled_nodes_and_marks_them_offscreen() {
         let snapshot =
             snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 144);
