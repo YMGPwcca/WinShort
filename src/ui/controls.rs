@@ -209,6 +209,22 @@ pub(crate) fn value_control_rect(row: Rect, kind: ElementKind) -> Rect {
     };
     control_rect(row, width)
 }
+const VALUE_TEXT_PADDING: f32 = 8.0;
+const VALUE_CHEVRON_RESERVE: f32 = 30.0;
+
+pub(crate) fn value_text_rect(row: Rect, kind: ElementKind) -> Rect {
+    let control = value_control_rect(row, kind);
+    let left = control.x + VALUE_TEXT_PADDING;
+    let top = control.y + VALUE_TEXT_PADDING;
+    let right_padding = if kind == ElementKind::Value {
+        VALUE_CHEVRON_RESERVE
+    } else {
+        VALUE_TEXT_PADDING
+    };
+    let right = (control.right() - right_padding).max(left);
+    let bottom = (control.bottom() - VALUE_TEXT_PADDING).max(top);
+    Rect::new(left, top, right - left, bottom - top)
+}
 
 fn draw_toggle(r: &Renderer, row: Rect, value: bool, interaction: Interaction) {
     let rect = control_rect(row, 46.0);
@@ -311,7 +327,12 @@ fn draw_value_box(
     } else {
         BrushRole::Text
     };
-    r.text(text, rect.inset(8.0).d2d(), TextStyle::Value, role);
+    r.text_clipped(
+        text,
+        value_text_rect(row, kind).d2d(),
+        TextStyle::Value,
+        role,
+    );
 
     // Dropdown chevron for value fields.
     if matches!(kind, ElementKind::Value) {
@@ -440,7 +461,10 @@ fn draw_action(r: &Renderer, row: Rect, label: &str, interaction: Interaction) {
 }
 #[cfg(test)]
 mod tests {
-    use super::{interaction_state, value_control_rect, Interaction, InteractionState};
+    use super::{
+        interaction_state, value_control_rect, value_text_rect, Interaction, InteractionState,
+        VALUE_TEXT_PADDING,
+    };
     use crate::ui::layout::{ElementKind, Rect};
 
     fn interaction() -> Interaction {
@@ -488,5 +512,20 @@ mod tests {
         assert_eq!(hotkey.w, 178.0);
         assert!(value.x > row.x);
         assert_eq!(value.right(), row.right() - 18.0);
+    }
+
+    #[test]
+    fn value_text_geometry_reserves_chevron_and_stays_positive() {
+        let row = Rect::new(24.0, 100.0, 560.0, 58.0);
+        let value = value_control_rect(row, ElementKind::Value);
+        let text = value_text_rect(row, ElementKind::Value);
+        assert!(text.w > 0.0);
+        assert!(text.h > 0.0);
+        assert!(text.x > value.x);
+        assert!(text.right() < value.right() - 12.0);
+
+        let hotkey = value_control_rect(row, ElementKind::Hotkey);
+        let hotkey_text = value_text_rect(row, ElementKind::Hotkey);
+        assert_eq!(hotkey_text.right(), hotkey.right() - VALUE_TEXT_PADDING);
     }
 }

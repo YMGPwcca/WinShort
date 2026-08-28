@@ -55,6 +55,7 @@ pub const DESIGN_WIDTH: f32 = 610.0;
 pub const DESIGN_HEIGHT: f32 = 720.0;
 const UI_TIMER: usize = 1;
 const UI_TIMER_MS: u32 = 16;
+const APPLIED_STATUS: &str = "Changes applied";
 
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -134,6 +135,7 @@ pub struct SettingsUi {
     scroll: f32,
     motion: Motion,
     applied_until: Option<Instant>,
+    closing: bool,
     mouse_tracking: bool,
     automation: Option<SettingsAutomation>,
 }
@@ -162,6 +164,7 @@ impl SettingsUi {
             scroll: 0.0,
             motion: Motion::default(),
             applied_until: None,
+            closing: false,
             mouse_tracking: false,
             automation: None,
         }
@@ -183,6 +186,35 @@ impl SettingsUi {
     fn replace_draft(&mut self, draft: Config) {
         self.draft = draft;
         self.motion.clear_channel(MotionChannel::ToggleState);
+    }
+
+    fn repair_focus(&mut self) {
+        if self.focus_owner != AutomationFocusOwner::Settings {
+            return;
+        }
+        let Some(current) = self.focused else {
+            return;
+        };
+        if self.layout.element(current).is_some() && !self.is_disabled(current) {
+            return;
+        }
+        let next = Self::next_focus_index(&ElementId::FOCUS_ORDER, Some(current), false, |id| {
+            self.is_disabled(id)
+        });
+        self.focused = (!self.is_disabled(next)).then_some(next);
+    }
+
+    fn begin_close(&mut self) -> bool {
+        if self.closing {
+            false
+        } else {
+            self.closing = true;
+            true
+        }
+    }
+
+    fn picker_activation_allowed(&self) -> bool {
+        !self.closing
     }
 
     fn paint(&mut self, hwnd: HWND) -> Result<()> {
@@ -289,7 +321,7 @@ impl SettingsUi {
                 0.0,
             );
             renderer.text(
-                "Applied — hotkeys are live",
+                APPLIED_STATUS,
                 UiRect::new(
                     status_rect.x + 16.0,
                     status_rect.y,
@@ -620,7 +652,7 @@ impl SettingsUi {
     }
 
     fn activate(&mut self, hwnd: HWND, id: ElementId) {
-        if self.is_disabled(id) {
+        if self.closing || self.is_disabled(id) {
             return;
         }
         if self
@@ -958,7 +990,8 @@ impl SettingsUi {
         }
     }
 
-    fn publish_automation_snapshot(&self, hwnd: HWND) {
+    fn publish_automation_snapshot(&mut self, hwnd: HWND) {
+        self.repair_focus();
         let values: Vec<(ElementId, String, bool, f32)> = ElementId::FOCUS_ORDER
             .into_iter()
             .map(|id| {
@@ -1065,6 +1098,9 @@ impl SettingsUi {
             .as_ref()
             .map(SettingsAutomation::drain_actions)
             .unwrap_or_default();
+        if self.closing {
+            return false;
+        }
         let mut focus_requested = false;
         for action in actions {
             match action {
@@ -1168,6 +1204,7 @@ impl SettingsWindow {
         // SAFETY: settings window is owned by this main-thread object.
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();
+            ui.closing = false;
             if !ui.dirty() {
                 ui.replace_draft((*crate::app::config()).clone());
             }
@@ -1229,10 +1266,13 @@ impl SettingsWindow {
         devices: crate::audio::devices::DeviceLists,
         monitors: Vec<crate::platform::monitor::MonitorGeometry>,
     ) -> Result<()> {
-        self.cancel_picker();
         let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(self.hwnd) }) else {
             return Err(Error::internal("settings state missing"));
         };
+        if !cell.borrow().picker_activation_allowed() {
+            return Ok(());
+        }
+        self.cancel_picker();
         let (draft, control_rect, dpi) = {
             let ui = cell.borrow();
             let element = picker_element(kind)
@@ -1288,6 +1328,15 @@ impl SettingsWindow {
                 actual,
             );
         }
+        let can_activate = if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow().picker_activation_allowed()
+        } else {
+            false
+        };
+        if !can_activate {
+            self.cancel_picker_without_focus();
+            return Ok(());
+        }
         if let Some(picker) = self.picker.as_ref() {
             picker.activate();
         }
@@ -1304,7 +1353,7 @@ impl SettingsWindow {
         }
         invalidate(self.hwnd);
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            cell.borrow().publish_automation_snapshot(self.hwnd);
+            cell.borrow_mut().publish_automation_snapshot(self.hwnd);
         }
         self.cancel_picker();
     }
@@ -1315,6 +1364,16 @@ impl SettingsWindow {
 
     pub(crate) fn cancel_picker_without_focus(&mut self) {
         self.cancel_picker_impl(false);
+    }
+
+    pub(crate) fn close_for_hide(&mut self) {
+        let hwnd = self.hwnd;
+        close_picker_before_settings_hide(
+            || self.cancel_picker_without_focus(),
+            || unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            },
+        );
     }
 
     fn cancel_picker_impl(&mut self, restore_focus: bool) {
@@ -1757,18 +1816,23 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_CLOSE => {
-                crate::event::post_main(crate::event::AppEvent::SettingsWindowClosed);
-                let capture_armed = {
+                let (should_close, capture_armed) = {
                     let mut ui = cell.borrow_mut();
-                    let capture_armed = ui.recording.is_some() || ui.capture_armed;
-                    ui.capture_armed = false;
-                    ui.recording = None;
-                    capture_armed
+                    if !ui.begin_close() {
+                        (false, false)
+                    } else {
+                        let capture_armed = ui.recording.is_some() || ui.capture_armed;
+                        ui.capture_armed = false;
+                        ui.recording = None;
+                        (true, capture_armed)
+                    }
                 };
-                if capture_armed {
-                    crate::keyboard::hook::end_capture();
+                if should_close {
+                    crate::event::post_main(crate::event::AppEvent::SettingsWindowClosed);
+                    if capture_armed {
+                        crate::keyboard::hook::end_capture();
+                    }
                 }
-                let _ = ShowWindow(hwnd, SW_HIDE);
                 LRESULT(0)
             }
             WM_PAINT => {
@@ -1912,12 +1976,26 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_MOUSEWHEEL => {
-                let mut ui = cell.borrow_mut();
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
-                ui.scroll = scroll_after_wheel(ui.scroll, delta, ui.layout.max_scroll);
-                ui.rebuild_layout(hwnd);
-                ui.publish_automation_snapshot(hwnd);
-                invalidate(hwnd);
+                let (picker_hwnd, scroll, max_scroll) = {
+                    let ui = cell.borrow();
+                    (ui.picker_hwnd, ui.scroll, ui.layout.max_scroll)
+                };
+                match settings_wheel_action(picker_hwnd, scroll, delta, max_scroll) {
+                    SettingsWheelAction::ClosePicker(popup_hwnd) => {
+                        crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+                            popup_hwnd: popup_hwnd.0 as isize,
+                            restore_focus: true,
+                        });
+                    }
+                    SettingsWheelAction::Scroll(scroll) => {
+                        let mut ui = cell.borrow_mut();
+                        ui.scroll = scroll;
+                        ui.rebuild_layout(hwnd);
+                        ui.publish_automation_snapshot(hwnd);
+                        invalidate(hwnd);
+                    }
+                }
                 LRESULT(0)
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
@@ -1968,9 +2046,8 @@ unsafe extern "system" fn settings_wndproc(
                         if reset_confirm {
                             cell.borrow_mut().reset_confirm = false;
                             invalidate(hwnd);
-                        } else {
+                        } else if cell.borrow_mut().begin_close() {
                             crate::event::post_main(crate::event::AppEvent::SettingsWindowClosed);
-                            let _ = ShowWindow(hwnd, SW_HIDE);
                         }
                         LRESULT(0)
                     }
@@ -2040,6 +2117,33 @@ fn mouse_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
 }
 fn scroll_after_wheel(scroll: f32, delta: f32, max_scroll: f32) -> f32 {
     (scroll - delta / 120.0 * 64.0).clamp(0.0, max_scroll)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SettingsWheelAction {
+    ClosePicker(HWND),
+    Scroll(f32),
+}
+
+fn settings_wheel_action(
+    picker_hwnd: Option<HWND>,
+    scroll: f32,
+    delta: f32,
+    max_scroll: f32,
+) -> SettingsWheelAction {
+    picker_hwnd.map_or_else(
+        || SettingsWheelAction::Scroll(scroll_after_wheel(scroll, delta, max_scroll)),
+        SettingsWheelAction::ClosePicker,
+    )
+}
+
+fn close_picker_before_settings_hide<Cancel, Hide>(cancel_picker: Cancel, hide_settings: Hide)
+where
+    Cancel: FnOnce(),
+    Hide: FnOnce(),
+{
+    cancel_picker();
+    hide_settings();
 }
 fn invalidate(hwnd: HWND) {
     unsafe {
@@ -2520,5 +2624,116 @@ mod interaction_tests {
         assert_eq!(scroll_after_wheel(128.0, 120.0, 512.0), 64.0);
         assert_eq!(scroll_after_wheel(0.0, 120.0, 512.0), 0.0);
         assert_eq!(scroll_after_wheel(512.0, -120.0, 512.0), 512.0);
+    }
+
+    #[test]
+    fn parent_scroll_closes_picker_before_scrolling() {
+        let popup = HWND(7usize as *mut _);
+        assert!(matches!(
+            settings_wheel_action(Some(popup), 128.0, 120.0, 512.0),
+            SettingsWheelAction::ClosePicker(hwnd) if hwnd == popup
+        ));
+        assert!(matches!(
+            settings_wheel_action(None, 128.0, 120.0, 512.0),
+            SettingsWheelAction::Scroll(scroll) if (scroll - 64.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn close_request_blocks_pending_picker_activation() {
+        let mut ui = empty_settings_ui();
+        assert!(ui.picker_activation_allowed());
+        assert!(ui.begin_close());
+        assert!(!ui.picker_activation_allowed());
+        assert!(!ui.begin_close());
+    }
+
+    #[test]
+    fn settings_hide_cancels_picker_before_hiding_parent() {
+        use std::cell::RefCell;
+
+        let steps = RefCell::new(Vec::new());
+        close_picker_before_settings_hide(
+            || steps.borrow_mut().push("picker"),
+            || steps.borrow_mut().push("settings"),
+        );
+        assert_eq!(&*steps.borrow(), &["picker", "settings"]);
+    }
+
+    #[test]
+    fn disabled_save_focus_is_repaired_before_snapshot_publication() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = empty_settings_ui();
+        ui.install_automation(hwnd);
+        ui.focus_owner = AutomationFocusOwner::Settings;
+        ui.focused = Some(ElementId::Save);
+        assert!(ui.is_disabled(ElementId::Save));
+
+        ui.publish_automation_snapshot(hwnd);
+        let snapshot = ui.automation.as_ref().expect("automation").snapshot();
+        assert_ne!(snapshot.focused, Some(ElementId::Save));
+        assert!(snapshot
+            .nodes
+            .iter()
+            .all(|node| !node.focused || node.enabled));
+        assert!(snapshot.focused.is_none_or(|id| snapshot
+            .nodes
+            .iter()
+            .any(|node| node.id == id && node.enabled)));
+    }
+
+    #[test]
+    fn dependent_disable_repairs_focus_and_preserves_tab_navigation() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = empty_settings_ui();
+        ui.install_automation(hwnd);
+        ui.focus_owner = AutomationFocusOwner::Settings;
+        ui.focused = Some(ElementId::WinNumberEnabled);
+        ui.draft.virtual_desktops.enabled = false;
+
+        ui.publish_automation_snapshot(hwnd);
+        let repaired = ui.focused.expect("repaired focus");
+        assert_ne!(repaired, ElementId::WinNumberEnabled);
+        assert!(!ui.is_disabled(repaired));
+
+        let next =
+            SettingsUi::next_focus_index(&ElementId::FOCUS_ORDER, Some(repaired), false, |id| {
+                ui.is_disabled(id)
+            });
+        assert!(!ui.is_disabled(next));
+        let previous =
+            SettingsUi::next_focus_index(&ElementId::FOCUS_ORDER, Some(next), true, |id| {
+                ui.is_disabled(id)
+            });
+        assert_eq!(previous, repaired);
+    }
+
+    #[test]
+    fn focus_repair_does_not_duplicate_notifications() {
+        use std::cell::Cell;
+
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = empty_settings_ui();
+        ui.install_automation(hwnd);
+        ui.focus_owner = AutomationFocusOwner::Settings;
+        ui.focused = Some(ElementId::Save);
+        ui.publish_automation_snapshot(hwnd);
+        let automation = ui.automation.clone().expect("automation");
+
+        let first = Cell::new(0);
+        automation.flush_pending_events_for_test(|_| first.set(first.get() + 1));
+        assert_eq!(first.get(), 2);
+
+        ui.publish_automation_snapshot(hwnd);
+        let second = Cell::new(0);
+        automation.flush_pending_events_for_test(|_| second.set(second.get() + 1));
+        assert_eq!(second.get(), 0);
+    }
+
+    #[test]
+    fn applied_status_is_generic() {
+        let status = APPLIED_STATUS.to_ascii_lowercase();
+        assert!(status.contains("applied"));
+        assert!(!status.contains("hotkey"));
     }
 }

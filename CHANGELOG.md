@@ -24,6 +24,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Replaced the unsound nullable `windows-rs` Interface construction in the
   Settings UI Automation provider with raw ABI vtable overrides; optimized
   nullable-boundary coverage now runs in both local and hosted release tests.
+- Closing Settings now cancels and hides active picker surfaces before the
+  parent window hides, and parent scrolling dismisses open pickers instead of
+  leaving them detached from their rows.
+- Focus repair prevents Save or dynamically disabled controls from remaining
+  logically focused after a model change.
+- Bounded Settings value text uses DirectWrite character trimming and reserves
+  the dropdown chevron area; the applied footer uses generic "Changes applied"
+  status copy.
 
 ## [0.1.0] - 2026-08-24
 

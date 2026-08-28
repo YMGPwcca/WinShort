@@ -92,6 +92,11 @@ Automated coverage:
   output path through its raw vtable and runs in both normal and release
   profiles; hosted Windows CI runs the release-profile case in the x86_64
   release-build job.
+- Settings regression seams verify parent-wheel picker dismissal, close ordering
+  before parent hide, pending activation blocking, and focus repair when Save
+  or dependent controls become disabled.
+- Bounded value rendering tests verify chevron reservation and DirectWrite
+  trailing-character trimming; applied status text remains generic.
 
 Manual matrix:
 

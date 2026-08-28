@@ -350,9 +350,10 @@ impl App {
             }
         }
     }
-    pub(crate) fn close_settings_picker(&mut self) {
+
+    pub(crate) fn close_settings_window(&mut self) {
         if let Some(settings) = &mut self.settings {
-            settings.cancel_picker();
+            settings.close_for_hide();
         }
     }
     pub(crate) fn remember_settings_position(&mut self) {
@@ -658,7 +659,7 @@ impl App {
                 self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus);
             }
             AppEvent::SettingsWindowClosed => {
-                self.close_settings_picker();
+                self.close_settings_window();
                 self.remember_settings_position();
             }
             AppEvent::RunDiagnosticsSelfTest => self.run_diagnostics_self_test(),
@@ -1116,6 +1117,7 @@ impl App {
         }
         if let Some(mut s) = self.settings.take() {
             s.persist_position();
+            s.close_for_hide();
             unsafe {
                 let _ = DestroyWindow(s.hwnd);
             }

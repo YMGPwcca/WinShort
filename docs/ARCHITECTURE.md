@@ -179,6 +179,15 @@ offscreen, bounds, name, and displayed-value properties.
 External focus loss closes the picker without forcing focus back to Settings; Escape, commit,
 and picker Tab navigation explicitly return focus to the Settings HWND.
 
+Parent Settings scrolling dismisses an open picker before applying the scroll
+offset, so a screen-space popup cannot drift away from its owner. Settings close
+requests are idempotent: they block new picker activation, route cancellation
+through the main event loop, and hide the picker before hiding the Settings HWND.
+The focus repair pass runs before every published snapshot and moves focus to
+the next enabled focus-order element when a mutation disables the current one.
+Value controls reserve their chevron area and use DirectWrite character
+trimming with clipping for long displayed values.
+
 Contract audit references: [GetPatternProvider](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementprovidersimple-getpatternprovider),
 [Navigate](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-navigate),
 [GetRuntimeId](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-getruntimeid),

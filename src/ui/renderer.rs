@@ -14,8 +14,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_OPTIONS,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
     D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
     D2D1_ROUNDED_RECT,
 };
@@ -24,7 +24,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 
 use crate::error::{Error, Result};
@@ -67,6 +68,14 @@ pub enum TextStyle {
     Button,
     ButtonSmall,
     Value,
+}
+
+fn trimming_for(style: TextStyle) -> Option<DWRITE_TRIMMING> {
+    matches!(style, TextStyle::Value).then_some(DWRITE_TRIMMING {
+        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+        delimiter: 0,
+        delimiterCount: 0,
+    })
 }
 
 pub struct Renderer {
@@ -255,6 +264,21 @@ impl Renderer {
     }
 
     pub fn text(&self, text: &str, rect: D2D_RECT_F, style: TextStyle, role: BrushRole) {
+        self.draw_text(text, rect, style, role, D2D1_DRAW_TEXT_OPTIONS_NONE);
+    }
+
+    pub fn text_clipped(&self, text: &str, rect: D2D_RECT_F, style: TextStyle, role: BrushRole) {
+        self.draw_text(text, rect, style, role, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    fn draw_text(
+        &self,
+        text: &str,
+        rect: D2D_RECT_F,
+        style: TextStyle,
+        role: BrushRole,
+        options: windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS,
+    ) {
         let wide: Vec<u16> = text.encode_utf16().collect();
         unsafe {
             self.target.DrawText(
@@ -262,7 +286,7 @@ impl Renderer {
                 self.format(style),
                 std::ptr::from_ref(&rect),
                 self.brush(role),
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                options,
                 DWRITE_MEASURING_MODE_NATURAL,
             )
         }
@@ -356,6 +380,15 @@ impl Renderer {
         ];
         for (style, size, weight, alignment) in entries {
             let format = self.create_format(size, weight, alignment)?;
+            if let Some(trimming) = trimming_for(style) {
+                let sign = unsafe { self.dwrite.CreateEllipsisTrimmingSign(&format) }
+                    .map_err(|e| Error::win("CreateEllipsisTrimmingSign", &e))?;
+                unsafe {
+                    format
+                        .SetTrimming(&trimming, &sign)
+                        .map_err(|e| Error::win("IDWriteTextFormat::SetTrimming", &e))?;
+                }
+            }
             self.formats.insert(style, format);
         }
         Ok(())
@@ -452,5 +485,19 @@ pub fn rect(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
         top,
         right,
         bottom,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{trimming_for, TextStyle, DWRITE_TRIMMING_GRANULARITY_CHARACTER};
+
+    #[test]
+    fn value_text_uses_directwrite_trailing_character_trimming() {
+        let trimming = trimming_for(TextStyle::Value).expect("value trimming");
+        assert_eq!(trimming.granularity, DWRITE_TRIMMING_GRANULARITY_CHARACTER);
+        assert_eq!(trimming.delimiter, 0);
+        assert_eq!(trimming.delimiterCount, 0);
+        assert!(trimming_for(TextStyle::Body).is_none());
     }
 }

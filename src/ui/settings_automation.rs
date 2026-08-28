@@ -127,6 +127,9 @@ impl SettingsAutomationSnapshot {
     ) {
         self.focus_owner = focus_owner;
         self.picker_open_for = picker_open_for;
+        self.focused = self
+            .focused
+            .filter(|id| self.nodes.iter().any(|node| node.id == *id && node.enabled));
         for node in &mut self.nodes {
             node.focused =
                 focus_owner == AutomationFocusOwner::Settings && self.focused == Some(node.id);
@@ -536,7 +539,7 @@ pub(crate) fn snapshot_from_settings(
                 name: element.label.to_string(),
                 help_text: element.description.to_string(),
                 enabled: *enabled,
-                focused: focused == Some(element.id),
+                focused: focused == Some(element.id) && *enabled,
                 offscreen,
                 bounds,
                 kind: element.kind,
