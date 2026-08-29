@@ -48,6 +48,9 @@ Rules:
   used only when a previously known existing target can be safely walked.
 * Scratchpad assignment stores only the HWND in the desktop STA worker. It is never persisted;
   hidden/closed handles are validated before every toggle and cleared when stale.
+* Executable routing is replaced by `ConfigApplied`, matched from foreground WinEvents, and
+  performs only a native move. It excludes WinShort, shell classes, invisible, disabled, and
+  cloaked windows; it never switches desktops or calls `SetForegroundWindow`.
 
 ## Events
 
@@ -64,7 +67,8 @@ Strongly typed (`src/event.rs`). Two transports:
 enum AppEvent {
   DeviceCycleResolved(DeviceCycleResult), ForegroundVolumeChanged(AppVolumeState),
   MicrophoneStateChanged(AudioState), OutputStateChanged(OutputState),
-  ForegroundAudioChanged(AppAudioState), DesktopBackendChanged(BackendStatus),
+  ForegroundAudioChanged(AppAudioState), ForegroundWindowChanged { hwnd_raw: isize },
+  DesktopBackendChanged(BackendStatus), DesktopActionFailed { action, reason },
   ConfigApplied { seq: u64, stamp: ConfigRevisionStamp }, ShowSettings, ...
 }
 ```

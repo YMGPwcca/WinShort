@@ -8,7 +8,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 `write_all` → `flush` → `sync_all` → `rename` over the target; temp removed on rename failure.
 No backup copies are kept.
 
-schema_version = 5              # u8; CURRENT value is 5 (v1/v2/v3/v4 files migrate on load)
+schema_version = 6              # u8; CURRENT value is 6 (v1/v2/v3/v4/v5 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -49,6 +49,10 @@ previous_desktop = ""           # optional ordinary hotkey
 scratchpad_assign = ""          # optional hotkey; runtime-only window assignment
 scratchpad_toggle = ""           # optional hotkey; runtime-only show/hide
 
+[[virtual_desktops.routing_rules]]
+executable = "notepad.exe"      # basename (optional .exe) or full image path
+desktop = 2                     # one-based; 1..=256
+
 ## Internal representation
 
 Raw strings exist only at the TOML boundary (`config/load.rs`). After parsing:
@@ -61,7 +65,7 @@ enum MonitorChoice { Foreground, Primary, Device(String) }   // Device = stable 
 enum EndpointRole { Console, Multimedia, Communications }
 struct Config { general: GeneralCfg, overlay: OverlayCfg,
                 audio: AudioCfg, hotkeys: HotkeysCfg, virtual_desktops: VdCfg }
-```
+struct DesktopRule { executable: String, desktop: u16 }
 
 Monitor wire format is `"device:{name}"`; the legacy `"index:N"` string still parses but maps to
 `Primary` (#26 migration). `Hotkey` display order is fixed `Ctrl+Alt+Shift+Win+<Key>`;
@@ -71,8 +75,9 @@ required — bare keys are rejected** (#35). Numpad tokens (`Numpad0`–`Numpad9
 letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no media keys.
 
 `VdCfg` stores the numbered modifier family, optional move/follow and silent
-modifier families, an optional previous-desktop hotkey, and optional scratchpad
-hotkeys. Scratchpad HWND state is runtime-only and is never serialized.
+modifier families, an optional previous-desktop hotkey, optional scratchpad
+hotkeys, and opt-in executable routing rules. Scratchpad HWND state is runtime-only
+and is never serialized.
 
 `HotkeysCfg` retains the three existing defaulted toggle bindings and adds four
 optional fields (`cycle_input_device`, `cycle_output_device`,
@@ -81,14 +86,14 @@ optional fields (`cycle_input_device`, `cycle_output_device`,
 
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 5` (`config/load.rs::load`):
+Loading a document with `schema_version > 6` (`config/load.rs::load`):
 
 An absent `schema_version` is treated as legacy source schema v1. New files
-serialized by `Config::to_toml()` always write schema v5.
+serialized by `Config::to_toml()` always write schema v6.
 
 Diagnostics separates `source_schema_version` from `effective_schema_version`:
-missing/corrupt input has no source version and effective v5; v1/v2/v3/v4 input has
-its source version and effective v5; v5 input has source and effective v5. A
+missing/corrupt input has no source version and effective v6; v1/v2/v3/v4/v5 input has
+its source version and effective v6; v6 input has source and effective v6. A
 future source version is retained while runtime state falls back to safe defaults
 and the read-only latch remains active.
 
@@ -117,6 +122,8 @@ Serde does not deny unknown fields; instead load performs a manual double-parse 
 * optional move/follow and silent modifier families must not overlap each other, the numbered family,
   or explicit hotkeys
 * `previous_desktop` participates in the same centralized conflict validation
+* routing rules require a non-empty executable, a desktop in `1..=256`, and unique
+  executable identities (case-insensitive, whitespace-trimmed)
 
 `Config::repair` then fixes violations in-memory so the app stays usable:
 out-of-range `duration_ms → 2000`, `scale → 1.0`, `opacity → 0.85`; conflicting hotkey binding
@@ -150,7 +157,7 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 | existing toggle hotkeys | Ctrl+Alt+M / Ctrl+Alt+O / Ctrl+Alt+P |
 | cycle and foreground-volume hotkeys | unassigned |
 | `start_hotkeys_enabled` | true |
-| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/scratchpad unassigned |
+| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/scratchpad/routing unassigned |
 
 Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
@@ -165,9 +172,10 @@ in `config.toml` and #32 does not require a schema bump.
 Schema v1 files, including versionless legacy files, load with the v2 defaults for
 `overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`),
 v3 defaults for the four Phase-1 hotkeys, v4 defaults for the Virtual Desktop
-workflow fields, and v5 defaults for the scratchpad hotkeys. Schema v2/v3/v4 files
-preserve all existing values and default only the newly introduced fields. Load
-diagnostics records the source/effective transition. A successful Save writes schema
-v5 and updates active load diagnostics to source v5. Legacy
-`overlay.monitor = "index:N"` still maps to `primary`, and
-`general.start_with_windows` remains ignored because startup is registry-owned.
+workflow fields, v5 defaults for the scratchpad hotkeys, and v6 defaults for
+executable routing rules. Schema v2/v3/v4/v5 files preserve all existing values
+and default only the newly introduced fields. Load diagnostics records the
+source/effective transition. A successful Save writes schema v6 and updates active
+load diagnostics to source v6. Legacy `overlay.monitor = "index:N"` still maps to
+`primary`, and `general.start_with_windows` remains ignored because startup is
+registry-owned.

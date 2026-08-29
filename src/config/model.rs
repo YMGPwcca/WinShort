@@ -8,7 +8,7 @@ use crate::keyboard::binding::{Hotkey, ModifierMask};
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 5;
+pub const CURRENT_SCHEMA_VERSION: u8 = 6;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +57,14 @@ pub struct HotkeysCfg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopRule {
+    /// Executable basename (with optional `.exe`) or a full image path.
+    pub executable: String,
+    /// One-based virtual desktop number; missing desktops are created on demand.
+    pub desktop: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VdCfg {
     pub enabled: bool,
     pub win_number_switching: bool,
@@ -66,6 +74,7 @@ pub struct VdCfg {
     pub previous_desktop: Option<Hotkey>,
     pub scratchpad_assign: Option<Hotkey>,
     pub scratchpad_toggle: Option<Hotkey>,
+    pub routing_rules: Vec<DesktopRule>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +301,7 @@ impl Default for Config {
                 previous_desktop: None,
                 scratchpad_assign: None,
                 scratchpad_toggle: None,
+                routing_rules: Vec::new(),
             },
         }
     }
@@ -441,6 +451,12 @@ impl Default for HotkeysToml {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DesktopRuleToml {
+    pub executable: String,
+    pub desktop: u16,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct VdToml {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -458,6 +474,8 @@ pub struct VdToml {
     pub scratchpad_assign: String,
     #[serde(default)]
     pub scratchpad_toggle: String,
+    #[serde(default)]
+    pub routing_rules: Vec<DesktopRuleToml>,
 }
 
 impl Default for VdToml {
@@ -471,6 +489,7 @@ impl Default for VdToml {
             previous_desktop: String::new(),
             scratchpad_assign: String::new(),
             scratchpad_toggle: String::new(),
+            routing_rules: Vec::new(),
         }
     }
 }
@@ -635,6 +654,15 @@ impl Config {
                     .virtual_desktops
                     .scratchpad_toggle
                     .map_or(String::new(), |hotkey| hotkey.to_string()),
+                routing_rules: self
+                    .virtual_desktops
+                    .routing_rules
+                    .iter()
+                    .map(|rule| DesktopRuleToml {
+                        executable: rule.executable.clone(),
+                        desktop: rule.desktop,
+                    })
+                    .collect(),
             },
         }
     }
@@ -805,6 +833,15 @@ impl Config {
                 }
             }
         }
+        c.virtual_desktops.routing_rules = t
+            .virtual_desktops
+            .routing_rules
+            .iter()
+            .map(|rule| DesktopRule {
+                executable: rule.executable.clone(),
+                desktop: rule.desktop,
+            })
+            .collect();
 
         (c, warnings)
     }
@@ -843,6 +880,7 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "previous_desktop",
             "scratchpad_assign",
             "scratchpad_toggle",
+            "routing_rules",
         ]),
         _ => None,
     }
@@ -853,6 +891,11 @@ impl Config {
     /// ranges, drop conflicting hotkeys. Only violated fields are touched.
     pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
         let mut drop_hotkeys: Vec<String> = Vec::new();
+        let routing_rules_invalid = violations.iter().any(|violation| {
+            violation
+                .field
+                .starts_with("virtual_desktops.routing_rules[")
+        });
         for v in violations {
             match v.field.as_str() {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
@@ -889,6 +932,15 @@ impl Config {
                 "scratchpad_toggle" => self.virtual_desktops.scratchpad_toggle = None,
                 _ => {}
             }
+        }
+        if routing_rules_invalid {
+            let mut seen = std::collections::HashSet::new();
+            self.virtual_desktops.routing_rules.retain(|rule| {
+                let executable = rule.executable.trim();
+                (1..=256).contains(&rule.desktop)
+                    && !executable.is_empty()
+                    && seen.insert(executable.to_ascii_lowercase())
+            });
         }
     }
 }
@@ -1000,6 +1052,43 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
         let (round_tripped, warnings) = Config::from_toml(&boundary);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn executable_routing_rules_round_trip_through_schema_v6() {
+        let mut config = Config::default();
+        config.virtual_desktops.routing_rules = vec![
+            DesktopRule {
+                executable: "notepad.exe".into(),
+                desktop: 2,
+            },
+            DesktopRule {
+                executable: r"C:\Apps\Player.exe".into(),
+                desktop: 8,
+            },
+        ];
+
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn schema_v5_defaults_new_executable_routing_rules() {
+        let raw = r#"
+schema_version = 5
+[virtual_desktops]
+enabled = true
+win_number_switching = true
+number_modifier = "Win"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(config.virtual_desktops.routing_rules.is_empty());
     }
 
     #[test]

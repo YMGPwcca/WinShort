@@ -842,6 +842,15 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                 .virtual_desktops
                 .scratchpad_toggle
                 .map_or(String::new(), |hotkey| hotkey.to_string()),
+            routing_rules: config
+                .virtual_desktops
+                .routing_rules
+                .iter()
+                .map(|rule| SafeDesktopRule {
+                    executable: safe_rule_executable(&rule.executable),
+                    desktop: rule.desktop,
+                })
+                .collect(),
         },
     };
     toml::to_string_pretty(&safe)
@@ -919,7 +928,23 @@ struct SafeVirtualDesktops {
     previous_desktop: String,
     scratchpad_assign: String,
     scratchpad_toggle: String,
+    routing_rules: Vec<SafeDesktopRule>,
 }
+#[derive(Debug, Serialize)]
+struct SafeDesktopRule {
+    executable: String,
+    desktop: u16,
+}
+
+fn safe_rule_executable(value: &str) -> String {
+    value
+        .trim()
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .into()
+}
+
 fn collect_logs(
     directory: Option<&Path>,
     sanitizer: &mut Sanitizer,
@@ -1366,10 +1391,16 @@ safe=1"#,
         let mut sanitizer = Sanitizer::default();
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("opaque-endpoint".into());
+        config.virtual_desktops.routing_rules = vec![crate::config::model::DesktopRule {
+            executable: r"C:\Users\Alice\Apps\Player.exe".into(),
+            desktop: 3,
+        }];
         let output = format_config(&config, 1, &mut sanitizer);
         assert!(output.contains("schema_version = 1"));
         assert!(output.contains("endpoint#01"));
         assert!(!output.contains("opaque-endpoint"));
+        assert!(output.contains("executable = \"Player.exe\""));
+        assert!(!output.contains("Alice"));
     }
 
     #[cfg(windows)]

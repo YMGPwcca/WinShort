@@ -12,6 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_core::GUID;
 
+use crate::config::model::DesktopRule;
 use crate::desktop::backend::{
     BackendAvailability, BackendKind, BackendStatus, DesktopError, VirtualDesktopBackend,
 };
@@ -29,9 +30,10 @@ pub enum DesktopCommand {
         follow: bool,
     },
     SwitchPrevious,
-    RememberForeground {
+    ForegroundChanged {
         hwnd_raw: isize,
     },
+    SetRoutingRules(Vec<DesktopRule>),
     AssignScratchpad {
         hwnd_raw: isize,
     },
@@ -81,10 +83,14 @@ impl DesktopService {
         let _ = self.sender.send(DesktopCommand::SwitchPrevious);
     }
 
-    pub fn remember_foreground(&self, hwnd_raw: isize) {
+    pub fn foreground_changed(&self, hwnd_raw: isize) {
         let _ = self
             .sender
-            .send(DesktopCommand::RememberForeground { hwnd_raw });
+            .send(DesktopCommand::ForegroundChanged { hwnd_raw });
+    }
+
+    pub fn set_routing_rules(&self, rules: Vec<DesktopRule>) {
+        let _ = self.sender.send(DesktopCommand::SetRoutingRules(rules));
     }
 
     pub fn switch_to(&self, index: usize) {
@@ -130,6 +136,8 @@ struct DesktopController {
     previous_desktop: Option<windows_core::GUID>,
     /// Runtime-only scratchpad window; never persisted as an HWND.
     scratchpad: Option<HWND>,
+    /// Opt-in foreground executable routing rules, replaced on ConfigApplied.
+    routing_rules: Vec<DesktopRule>,
 }
 
 impl DesktopController {
@@ -165,6 +173,7 @@ impl DesktopController {
             last_focused: HashMap::new(),
             previous_desktop: None,
             scratchpad: None,
+            routing_rules: Vec::new(),
         };
         controller.publish_status();
         Ok(controller)
@@ -321,6 +330,78 @@ impl DesktopController {
     fn remember_current_foreground(&mut self) {
         let hwnd = unsafe { GetForegroundWindow() };
         self.remember_foreground(hwnd.0 as isize);
+    }
+    fn set_routing_rules(&mut self, rules: Vec<DesktopRule>) {
+        self.routing_rules = rules;
+        crate::info!(
+            "virtual desktop executable routing rules updated: {} rule(s)",
+            self.routing_rules.len()
+        );
+    }
+
+    fn foreground_changed(&mut self, hwnd_raw: isize) {
+        self.remember_foreground(hwnd_raw);
+        self.route_foreground(hwnd_raw);
+    }
+
+    fn route_foreground(&mut self, hwnd_raw: isize) {
+        if self.routing_rules.is_empty() {
+            return;
+        }
+        let hwnd = raw_hwnd(hwnd_raw);
+        if !eligible_window(hwnd) {
+            return;
+        }
+        let pid = unsafe {
+            let mut pid = 0u32;
+            let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            pid
+        };
+        let Some(image_path) = crate::platform::foreground::process_image_path(pid) else {
+            crate::warn_!("unable to resolve executable path for routed foreground window");
+            return;
+        };
+        let Some(rule) = self
+            .routing_rules
+            .iter()
+            .find(|rule| rule_matches_image(rule, &image_path))
+            .cloned()
+        else {
+            return;
+        };
+        if rule.desktop == 0 {
+            crate::warn_!("ignoring invalid routing rule with desktop 0");
+            return;
+        }
+        let index = rule.desktop as usize - 1;
+        let result = (|| {
+            self.native_ensure_count(index + 1)?;
+            let native = self.native.as_ref().ok_or_else(|| {
+                DesktopError::MoveUnavailable("native desktop backend is unavailable".into())
+            })?;
+            let ids = native.desktop_ids()?;
+            let target = ids
+                .get(index)
+                .copied()
+                .ok_or(DesktopError::TargetOutOfRange {
+                    requested: index,
+                    count: ids.len(),
+                })?;
+            let current = native.window_desktop_id(hwnd)?;
+            if current != target {
+                native.move_window_to_desktop(hwnd, index)?;
+                self.last_focused.insert(target, hwnd);
+                crate::info!(
+                    "routed {} to virtual desktop {} without switching focus",
+                    image_path,
+                    rule.desktop
+                );
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.publish_failure("route foreground window", error);
+        }
     }
     fn assign_scratchpad(&mut self, hwnd_raw: isize) {
         let hwnd = raw_hwnd(hwnd_raw);
@@ -570,6 +651,31 @@ impl DesktopController {
 fn raw_hwnd(raw: isize) -> HWND {
     HWND(raw as *mut _)
 }
+fn rule_matches_image(rule: &DesktopRule, image_path: &str) -> bool {
+    let configured = rule.executable.trim();
+    if configured.is_empty() {
+        return false;
+    }
+    if configured.contains('\\') || configured.contains('/') || configured.contains(':') {
+        return normalize_windows_path(configured) == normalize_windows_path(image_path);
+    }
+
+    let configured_name = configured.to_ascii_lowercase();
+    let image_name = image_path
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(image_path)
+        .to_ascii_lowercase();
+    if configured_name.contains('.') {
+        image_name == configured_name
+    } else {
+        image_name.strip_suffix(".exe").unwrap_or(&image_name) == configured_name
+    }
+}
+
+fn normalize_windows_path(value: &str) -> String {
+    value.trim().replace('/', "\\").to_ascii_lowercase()
+}
 
 fn eligible_window(hwnd: HWND) -> bool {
     valid_external_window(hwnd, true)
@@ -690,9 +796,10 @@ fn desktop_thread(
                 follow,
             } => controller.move_foreground(index, hwnd_raw, follow),
             DesktopCommand::SwitchPrevious => controller.switch_previous(),
-            DesktopCommand::RememberForeground { hwnd_raw } => {
-                controller.remember_foreground(hwnd_raw)
+            DesktopCommand::ForegroundChanged { hwnd_raw } => {
+                controller.foreground_changed(hwnd_raw)
             }
+            DesktopCommand::SetRoutingRules(rules) => controller.set_routing_rules(rules),
             DesktopCommand::AssignScratchpad { hwnd_raw } => controller.assign_scratchpad(hwnd_raw),
             DesktopCommand::ToggleScratchpad => controller.toggle_scratchpad(),
             DesktopCommand::Shutdown => break,
@@ -773,6 +880,23 @@ mod policy_tests {
         assert!(!*backend.fallback_used.borrow());
     }
     #[test]
+    fn executable_routing_matches_basename_and_full_path_without_case_sensitivity() {
+        let basename = DesktopRule {
+            executable: "Player".into(),
+            desktop: 2,
+        };
+        assert!(rule_matches_image(&basename, r"C:\Apps\PLAYER.EXE"));
+        assert!(!rule_matches_image(&basename, r"C:\Apps\PlayerHelper.exe"));
+
+        let full_path = DesktopRule {
+            executable: r"C:\Apps\Player.exe".into(),
+            desktop: 2,
+        };
+        assert!(rule_matches_image(&full_path, r"c:/apps/player.exe"));
+        assert!(!rule_matches_image(&full_path, r"C:\Other\Player.exe"));
+    }
+
+    #[test]
     fn stale_scratchpad_handle_is_cleared_without_shell_calls() {
         let mut controller = DesktopController {
             hwnd_raw: 0,
@@ -788,6 +912,7 @@ mod policy_tests {
             last_focused: HashMap::new(),
             previous_desktop: None,
             scratchpad: Some(HWND::default()),
+            routing_rules: Vec::new(),
         };
 
         controller.clear_stale_scratchpad();

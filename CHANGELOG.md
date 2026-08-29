@@ -49,10 +49,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
   persistently saved; desktop workflow hotkeys remain unassigned by default.
 - Schema v5 adds optional scratchpad assignment and toggle hotkeys. The assigned
   window handle remains runtime-only and is cleared when the window closes.
+- Schema v6 adds opt-in executable desktop routing rules. Matching a configured
+  basename or full image path moves the foreground window without switching or
+  stealing focus; invalid or duplicate rules are rejected.
 - Numbered Virtual Desktop switching now ensures missing desktops through the
   native Shell backend; move/follow, silent move, previous-desktop navigation,
-  per-desktop foreground restoration, and runtime scratchpad show/hide are
-  available as conservative configurable actions.
+  per-desktop foreground restoration, runtime scratchpad show/hide, and
+  executable routing are available as conservative configurable actions.
 
 ## [0.1.0] - 2026-08-24
 

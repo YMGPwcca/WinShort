@@ -117,6 +117,31 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
             }
         }
     }
+    let mut routing_rules_seen: HashMap<String, usize> = HashMap::new();
+    for (index, rule) in cfg.virtual_desktops.routing_rules.iter().enumerate() {
+        let field = format!("virtual_desktops.routing_rules[{index}]");
+        let executable = rule.executable.trim();
+        if executable.is_empty() {
+            v.push(Violation::new(
+                &format!("{field}.executable"),
+                "executable must not be empty",
+            ));
+        } else if let Some(previous) =
+            routing_rules_seen.insert(executable.to_ascii_lowercase(), index)
+        {
+            v.push(Violation::new(
+                &format!("{field}.executable"),
+                format!("duplicates routing rule at index {previous}"),
+            ));
+        }
+        if !(1..=256).contains(&rule.desktop) {
+            v.push(Violation::new(
+                &format!("{field}.desktop"),
+                format!("desktop must be 1–256 (got {})", rule.desktop),
+            ));
+        }
+    }
+
     // Endpoint IDs are opaque; only emptiness is malformed (parse already
     // routes empty to Default, so this is defense in depth) (#7).
     for (field, dev) in [
@@ -300,5 +325,41 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
         assert!(violations
             .iter()
             .any(|violation| violation.field == "hotkeys.previous_desktop"));
+    }
+    #[test]
+    fn executable_routing_rules_validate_and_repair() {
+        let mut config = Config::default();
+        config.virtual_desktops.routing_rules = vec![
+            DesktopRule {
+                executable: "Player.exe".into(),
+                desktop: 2,
+            },
+            DesktopRule {
+                executable: " player.EXE ".into(),
+                desktop: 3,
+            },
+            DesktopRule {
+                executable: " ".into(),
+                desktop: 0,
+            },
+        ];
+        let violations = validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.message.contains("duplicates routing rule")));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.message.contains("executable must not be empty")));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.message.contains("desktop must be 1–256")));
+
+        config.repair(&violations);
+
+        assert_eq!(config.virtual_desktops.routing_rules.len(), 1);
+        assert_eq!(
+            config.virtual_desktops.routing_rules[0].executable,
+            "Player.exe"
+        );
     }
 }
