@@ -119,6 +119,10 @@ Endpoint IDs are **opaque strings**, never GUID-validated (#7): `"default"` sele
 default device; any other non-empty string is passed through to Core Audio unchanged. Typical
 Windows form is `{0.0.0.00000000}.{guid}`, but nothing may assume it.
 
+The Settings device picker lists only real active endpoints. The `"default"`
+selection remains a configuration binding mode and is displayed using
+current-system-default metadata; it is never emitted as a fake picker endpoint.
+
 ## Startup authority (#16)
 
 The registry is the single source of truth: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,

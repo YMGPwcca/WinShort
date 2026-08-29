@@ -404,18 +404,11 @@ pub fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow {
 
 pub fn device_cycle_row(
     flow: crate::audio::DeviceCycleFlow,
-    selection: &crate::config::model::DeviceSelection,
-    device: Option<&crate::audio::DeviceId>,
+    device: &crate::audio::DeviceId,
 ) -> OverlayRow {
     let title = match flow {
         crate::audio::DeviceCycleFlow::Input => "Input device",
         crate::audio::DeviceCycleFlow::Output => "Output device",
-    };
-    let detail = match selection {
-        crate::config::model::DeviceSelection::Default => "Default device".into(),
-        crate::config::model::DeviceSelection::Endpoint(_) => device
-            .map(|device| concise(&device.name))
-            .unwrap_or_else(|| "Selected device unavailable".into()),
     };
     OverlayRow {
         icon: match flow {
@@ -424,7 +417,7 @@ pub fn device_cycle_row(
         },
         tone: OverlayTone::Changed,
         title: title.into(),
-        detail,
+        detail: concise(&device.name),
     }
 }
 
@@ -1713,25 +1706,14 @@ mod tests {
         }
     }
     #[test]
-    fn device_cycle_rows_report_target_without_system_default_claim() {
+    fn device_cycle_rows_report_real_system_endpoint() {
         let device = crate::audio::DeviceId {
             endpoint: "opaque-id".into(),
             name: "USB Microphone".into(),
         };
-        let row = device_cycle_row(
-            crate::audio::DeviceCycleFlow::Input,
-            &crate::config::model::DeviceSelection::Endpoint("opaque-id".into()),
-            Some(&device),
-        );
+        let row = device_cycle_row(crate::audio::DeviceCycleFlow::Input, &device);
         assert_eq!(row.title, "Input device");
         assert_eq!(row.detail, "USB Microphone");
-
-        let default_row = device_cycle_row(
-            crate::audio::DeviceCycleFlow::Output,
-            &crate::config::model::DeviceSelection::Default,
-            None,
-        );
-        assert_eq!(default_row.detail, "Default device");
     }
 
     #[test]

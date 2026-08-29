@@ -1,6 +1,6 @@
 # Audio Design
 
-**Status: Implemented** (endpoints, notifications, configured device cycling,
+**Status: Implemented** (endpoints, notifications, system-default device cycling,
 foreground resolver, mute, and volume semantics). Known limitations listed at
 the end are accepted behavior, not gaps.
 
@@ -26,21 +26,28 @@ IMMDeviceEnumerator (CoCreateInstance MMDeviceEnumerator)
   state. Device enumeration failures degrade per-flow with warnings surfaced in Settings (#36),
   never aborting the whole subsystem.
 
-## Configured device cycling
+## System-default device cycling
 
-Phase-1 cycle hotkeys change only `Config.audio.input_device` or
-`Config.audio.output_device`; they never change the Windows system default
-endpoint. The audio worker plans the ring `Default → active endpoint list →
-Default` using opaque endpoint IDs. The plan is returned as a typed event, and
-the main thread performs validation, atomic persistence, `ConfigHandle`
-publication, and the dependent rebuild notification. Unavailable selections
-recover to `Default`; an empty list leaves an already-default selection
-unchanged and reports no active devices.
+Phase-1 cycle hotkeys enumerate active real endpoints, read the current Console
+default as the cycle cursor, select the next endpoint by opaque ID, and set
+that endpoint as the Windows default for Console, Multimedia, and
+Communications. The isolated `IPolicyConfig` wrapper performs the native
+default switch; successful switches immediately rebuild both endpoint flows
+and publish the normal device-cycle overlay. The Settings draft is not
+rewritten by a cycle hotkey.
+
+The Settings device picker contains only real active endpoints. A `Default`
+configuration selection remains a follow-the-system-default binding mode, but
+it is represented by current-default metadata rather than a selectable
+`Default device` pseudo-entry. Missing explicit bindings fall back to the
+current system default when rebuilding if that default is available.
 
 ## Notifications (no polling)
 
-* `IMMNotificationClient` on the enumerator — device state/add/remove/default changes send
-  `RefreshAll` commands.
+* `IMMNotificationClient::OnDefaultDeviceChanged` carries flow, role, and endpoint ID to the
+  worker; external changes trigger a coherent refresh of endpoint state and current-default
+  metadata.
+* Other endpoint state/add/remove/property changes send `RefreshAll` commands.
 * `IAudioEndpointVolumeCallback` per endpoint — external volume/mute changes arrive as commands.
 
 Both run on the audio thread, hold no references into worker state (raw post target only), and
@@ -132,3 +139,6 @@ drops and joining before main teardown (WIN32_LIFETIME.md).
   `IAudioSessionEnumerator`) are skipped and surface as `NoSession`. WinShort uses only classic
   session enumeration; there is no WASAPI2 package-session support.
 * Same-full-path independent instances behave as one app (above).
+
+* System-default switching uses the de-facto undocumented `IPolicyConfig`
+  interface; Windows desktop/hardware acceptance remains required.

@@ -41,11 +41,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Four optional Phase-1 hotkeys: cycle WinShort's configured input/output
-  targets and adjust foreground application session volume by ±5%.
+- Four optional Phase-1 hotkeys: cycle the Windows input/output defaults and
+  adjust foreground application session volume by ±5%.
 - Schema v3 persistence migrates v2 configurations without assigning new
-  global shortcuts; cycle changes persist atomically and hot-reload bindings
-  without reinstalling the keyboard hook.
+  global shortcuts; explicit Settings endpoint selections persist atomically,
+  while Cycle Input/Output switches Windows system defaults without rewriting
+  unsaved Settings drafts.
 
 ## [0.1.0] - 2026-08-24
 

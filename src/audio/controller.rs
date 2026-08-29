@@ -15,6 +15,7 @@ use crate::audio::state::{
     AppVolumeState, AudioRuntimeSnapshot, AudioState, DeviceCycleFlow, DeviceCycleResult,
     OutputState,
 };
+use crate::config::model::EndpointRole;
 use crate::config::{ConfigHandle, ConfigRevisionStamp, ConfigSnapshot};
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
@@ -25,32 +26,55 @@ pub enum EndpointFlow {
     Render,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefaultDeviceChange {
+    flow: EndpointFlow,
+    role: EndpointRole,
+    endpoint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingDefaultSwitch {
+    flow: EndpointFlow,
+    endpoint: String,
+    observed_roles: u8,
+}
+
+fn default_role_bit(role: EndpointRole) -> u8 {
+    match role {
+        EndpointRole::Console => 0b001,
+        EndpointRole::Multimedia => 0b010,
+        EndpointRole::Communications => 0b100,
+    }
+}
+
 /// Refresh work extracted from one worker backlog. External refreshes and
 /// config changes are tracked independently because an already-consumed
 /// ConfigChanged must not erase a real external refresh.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct PendingRebuild {
     external_refresh: bool,
     config_revision: Option<u64>,
+    default_changes: Vec<DefaultDeviceChange>,
 }
 
 impl PendingRebuild {
     fn external() -> Self {
         Self {
             external_refresh: true,
-            config_revision: None,
+            ..Self::default()
         }
     }
 
     fn config(stamp: ConfigRevisionStamp) -> Self {
         Self {
-            external_refresh: false,
             config_revision: Some(stamp.revision),
+            ..Self::default()
         }
     }
 
-    fn is_empty(self) -> bool {
-        !self.external_refresh && self.config_revision.is_none()
+    fn is_empty(&self) -> bool {
+        !self.external_refresh && self.config_revision.is_none() && self.default_changes.is_empty()
     }
 }
 
@@ -127,6 +151,11 @@ pub enum AudioCommand {
     },
     RefreshEndpoint(EndpointFlow),
     RefreshAll,
+    DefaultDeviceChanged {
+        flow: EndpointFlow,
+        role: EndpointRole,
+        endpoint: String,
+    },
     ConfigChanged {
         stamp: ConfigRevisionStamp,
     },
@@ -231,6 +260,7 @@ struct AudioController {
     render: Option<EndpointBinding>,
     capture_error: Option<String>,
     render_error: Option<String>,
+    pending_default_switches: Vec<PendingDefaultSwitch>,
 }
 
 impl AudioController {
@@ -266,6 +296,7 @@ impl AudioController {
             render: None,
             capture_error: None,
             render_error: None,
+            pending_default_switches: Vec::new(),
         };
         controller.rebuild_all(true, initial.value, crate::event::AudioEventOrigin::Initial);
         Ok(controller)
@@ -337,6 +368,19 @@ impl AudioController {
                     origin: crate::event::AudioEventOrigin::WinShortAction(request_id),
                 });
             }
+            AudioCommand::DefaultDeviceChanged {
+                flow,
+                role,
+                endpoint,
+            } => {
+                let mut pending = PendingRebuild::default();
+                pending.default_changes.push(DefaultDeviceChange {
+                    flow,
+                    role,
+                    endpoint,
+                });
+                self.apply_pending_rebuild(pending);
+            }
             AudioCommand::RefreshEndpoint(flow) => {
                 crate::log_debug!("audio {:?} endpoint notification", flow);
                 self.publish(flow, crate::event::AudioEventOrigin::External);
@@ -378,6 +422,8 @@ impl AudioController {
         snapshot: ConfigSnapshot,
         pending: PendingRebuild,
     ) {
+        let mut pending = pending;
+        self.filter_default_changes(&mut pending);
         let (revision, plan) = plan_pending_rebuild(snapshot, self.config_revision, pending);
         self.config_revision = revision;
         if let Some(plan) = plan {
@@ -385,18 +431,110 @@ impl AudioController {
         }
     }
 
-    fn cycle_device(&self, flow: DeviceCycleFlow) -> DeviceCycleResult {
-        let config = self.config.get();
-        let previous = match flow {
-            DeviceCycleFlow::Input => config.audio.input_device.clone(),
-            DeviceCycleFlow::Output => config.audio.output_device.clone(),
+    fn filter_default_changes(&mut self, pending: &mut PendingRebuild) {
+        if pending.external_refresh {
+            self.pending_default_switches.clear();
+        }
+        let changes = std::mem::take(&mut pending.default_changes);
+        for change in changes {
+            if !self.is_pending_default_change(&change) {
+                pending.external_refresh = true;
+            }
+        }
+    }
+
+    fn is_pending_default_change(&mut self, change: &DefaultDeviceChange) -> bool {
+        Self::consume_pending_default_change(&mut self.pending_default_switches, change)
+    }
+
+    fn consume_pending_default_change(
+        pending: &mut Vec<PendingDefaultSwitch>,
+        change: &DefaultDeviceChange,
+    ) -> bool {
+        let Some(index) = pending.iter().position(|expected| {
+            expected.flow == change.flow && expected.endpoint == change.endpoint
+        }) else {
+            pending.retain(|expected| expected.flow != change.flow);
+            return false;
         };
-        let devices = self.devices.read().expect("audio device list");
-        let active = match flow {
-            DeviceCycleFlow::Input => &devices.inputs,
-            DeviceCycleFlow::Output => &devices.outputs,
+        let complete = {
+            let expected = &mut pending[index];
+            expected.observed_roles |= default_role_bit(change.role);
+            expected.observed_roles == 0b111
         };
-        crate::audio::devices::device_cycle_result(flow, &previous, active)
+        if complete {
+            pending.remove(index);
+        }
+        true
+    }
+
+    fn cycle_device(&mut self, flow: DeviceCycleFlow) -> DeviceCycleResult {
+        let active = {
+            let devices = self.devices.read().expect("audio device list");
+            match flow {
+                DeviceCycleFlow::Input => devices.inputs.clone(),
+                DeviceCycleFlow::Output => devices.outputs.clone(),
+            }
+        };
+        let endpoint_flow = match flow {
+            DeviceCycleFlow::Input => EndpointFlow::Capture,
+            DeviceCycleFlow::Output => EndpointFlow::Render,
+        };
+        let current_default =
+            crate::audio::devices::current_default_device(&self.enumerator, endpoint_flow);
+        let previous = current_default.as_ref().ok().cloned();
+        match crate::audio::devices::device_cycle_result(flow, previous, &active) {
+            DeviceCycleResult::NoDevices { flow, previous } => {
+                DeviceCycleResult::NoDevices { flow, previous }
+            }
+            DeviceCycleResult::Changed {
+                flow,
+                previous,
+                device,
+            } => {
+                if let Err(error) = crate::audio::devices::set_system_default(
+                    &self.enumerator,
+                    endpoint_flow,
+                    &device,
+                ) {
+                    return DeviceCycleResult::Failed {
+                        flow,
+                        previous,
+                        target: Some(device),
+                        error: error.to_string(),
+                    };
+                }
+                self.pending_default_switches.push(PendingDefaultSwitch {
+                    flow: endpoint_flow,
+                    endpoint: device.endpoint.clone(),
+                    observed_roles: 0,
+                });
+                let snapshot = self.config.snapshot();
+                self.rebuild_all(
+                    false,
+                    snapshot.value,
+                    crate::event::AudioEventOrigin::Config(
+                        crate::event::ConfigCommitOrigin::DeviceCycle,
+                    ),
+                );
+                DeviceCycleResult::Changed {
+                    flow,
+                    previous,
+                    device,
+                }
+            }
+            DeviceCycleResult::Failed {
+                flow,
+                previous,
+                target,
+                error,
+            } => DeviceCycleResult::Failed {
+                flow,
+                previous,
+                target,
+                error,
+            },
+        }
     }
 
     fn refresh_config_if_needed(&mut self) {
@@ -648,6 +786,15 @@ fn coalesce_backlog(backlog: Vec<AudioCommand>) -> (PendingRebuild, Vec<AudioCom
         match cmd {
             AudioCommand::RefreshAll => pending.external_refresh = true,
             AudioCommand::ConfigChanged { stamp } => pending.config_revision = Some(stamp.revision),
+            AudioCommand::DefaultDeviceChanged {
+                flow,
+                role,
+                endpoint,
+            } => pending.default_changes.push(DefaultDeviceChange {
+                flow,
+                role,
+                endpoint,
+            }),
             other => rest.push(other),
         }
     }
@@ -666,6 +813,50 @@ mod tests {
         AudioCommand::ConfigChanged {
             stamp: stamp(revision, origin),
         }
+    }
+
+    fn default_changed(flow: EndpointFlow, role: EndpointRole, endpoint: &str) -> AudioCommand {
+        AudioCommand::DefaultDeviceChanged {
+            flow,
+            role,
+            endpoint: endpoint.into(),
+        }
+    }
+
+    #[test]
+    fn default_device_notifications_coalesce_as_refresh_work() {
+        let (pending, rest) = coalesce_backlog(vec![
+            default_changed(EndpointFlow::Render, EndpointRole::Console, "first"),
+            default_changed(EndpointFlow::Render, EndpointRole::Communications, "second"),
+        ]);
+        assert!(rest.is_empty());
+        assert_eq!(pending.default_changes.len(), 2);
+        assert_eq!(pending.default_changes[0].endpoint, "first");
+        assert_eq!(pending.default_changes[1].endpoint, "second");
+    }
+
+    #[test]
+    fn own_default_notifications_are_consumed_for_all_three_roles() {
+        let mut pending = vec![PendingDefaultSwitch {
+            flow: EndpointFlow::Render,
+            endpoint: "render-endpoint".into(),
+            observed_roles: 0,
+        }];
+        for role in [
+            EndpointRole::Console,
+            EndpointRole::Multimedia,
+            EndpointRole::Communications,
+        ] {
+            assert!(AudioController::consume_pending_default_change(
+                &mut pending,
+                &DefaultDeviceChange {
+                    flow: EndpointFlow::Render,
+                    role,
+                    endpoint: "render-endpoint".into(),
+                },
+            ));
+        }
+        assert!(pending.is_empty());
     }
 
     fn snapshot(

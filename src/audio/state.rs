@@ -1,7 +1,6 @@
 //! Audio state types shared across threads (main thread consumes; audio
 //! worker produces). Pure data — no COM.
 
-use crate::config::model::DeviceSelection;
 /// Identity of an audio endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceId {
@@ -21,13 +20,18 @@ pub enum DeviceCycleFlow {
 pub enum DeviceCycleResult {
     Changed {
         flow: DeviceCycleFlow,
-        previous: DeviceSelection,
-        selection: DeviceSelection,
-        device: Option<DeviceId>,
+        previous: Option<DeviceId>,
+        device: DeviceId,
     },
     NoDevices {
         flow: DeviceCycleFlow,
-        previous: DeviceSelection,
+        previous: Option<DeviceId>,
+    },
+    Failed {
+        flow: DeviceCycleFlow,
+        previous: Option<DeviceId>,
+        target: Option<DeviceId>,
+        error: String,
     },
 }
 

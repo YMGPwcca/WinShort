@@ -3,6 +3,7 @@
 pub mod controller;
 pub mod devices;
 pub mod notifications;
+mod policy;
 pub mod sessions;
 pub mod state;
 

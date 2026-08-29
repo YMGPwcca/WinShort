@@ -171,8 +171,9 @@ callback (own events filtered) · foreground app mute · foreground app volume �
 app without audio ("no audio session") · multi-session app (aggregate Mixed→mute-all) · app exits
 mid-enumeration · audio service restart (`net stop audiosrv`) → endpoints rebuild · same-basename
 different installations (ambiguous refusal) · same-full-path independent instances (accepted
-limitation) · configured input/output cycle ring (Default → active endpoints → Default), including
-unavailable endpoint recovery and duplicate friendly names.
+limitation) · input/output cycle through active real endpoints and
+set all three Windows default roles, including unavailable-endpoint recovery
+and duplicate friendly names.
 
 Policy-level properties run in CI: resolver ladder grouping invariants (#37).
 
@@ -247,7 +248,7 @@ fuzz campaign is claimed or running.
 - Multi-session foreground app (browser with media)
 - Same-basename different installations (#46 ambiguous case)
 - Same-full-path independent instances (accepted limitation)
-- Configured input/output cycle hotkeys change WinShort's target, not the Windows default
+- Cycle Input/Output hotkeys change the Windows system default for all three roles
 - Foreground volume up/down changes only matched application sessions by 5 percentage points
 - Long multi-session volume values show an exact percentage or truthful min–max range
 

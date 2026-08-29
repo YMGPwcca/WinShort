@@ -20,76 +20,87 @@ use crate::audio::state::{AudioState, DeviceId, OutputState};
 use crate::config::model::{DeviceSelection, EndpointRole};
 use crate::error::{Error, Result};
 
+/// The three Windows default roles are always handled together for a cycle.
+pub const ALL_ENDPOINT_ROLES: [EndpointRole; 3] = [
+    EndpointRole::Console,
+    EndpointRole::Multimedia,
+    EndpointRole::Communications,
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DefaultDevices {
+    pub console: Option<DeviceId>,
+    pub multimedia: Option<DeviceId>,
+    pub communications: Option<DeviceId>,
+}
+
+impl DefaultDevices {
+    pub fn for_role(&self, role: EndpointRole) -> Option<&DeviceId> {
+        match role {
+            EndpointRole::Console => self.console.as_ref(),
+            EndpointRole::Multimedia => self.multimedia.as_ref(),
+            EndpointRole::Communications => self.communications.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceLists {
     pub inputs: Vec<DeviceId>,
     pub outputs: Vec<DeviceId>,
+    /// Current Windows defaults, retained as metadata rather than pseudo
+    /// entries in the selectable endpoint lists.
+    pub input_defaults: DefaultDevices,
+    pub output_defaults: DefaultDevices,
     /// Per-flow degradation notes from the last enumeration (#36): a failed
-    /// flow yields an empty list plus a warning instead of failing wholesale.
+    /// flow yields an empty list plus a warning instead of losing both flows.
     pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceCyclePlan {
-    Select(DeviceSelection),
+    Select(DeviceId),
     NoActiveEndpoints,
 }
 
-/// Plan the next configured endpoint without consulting friendly names.
+/// Plan the next real Windows endpoint from the current system default.
 ///
 /// The active inventory order is the cycle order. Endpoint IDs are opaque and
-/// remain the only identity used for matching an existing selection.
-pub fn plan_device_cycle(current: &DeviceSelection, active: &[DeviceId]) -> DeviceCyclePlan {
+/// remain the only identity used for matching; there is no synthetic default
+/// entry or internal target in this ring.
+pub fn plan_device_cycle(current: Option<&DeviceId>, active: &[DeviceId]) -> DeviceCyclePlan {
     if active.is_empty() {
-        return match current {
-            DeviceSelection::Default => DeviceCyclePlan::NoActiveEndpoints,
-            DeviceSelection::Endpoint(_) => DeviceCyclePlan::Select(DeviceSelection::Default),
-        };
+        return DeviceCyclePlan::NoActiveEndpoints;
     }
-    let next = match current {
-        DeviceSelection::Default => DeviceSelection::Endpoint(active[0].endpoint.clone()),
-        DeviceSelection::Endpoint(id) => {
-            match active.iter().position(|device| device.endpoint == *id) {
-                Some(index) if index + 1 < active.len() => {
-                    DeviceSelection::Endpoint(active[index + 1].endpoint.clone())
-                }
-                Some(_) | None => DeviceSelection::Default,
-            }
-        }
-    };
-    DeviceCyclePlan::Select(next)
+    let next = current
+        .and_then(|current| {
+            active
+                .iter()
+                .position(|device| device.endpoint == current.endpoint)
+        })
+        .map(|index| (index + 1) % active.len())
+        .unwrap_or(0);
+    DeviceCyclePlan::Select(active[next].clone())
 }
 
 pub fn device_cycle_result(
     flow: crate::audio::DeviceCycleFlow,
-    current: &DeviceSelection,
+    previous: Option<DeviceId>,
     active: &[DeviceId],
 ) -> crate::audio::DeviceCycleResult {
-    let previous = current.clone();
-    match plan_device_cycle(current, active) {
-        DeviceCyclePlan::Select(selection) => {
-            let device = match &selection {
-                DeviceSelection::Endpoint(id) => {
-                    active.iter().find(|device| device.endpoint == *id).cloned()
-                }
-                DeviceSelection::Default => None,
-            };
-            crate::audio::DeviceCycleResult::Changed {
-                flow,
-                previous,
-                selection,
-                device,
-            }
-        }
+    match plan_device_cycle(previous.as_ref(), active) {
+        DeviceCyclePlan::Select(device) => crate::audio::DeviceCycleResult::Changed {
+            flow,
+            previous,
+            device,
+        },
         DeviceCyclePlan::NoActiveEndpoints => {
             crate::audio::DeviceCycleResult::NoDevices { flow, previous }
         }
     }
 }
 
-/// Enumerate active endpoints per flow. One flow failing (or one device's
-/// properties failing inside a flow) degrades to an empty list + warning
-/// rather than losing both flows (#36).
+/// Enumerate active endpoints and the current Windows default per role.
 pub fn enumerate_devices(enumerator: &IMMDeviceEnumerator) -> DeviceLists {
     let mut warnings = Vec::new();
     let inputs = match enumerate_flow(enumerator, EndpointFlow::Capture) {
@@ -106,11 +117,110 @@ pub fn enumerate_devices(enumerator: &IMMDeviceEnumerator) -> DeviceLists {
             Vec::new()
         }
     };
+    let input_defaults = enumerate_defaults(enumerator, EndpointFlow::Capture, &mut warnings);
+    let output_defaults = enumerate_defaults(enumerator, EndpointFlow::Render, &mut warnings);
     DeviceLists {
         inputs,
         outputs,
+        input_defaults,
+        output_defaults,
         warnings,
     }
+}
+
+fn enumerate_defaults(
+    enumerator: &IMMDeviceEnumerator,
+    flow: EndpointFlow,
+    warnings: &mut Vec<String>,
+) -> DefaultDevices {
+    let mut defaults = DefaultDevices::default();
+    for role in ALL_ENDPOINT_ROLES {
+        match default_device(enumerator, flow, role) {
+            Ok(device) => match role {
+                EndpointRole::Console => defaults.console = Some(device),
+                EndpointRole::Multimedia => defaults.multimedia = Some(device),
+                EndpointRole::Communications => defaults.communications = Some(device),
+            },
+            Err(error) => warnings.push(format!(
+                "{flow:?} {role:?} default enumeration failed: {error}"
+            )),
+        }
+    }
+    defaults
+}
+
+/// Return the current console default, which is the canonical cycle cursor.
+pub(crate) fn current_default_device(
+    enumerator: &IMMDeviceEnumerator,
+    flow: EndpointFlow,
+) -> Result<DeviceId> {
+    default_device(enumerator, flow, EndpointRole::Console)
+}
+
+fn default_device(
+    enumerator: &IMMDeviceEnumerator,
+    flow: EndpointFlow,
+    role: EndpointRole,
+) -> Result<DeviceId> {
+    let device = unsafe {
+        enumerator
+            .GetDefaultAudioEndpoint(data_flow(flow), endpoint_role(role))
+            .map_err(|e| {
+                Error::os_ctx(
+                    "GetDefaultAudioEndpoint",
+                    e.code().0 as u32,
+                    format!("{:?} / {:?}", flow, role),
+                )
+            })?
+    };
+    identity(&device, flow)
+}
+
+/// Set one real endpoint as the Windows default for every applicable role.
+///
+/// If a later role fails, previously changed roles are restored when their
+/// prior defaults were readable. The caller must treat any error as a failed
+/// switch and must not publish success.
+pub(crate) fn set_system_default(
+    enumerator: &IMMDeviceEnumerator,
+    flow: EndpointFlow,
+    target: &DeviceId,
+) -> Result<()> {
+    let policy = super::policy::PolicyConfig::create()?;
+    let previous: [Option<String>; 3] =
+        ALL_ENDPOINT_ROLES.map(|role| match default_device(enumerator, flow, role) {
+            Ok(device) => Some(device.endpoint),
+            Err(error) => {
+                crate::warn_!(
+                    "audio {:?} {:?} prior default unavailable: {error}",
+                    flow,
+                    role
+                );
+                None
+            }
+        });
+
+    for (index, role) in ALL_ENDPOINT_ROLES.iter().copied().enumerate() {
+        if let Err(error) = policy.set_default_endpoint(&target.endpoint, endpoint_role(role)) {
+            crate::warn_!("audio {:?} {:?} default switch failed: {error}", flow, role);
+            for rollback_index in (0..index).rev() {
+                if let Some(endpoint) = previous[rollback_index].as_deref() {
+                    if let Err(rollback_error) = policy.set_default_endpoint(
+                        endpoint,
+                        endpoint_role(ALL_ENDPOINT_ROLES[rollback_index]),
+                    ) {
+                        crate::warn_!(
+                            "audio {:?} {:?} default rollback failed: {rollback_error}",
+                            flow,
+                            ALL_ENDPOINT_ROLES[rollback_index]
+                        );
+                    }
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn enumerate_flow(enumerator: &IMMDeviceEnumerator, flow: EndpointFlow) -> Result<Vec<DeviceId>> {
@@ -243,9 +353,24 @@ pub(crate) fn resolve_device(
                 }),
             DeviceSelection::Endpoint(id) => {
                 let wide = HSTRING::from(id);
-                enumerator
-                    .GetDevice(PCWSTR(wide.as_ptr()))
-                    .map_err(|e| Error::win("IMMDeviceEnumerator::GetDevice", &e))
+                match enumerator.GetDevice(PCWSTR(wide.as_ptr())) {
+                    Ok(device) => Ok(device),
+                    Err(error) => {
+                        crate::warn_!(
+                            "audio {:?} configured endpoint unavailable; using system default: {error}",
+                            flow
+                        );
+                        enumerator
+                            .GetDefaultAudioEndpoint(data_flow(flow), endpoint_role(role))
+                            .map_err(|fallback| {
+                                Error::os_ctx(
+                                    "GetDefaultAudioEndpoint",
+                                    fallback.code().0 as u32,
+                                    format!("{:?} / {:?}", flow, role),
+                                )
+                            })
+                    }
+                }
             }
         }
     }
@@ -338,52 +463,71 @@ mod cycle_tests {
     }
 
     #[test]
-    fn default_selects_first_active_endpoint() {
+    fn missing_system_default_selects_first_active_endpoint() {
         let active = [
             device("first-id", "Same name"),
             device("second-id", "Same name"),
         ];
         assert_eq!(
-            plan_device_cycle(&DeviceSelection::Default, &active),
-            DeviceCyclePlan::Select(DeviceSelection::Endpoint("first-id".into()))
+            plan_device_cycle(None, &active),
+            DeviceCyclePlan::Select(active[0].clone())
         );
     }
 
     #[test]
-    fn endpoint_cycles_and_wraps_to_default() {
+    fn endpoint_cycles_and_wraps_to_first_real_endpoint() {
         let active = [device("first-id", "First"), device("second-id", "Second")];
         assert_eq!(
-            plan_device_cycle(&DeviceSelection::Endpoint("first-id".into()), &active),
-            DeviceCyclePlan::Select(DeviceSelection::Endpoint("second-id".into()))
+            plan_device_cycle(Some(&active[0]), &active),
+            DeviceCyclePlan::Select(active[1].clone())
         );
         assert_eq!(
-            plan_device_cycle(&DeviceSelection::Endpoint("second-id".into()), &active),
-            DeviceCyclePlan::Select(DeviceSelection::Default)
+            plan_device_cycle(Some(&active[1]), &active),
+            DeviceCyclePlan::Select(active[0].clone())
         );
     }
 
     #[test]
-    fn unavailable_endpoint_recovers_to_default() {
+    fn cycle_result_reports_real_previous_and_target_endpoints() {
+        let active = [device("first-id", "First"), device("second-id", "Second")];
+        let result = device_cycle_result(
+            crate::audio::DeviceCycleFlow::Output,
+            Some(active[0].clone()),
+            &active,
+        );
+        match result {
+            crate::audio::DeviceCycleResult::Changed {
+                previous: Some(previous),
+                device,
+                ..
+            } => {
+                assert_eq!(previous, active[0]);
+                assert_eq!(device, active[1]);
+            }
+            other => panic!("unexpected cycle result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unavailable_system_default_recovers_to_first_active_endpoint() {
+        let current = device("missing-id", "Missing");
         let active = [device("current-id", "Current")];
         assert_eq!(
-            plan_device_cycle(&DeviceSelection::Endpoint("missing-id".into()), &active),
-            DeviceCyclePlan::Select(DeviceSelection::Default)
+            plan_device_cycle(Some(&current), &active),
+            DeviceCyclePlan::Select(active[0].clone())
         );
     }
 
     #[test]
     fn no_active_endpoints_is_a_noop() {
         assert_eq!(
-            plan_device_cycle(&DeviceSelection::Default, &[]),
+            plan_device_cycle(None, &[]),
             DeviceCyclePlan::NoActiveEndpoints
         );
-    }
-
-    #[test]
-    fn unavailable_endpoint_recovers_even_when_inventory_is_empty() {
+        let current = device("missing-id", "Missing");
         assert_eq!(
-            plan_device_cycle(&DeviceSelection::Endpoint("missing-id".into()), &[]),
-            DeviceCyclePlan::Select(DeviceSelection::Default)
+            plan_device_cycle(Some(&current), &[]),
+            DeviceCyclePlan::NoActiveEndpoints
         );
     }
 
@@ -391,8 +535,41 @@ mod cycle_tests {
     fn duplicate_friendly_names_still_cycle_by_endpoint_id() {
         let active = [device("a", "USB microphone"), device("b", "USB microphone")];
         assert_eq!(
-            plan_device_cycle(&DeviceSelection::Endpoint("a".into()), &active),
-            DeviceCyclePlan::Select(DeviceSelection::Endpoint("b".into()))
+            plan_device_cycle(Some(&active[0]), &active),
+            DeviceCyclePlan::Select(active[1].clone())
+        );
+    }
+
+    #[test]
+    fn default_devices_are_indexed_by_role_without_pseudo_entries() {
+        let console = device("console", "Console");
+        let multimedia = device("multimedia", "Multimedia");
+        let communications = device("communications", "Communications");
+        let defaults = DefaultDevices {
+            console: Some(console.clone()),
+            multimedia: Some(multimedia.clone()),
+            communications: Some(communications.clone()),
+        };
+        assert_eq!(defaults.for_role(EndpointRole::Console), Some(&console));
+        assert_eq!(
+            defaults.for_role(EndpointRole::Multimedia),
+            Some(&multimedia)
+        );
+        assert_eq!(
+            defaults.for_role(EndpointRole::Communications),
+            Some(&communications)
+        );
+    }
+
+    #[test]
+    fn system_cycle_applies_console_multimedia_and_communications_roles() {
+        assert_eq!(
+            ALL_ENDPOINT_ROLES,
+            [
+                EndpointRole::Console,
+                EndpointRole::Multimedia,
+                EndpointRole::Communications,
+            ]
         );
     }
 }

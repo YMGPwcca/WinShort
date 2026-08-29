@@ -9,8 +9,9 @@ use windows::Win32::Media::Audio::Endpoints::{
     IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
 };
 use windows::Win32::Media::Audio::{
-    EDataFlow, ERole, IMMNotificationClient, IMMNotificationClient_Impl,
-    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE,
+    eCapture as E_CAPTURE, eCommunications as E_COMMUNICATIONS, eConsole as E_CONSOLE,
+    eMultimedia as E_MULTIMEDIA, eRender as E_RENDER, EDataFlow, ERole, IMMNotificationClient,
+    IMMNotificationClient_Impl, AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE,
 };
 
 use crate::audio::controller::{AudioCommand, EndpointFlow};
@@ -41,6 +42,36 @@ impl DeviceNotificationClient {
     }
 }
 
+fn map_default_device_change(
+    flow: EDataFlow,
+    role: ERole,
+    default_device_id: &PCWSTR,
+) -> windows::core::Result<Option<AudioCommand>> {
+    let Some(flow) = (match flow {
+        E_CAPTURE => Some(EndpointFlow::Capture),
+        E_RENDER => Some(EndpointFlow::Render),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let Some(role) = (match role {
+        E_CONSOLE => Some(crate::config::model::EndpointRole::Console),
+        E_MULTIMEDIA => Some(crate::config::model::EndpointRole::Multimedia),
+        E_COMMUNICATIONS => Some(crate::config::model::EndpointRole::Communications),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    if default_device_id.0.is_null() {
+        return Ok(Some(AudioCommand::RefreshAll));
+    }
+    let endpoint = unsafe { default_device_id.to_string()? };
+    Ok(Some(AudioCommand::DefaultDeviceChanged {
+        flow,
+        role,
+        endpoint,
+    }))
+}
 impl IMMNotificationClient_Impl for DeviceNotificationClient_Impl {
     fn OnDeviceStateChanged(
         &self,
@@ -63,11 +94,13 @@ impl IMMNotificationClient_Impl for DeviceNotificationClient_Impl {
 
     fn OnDefaultDeviceChanged(
         &self,
-        _flow: EDataFlow,
-        _role: ERole,
-        _default_device_id: &PCWSTR,
+        flow: EDataFlow,
+        role: ERole,
+        default_device_id: &PCWSTR,
     ) -> windows::core::Result<()> {
-        let _ = self.sender.send(AudioCommand::RefreshAll);
+        if let Some(command) = map_default_device_change(flow, role, default_device_id)? {
+            let _ = self.sender.send(command);
+        }
         Ok(())
     }
 
@@ -114,7 +147,7 @@ impl IAudioEndpointVolumeCallback_Impl for EndpointVolumeClient_Impl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::core::GUID;
+    use windows::core::{GUID, HSTRING, PCWSTR};
 
     #[test]
     fn own_context_notifications_are_dropped() {
@@ -128,5 +161,20 @@ mod tests {
             notify_command(EndpointFlow::Capture, foreign),
             Some(AudioCommand::RefreshEndpoint(_))
         ));
+    }
+
+    #[test]
+    fn default_change_notifications_preserve_flow_role_and_endpoint() {
+        let id = HSTRING::from("render-endpoint");
+        let command =
+            map_default_device_change(E_RENDER, E_COMMUNICATIONS, &PCWSTR(id.as_ptr())).unwrap();
+        assert_eq!(
+            command,
+            Some(AudioCommand::DefaultDeviceChanged {
+                flow: EndpointFlow::Render,
+                role: crate::config::model::EndpointRole::Communications,
+                endpoint: "render-endpoint".into(),
+            })
+        );
     }
 }

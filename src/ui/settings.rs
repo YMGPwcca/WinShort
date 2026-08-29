@@ -409,10 +409,16 @@ impl SettingsUi {
             ElementId::InputDevice => ControlValue::Text(Cow::Owned(device_label(
                 &self.draft.audio.input_device,
                 &self.devices.inputs,
+                self.devices
+                    .input_defaults
+                    .for_role(self.draft.audio.input_role),
             ))),
             ElementId::OutputDevice => ControlValue::Text(Cow::Owned(device_label(
                 &self.draft.audio.output_device,
                 &self.devices.outputs,
+                self.devices
+                    .output_defaults
+                    .for_role(self.draft.audio.output_role),
             ))),
             ElementId::InputRole => {
                 ControlValue::Text(Cow::Borrowed(self.draft.audio.input_role.label()))
@@ -1018,22 +1024,6 @@ impl SettingsUi {
         self.validation.clear();
     }
 
-    fn merge_external_device_cycle(
-        &mut self,
-        flow: crate::audio::DeviceCycleFlow,
-        old_live: &DeviceSelection,
-        new_live: &DeviceSelection,
-    ) {
-        let draft = match flow {
-            crate::audio::DeviceCycleFlow::Input => &mut self.draft.audio.input_device,
-            crate::audio::DeviceCycleFlow::Output => &mut self.draft.audio.output_device,
-        };
-        if draft == old_live {
-            *draft = new_live.clone();
-        }
-        self.reset_confirm = false;
-        self.validation.clear();
-    }
     fn install_automation(&mut self, hwnd: HWND) {
         if self.automation.is_none() {
             self.automation = Some(SettingsAutomation::new(hwnd));
@@ -1417,30 +1407,6 @@ impl SettingsWindow {
         self.cancel_picker_impl(false);
     }
 
-    pub(crate) fn cancel_picker_for_device_cycle(&mut self, flow: crate::audio::DeviceCycleFlow) {
-        let owner = match flow {
-            crate::audio::DeviceCycleFlow::Input => ElementId::InputDevice,
-            crate::audio::DeviceCycleFlow::Output => ElementId::OutputDevice,
-        };
-        if self.picker_owner == Some(owner) {
-            self.cancel_picker_without_focus();
-        }
-    }
-
-    pub(crate) fn merge_external_device_cycle(
-        &mut self,
-        flow: crate::audio::DeviceCycleFlow,
-        old_live: &DeviceSelection,
-        new_live: &DeviceSelection,
-    ) {
-        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            let mut ui = cell.borrow_mut();
-            ui.merge_external_device_cycle(flow, old_live, new_live);
-            ui.publish_automation_snapshot(self.hwnd);
-        }
-        invalidate(self.hwnd);
-    }
-
     pub(crate) fn close_for_hide(&mut self) {
         let hwnd = self.hwnd;
         close_picker_before_settings_hide(
@@ -1663,18 +1629,16 @@ fn picker_choices(
     let mut choices = Vec::new();
     match kind {
         PickerKind::InputDevice => {
-            choices.push(PickerChoice {
-                label: "Default device".into(),
-                value: PickerValue::Device(DeviceSelection::Default),
-            });
-            choices.extend(device_choices(&draft.audio.input_device, &devices.inputs));
+            choices.extend(device_choices(
+                &devices.inputs,
+                devices.input_defaults.for_role(draft.audio.input_role),
+            ));
         }
         PickerKind::OutputDevice => {
-            choices.push(PickerChoice {
-                label: "Default device".into(),
-                value: PickerValue::Device(DeviceSelection::Default),
-            });
-            choices.extend(device_choices(&draft.audio.output_device, &devices.outputs));
+            choices.extend(device_choices(
+                &devices.outputs,
+                devices.output_defaults.for_role(draft.audio.output_role),
+            ));
         }
         PickerKind::InputRole => {
             for role in [
@@ -1758,34 +1722,71 @@ fn picker_choices(
             }
         }
     }
-    let current = current_picker_value(kind, draft);
-    let current_index = choices
-        .iter()
-        .position(|choice| choice.value == current)
-        .unwrap_or(0);
+    let current_index = match kind {
+        PickerKind::InputDevice => current_device_index(
+            &draft.audio.input_device,
+            devices.input_defaults.for_role(draft.audio.input_role),
+            &choices,
+        ),
+        PickerKind::OutputDevice => current_device_index(
+            &draft.audio.output_device,
+            devices.output_defaults.for_role(draft.audio.output_role),
+            &choices,
+        ),
+        _ => {
+            let current = current_picker_value(kind, draft);
+            choices
+                .iter()
+                .position(|choice| choice.value == current)
+                .unwrap_or(0)
+        }
+    };
     (choices, current_index)
 }
 
 fn device_choices(
-    current: &DeviceSelection,
     devices: &[crate::audio::DeviceId],
+    default: Option<&crate::audio::DeviceId>,
 ) -> Vec<PickerChoice> {
-    let mut choices = devices
+    devices
         .iter()
         .map(|device| PickerChoice {
-            label: device.name.clone(),
+            label: device_choice_label(device, default),
             value: PickerValue::Device(DeviceSelection::Endpoint(device.endpoint.clone())),
         })
-        .collect::<Vec<_>>();
-    if let DeviceSelection::Endpoint(endpoint) = current {
-        if !devices.iter().any(|device| device.endpoint == *endpoint) {
-            choices.push(PickerChoice {
-                label: "Selected device unavailable".into(),
-                value: PickerValue::Device(DeviceSelection::Endpoint(endpoint.clone())),
-            });
-        }
+        .collect()
+}
+
+fn current_device_index(
+    selection: &DeviceSelection,
+    default: Option<&crate::audio::DeviceId>,
+    choices: &[PickerChoice],
+) -> usize {
+    let endpoint = match selection {
+        DeviceSelection::Default => default.map(|device| device.endpoint.as_str()),
+        DeviceSelection::Endpoint(endpoint) => Some(endpoint.as_str()),
+    };
+    endpoint
+        .and_then(|endpoint| {
+            choices.iter().position(|choice| {
+                matches!(
+                    &choice.value,
+                    PickerValue::Device(DeviceSelection::Endpoint(id)) if id == endpoint
+                )
+            })
+        })
+        .unwrap_or(0)
+}
+
+fn device_choice_label(
+    device: &crate::audio::DeviceId,
+    default: Option<&crate::audio::DeviceId>,
+) -> String {
+    if default.is_some_and(|current| current.endpoint == device.endpoint) {
+        format!("{} (System Default)", device.name)
+    } else {
+        device.name.clone()
     }
-    choices
 }
 
 fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
@@ -2190,6 +2191,7 @@ fn mouse_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
     let scale = 96.0 / dpi.max(96) as f32;
     (x * scale, y * scale)
 }
+
 fn scroll_after_wheel(scroll: f32, delta: f32, max_scroll: f32) -> f32 {
     (scroll - delta / 120.0 * 64.0).clamp(0.0, max_scroll)
 }
@@ -2232,14 +2234,29 @@ fn start_timer(hwnd: HWND) {
     }
 }
 
-fn device_label(selection: &DeviceSelection, devices: &[crate::audio::DeviceId]) -> String {
+fn device_label(
+    selection: &DeviceSelection,
+    devices: &[crate::audio::DeviceId],
+    default: Option<&crate::audio::DeviceId>,
+) -> String {
     match selection {
-        DeviceSelection::Default => "Default device".into(),
+        DeviceSelection::Default => default
+            .map(|device| device_choice_label(device, Some(device)))
+            .unwrap_or_else(|| "System default unavailable".into()),
         DeviceSelection::Endpoint(id) => devices
             .iter()
             .find(|device| device.endpoint == *id)
-            .map(|device| device.name.clone())
-            .unwrap_or_else(|| "Selected device unavailable".into()),
+            .map(|device| device_choice_label(device, default))
+            .unwrap_or_else(|| {
+                default
+                    .map(|device| {
+                        format!(
+                            "Selected device unavailable — using {}",
+                            device_choice_label(device, Some(device))
+                        )
+                    })
+                    .unwrap_or_else(|| "Selected device unavailable".into())
+            }),
     }
 }
 
@@ -2368,7 +2385,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn explicit_unavailable_device_is_preserved_in_picker() {
+    fn explicit_unavailable_device_is_not_inserted_as_fake_picker_row() {
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("missing-endpoint".into());
         let devices = crate::audio::devices::DeviceLists {
@@ -2377,14 +2394,54 @@ mod interaction_tests {
                 name: "Current microphone".into(),
             }],
             outputs: Vec::new(),
+            input_defaults: Default::default(),
+            output_defaults: Default::default(),
             warnings: Vec::new(),
         };
         let (choices, current) = picker_choices(PickerKind::InputDevice, &config, &devices, &[]);
-        assert_eq!(choices[current].label, "Selected device unavailable");
+        assert_eq!(choices.len(), 1);
+        assert_eq!(current, 0);
+        assert_eq!(choices[current].label, "Current microphone");
         assert_eq!(
             choices[current].value,
-            PickerValue::Device(DeviceSelection::Endpoint("missing-endpoint".into()))
+            PickerValue::Device(DeviceSelection::Endpoint("current-endpoint".into()))
         );
+        assert_eq!(
+            config.audio.input_device,
+            DeviceSelection::Endpoint("missing-endpoint".into())
+        );
+    }
+
+    #[test]
+    fn device_picker_omits_pseudo_default_and_marks_system_default() {
+        let current = crate::audio::DeviceId {
+            endpoint: "current-endpoint".into(),
+            name: "Current microphone".into(),
+        };
+        let devices = crate::audio::devices::DeviceLists {
+            inputs: vec![current.clone()],
+            outputs: Vec::new(),
+            input_defaults: crate::audio::devices::DefaultDevices {
+                console: Some(current.clone()),
+                ..Default::default()
+            },
+            output_defaults: Default::default(),
+            warnings: Vec::new(),
+        };
+        let config = Config::default();
+        let (choices, selected) = picker_choices(PickerKind::InputDevice, &config, &devices, &[]);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(selected, 0);
+        assert_eq!(choices[0].label, "Current microphone (System Default)");
+        assert_eq!(
+            choices[0].value,
+            PickerValue::Device(DeviceSelection::Endpoint("current-endpoint".into()))
+        );
+        let ui = SettingsUi::new(96, devices);
+        match ui.value_for(ElementId::InputDevice) {
+            ControlValue::Text(value) => assert_eq!(value, "Current microphone (System Default)"),
+            _ => panic!("unexpected control value variant"),
+        }
     }
     #[test]
     fn endpoint_roles_apply_only_to_default_selection() {
@@ -2475,6 +2532,8 @@ mod interaction_tests {
                 endpoint: "output".into(),
                 name: "Cached speakers".into(),
             }],
+            input_defaults: Default::default(),
+            output_defaults: Default::default(),
             warnings: Vec::new(),
         };
         let mut ui = SettingsUi::new(96, devices);
@@ -2557,6 +2616,8 @@ mod interaction_tests {
             crate::audio::devices::DeviceLists {
                 inputs: Vec::new(),
                 outputs: Vec::new(),
+                input_defaults: Default::default(),
+                output_defaults: Default::default(),
                 warnings: Vec::new(),
             },
         )
@@ -2803,28 +2864,6 @@ mod interaction_tests {
         let second = Cell::new(0);
         automation.flush_pending_events_for_test(|_| second.set(second.get() + 1));
         assert_eq!(second.get(), 0);
-    }
-
-    #[test]
-    fn external_device_cycle_updates_clean_draft_and_preserves_unrelated_dirty_fields() {
-        let old = DeviceSelection::Default;
-        let new = DeviceSelection::Endpoint("next-input".into());
-        let mut ui = empty_settings_ui();
-        ui.draft.overlay.enabled = false;
-        ui.merge_external_device_cycle(crate::audio::DeviceCycleFlow::Input, &old, &new);
-        assert_eq!(ui.draft.audio.input_device, new);
-        assert!(!ui.draft.overlay.enabled);
-    }
-
-    #[test]
-    fn external_device_cycle_preserves_same_field_user_draft() {
-        let old = DeviceSelection::Default;
-        let new = DeviceSelection::Endpoint("live-next".into());
-        let user_draft = DeviceSelection::Endpoint("user-choice".into());
-        let mut ui = empty_settings_ui();
-        ui.draft.audio.input_device = user_draft.clone();
-        ui.merge_external_device_cycle(crate::audio::DeviceCycleFlow::Input, &old, &new);
-        assert_eq!(ui.draft.audio.input_device, user_draft);
     }
 
     #[test]

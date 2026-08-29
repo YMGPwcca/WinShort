@@ -618,8 +618,44 @@ impl App {
             audio.send(crate::audio::AudioCommand::CycleDevice { flow, request_id });
             return;
         }
-        let result = self.plan_device_cycle(flow);
-        self.handle_device_cycle_result(request_id, result);
+        let error = self
+            .degraded_reason("audio")
+            .unwrap_or_else(|| "audio subsystem unavailable".into());
+        self.handle_device_cycle_result(
+            request_id,
+            crate::audio::DeviceCycleResult::Failed {
+                flow,
+                previous: None,
+                target: None,
+                error,
+            },
+        );
+    }
+
+    fn handle_device_cycle_result(
+        &mut self,
+        request_id: u64,
+        result: crate::audio::DeviceCycleResult,
+    ) {
+        match result {
+            crate::audio::DeviceCycleResult::Changed { flow, device, .. } => {
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::device_cycle_row(flow, &device),
+                ));
+                crate::log_debug!("device cycle request {request_id} applied for {flow:?}");
+            }
+            crate::audio::DeviceCycleResult::NoDevices { flow, .. } => {
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::device_cycle_no_devices_row(flow),
+                ));
+            }
+            crate::audio::DeviceCycleResult::Failed { flow, error, .. } => {
+                crate::warn_!("device cycle request {request_id} failed: {error}");
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::device_cycle_error_row(flow, &error),
+                ));
+            }
+        }
     }
 
     fn dispatch_foreground_volume(&mut self, adjustment: crate::audio::sessions::VolumeAdjustment) {
@@ -642,94 +678,6 @@ impl App {
                 state: crate::audio::AppVolumeState::error(None, reason),
                 origin: AudioEventOrigin::WinShortAction(request_id),
             });
-        }
-    }
-
-    fn plan_device_cycle(
-        &self,
-        flow: crate::audio::DeviceCycleFlow,
-    ) -> crate::audio::DeviceCycleResult {
-        let config = crate::app::config();
-        let previous = match flow {
-            crate::audio::DeviceCycleFlow::Input => config.audio.input_device.clone(),
-            crate::audio::DeviceCycleFlow::Output => config.audio.output_device.clone(),
-        };
-        let devices = self.audio_devices();
-        let active = match flow {
-            crate::audio::DeviceCycleFlow::Input => &devices.inputs,
-            crate::audio::DeviceCycleFlow::Output => &devices.outputs,
-        };
-        crate::audio::devices::device_cycle_result(flow, &previous, active)
-    }
-
-    fn handle_device_cycle_result(
-        &mut self,
-        request_id: u64,
-        result: crate::audio::DeviceCycleResult,
-    ) {
-        match result {
-            crate::audio::DeviceCycleResult::Changed {
-                flow,
-                previous,
-                selection,
-                device,
-            } => {
-                let live = crate::app::config();
-                let current = match flow {
-                    crate::audio::DeviceCycleFlow::Input => live.audio.input_device.clone(),
-                    crate::audio::DeviceCycleFlow::Output => live.audio.output_device.clone(),
-                };
-                if current != previous {
-                    drop(live);
-                    self.handle_device_cycle_result(request_id, self.plan_device_cycle(flow));
-                    return;
-                }
-
-                if let Some(settings) = &mut self.settings {
-                    settings.cancel_picker_for_device_cycle(flow);
-                }
-                let mut candidate = (*live).clone();
-                match flow {
-                    crate::audio::DeviceCycleFlow::Input => {
-                        candidate.audio.input_device = selection.clone();
-                    }
-                    crate::audio::DeviceCycleFlow::Output => {
-                        candidate.audio.output_device = selection.clone();
-                    }
-                }
-                match commit_config(candidate, crate::event::ConfigCommitOrigin::DeviceCycle) {
-                    Ok(()) => {
-                        if let Some(settings) = &mut self.settings {
-                            settings.merge_external_device_cycle(flow, &previous, &selection);
-                        }
-                        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                            crate::ui::overlay::device_cycle_row(flow, &selection, device.as_ref()),
-                        ));
-                        crate::log_debug!("device cycle request {request_id} applied for {flow:?}");
-                    }
-                    Err(error) => {
-                        crate::warn_!("device cycle request {request_id} failed: {error}");
-                        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                            crate::ui::overlay::device_cycle_error_row(flow, &error.to_string()),
-                        ));
-                    }
-                }
-            }
-            crate::audio::DeviceCycleResult::NoDevices { flow, previous } => {
-                let live = crate::app::config();
-                let current = match flow {
-                    crate::audio::DeviceCycleFlow::Input => live.audio.input_device.clone(),
-                    crate::audio::DeviceCycleFlow::Output => live.audio.output_device.clone(),
-                };
-                if current != previous {
-                    drop(live);
-                    self.handle_device_cycle_result(request_id, self.plan_device_cycle(flow));
-                } else {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::device_cycle_no_devices_row(flow),
-                    ));
-                }
-            }
         }
     }
     fn show_overlay_model_with_config(
