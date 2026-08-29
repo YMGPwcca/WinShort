@@ -66,6 +66,8 @@ pub enum ElementId {
     ForegroundVolumeDownHotkey,
     InputDevice,
     OutputDevice,
+    InputAllowlist,
+    OutputAllowlist,
     DebugLogging,
     DiagnosticsStatus,
     InputRole,
@@ -94,7 +96,7 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 35] = [
+    pub const FOCUS_ORDER: [ElementId; 37] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
@@ -106,6 +108,8 @@ impl ElementId {
         ElementId::ForegroundVolumeDownHotkey,
         ElementId::InputDevice,
         ElementId::OutputDevice,
+        ElementId::InputAllowlist,
+        ElementId::OutputAllowlist,
         ElementId::InputRole,
         ElementId::OutputRole,
         ElementId::DesktopsEnabled,
@@ -284,6 +288,18 @@ impl SettingsLayout {
                     ElementKind::Value,
                     "Output device",
                     "Follow the default render endpoint",
+                ),
+                row(
+                    ElementId::InputAllowlist,
+                    ElementKind::Value,
+                    "Input cycle allowlist",
+                    "Choose which active capture endpoints may cycle",
+                ),
+                row(
+                    ElementId::OutputAllowlist,
+                    ElementKind::Value,
+                    "Output cycle allowlist",
+                    "Choose which active render endpoints may cycle",
                 ),
                 row(
                     ElementId::InputRole,

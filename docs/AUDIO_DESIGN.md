@@ -36,6 +36,13 @@ default switch; successful switches immediately rebuild both endpoint flows
 and publish the normal device-cycle overlay. The Settings draft is not
 rewritten by a cycle hotkey.
 
+`audio.cycle_input_allowlist` and `audio.cycle_output_allowlist` optionally restrict each
+cycle ring by opaque endpoint ID. Omitted (`None`) preserves all-active behavior; an explicit
+empty list disables that direction. The allowlist is applied to the active inventory at
+planning time, so a disconnected endpoint is skipped without deleting its configured ID.
+`RefreshAll` after a device notification rebuilds the inventory; a later reconnect makes the
+configured endpoint eligible again without polling or migration.
+
 The Settings device picker contains only real active endpoints. A `Default`
 configuration selection remains a follow-the-system-default binding mode, but
 it is represented by current-default metadata rather than a selectable

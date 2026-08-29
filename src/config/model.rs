@@ -8,7 +8,7 @@ use crate::keyboard::binding::{Hotkey, ModifierMask};
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 6;
+pub const CURRENT_SCHEMA_VERSION: u8 = 7;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +43,10 @@ pub struct AudioCfg {
     pub output_role: EndpointRole,
     pub input_device: DeviceSelection,
     pub output_device: DeviceSelection,
+    /// `None` means all active capture endpoints; `Some(empty)` means none.
+    pub cycle_input_allowlist: Option<Vec<String>>,
+    /// `None` means all active render endpoints; `Some(empty)` means none.
+    pub cycle_output_allowlist: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +286,8 @@ impl Default for Config {
                 output_role: EndpointRole::Console,
                 input_device: DeviceSelection::Default,
                 output_device: DeviceSelection::Default,
+                cycle_input_allowlist: None,
+                cycle_output_allowlist: None,
             },
             hotkeys: HotkeysCfg {
                 toggle_microphone: Some(Hotkey::parse(DEFAULT_TOGGLE_MICROPHONE).unwrap()),
@@ -405,6 +411,11 @@ pub struct AudioToml {
     pub input_device: String,
     #[serde(default)]
     pub output_device: String,
+    /// Absent means all active endpoints; an explicit empty list disables cycling.
+    #[serde(default)]
+    pub cycle_input_allowlist: Option<Vec<String>>,
+    #[serde(default)]
+    pub cycle_output_allowlist: Option<Vec<String>>,
 }
 
 impl Default for AudioToml {
@@ -414,6 +425,8 @@ impl Default for AudioToml {
             output_role: default_role(),
             input_device: String::new(),
             output_device: String::new(),
+            cycle_input_allowlist: None,
+            cycle_output_allowlist: None,
         }
     }
 }
@@ -599,6 +612,8 @@ impl Config {
                     DeviceSelection::Default => "default".into(),
                     DeviceSelection::Endpoint(s) => s.clone(),
                 },
+                cycle_input_allowlist: self.audio.cycle_input_allowlist.clone(),
+                cycle_output_allowlist: self.audio.cycle_output_allowlist.clone(),
             },
             hotkeys: HotkeysToml {
                 toggle_microphone: self
@@ -740,6 +755,8 @@ impl Config {
                 *slot = DeviceSelection::Endpoint(raw.clone());
             }
         }
+        c.audio.cycle_input_allowlist = t.audio.cycle_input_allowlist.clone();
+        c.audio.cycle_output_allowlist = t.audio.cycle_output_allowlist.clone();
 
         for (field, raw, slot) in [
             (
@@ -861,7 +878,14 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "appearance",
             "show_external_audio_changes",
         ]),
-        "audio" => Some(&["input_device", "output_device", "input_role", "output_role"]),
+        "audio" => Some(&[
+            "input_device",
+            "output_device",
+            "input_role",
+            "output_role",
+            "cycle_input_allowlist",
+            "cycle_output_allowlist",
+        ]),
         "hotkeys" => Some(&[
             "toggle_microphone",
             "toggle_output",
@@ -896,6 +920,12 @@ impl Config {
                 .field
                 .starts_with("virtual_desktops.routing_rules[")
         });
+        let input_allowlist_invalid = violations
+            .iter()
+            .any(|violation| violation.field.starts_with("audio.cycle_input_allowlist["));
+        let output_allowlist_invalid = violations
+            .iter()
+            .any(|violation| violation.field.starts_with("audio.cycle_output_allowlist["));
         for v in violations {
             match v.field.as_str() {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
@@ -941,6 +971,23 @@ impl Config {
                     && !executable.is_empty()
                     && seen.insert(executable.to_ascii_lowercase())
             });
+        }
+        for (invalid, allowlist) in [
+            (
+                input_allowlist_invalid,
+                &mut self.audio.cycle_input_allowlist,
+            ),
+            (
+                output_allowlist_invalid,
+                &mut self.audio.cycle_output_allowlist,
+            ),
+        ] {
+            if invalid {
+                if let Some(ids) = allowlist {
+                    let mut seen = std::collections::HashSet::new();
+                    ids.retain(|id| !id.trim().is_empty() && seen.insert(id.clone()));
+                }
+            }
         }
     }
 }
@@ -1052,6 +1099,40 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
         let (round_tripped, warnings) = Config::from_toml(&boundary);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn audio_allowlists_round_trip_through_schema_v7() {
+        let mut config = Config::default();
+        config.audio.cycle_input_allowlist = Some(vec!["capture-a".into(), "capture-b".into()]);
+        config.audio.cycle_output_allowlist = Some(Vec::new());
+
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            boundary.audio.cycle_input_allowlist,
+            Some(vec!["capture-a".to_string(), "capture-b".to_string()])
+        );
+        assert_eq!(boundary.audio.cycle_output_allowlist, Some(Vec::new()));
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn schema_v6_defaults_new_audio_allowlists() {
+        let raw = r#"
+schema_version = 6
+[audio]
+input_device = "default"
+output_device = "default"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(config.audio.cycle_input_allowlist.is_none());
+        assert!(config.audio.cycle_output_allowlist.is_none());
     }
 
     #[test]

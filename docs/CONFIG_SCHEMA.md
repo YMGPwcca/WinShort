@@ -8,7 +8,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 `write_all` → `flush` → `sync_all` → `rename` over the target; temp removed on rename failure.
 No backup copies are kept.
 
-schema_version = 6              # u8; CURRENT value is 6 (v1/v2/v3/v4/v5 files migrate on load)
+schema_version = 7              # u8; CURRENT value is 7 (v1/v2/v3/v4/v5/v6 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -29,6 +29,8 @@ input_role = "console"          # console|multimedia|communications (default con
 output_role = "console"
 input_device = "default"        # "default" or an opaque endpoint ID string (#7)
 output_device = "default"
+cycle_input_allowlist = []      # omitted = all active; [] = disable input cycling
+cycle_output_allowlist = []     # omitted = all active; [] = disable output cycling
 
 [hotkeys]
 toggle_microphone = "Ctrl+Alt+M"
@@ -63,6 +65,10 @@ enum OverlayPosition { TopLeft, TopCenter, TopRight, Center, BottomLeft, BottomC
 enum OverlayAppearance { System, Dark, Light }
 enum MonitorChoice { Foreground, Primary, Device(String) }   // Device = stable monitor name "\\.\DISPLAYn" (#26)
 enum EndpointRole { Console, Multimedia, Communications }
+struct AudioCfg {
+  cycle_input_allowlist: Option<Vec<String>>,
+  cycle_output_allowlist: Option<Vec<String>>,
+}
 struct Config { general: GeneralCfg, overlay: OverlayCfg,
                 audio: AudioCfg, hotkeys: HotkeysCfg, virtual_desktops: VdCfg }
 struct DesktopRule { executable: String, desktop: u16 }
@@ -79,6 +85,10 @@ modifier families, an optional previous-desktop hotkey, optional scratchpad
 hotkeys, and opt-in executable routing rules. Scratchpad HWND state is runtime-only
 and is never serialized.
 
+`AudioCfg` stores optional endpoint-ID allowlists for input and output cycling.
+`None` means all currently active endpoints; `Some(empty)` is an explicit deny-all
+policy. Endpoint IDs remain opaque strings and are retained across offline periods.
+
 `HotkeysCfg` retains the three existing defaulted toggle bindings and adds four
 optional fields (`cycle_input_device`, `cycle_output_device`,
 `foreground_volume_up`, `foreground_volume_down`). The new fields default to
@@ -86,14 +96,14 @@ optional fields (`cycle_input_device`, `cycle_output_device`,
 
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 6` (`config/load.rs::load`):
+Loading a document with `schema_version > 7` (`config/load.rs::load`):
 
 An absent `schema_version` is treated as legacy source schema v1. New files
-serialized by `Config::to_toml()` always write schema v6.
+serialized by `Config::to_toml()` always write schema v7.
 
 Diagnostics separates `source_schema_version` from `effective_schema_version`:
-missing/corrupt input has no source version and effective v6; v1/v2/v3/v4/v5 input has
-its source version and effective v6; v6 input has source and effective v6. A
+missing/corrupt input has no source version and effective v7; v1/v2/v3/v4/v5/v6 input has
+its source version and effective v7; v7 input has source and effective v7. A
 future source version is retained while runtime state falls back to safe defaults
 and the read-only latch remains active.
 
@@ -122,13 +132,14 @@ Serde does not deny unknown fields; instead load performs a manual double-parse 
 * optional move/follow and silent modifier families must not overlap each other, the numbered family,
   or explicit hotkeys
 * `previous_desktop` participates in the same centralized conflict validation
-* routing rules require a non-empty executable, a desktop in `1..=256`, and unique
-  executable identities (case-insensitive, whitespace-trimmed)
+* routing rules require a non-empty executable, a desktop in `1..=256`, and unique executable identities
+* allowlist entries must be non-empty endpoint IDs with no duplicate exact IDs; an explicit empty list is valid
 
 `Config::repair` then fixes violations in-memory so the app stays usable:
 out-of-range `duration_ms → 2000`, `scale → 1.0`, `opacity → 0.85`; conflicting hotkey binding
-→ `None`; an invalid numbered modifier returns to `Win`. Repair is idempotent (repaired values are
-themselves valid). Whitespace-only endpoint IDs are rejected as defense-in-depth.
+→ `None`; an invalid numbered modifier returns to `Win`; invalid routing rules and allowlist
+entries are removed while preserving the first valid entry. Repair is idempotent (repaired values are
+themselves valid).
 
 ## Endpoint device IDs
 
@@ -154,6 +165,7 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 | Field | Default |
 | overlay | enabled, 1300 ms, bottom-center, foreground monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
 | audio roles / devices | console / console, default devices |
+| audio cycle allowlists | omitted (`None`, all active endpoints) |
 | existing toggle hotkeys | Ctrl+Alt+M / Ctrl+Alt+O / Ctrl+Alt+P |
 | cycle and foreground-volume hotkeys | unassigned |
 | `start_hotkeys_enabled` | true |
@@ -167,15 +179,16 @@ Runtime logging level is operational state, not configuration. Release builds
 start at Info; debug builds start at Debug. Advanced Settings can enable
 temporary Debug logging until restart, but no logging level field is persisted
 in `config.toml` and #32 does not require a schema bump.
+
 ## Migration
 
 Schema v1 files, including versionless legacy files, load with the v2 defaults for
 `overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`),
 v3 defaults for the four Phase-1 hotkeys, v4 defaults for the Virtual Desktop
-workflow fields, v5 defaults for the scratchpad hotkeys, and v6 defaults for
-executable routing rules. Schema v2/v3/v4/v5 files preserve all existing values
-and default only the newly introduced fields. Load diagnostics records the
-source/effective transition. A successful Save writes schema v6 and updates active
-load diagnostics to source v6. Legacy `overlay.monitor = "index:N"` still maps to
-`primary`, and `general.start_with_windows` remains ignored because startup is
-registry-owned.
+workflow fields, v5 defaults for the scratchpad hotkeys, v6 defaults for
+executable routing rules, and v7 defaults for input/output allowlists. Schema
+v2/v3/v4/v5/v6 files preserve all existing values and default only the newly
+introduced fields. Load diagnostics records the source/effective transition.
+A successful Save writes schema v7 and updates active load diagnostics to source
+v7. Legacy `overlay.monitor = "index:N"` still maps to `primary`, and
+`general.start_with_windows` remains ignored because startup is registry-owned.

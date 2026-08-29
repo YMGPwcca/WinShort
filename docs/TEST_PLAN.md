@@ -250,7 +250,10 @@ fuzz campaign is claimed or running.
 - Same-full-path independent instances (accepted limitation)
 - Cycle Input/Output hotkeys change the Windows system default for all three roles
 - Foreground volume up/down changes only matched application sessions by 5 percentage points
-- Long multi-session volume values show an exact percentage or truthful min–max range
+- Settings allowlist picker selects multiple input/output endpoints and offers
+  explicit All-active and No-endpoint controls
+- An allowlisted endpoint unplugged from Windows is skipped without losing its
+  configured ID; reconnect notification makes it eligible again
 
 ### Virtual desktop
 - Configurable numbered modifier family and `1..9` action derivation

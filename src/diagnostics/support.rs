@@ -311,6 +311,17 @@ fn register_endpoint_ids(snapshot: &DiagnosticsSnapshot, sanitizer: &mut Sanitiz
             sanitizer.endpoint_token(value);
         }
     }
+    for ids in [
+        &snapshot.config.raw.audio.cycle_input_allowlist,
+        &snapshot.config.raw.audio.cycle_output_allowlist,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for id in ids {
+            sanitizer.endpoint_token(id);
+        }
+    }
     for endpoint in [
         &snapshot.audio.input.selector,
         &snapshot.audio.output.selector,
@@ -780,6 +791,14 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
             output_role: config.audio.output_role.as_str().into(),
             input_device: safe_selection(&config.audio.input_device, sanitizer),
             output_device: safe_selection(&config.audio.output_device, sanitizer),
+            cycle_input_allowlist: safe_allowlist(
+                config.audio.cycle_input_allowlist.as_deref(),
+                sanitizer,
+            ),
+            cycle_output_allowlist: safe_allowlist(
+                config.audio.cycle_output_allowlist.as_deref(),
+                sanitizer,
+            ),
         },
         hotkeys: SafeHotkeys {
             toggle_microphone: config
@@ -863,6 +882,13 @@ fn safe_selection(selection: &DeviceSelection, sanitizer: &mut Sanitizer) -> Str
         DeviceSelection::Endpoint(value) => sanitizer.endpoint_token(value),
     }
 }
+fn safe_allowlist(allowlist: Option<&[String]>, sanitizer: &mut Sanitizer) -> Option<Vec<String>> {
+    allowlist.map(|ids| {
+        ids.iter()
+            .map(|id| sanitizer.endpoint_token(id))
+            .collect::<Vec<_>>()
+    })
+}
 
 fn safe_monitor(monitor: &MonitorChoice) -> String {
     match monitor {
@@ -905,6 +931,8 @@ struct SafeAudio {
     output_role: String,
     input_device: String,
     output_device: String,
+    cycle_input_allowlist: Option<Vec<String>>,
+    cycle_output_allowlist: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1391,6 +1419,7 @@ safe=1"#,
         let mut sanitizer = Sanitizer::default();
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("opaque-endpoint".into());
+        config.audio.cycle_input_allowlist = Some(vec!["opaque-allowlist".into()]);
         config.virtual_desktops.routing_rules = vec![crate::config::model::DesktopRule {
             executable: r"C:\Users\Alice\Apps\Player.exe".into(),
             desktop: 3,
@@ -1399,6 +1428,8 @@ safe=1"#,
         assert!(output.contains("schema_version = 1"));
         assert!(output.contains("endpoint#01"));
         assert!(!output.contains("opaque-endpoint"));
+        assert!(output.contains("endpoint#02"));
+        assert!(!output.contains("opaque-allowlist"));
         assert!(output.contains("executable = \"Player.exe\""));
         assert!(!output.contains("Alice"));
     }

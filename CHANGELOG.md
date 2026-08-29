@@ -56,6 +56,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   native Shell backend; move/follow, silent move, previous-desktop navigation,
   per-desktop foreground restoration, runtime scratchpad show/hide, and
   executable routing are available as conservative configurable actions.
+- Schema v7 adds independent input/output endpoint allowlists for device cycling.
+  Omitted means all active endpoints, while an explicit empty list disables that
+  direction; offline IDs remain configured and reconnects are notification-driven.
 
 ## [0.1.0] - 2026-08-24
 

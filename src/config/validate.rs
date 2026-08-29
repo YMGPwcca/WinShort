@@ -142,6 +142,35 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
         }
     }
 
+    for (field, allowlist) in [
+        (
+            "audio.cycle_input_allowlist",
+            &cfg.audio.cycle_input_allowlist,
+        ),
+        (
+            "audio.cycle_output_allowlist",
+            &cfg.audio.cycle_output_allowlist,
+        ),
+    ] {
+        let Some(ids) = allowlist else {
+            continue;
+        };
+        let mut seen = HashMap::new();
+        for (index, id) in ids.iter().enumerate() {
+            if id.trim().is_empty() {
+                v.push(Violation::new(
+                    &format!("{field}[{index}]"),
+                    "endpoint ID must not be empty",
+                ));
+            } else if let Some(previous) = seen.insert(id, index) {
+                v.push(Violation::new(
+                    &format!("{field}[{index}]"),
+                    format!("duplicates endpoint ID at index {previous}"),
+                ));
+            }
+        }
+    }
+
     // Endpoint IDs are opaque; only emptiness is malformed (parse already
     // routes empty to Default, so this is defense in depth) (#7).
     for (field, dev) in [
@@ -361,5 +390,31 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
             config.virtual_desktops.routing_rules[0].executable,
             "Player.exe"
         );
+    }
+    #[test]
+    fn audio_allowlists_validate_duplicates_and_repair() {
+        let mut config = Config::default();
+        config.audio.cycle_input_allowlist =
+            Some(vec!["capture-a".into(), "capture-a".into(), " ".into()]);
+        config.audio.cycle_output_allowlist = Some(Vec::new());
+
+        let violations = validate(&config);
+        assert!(violations.iter().any(|violation| {
+            violation
+                .message
+                .contains("duplicates endpoint ID at index 0")
+        }));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.message.contains("endpoint ID must not be empty")));
+
+        config.repair(&violations);
+
+        assert_eq!(
+            config.audio.cycle_input_allowlist,
+            Some(vec!["capture-a".into()])
+        );
+        assert_eq!(config.audio.cycle_output_allowlist, Some(Vec::new()));
+        assert!(validate(&config).is_empty());
     }
 }

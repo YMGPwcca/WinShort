@@ -45,6 +45,11 @@ const LB_ADDSTRING: u32 = 0x0180;
 const LB_SETCURSEL: u32 = 0x0186;
 const LB_GETCURSEL: u32 = 0x0188;
 const LBN_SELCHANGE: u16 = 1;
+const LB_SETSEL: u32 = 0x0185;
+const LB_GETSEL: u32 = 0x0187;
+const LB_GETCOUNT: u32 = 0x018A;
+const LB_GETSELCOUNT: u32 = 0x0190;
+const LB_GETSELITEMS: u32 = 0x0191;
 pub const fn loword(value: usize) -> u16 {
     (value & 0xFFFF) as u16
 }
@@ -64,6 +69,8 @@ static REGISTERED: OnceLock<u16> = OnceLock::new();
 pub enum PickerKind {
     InputDevice,
     OutputDevice,
+    InputAllowlist,
+    OutputAllowlist,
     InputRole,
     OutputRole,
     DesktopNumberModifier,
@@ -74,8 +81,15 @@ pub enum PickerKind {
     OverlayMonitor,
 }
 
+impl PickerKind {
+    pub const fn is_multi_select(self) -> bool {
+        matches!(self, Self::InputAllowlist | Self::OutputAllowlist)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickerValue {
+    /// `None` means all active endpoints; `Some(empty)` means none.
+    Allowlist(Option<Vec<String>>),
     Device(DeviceSelection),
     Role(EndpointRole),
     Modifier(crate::keyboard::binding::ModifierMask),
@@ -391,6 +405,7 @@ impl PickerPopup {
         kind: PickerKind,
         choices: Vec<PickerChoice>,
         current: usize,
+        selected_indices: &[usize],
         geometry: PopupRect,
     ) -> Result<Self> {
         let _atom = *REGISTERED.get_or_init(|| {
@@ -429,7 +444,8 @@ impl PickerPopup {
                 | WS_VSCROLL.0
                 | 0x0001 // LBS_NOTIFY
                 | 0x0010 // LBS_OWNERDRAWFIXED
-                | 0x0040, // LBS_HASSTRINGS
+                | 0x0040 // LBS_HASSTRINGS
+                | if kind.is_multi_select() { 0x0008 } else { 0 }, // LBS_MULTIPLESEL
         );
         let list = unsafe {
             CreateWindowExW(
@@ -487,12 +503,23 @@ impl PickerPopup {
             }
         }
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                list,
-                LB_SETCURSEL,
-                Some(WPARAM(selected)),
-                Some(LPARAM(0)),
-            );
+            if kind.is_multi_select() {
+                for index in selected_indices {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                        list,
+                        LB_SETSEL,
+                        Some(WPARAM(1)),
+                        Some(LPARAM(*index as isize)),
+                    );
+                }
+            } else {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    list,
+                    LB_SETCURSEL,
+                    Some(WPARAM(selected)),
+                    Some(LPARAM(0)),
+                );
+            }
             let _ = SetWindowSubclass(
                 list,
                 Some(picker_list_subclass),
@@ -553,6 +580,7 @@ fn picker_item_from_point(hwnd: HWND, lparam: LPARAM) -> Option<usize> {
             Some(lparam),
         )
     };
+
     let packed = result.0 as usize;
     if ((packed >> 16) & 0xFFFF) != 0 {
         None
@@ -578,6 +606,75 @@ fn set_picker_hover(parent: HWND, list: HWND, hovered: Option<usize>) {
     if changed {
         unsafe {
             let _ = InvalidateRect(Some(list), None, false);
+        }
+    }
+}
+fn normalize_allowlist_selection(list: HWND) {
+    let focused = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_GETCURSEL,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        )
+    }
+    .0;
+    if focused < 0 {
+        return;
+    }
+    let focused = focused as usize;
+    let is_selected = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_GETSEL,
+            Some(WPARAM(focused)),
+            Some(LPARAM(0)),
+        )
+    }
+    .0 != 0;
+    if !is_selected {
+        return;
+    }
+
+    let count = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_GETCOUNT,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        )
+    }
+    .0
+    .max(0) as usize;
+    if focused < 2 {
+        for index in 0..count {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    list,
+                    LB_SETSEL,
+                    Some(WPARAM(0)),
+                    Some(LPARAM(index as isize)),
+                );
+            }
+        }
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                list,
+                LB_SETSEL,
+                Some(WPARAM(1)),
+                Some(LPARAM(focused as isize)),
+            );
+        }
+    } else {
+        for index in 0..2.min(count) {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    list,
+                    LB_SETSEL,
+                    Some(WPARAM(0)),
+                    Some(LPARAM(index as isize)),
+                );
+            }
         }
     }
 }
@@ -635,7 +732,13 @@ unsafe extern "system" fn picker_list_subclass(
         }
         WM_LBUTTONUP => {
             let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-            commit_selected(parent, hwnd);
+            let multi_select = unsafe { win::state_cell::<PickerUi>(parent) }
+                .is_some_and(|cell| cell.borrow().kind.is_multi_select());
+            if multi_select {
+                normalize_allowlist_selection(hwnd);
+            } else {
+                commit_selected(parent, hwnd);
+            }
             result
         }
         WM_KILLFOCUS => {
@@ -741,11 +844,17 @@ unsafe extern "system" fn picker_wndproc(
                 let _control_id = loword(wparam.0);
                 let notification = hiword(wparam.0);
                 let source = HWND(lparam.0 as *mut _);
-                let list = cell.borrow().list;
-                if source == list && notification == LBN_DBLCLK {
+                let (list, multi_select) = {
+                    let ui = cell.borrow();
+                    (ui.list, ui.kind.is_multi_select())
+                };
+                if source == list && notification == LBN_DBLCLK && !multi_select {
                     commit_selected(hwnd, source);
                     LRESULT(0)
                 } else if source == list && notification == LBN_SELCHANGE {
+                    if multi_select {
+                        normalize_allowlist_selection(source);
+                    }
                     LRESULT(0)
                 } else {
                     win::def_proc(hwnd, msg, wparam, lparam)
@@ -778,6 +887,59 @@ unsafe extern "system" fn picker_wndproc(
 }
 fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)> {
     let cell = unsafe { win::state_cell::<PickerUi>(parent) }?;
+    let kind = cell.borrow().kind;
+    if kind.is_multi_select() {
+        let count = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                list,
+                LB_GETSELCOUNT,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            )
+        }
+        .0;
+        if count < 0 {
+            return None;
+        }
+        let mut indices = vec![0i32; count as usize];
+        if count > 0 {
+            let copied = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    list,
+                    LB_GETSELITEMS,
+                    Some(WPARAM(count as usize)),
+                    Some(LPARAM(indices.as_mut_ptr() as isize)),
+                )
+            }
+            .0;
+            if copied < 0 {
+                return None;
+            }
+            indices.truncate(copied as usize);
+        }
+        let ui = cell.borrow();
+        let mut use_all = false;
+        let mut endpoints = Vec::new();
+        for index in indices {
+            let Some(choice) = ui.choices.get(index as usize) else {
+                continue;
+            };
+            match &choice.value {
+                PickerValue::Allowlist(None) => use_all = true,
+                PickerValue::Allowlist(Some(values)) => endpoints.extend(values.iter().cloned()),
+                _ => {}
+            }
+        }
+        let allowlist = if !endpoints.is_empty() {
+            Some(endpoints)
+        } else if use_all {
+            None
+        } else {
+            Some(Vec::new())
+        };
+        return Some((kind, PickerValue::Allowlist(allowlist)));
+    }
+
     let index = unsafe {
         windows::Win32::UI::WindowsAndMessaging::SendMessageW(
             list,
@@ -785,11 +947,14 @@ fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)>
             Some(WPARAM(0)),
             Some(LPARAM(0)),
         )
-        .0 as usize
-    };
+    }
+    .0;
+    if index < 0 {
+        return None;
+    }
     let ui = cell.borrow();
     ui.choices
-        .get(index)
+        .get(index as usize)
         .map(|choice| (ui.kind, choice.value.clone()))
 }
 fn claim_close(cell: &std::cell::RefCell<PickerUi>, action: PickerCloseAction) -> bool {

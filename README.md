@@ -32,6 +32,8 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
   applied instantly on Save without reinstalling the hook.
 - **Audio control** — microphone mute, output mute, and foreground-application session mute
   (all sessions of the owning PID toggle together; mixed state mutes all).
+- **Audio cycling allowlists** — independently select stable input/output endpoints;
+  disconnected IDs remain configured and re-enter the cycle after reconnect.
 - **Status overlay** — per-pixel-alpha HUD: topmost, no-activate, click-through, fade/slide
   animation, monitor-aware placement. Never steals focus from games.
 - **Virtual desktop workflow** — configurable numbered switching creates only missing
@@ -53,6 +55,7 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
 | `Ctrl+Alt+O` | Toggle output mute |
 | `Ctrl+Alt+P` | Toggle foreground app audio |
 | `Win+1`…`Win+9` | Switch to virtual desktop 1–9 |
+
 Optional desktop workflow and scratchpad shortcuts are unassigned by default and can be
 configured in Settings; the scratchpad assignment is runtime-only and is forgotten when
 the window closes.

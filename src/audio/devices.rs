@@ -68,27 +68,61 @@ pub enum DeviceCyclePlan {
 /// The active inventory order is the cycle order. Endpoint IDs are opaque and
 /// remain the only identity used for matching; there is no synthetic default
 /// entry or internal target in this ring.
+#[cfg(test)]
 pub fn plan_device_cycle(current: Option<&DeviceId>, active: &[DeviceId]) -> DeviceCyclePlan {
-    if active.is_empty() {
-        return DeviceCyclePlan::NoActiveEndpoints;
-    }
-    let next = current
-        .and_then(|current| {
-            active
-                .iter()
-                .position(|device| device.endpoint == current.endpoint)
-        })
-        .map(|index| (index + 1) % active.len())
-        .unwrap_or(0);
-    DeviceCyclePlan::Select(active[next].clone())
+    plan_device_cycle_with_allowlist(current, active, None)
 }
 
+/// Plan the next endpoint after applying an optional endpoint-ID allowlist.
+///
+/// `None` preserves the historical all-active behavior. `Some(&[])` is an
+/// explicit deny-all policy and yields `NoActiveEndpoints`.
+pub fn plan_device_cycle_with_allowlist(
+    current: Option<&DeviceId>,
+    active: &[DeviceId],
+    allowlist: Option<&[String]>,
+) -> DeviceCyclePlan {
+    let allowed =
+        |device: &DeviceId| allowlist.is_none_or(|ids| ids.iter().any(|id| id == &device.endpoint));
+    let allowed_count = active.iter().filter(|device| allowed(device)).count();
+    if allowed_count == 0 {
+        return DeviceCyclePlan::NoActiveEndpoints;
+    }
+    let current_index = current.and_then(|current| {
+        active
+            .iter()
+            .filter(|device| allowed(device))
+            .position(|device| device.endpoint == current.endpoint)
+    });
+    let next = current_index
+        .map(|index| (index + 1) % allowed_count)
+        .unwrap_or(0);
+    DeviceCyclePlan::Select(
+        active
+            .iter()
+            .filter(|device| allowed(device))
+            .nth(next)
+            .expect("allowlist count matches filtered inventory")
+            .clone(),
+    )
+}
+
+#[cfg(test)]
 pub fn device_cycle_result(
     flow: crate::audio::DeviceCycleFlow,
     previous: Option<DeviceId>,
     active: &[DeviceId],
 ) -> crate::audio::DeviceCycleResult {
-    match plan_device_cycle(previous.as_ref(), active) {
+    device_cycle_result_with_allowlist(flow, previous, active, None)
+}
+
+pub fn device_cycle_result_with_allowlist(
+    flow: crate::audio::DeviceCycleFlow,
+    previous: Option<DeviceId>,
+    active: &[DeviceId],
+    allowlist: Option<&[String]>,
+) -> crate::audio::DeviceCycleResult {
+    match plan_device_cycle_with_allowlist(previous.as_ref(), active, allowlist) {
         DeviceCyclePlan::Select(device) => crate::audio::DeviceCycleResult::Changed {
             flow,
             previous,
@@ -484,6 +518,59 @@ mod cycle_tests {
         assert_eq!(
             plan_device_cycle(Some(&active[1]), &active),
             DeviceCyclePlan::Select(active[0].clone())
+        );
+    }
+    #[test]
+    fn allowlist_filters_cycle_order_and_wraps() {
+        let active = [
+            device("first-id", "First"),
+            device("second-id", "Second"),
+            device("third-id", "Third"),
+        ];
+        let allowlist = vec!["third-id".into(), "first-id".into()];
+        assert_eq!(
+            plan_device_cycle_with_allowlist(None, &active, Some(&allowlist)),
+            DeviceCyclePlan::Select(active[0].clone())
+        );
+        assert_eq!(
+            plan_device_cycle_with_allowlist(Some(&active[0]), &active, Some(&allowlist)),
+            DeviceCyclePlan::Select(active[2].clone())
+        );
+        assert_eq!(
+            plan_device_cycle_with_allowlist(Some(&active[1]), &active, Some(&allowlist)),
+            DeviceCyclePlan::Select(active[0].clone())
+        );
+    }
+
+    #[test]
+    fn explicit_empty_allowlist_has_no_cycle_targets() {
+        let active = [device("first-id", "First")];
+        let allowlist: Vec<String> = Vec::new();
+        assert_eq!(
+            plan_device_cycle_with_allowlist(None, &active, Some(&allowlist)),
+            DeviceCyclePlan::NoActiveEndpoints
+        );
+    }
+    #[test]
+    fn offline_allowlisted_endpoint_returns_after_inventory_reconnect() {
+        let gone = device("gone-id", "Gone");
+        let stable = device("stable-id", "Stable");
+        let allowlist = vec!["gone-id".into(), "stable-id".into()];
+        assert_eq!(
+            plan_device_cycle_with_allowlist(
+                Some(&gone),
+                std::slice::from_ref(&stable),
+                Some(&allowlist)
+            ),
+            DeviceCyclePlan::Select(stable.clone())
+        );
+        assert_eq!(
+            plan_device_cycle_with_allowlist(
+                Some(&stable),
+                &[gone.clone(), stable.clone()],
+                Some(&allowlist)
+            ),
+            DeviceCyclePlan::Select(gone)
         );
     }
 

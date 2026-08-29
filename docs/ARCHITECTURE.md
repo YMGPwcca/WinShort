@@ -39,7 +39,10 @@ Rules:
   access. The only heap allocation on the callback path is one small bounded `Vec` in the
   digit-first chord completion arm (see KEYBOARD_HOOK_DESIGN.md).
 * Core Audio callbacks fire on the audio thread; they post typed events to the main window and
-  never touch UI. Notification bursts are coalesced into a single rebuild (#19).
+  never touch UI. Notification bursts are coalesced into a single rebuild (#19), so an endpoint
+  disconnect/reconnect refreshes the active inventory without polling.
+* Audio cycle planning applies the input/output endpoint-ID allowlist from the same config snapshot
+  used for the command. `None` means all active endpoints; `Some(empty)` is deny-all.
 * Raw COM interfaces never cross threads. Cross-thread communication is `AppEvent` messages and
   `std::sync::mpsc` command channels.
 * The desktop controller runs one bounded recovery attempt per user command; policy errors are

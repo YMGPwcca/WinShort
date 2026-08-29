@@ -420,6 +420,12 @@ impl SettingsUi {
                     .output_defaults
                     .for_role(self.draft.audio.output_role),
             ))),
+            ElementId::InputAllowlist => ControlValue::Text(Cow::Owned(allowlist_label(
+                self.draft.audio.cycle_input_allowlist.as_deref(),
+            ))),
+            ElementId::OutputAllowlist => ControlValue::Text(Cow::Owned(allowlist_label(
+                self.draft.audio.cycle_output_allowlist.as_deref(),
+            ))),
             ElementId::InputRole => {
                 ControlValue::Text(Cow::Borrowed(self.draft.audio.input_role.label()))
             }
@@ -760,6 +766,16 @@ impl SettingsUi {
                     PickerKind::OutputDevice,
                 ));
             }
+            ElementId::InputAllowlist => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::InputAllowlist,
+                ));
+            }
+            ElementId::OutputAllowlist => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::OutputAllowlist,
+                ));
+            }
             ElementId::InputRole => {
                 post_main(crate::event::AppEvent::OpenSettingsPicker(
                     PickerKind::InputRole,
@@ -1066,6 +1082,12 @@ impl SettingsUi {
             }
             (PickerKind::OutputDevice, PickerValue::Device(value)) => {
                 self.draft.audio.output_device = value;
+            }
+            (PickerKind::InputAllowlist, PickerValue::Allowlist(value)) => {
+                self.draft.audio.cycle_input_allowlist = value;
+            }
+            (PickerKind::OutputAllowlist, PickerValue::Allowlist(value)) => {
+                self.draft.audio.cycle_output_allowlist = value;
             }
             (PickerKind::InputRole, PickerValue::Role(value)) => {
                 self.draft.audio.input_role = value;
@@ -1402,6 +1424,7 @@ impl SettingsWindow {
         };
         let anchor = screen_rect(self.hwnd, control_rect, dpi)?;
         let (choices, current) = picker_choices(kind, &draft, &devices, &monitors);
+        let selected_indices = picker_selection_indices(kind, &draft, &choices);
         if choices.is_empty() {
             return Err(Error::config("no choices available"));
         }
@@ -1423,7 +1446,14 @@ impl SettingsWindow {
         let geometry = crate::ui::picker::place_popup(anchor, work, width, height);
         let owner =
             picker_element(kind).ok_or_else(|| Error::internal("settings picker row missing"))?;
-        let picker = match PickerPopup::create(self.hwnd, kind, choices, current, geometry) {
+        let picker = match PickerPopup::create(
+            self.hwnd,
+            kind,
+            choices,
+            current,
+            &selected_indices,
+            geometry,
+        ) {
             Ok(picker) => picker,
             Err(error) => {
                 self.cancel_picker();
@@ -1650,6 +1680,8 @@ fn picker_element(kind: PickerKind) -> Option<ElementId> {
     Some(match kind {
         PickerKind::InputDevice => ElementId::InputDevice,
         PickerKind::OutputDevice => ElementId::OutputDevice,
+        PickerKind::InputAllowlist => ElementId::InputAllowlist,
+        PickerKind::OutputAllowlist => ElementId::OutputAllowlist,
         PickerKind::InputRole => ElementId::InputRole,
         PickerKind::OutputRole => ElementId::OutputRole,
         PickerKind::DesktopNumberModifier => ElementId::DesktopNumberModifier,
@@ -1716,6 +1748,18 @@ fn picker_choices(
             choices.extend(device_choices(
                 &devices.outputs,
                 devices.output_defaults.for_role(draft.audio.output_role),
+            ));
+        }
+        PickerKind::InputAllowlist => {
+            choices.extend(allowlist_choices(
+                &devices.inputs,
+                draft.audio.cycle_input_allowlist.as_deref(),
+            ));
+        }
+        PickerKind::OutputAllowlist => {
+            choices.extend(allowlist_choices(
+                &devices.outputs,
+                draft.audio.cycle_output_allowlist.as_deref(),
             ));
         }
         PickerKind::InputRole => {
@@ -1820,6 +1864,7 @@ fn picker_choices(
             devices.output_defaults.for_role(draft.audio.output_role),
             &choices,
         ),
+        PickerKind::InputAllowlist | PickerKind::OutputAllowlist => 0,
         _ => {
             let current = current_picker_value(kind, draft);
             choices
@@ -1829,6 +1874,71 @@ fn picker_choices(
         }
     };
     (choices, current_index)
+}
+fn picker_selection_indices(
+    kind: PickerKind,
+    draft: &Config,
+    choices: &[PickerChoice],
+) -> Vec<usize> {
+    let configured = match kind {
+        PickerKind::InputAllowlist => draft.audio.cycle_input_allowlist.as_deref(),
+        PickerKind::OutputAllowlist => draft.audio.cycle_output_allowlist.as_deref(),
+        _ => return Vec::new(),
+    };
+    match configured {
+        None => vec![0],
+        Some([]) => vec![1],
+        Some(ids) => {
+            let selected = choices
+                .iter()
+                .enumerate()
+                .filter_map(|(index, choice)| match &choice.value {
+                    PickerValue::Allowlist(Some(values))
+                        if values.len() == 1 && ids.iter().any(|id| id == &values[0]) =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                vec![1]
+            } else {
+                selected
+            }
+        }
+    }
+}
+
+fn allowlist_choices(
+    devices: &[crate::audio::DeviceId],
+    configured: Option<&[String]>,
+) -> Vec<PickerChoice> {
+    let mut choices = vec![
+        PickerChoice {
+            label: "All active endpoints (allowlist off)".into(),
+            value: PickerValue::Allowlist(None),
+        },
+        PickerChoice {
+            label: "No endpoints (disable cycling)".into(),
+            value: PickerValue::Allowlist(Some(Vec::new())),
+        },
+    ];
+    choices.extend(devices.iter().map(|device| PickerChoice {
+        label: device.name.clone(),
+        value: PickerValue::Allowlist(Some(vec![device.endpoint.clone()])),
+    }));
+    if let Some(configured) = configured {
+        for endpoint in configured {
+            if !devices.iter().any(|device| device.endpoint == *endpoint) {
+                choices.push(PickerChoice {
+                    label: format!("Unavailable endpoint — {endpoint}"),
+                    value: PickerValue::Allowlist(Some(vec![endpoint.clone()])),
+                });
+            }
+        }
+    }
+    choices
 }
 
 fn modifier_choices(allow_unassigned: bool) -> Vec<PickerChoice> {
@@ -1898,6 +2008,12 @@ fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
     match kind {
         PickerKind::InputDevice => PickerValue::Device(draft.audio.input_device.clone()),
         PickerKind::OutputDevice => PickerValue::Device(draft.audio.output_device.clone()),
+        PickerKind::InputAllowlist => {
+            PickerValue::Allowlist(draft.audio.cycle_input_allowlist.clone())
+        }
+        PickerKind::OutputAllowlist => {
+            PickerValue::Allowlist(draft.audio.cycle_output_allowlist.clone())
+        }
         PickerKind::InputRole => PickerValue::Role(draft.audio.input_role),
         PickerKind::OutputRole => PickerValue::Role(draft.audio.output_role),
         PickerKind::DesktopNumberModifier => {
@@ -2359,6 +2475,13 @@ fn modifier_family_label(modifier: Option<ModifierMask>) -> String {
         .map(|modifier| format!("{modifier} + 1..9"))
         .unwrap_or_else(|| "Unassigned".into())
 }
+fn allowlist_label(allowlist: Option<&[String]>) -> String {
+    match allowlist {
+        None => "All active endpoints".into(),
+        Some([]) => "No endpoints".into(),
+        Some(ids) => format!("{} endpoint(s) selected", ids.len()),
+    }
+}
 
 fn device_label(
     selection: &DeviceSelection,
@@ -2569,6 +2692,49 @@ mod interaction_tests {
             _ => panic!("unexpected control value variant"),
         }
     }
+    #[test]
+    fn allowlist_picker_exposes_clear_controls_and_offline_selections() {
+        let mut config = Config::default();
+        config.audio.cycle_input_allowlist =
+            Some(vec!["second-endpoint".into(), "missing-endpoint".into()]);
+        let devices = crate::audio::devices::DeviceLists {
+            inputs: vec![
+                crate::audio::DeviceId {
+                    endpoint: "first-endpoint".into(),
+                    name: "First microphone".into(),
+                },
+                crate::audio::DeviceId {
+                    endpoint: "second-endpoint".into(),
+                    name: "Second microphone".into(),
+                },
+            ],
+            outputs: Vec::new(),
+            input_defaults: Default::default(),
+            output_defaults: Default::default(),
+            warnings: Vec::new(),
+        };
+        let (choices, current) = picker_choices(PickerKind::InputAllowlist, &config, &devices, &[]);
+        assert_eq!(current, 0);
+        assert_eq!(choices[0].label, "All active endpoints (allowlist off)");
+        assert_eq!(choices[1].label, "No endpoints (disable cycling)");
+        assert_eq!(
+            picker_selection_indices(PickerKind::InputAllowlist, &config, &choices),
+            vec![3, 4]
+        );
+        assert!(choices[4].label.starts_with("Unavailable endpoint"));
+
+        config.audio.cycle_input_allowlist = None;
+        assert_eq!(
+            picker_selection_indices(PickerKind::InputAllowlist, &config, &choices),
+            vec![0]
+        );
+        config.audio.cycle_input_allowlist = Some(Vec::new());
+        assert_eq!(
+            picker_selection_indices(PickerKind::InputAllowlist, &config, &choices),
+            vec![1]
+        );
+    }
+
     #[test]
     fn endpoint_roles_apply_only_to_default_selection() {
         assert!(SettingsUi::endpoint_role_enabled(&DeviceSelection::Default));

@@ -483,7 +483,18 @@ impl AudioController {
         let current_default =
             crate::audio::devices::current_default_device(&self.enumerator, endpoint_flow);
         let previous = current_default.as_ref().ok().cloned();
-        match crate::audio::devices::device_cycle_result(flow, previous, &active) {
+        let config_snapshot = self.config.snapshot();
+        let allowlist = match flow {
+            DeviceCycleFlow::Input => config_snapshot.value.audio.cycle_input_allowlist.as_deref(),
+            DeviceCycleFlow::Output => config_snapshot
+                .value
+                .audio
+                .cycle_output_allowlist
+                .as_deref(),
+        };
+        match crate::audio::devices::device_cycle_result_with_allowlist(
+            flow, previous, &active, allowlist,
+        ) {
             DeviceCycleResult::NoDevices { flow, previous } => {
                 DeviceCycleResult::NoDevices { flow, previous }
             }
