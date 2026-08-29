@@ -21,7 +21,7 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
                     // Versionless documents deserialize as the legacy v1
-                    // baseline; newly serialized documents always include v7.
+                    // baseline; newly serialized documents always include v8.
                     let parsed_schema = toml.schema_version;
                     if parsed_schema > CURRENT_SCHEMA_VERSION {
                         let msg = format!(
@@ -58,12 +58,13 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     let mut migrations = Vec::new();
                     if parsed_schema < CURRENT_SCHEMA_VERSION {
                         let detail = match parsed_schema {
-                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, and v7 audio allowlists defaulted",
-                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, and v7 audio allowlists defaulted",
-                            3 => "v4 desktop workflow, v5 scratchpad fields, v6 routing rules, and v7 audio allowlists defaulted",
-                            4 => "v5 scratchpad fields, v6 routing rules, and v7 audio allowlists defaulted",
-                            5 => "v6 executable routing rules and v7 audio allowlists defaulted",
-                            6 => "v7 audio allowlists defaulted",
+                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
+                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
+                            3 => "v4 desktop workflow, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
+                            4 => "v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
+                            5 => "v6 executable routing rules, v7 audio allowlists, and v8 display profiles defaulted",
+                            6 => "v7 audio allowlists and v8 display profiles defaulted",
+                            7 => "v8 display profiles defaulted",
                             _ => "newer fields defaulted",
                         };
                         migrations.push(format!(
@@ -223,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_defaults_new_hotkeys_and_records_v7_migration() {
+    fn schema_v2_defaults_new_hotkeys_and_records_v8_migration() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_v2_{}", std::process::id()));
@@ -251,7 +252,7 @@ mod tests {
         assert!(diagnostics
             .migrations
             .iter()
-            .any(|value| value.contains("schema v2 migrated") && value.contains("v7")));
+            .any(|value| value.contains("schema v2 migrated") && value.contains("v8")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -318,7 +319,7 @@ mod tests {
     }
     #[test]
 
-    fn saving_migrated_config_updates_diagnostics_to_v7() {
+    fn saving_migrated_config_updates_diagnostics_to_v8() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_save_{}", std::process::id()));

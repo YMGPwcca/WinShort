@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterWindowMessageW, HWND_MESSAGE,
-    WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_TIMER,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, KillTimer, RegisterWindowMessageW, SetTimer,
+    HWND_MESSAGE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_TIMER,
 };
 
 use crate::error::{Error, Result};
@@ -19,6 +19,8 @@ pub static CONFIG: std::sync::OnceLock<std::sync::Arc<crate::config::ConfigHandl
     std::sync::OnceLock::new();
 
 static CONFIG_SEQ: AtomicU64 = AtomicU64::new(1);
+const DISPLAY_ROLLBACK_TIMER_ID: usize = 0x4450;
+const DISPLAY_ROLLBACK_WINDOW_MS: u32 = 15_000;
 
 /// Access the live config snapshot from any thread.
 pub fn config() -> std::sync::Arc<crate::config::Config> {
@@ -76,6 +78,7 @@ pub struct App {
     foreground: Option<crate::platform::foreground::ForegroundTracker>,
     keyboard: Option<crate::keyboard::hook::KeyboardService>,
     audio: Option<crate::audio::AudioService>,
+    display_rollback: Option<crate::display::DisplayRollback>,
     desktop: Option<crate::desktop::DesktopService>,
     desktop_status: crate::desktop::BackendStatus,
     microphone_state: crate::audio::AudioState,
@@ -121,6 +124,9 @@ pub fn set_app(app: App) {
 /// The main window handle, valid from creation until process exit.
 pub fn main_hwnd() -> Option<HWND> {
     MAIN_HWND.get().map(|h| HWND(*h as *mut _))
+}
+pub fn display_rollback_active() -> bool {
+    with_app(|app| app.display_rollback.is_some()).unwrap_or(false)
 }
 
 impl App {
@@ -169,6 +175,7 @@ impl App {
             keyboard: None,
             audio: None,
             desktop: None,
+            display_rollback: None,
             desktop_status: crate::desktop::BackendStatus {
                 native: crate::desktop::BackendAvailability::Failed {
                     reason: "Detecting…".into(),
@@ -253,6 +260,105 @@ impl App {
         }
         self.desktop = Some(service);
         Ok(())
+    }
+    fn apply_display_profile(&mut self, profile: crate::display::DisplayProfile) {
+        if !crate::app::config().display_profiles.enabled {
+            self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                crate::ui::overlay::OverlayRow {
+                    icon: crate::ui::overlay::OverlayIcon::Info,
+                    tone: crate::ui::overlay::OverlayTone::Unavailable,
+                    title: "Display profile".into(),
+                    detail: "Display profiles are disabled in Settings".into(),
+                },
+            ));
+            return;
+        }
+        self.display_rollback = None;
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), DISPLAY_ROLLBACK_TIMER_ID);
+        }
+        match crate::display::apply_profile(&profile) {
+            Ok(rollback) => {
+                self.display_rollback = Some(rollback);
+                unsafe {
+                    let _ = SetTimer(
+                        Some(self.hwnd),
+                        DISPLAY_ROLLBACK_TIMER_ID,
+                        DISPLAY_ROLLBACK_WINDOW_MS,
+                        None,
+                    );
+                }
+                self.invalidate_settings();
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::OverlayRow {
+                        icon: crate::ui::overlay::OverlayIcon::Info,
+                        tone: crate::ui::overlay::OverlayTone::Changed,
+                        title: format!("Display profile: {}", profile.name),
+                        detail: "Applied. Use Undo in Settings within 15 seconds if needed".into(),
+                    },
+                ));
+            }
+            Err(error) => {
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::OverlayRow {
+                        icon: crate::ui::overlay::OverlayIcon::Info,
+                        tone: crate::ui::overlay::OverlayTone::Unavailable,
+                        title: "Display profile not applied".into(),
+                        detail: error.to_string(),
+                    },
+                ));
+            }
+        }
+    }
+
+    fn revert_display_profile(&mut self) {
+        let Some(rollback) = self.display_rollback.take() else {
+            return;
+        };
+        match crate::display::rollback(&rollback) {
+            Ok(()) => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), DISPLAY_ROLLBACK_TIMER_ID);
+                }
+                self.invalidate_settings();
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::OverlayRow {
+                        icon: crate::ui::overlay::OverlayIcon::Info,
+                        tone: crate::ui::overlay::OverlayTone::Changed,
+                        title: "Display profile undone".into(),
+                        detail: "The previous display topology was restored".into(),
+                    },
+                ));
+            }
+            Err(error) => {
+                self.display_rollback = Some(rollback);
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::OverlayRow {
+                        icon: crate::ui::overlay::OverlayIcon::Info,
+                        tone: crate::ui::overlay::OverlayTone::Unavailable,
+                        title: "Display undo failed".into(),
+                        detail: error.to_string(),
+                    },
+                ));
+            }
+        }
+    }
+
+    fn expire_display_rollback(&mut self) {
+        if self.display_rollback.take().is_some() {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), DISPLAY_ROLLBACK_TIMER_ID);
+            }
+            self.invalidate_settings();
+        }
+    }
+    fn invalidate_settings(&self) {
+        if let Some(settings) = &self.settings {
+            unsafe {
+                let _ =
+                    windows::Win32::Graphics::Gdi::InvalidateRect(Some(settings.hwnd), None, false);
+            }
+        }
     }
 
     pub fn audio_devices(&self) -> crate::audio::devices::DeviceLists {
@@ -853,6 +959,8 @@ impl App {
                 self.close_settings_window();
                 self.remember_settings_position();
             }
+            AppEvent::ApplyDisplayProfile { profile } => self.apply_display_profile(profile),
+            AppEvent::RevertDisplayProfile => self.revert_display_profile(),
             AppEvent::RunDiagnosticsSelfTest => self.run_diagnostics_self_test(),
             AppEvent::CopyDiagnostics => self.copy_diagnostics(),
             AppEvent::OpenDiagnosticsLogs => self.open_diagnostics_logs(),
@@ -1337,6 +1445,10 @@ impl App {
         }
         self.shutting_down = true;
         crate::diagnostics::logging::stop_flush_timer(self.hwnd);
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), DISPLAY_ROLLBACK_TIMER_ID);
+        }
+        self.display_rollback = None;
 
         // Wake-and-stop the second-instance watcher before any window goes
         // away (#24 ordering).
@@ -1476,6 +1588,10 @@ unsafe extern "system" fn main_wndproc(
             crate::diagnostics::logging::flush_if_dirty();
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == DISPLAY_ROLLBACK_TIMER_ID => {
+            with_app(App::expire_display_rollback);
+            LRESULT(0)
+        }
         WM_CLOSE => {
             // Idempotent ordered teardown, then destroy. Posted by
             // begin_shutdown; external close requests land here too.
@@ -1590,6 +1706,7 @@ mod shutdown_gate_tests {
             foreground: None,
             keyboard: None,
             audio: None,
+            display_rollback: None,
             desktop: None,
             desktop_status: crate::desktop::BackendStatus {
                 native: crate::desktop::BackendAvailability::Failed {

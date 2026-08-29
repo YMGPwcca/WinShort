@@ -59,6 +59,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Schema v7 adds independent input/output endpoint allowlists for device cycling.
   Omitted means all active endpoints, while an explicit empty list disables that
   direction; offline IDs remain configured and reconnects are notification-driven.
+- Schema v8 adds persisted DisplayConfig topology profiles with stable target-path
+  identities, Capture Current, profile CRUD, route validation, and a bounded
+  15-second Undo window after explicit Apply.
 
 ## [0.1.0] - 2026-08-24
 

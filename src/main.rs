@@ -16,6 +16,7 @@ mod app;
 mod audio;
 mod config;
 mod desktop;
+mod display;
 mod error;
 mod event;
 mod keyboard;

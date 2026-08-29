@@ -3,12 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 
+#[allow(unused_imports)]
+pub use crate::display::{DisplayProfile, DisplayProfilesCfg, DisplayRoute, DisplayTopology};
 use crate::keyboard::binding::{Hotkey, ModifierMask};
 
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 7;
+pub const CURRENT_SCHEMA_VERSION: u8 = 8;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +20,7 @@ pub struct Config {
     pub audio: AudioCfg,
     pub hotkeys: HotkeysCfg,
     pub virtual_desktops: VdCfg,
+    pub display_profiles: DisplayProfilesCfg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,6 +312,7 @@ impl Default for Config {
                 scratchpad_toggle: None,
                 routing_rules: Vec::new(),
             },
+            display_profiles: DisplayProfilesCfg::default(),
         }
     }
 }
@@ -329,6 +333,8 @@ pub struct ConfigToml {
     pub hotkeys: HotkeysToml,
     #[serde(default)]
     pub virtual_desktops: VdToml,
+    #[serde(default)]
+    pub display_profiles: DisplayProfilesCfg,
 }
 
 impl Default for ConfigToml {
@@ -340,6 +346,7 @@ impl Default for ConfigToml {
             audio: AudioToml::default(),
             hotkeys: HotkeysToml::default(),
             virtual_desktops: VdToml::default(),
+            display_profiles: DisplayProfilesCfg::default(),
         }
     }
 }
@@ -679,6 +686,7 @@ impl Config {
                     })
                     .collect(),
             },
+            display_profiles: self.display_profiles.clone(),
         }
     }
 
@@ -859,6 +867,7 @@ impl Config {
                 desktop: rule.desktop,
             })
             .collect();
+        c.display_profiles = t.display_profiles.clone();
 
         (c, warnings)
     }
@@ -906,6 +915,7 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "scratchpad_toggle",
             "routing_rules",
         ]),
+        "display_profiles" => Some(&["enabled", "active_profile", "profiles"]),
         _ => None,
     }
 }
@@ -926,6 +936,9 @@ impl Config {
         let output_allowlist_invalid = violations
             .iter()
             .any(|violation| violation.field.starts_with("audio.cycle_output_allowlist["));
+        let display_profiles_invalid = violations
+            .iter()
+            .any(|violation| violation.field.starts_with("display_profiles."));
         for v in violations {
             match v.field.as_str() {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
@@ -987,6 +1000,36 @@ impl Config {
                     let mut seen = std::collections::HashSet::new();
                     ids.retain(|id| !id.trim().is_empty() && seen.insert(id.clone()));
                 }
+            }
+        }
+        if display_profiles_invalid {
+            let mut seen_profiles = std::collections::HashSet::new();
+            self.display_profiles.profiles.retain(|profile| {
+                let id = profile.id.trim();
+                let mut seen_routes = std::collections::HashSet::new();
+                !id.is_empty()
+                    && !profile.name.trim().is_empty()
+                    && !profile.routes.is_empty()
+                    && profile.routes.len() <= 32
+                    && profile.routes.iter().all(|route| {
+                        !route.target_path.trim().is_empty()
+                            && seen_routes.insert(route.target_path.trim().to_ascii_lowercase())
+                    })
+                    && seen_profiles.insert(id.to_ascii_lowercase())
+            });
+            if self
+                .display_profiles
+                .active_profile
+                .as_deref()
+                .is_some_and(|active| {
+                    !self
+                        .display_profiles
+                        .profiles
+                        .iter()
+                        .any(|profile| profile.id.eq_ignore_ascii_case(active))
+                })
+            {
+                self.display_profiles.active_profile = None;
             }
         }
     }
@@ -1133,6 +1176,43 @@ output_device = "default"
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(config.audio.cycle_input_allowlist.is_none());
         assert!(config.audio.cycle_output_allowlist.is_none());
+    }
+
+    #[test]
+    fn display_profiles_round_trip_through_schema_v8() {
+        let mut config = Config::default();
+        config.display_profiles.active_profile = Some("work".into());
+        config.display_profiles.profiles = vec![DisplayProfile {
+            id: "work".into(),
+            name: "Work".into(),
+            topology: DisplayTopology::Extend,
+            routes: vec![DisplayRoute {
+                target_path: r"\\?\DISPLAY#MONITOR-A".into(),
+                source_id: 1,
+                target_id: 2,
+                source_width: 1920,
+                source_height: 1080,
+                ..Default::default()
+            }],
+        }];
+
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn schema_v7_defaults_new_display_profiles() {
+        let raw = "schema_version = 7\n[display_profiles]\nenabled = true\n";
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(config.display_profiles.enabled);
+        assert!(config.display_profiles.profiles.is_empty());
+        assert!(config.display_profiles.active_profile.is_none());
     }
 
     #[test]

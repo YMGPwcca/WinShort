@@ -68,6 +68,12 @@ pub enum ElementId {
     OutputDevice,
     InputAllowlist,
     OutputAllowlist,
+    DisplayProfilesEnabled,
+    DisplayProfile,
+    CaptureDisplayProfile,
+    ApplyDisplayProfile,
+    DeleteDisplayProfile,
+    UndoDisplayChange,
     DebugLogging,
     DiagnosticsStatus,
     InputRole,
@@ -96,7 +102,7 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 37] = [
+    pub const FOCUS_ORDER: [ElementId; 43] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
@@ -112,6 +118,12 @@ impl ElementId {
         ElementId::OutputAllowlist,
         ElementId::InputRole,
         ElementId::OutputRole,
+        ElementId::DisplayProfilesEnabled,
+        ElementId::DisplayProfile,
+        ElementId::CaptureDisplayProfile,
+        ElementId::ApplyDisplayProfile,
+        ElementId::DeleteDisplayProfile,
+        ElementId::UndoDisplayChange,
         ElementId::DesktopsEnabled,
         ElementId::WinNumberEnabled,
         ElementId::DesktopNumberModifier,
@@ -312,6 +324,51 @@ impl SettingsLayout {
                     ElementKind::Value,
                     "Output role",
                     "Only applies when following the Windows default device",
+                ),
+            ],
+        );
+        add_section(&mut raw_sections, &mut y, "Display Profiles");
+        add_card_rows(
+            &mut raw_elements,
+            &mut y,
+            card_x,
+            card_w,
+            &[
+                row(
+                    ElementId::DisplayProfilesEnabled,
+                    ElementKind::Toggle,
+                    "Display profile engine",
+                    "Store and apply documented DisplayConfig snapshots",
+                ),
+                row(
+                    ElementId::DisplayProfile,
+                    ElementKind::Value,
+                    "Active display profile",
+                    "Choose the profile used by Apply",
+                ),
+                row(
+                    ElementId::CaptureDisplayProfile,
+                    ElementKind::Action,
+                    "Capture Current",
+                    "Save the current monitor topology as a profile",
+                ),
+                row(
+                    ElementId::ApplyDisplayProfile,
+                    ElementKind::Action,
+                    "Apply profile",
+                    "Apply with a 15-second undo window",
+                ),
+                row(
+                    ElementId::DeleteDisplayProfile,
+                    ElementKind::ButtonSecondary,
+                    "Delete profile",
+                    "Remove the selected profile from the draft",
+                ),
+                row(
+                    ElementId::UndoDisplayChange,
+                    ElementKind::ButtonSecondary,
+                    "Undo display change",
+                    "Restore the topology captured before Apply",
                 ),
             ],
         );

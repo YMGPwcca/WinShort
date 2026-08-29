@@ -267,6 +267,14 @@ fuzz campaign is claimed or running.
 - Scratchpad assignment/toggle/cleanup remains runtime-only
 - Opt-in executable routing never focuses or switches the user
 
+### Display profiles
+- Capture Current on single/multi-monitor topology persists stable target paths,
+  positions, modes, and detected topology kind
+- Profile picker creates/updates/selects/deletes profiles and Save migrates config
+- Apply refuses missing/ambiguous routes before mutation
+- Apply presents 15-second Undo; failed verification or explicit Undo restores the
+  prior topology
+
 ### DPI / overlay
 - 100% → 150% monitor move (scale up)
 - 150% → 100% monitor move (scale down — #49 regression)

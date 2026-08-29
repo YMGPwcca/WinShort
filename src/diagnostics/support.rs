@@ -871,6 +871,25 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                 })
                 .collect(),
         },
+        display_profiles: SafeDisplayProfiles {
+            enabled: config.display_profiles.enabled,
+            active_profile: config
+                .display_profiles
+                .active_profile
+                .clone()
+                .unwrap_or_default(),
+            profiles: config
+                .display_profiles
+                .profiles
+                .iter()
+                .map(|profile| SafeDisplayProfile {
+                    id: profile.id.clone(),
+                    name: profile.name.clone(),
+                    topology: profile.topology.label().into(),
+                    route_count: profile.routes.len(),
+                })
+                .collect(),
+        },
     };
     toml::to_string_pretty(&safe)
         .unwrap_or_else(|_| "# sanitized config formatting failed\n".into())
@@ -906,6 +925,7 @@ struct SafeConfig {
     audio: SafeAudio,
     hotkeys: SafeHotkeys,
     virtual_desktops: SafeVirtualDesktops,
+    display_profiles: SafeDisplayProfiles,
 }
 
 #[derive(Debug, Serialize)]
@@ -971,6 +991,20 @@ fn safe_rule_executable(value: &str) -> String {
         .next()
         .unwrap_or_default()
         .into()
+}
+#[derive(Debug, Serialize)]
+struct SafeDisplayProfiles {
+    enabled: bool,
+    active_profile: String,
+    profiles: Vec<SafeDisplayProfile>,
+}
+
+#[derive(Debug, Serialize)]
+struct SafeDisplayProfile {
+    id: String,
+    name: String,
+    topology: String,
+    route_count: usize,
 }
 
 fn collect_logs(

@@ -171,8 +171,64 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
         }
     }
 
-    // Endpoint IDs are opaque; only emptiness is malformed (parse already
-    // routes empty to Default, so this is defense in depth) (#7).
+    let mut profile_ids: HashMap<String, usize> = HashMap::new();
+    for (index, profile) in cfg.display_profiles.profiles.iter().enumerate() {
+        let field = format!("display_profiles.profiles[{index}]");
+        let id = profile.id.trim();
+        if id.is_empty() {
+            v.push(Violation::new(
+                &format!("{field}.id"),
+                "display profile ID must not be empty",
+            ));
+        } else if let Some(previous) = profile_ids.insert(id.to_ascii_lowercase(), index) {
+            v.push(Violation::new(
+                &format!("{field}.id"),
+                format!("duplicates display profile at index {previous}"),
+            ));
+        }
+        if profile.name.trim().is_empty() {
+            v.push(Violation::new(
+                &format!("{field}.name"),
+                "display profile name must not be empty",
+            ));
+        }
+        if profile.routes.is_empty() {
+            v.push(Violation::new(
+                &format!("{field}.routes"),
+                "display profile must contain at least one route",
+            ));
+        } else if profile.routes.len() > 32 {
+            v.push(Violation::new(
+                &format!("{field}.routes"),
+                "display profile contains more than 32 routes",
+            ));
+        }
+        let mut route_ids = HashMap::new();
+        for (route_index, route) in profile.routes.iter().enumerate() {
+            if route.target_path.trim().is_empty() {
+                v.push(Violation::new(
+                    &format!("{field}.routes[{route_index}].target_path"),
+                    "display route target path must not be empty",
+                ));
+            }
+            let route_id = route.target_path.trim().to_ascii_lowercase();
+            if let Some(previous) = route_ids.insert(route_id, route_index) {
+                v.push(Violation::new(
+                    &format!("{field}.routes[{route_index}]"),
+                    format!("duplicates display route at index {previous}"),
+                ));
+            }
+        }
+    }
+    if let Some(active) = cfg.display_profiles.active_profile.as_deref() {
+        if !profile_ids.contains_key(&active.to_ascii_lowercase()) {
+            v.push(Violation::new(
+                "display_profiles.active_profile",
+                format!("references unknown display profile `{active}`"),
+            ));
+        }
+    }
+
     for (field, dev) in [
         ("audio.input_device", &cfg.audio.input_device),
         ("audio.output_device", &cfg.audio.output_device),
@@ -355,6 +411,45 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
             .iter()
             .any(|violation| violation.field == "hotkeys.previous_desktop"));
     }
+    #[test]
+    fn display_profiles_validate_and_repair_unknown_selection() {
+        let mut config = Config::default();
+        config.display_profiles.active_profile = Some("missing".into());
+        config.display_profiles.profiles = vec![
+            DisplayProfile {
+                id: "Work".into(),
+                name: "Work".into(),
+                topology: DisplayTopology::Extend,
+                routes: vec![DisplayRoute {
+                    target_path: "monitor-a".into(),
+                    ..Default::default()
+                }],
+            },
+            DisplayProfile {
+                id: "work".into(),
+                name: "Duplicate".into(),
+                topology: DisplayTopology::Extend,
+                routes: vec![DisplayRoute {
+                    target_path: "monitor-b".into(),
+                    ..Default::default()
+                }],
+            },
+        ];
+        let violations = validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "display_profiles.active_profile"));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.message.contains("duplicates display profile")));
+
+        config.repair(&violations);
+
+        assert_eq!(config.display_profiles.profiles.len(), 1);
+        assert!(config.display_profiles.active_profile.is_none());
+        assert!(validate(&config).is_empty());
+    }
+
     #[test]
     fn executable_routing_rules_validate_and_repair() {
         let mut config = Config::default();

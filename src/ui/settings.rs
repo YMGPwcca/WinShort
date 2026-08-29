@@ -432,6 +432,26 @@ impl SettingsUi {
             ElementId::OutputRole => {
                 ControlValue::Text(Cow::Borrowed(self.draft.audio.output_role.label()))
             }
+            ElementId::DisplayProfilesEnabled => {
+                ControlValue::Toggle(self.draft.display_profiles.enabled)
+            }
+            ElementId::DisplayProfile => ControlValue::Text(Cow::Owned(
+                self.draft
+                    .display_profiles
+                    .active()
+                    .map(|profile| profile.name.clone())
+                    .unwrap_or_else(|| "No profile selected".into()),
+            )),
+            ElementId::CaptureDisplayProfile => ControlValue::Action(Cow::Borrowed("Capture")),
+            ElementId::ApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Apply")),
+            ElementId::DeleteDisplayProfile => ControlValue::Action(Cow::Borrowed("Delete")),
+            ElementId::UndoDisplayChange => {
+                ControlValue::Action(Cow::Borrowed(if crate::app::display_rollback_active() {
+                    "Undo"
+                } else {
+                    "No pending change"
+                }))
+            }
             ElementId::DesktopsEnabled => ControlValue::Toggle(self.draft.virtual_desktops.enabled),
             ElementId::WinNumberEnabled => {
                 ControlValue::Toggle(self.draft.virtual_desktops.win_number_switching)
@@ -523,6 +543,7 @@ impl SettingsUi {
             ElementId::StartHotkeysEnabled => self.draft.general.start_hotkeys_enabled,
             ElementId::DesktopsEnabled => self.draft.virtual_desktops.enabled,
             ElementId::WinNumberEnabled => self.draft.virtual_desktops.win_number_switching,
+            ElementId::DisplayProfilesEnabled => self.draft.display_profiles.enabled,
             ElementId::OverlayEnabled => self.draft.overlay.enabled,
             ElementId::OverlayExternalChanges => self.draft.overlay.show_external_audio_changes,
             ElementId::DebugLogging => crate::diagnostics::logging::debug_logging_enabled(),
@@ -562,6 +583,16 @@ impl SettingsUi {
             | ElementId::PreviousDesktopHotkey
             | ElementId::AssignScratchpadHotkey
             | ElementId::ToggleScratchpadHotkey => !self.draft.virtual_desktops.enabled,
+            ElementId::DisplayProfile => {
+                !self.draft.display_profiles.enabled
+                    || self.draft.display_profiles.active().is_none()
+            }
+            ElementId::CaptureDisplayProfile => !self.draft.display_profiles.enabled,
+            ElementId::ApplyDisplayProfile | ElementId::DeleteDisplayProfile => {
+                !self.draft.display_profiles.enabled
+                    || self.draft.display_profiles.active().is_none()
+            }
+            ElementId::UndoDisplayChange => !crate::app::display_rollback_active(),
             ElementId::InputRole => !Self::endpoint_role_enabled(&self.draft.audio.input_device),
             ElementId::OutputRole => !Self::endpoint_role_enabled(&self.draft.audio.output_device),
             ElementId::OverlayAppearance
@@ -786,6 +817,25 @@ impl SettingsUi {
                     PickerKind::OutputRole,
                 ));
             }
+            ElementId::DisplayProfilesEnabled => {
+                self.draft.display_profiles.enabled = !self.draft.display_profiles.enabled;
+                self.animate_toggle(hwnd, id, self.draft.display_profiles.enabled);
+            }
+            ElementId::DisplayProfile => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::DisplayProfile,
+                ));
+            }
+            ElementId::CaptureDisplayProfile => self.capture_display_profile(hwnd),
+            ElementId::ApplyDisplayProfile => {
+                if let Some(profile) = self.draft.display_profiles.active().cloned() {
+                    post_main(crate::event::AppEvent::ApplyDisplayProfile { profile });
+                }
+            }
+            ElementId::DeleteDisplayProfile => self.delete_active_display_profile(),
+            ElementId::UndoDisplayChange => {
+                post_main(crate::event::AppEvent::RevertDisplayProfile);
+            }
             ElementId::DesktopsEnabled => {
                 self.draft.virtual_desktops.enabled = !self.draft.virtual_desktops.enabled;
                 self.animate_toggle(hwnd, id, self.draft.virtual_desktops.enabled);
@@ -863,9 +913,50 @@ impl SettingsUi {
             ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale => {}
             ElementId::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
         }
-        self.validation.clear();
+        if id != ElementId::CaptureDisplayProfile {
+            self.validation.clear();
+        }
         invalidate(hwnd);
         self.publish_automation_snapshot(hwnd);
+    }
+    fn capture_display_profile(&mut self, _hwnd: HWND) {
+        let (id, name) = if let Some(profile) = self.draft.display_profiles.active() {
+            (profile.id.clone(), profile.name.clone())
+        } else {
+            let mut number = 1usize;
+            loop {
+                let id = format!("profile-{number}");
+                if !self
+                    .draft
+                    .display_profiles
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.id == id)
+                {
+                    break (id, format!("Profile {number}"));
+                }
+                number += 1;
+            }
+        };
+        match crate::display::capture_current_profile(&id, &name) {
+            Ok(profile) => {
+                self.draft.display_profiles.upsert(profile);
+                self.validation.clear();
+            }
+            Err(error) => {
+                self.validation = vec![Violation {
+                    field: "display_profiles".into(),
+                    message: error.to_string(),
+                }];
+            }
+        }
+    }
+
+    fn delete_active_display_profile(&mut self) {
+        if let Some(active) = self.draft.display_profiles.active_profile.clone() {
+            self.draft.display_profiles.remove(&active);
+        }
+        self.validation.clear();
     }
 
     fn animate_toggle(&mut self, hwnd: HWND, id: ElementId, value: bool) {
@@ -1088,6 +1179,9 @@ impl SettingsUi {
             }
             (PickerKind::OutputAllowlist, PickerValue::Allowlist(value)) => {
                 self.draft.audio.cycle_output_allowlist = value;
+            }
+            (PickerKind::DisplayProfile, PickerValue::DisplayProfile(value)) => {
+                self.draft.display_profiles.active_profile = value;
             }
             (PickerKind::InputRole, PickerValue::Role(value)) => {
                 self.draft.audio.input_role = value;
@@ -1682,6 +1776,7 @@ fn picker_element(kind: PickerKind) -> Option<ElementId> {
         PickerKind::OutputDevice => ElementId::OutputDevice,
         PickerKind::InputAllowlist => ElementId::InputAllowlist,
         PickerKind::OutputAllowlist => ElementId::OutputAllowlist,
+        PickerKind::DisplayProfile => ElementId::DisplayProfile,
         PickerKind::InputRole => ElementId::InputRole,
         PickerKind::OutputRole => ElementId::OutputRole,
         PickerKind::DesktopNumberModifier => ElementId::DesktopNumberModifier,
@@ -1761,6 +1856,9 @@ fn picker_choices(
                 &devices.outputs,
                 draft.audio.cycle_output_allowlist.as_deref(),
             ));
+        }
+        PickerKind::DisplayProfile => {
+            choices.extend(display_profile_choices(&draft.display_profiles));
         }
         PickerKind::InputRole => {
             for role in [
@@ -1940,6 +2038,17 @@ fn allowlist_choices(
     }
     choices
 }
+fn display_profile_choices(profiles: &crate::display::DisplayProfilesCfg) -> Vec<PickerChoice> {
+    let mut choices = vec![PickerChoice {
+        label: "No profile selected".into(),
+        value: PickerValue::DisplayProfile(None),
+    }];
+    choices.extend(profiles.profiles.iter().map(|profile| PickerChoice {
+        label: format!("{} — {}", profile.name, profile.topology.label()),
+        value: PickerValue::DisplayProfile(Some(profile.id.clone())),
+    }));
+    choices
+}
 
 fn modifier_choices(allow_unassigned: bool) -> Vec<PickerChoice> {
     let mut choices = Vec::new();
@@ -2013,6 +2122,9 @@ fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
         }
         PickerKind::OutputAllowlist => {
             PickerValue::Allowlist(draft.audio.cycle_output_allowlist.clone())
+        }
+        PickerKind::DisplayProfile => {
+            PickerValue::DisplayProfile(draft.display_profiles.active_profile.clone())
         }
         PickerKind::InputRole => PickerValue::Role(draft.audio.input_role),
         PickerKind::OutputRole => PickerValue::Role(draft.audio.output_role),

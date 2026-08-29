@@ -15,6 +15,7 @@ App Runtime (main thread, STA)
 ├── Tray (Shell_NotifyIconW, NOTIFYICON_VERSION_4)
 ├── Settings window (Direct2D HwndRenderTarget + DirectWrite + DWM chrome)
 ├── Overlay window (WS_EX_NOACTIVATE/TRANSPARENT/LAYERED, WIC→DIB→UpdateLayeredWindow)
+├── DisplayConfig profile capture/apply + bounded rollback
 └── Action router: AppEvent -> worker threads
 
 Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
@@ -25,8 +26,7 @@ Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 ## Threading model
 
 | Thread | COM apartment | Owns |
-|---|---|---|
-| Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), timers |
+| Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), DisplayConfig profile capture/apply/rollback timer, timers |
 | Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
 | Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
 | Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable desktop focus history, runtime scratchpad HWND |

@@ -144,6 +144,10 @@ pub enum AppEvent {
         restore_focus: bool,
     },
     SettingsWindowClosed,
+    ApplyDisplayProfile {
+        profile: crate::config::model::DisplayProfile,
+    },
+    RevertDisplayProfile,
     RunDiagnosticsSelfTest,
     CopyDiagnostics,
     OpenDiagnosticsLogs,
