@@ -19,8 +19,8 @@ App Runtime (main thread, STA)
 Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 ├── WH_KEYBOARD_LL       ├── IMMDeviceEnumerator    ├── ImmersiveShell IServiceProvider
 ├── modifier tracking    ├── IAudioEndpointVolume   ├── IVirtualDesktopManagerInternal
-├── binding recognition  ├── IMMNotificationClient  └── SwitchDesktop / enumeration
-└── PostMessage only     └── command channel loop
+├── binding recognition   ├── IMMNotificationClient  ├── IVirtualDesktopManager / HWND focus
+└── PostMessage only      └── command channel loop   └── stable desktop focus history
 ```
 
 ## Threading model
@@ -30,7 +30,7 @@ Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 | Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), timers |
 | Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
 | Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
-| Desktop | STA | undocumented Shell COM pointers (`winshort-desktop` worker) |
+| Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable desktop focus history |
 | Instance watcher | none | waits on named activate/shutdown events |
 
 Rules:
@@ -45,6 +45,8 @@ Rules:
   `std::sync::mpsc` command channels.
 * The desktop controller runs one bounded recovery attempt per user command; policy errors are
   classified by `DesktopError::permits_fallback` (VIRTUAL_DESKTOP_COMPAT.md).
+* Missing numbered desktops are created only through the native backend; the keyboard fallback is
+  used only when a previously known existing target can be safely walked.
 
 ## Events
 

@@ -54,6 +54,7 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
             "foreground_volume_down",
             &cfg.hotkeys.foreground_volume_down,
         ),
+        ("previous_desktop", &cfg.virtual_desktops.previous_desktop),
     ] {
         if let Some(hk) = hk {
             if let Some(other) = seen.insert(*hk, name) {
@@ -65,37 +66,51 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
         }
     }
 
-    // Reserved virtual-desktop shortcuts (#12): when Win-number switching is
-    // on, a user hotkey equal to Win+1..9 would be overwritten by the table
-    // build. Reject the collision instead of silently shadowing it.
-    if cfg.virtual_desktops.enabled && cfg.virtual_desktops.win_number_switching {
-        for (name, hk) in [
-            ("toggle_microphone", &cfg.hotkeys.toggle_microphone),
-            ("toggle_output", &cfg.hotkeys.toggle_output),
-            (
-                "toggle_foreground_audio",
-                &cfg.hotkeys.toggle_foreground_audio,
-            ),
-            ("cycle_input_device", &cfg.hotkeys.cycle_input_device),
-            ("cycle_output_device", &cfg.hotkeys.cycle_output_device),
-            ("foreground_volume_up", &cfg.hotkeys.foreground_volume_up),
-            (
-                "foreground_volume_down",
-                &cfg.hotkeys.foreground_volume_down,
-            ),
-        ] {
-            if let Some(hk) = hk {
-                if hk.modifiers == crate::keyboard::binding::ModifierMask::WIN {
-                    let vk = hk.key.code();
-                    if (0x31..=0x39).contains(&vk) {
-                        v.push(Violation::new(
-                            &format!("hotkeys.{name}"),
-                            format!(
-                                "conflicts with reserved virtual-desktop shortcut Win+{}",
-                                vk - 0x30
-                            ),
-                        ));
-                    }
+    // Numbered families reserve every digit with their configured modifier.
+    // Family collisions and explicit-hotkey collisions are rejected instead
+    // of being silently shadowed by build_bindings.
+    if cfg.virtual_desktops.enabled {
+        let mut families: Vec<(&str, crate::keyboard::binding::ModifierMask)> = Vec::new();
+        if cfg.virtual_desktops.win_number_switching {
+            families.push(("number_modifier", cfg.virtual_desktops.number_modifier));
+        }
+        if let Some(modifier) = cfg.virtual_desktops.move_follow_modifier {
+            families.push(("move_follow_modifier", modifier));
+        }
+        if let Some(modifier) = cfg.virtual_desktops.move_silent_modifier {
+            families.push(("move_silent_modifier", modifier));
+        }
+        if cfg.virtual_desktops.win_number_switching
+            && cfg.virtual_desktops.number_modifier.is_empty()
+        {
+            v.push(Violation::new(
+                "virtual_desktops.number_modifier",
+                "numbered desktop switching requires at least one modifier",
+            ));
+        }
+        let mut family_seen: HashMap<Hotkey, &str> = HashMap::new();
+        for (family, modifier) in families {
+            if modifier.is_empty() {
+                continue;
+            }
+            for number in 1u16..=9 {
+                let hotkey = Hotkey {
+                    modifiers: modifier,
+                    key: crate::keyboard::binding::VirtualKey(0x30 + number),
+                };
+                if let Some(other) = seen.get(&hotkey) {
+                    let message = if family == "number_modifier" {
+                        format!("conflicts with reserved virtual-desktop shortcut {hotkey}")
+                    } else {
+                        format!("conflicts with virtual-desktop {family} shortcut {hotkey}")
+                    };
+                    v.push(Violation::new(&format!("hotkeys.{other}"), message));
+                }
+                if let Some(other) = family_seen.insert(hotkey, family) {
+                    v.push(Violation::new(
+                        &format!("virtual_desktops.{family}"),
+                        format!("conflicts with virtual-desktop {other} family ({hotkey})"),
+                    ));
                 }
             }
         }
@@ -231,5 +246,57 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
                     .message
                     .contains("reserved virtual-desktop shortcut Win+6")
         }));
+    }
+
+    #[test]
+    fn configurable_number_family_reserves_custom_chord() {
+        let mut config = Config::default();
+        config.virtual_desktops.number_modifier = crate::keyboard::binding::ModifierMask::CTRL
+            .union(crate::keyboard::binding::ModifierMask::WIN);
+        config.hotkeys.toggle_output = Some(Hotkey {
+            modifiers: config.virtual_desktops.number_modifier,
+            key: crate::keyboard::binding::VirtualKey(b'5' as u16),
+        });
+        let violations = validate(&config);
+        assert!(violations.iter().any(|violation| {
+            violation.field == "hotkeys.toggle_output"
+                && violation
+                    .message
+                    .contains("reserved virtual-desktop shortcut Ctrl+Win+5")
+        }));
+    }
+
+    #[test]
+    fn move_families_participate_in_conflict_validation() {
+        let mut config = Config::default();
+        config.virtual_desktops.move_follow_modifier =
+            Some(crate::keyboard::binding::ModifierMask::ALT);
+        config.virtual_desktops.move_silent_modifier =
+            Some(crate::keyboard::binding::ModifierMask::ALT);
+        let violations = validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "virtual_desktops.move_silent_modifier"));
+
+        config.virtual_desktops.move_silent_modifier = None;
+        config.hotkeys.toggle_output = Some(Hotkey {
+            modifiers: crate::keyboard::binding::ModifierMask::ALT,
+            key: crate::keyboard::binding::VirtualKey(b'5' as u16),
+        });
+        let violations = validate(&config);
+        assert!(violations.iter().any(|violation| {
+            violation.field == "hotkeys.toggle_output"
+                && violation.message.contains("move_follow_modifier")
+        }));
+    }
+
+    #[test]
+    fn previous_desktop_hotkey_uses_shared_conflict_validation() {
+        let mut config = Config::default();
+        config.virtual_desktops.previous_desktop = config.hotkeys.toggle_microphone;
+        let violations = validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "hotkeys.previous_desktop"));
     }
 }

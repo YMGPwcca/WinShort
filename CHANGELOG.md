@@ -43,10 +43,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 - Four optional Phase-1 hotkeys: cycle the Windows input/output defaults and
   adjust foreground application session volume by ±5%.
-- Schema v3 persistence migrates v2 configurations without assigning new
-  global shortcuts; explicit Settings endpoint selections persist atomically,
-  while Cycle Input/Output switches Windows system defaults without rewriting
-  unsaved Settings drafts.
+- Schema v4 adds one configurable numbered-desktop modifier family plus
+  optional move/follow, silent-move, and previous-desktop actions without
+  stealing existing hotkey slots. Explicit Settings endpoint selections remain
+  persistently saved; desktop workflow hotkeys remain unassigned by default.
+- Numbered Virtual Desktop switching now ensures missing desktops through the
+  native Shell backend; move/follow, silent move, previous-desktop navigation,
+  and per-desktop foreground restoration are available as conservative
+  configurable actions.
 
 ## [0.1.0] - 2026-08-24
 

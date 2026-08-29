@@ -66,6 +66,9 @@ pub enum PickerKind {
     OutputDevice,
     InputRole,
     OutputRole,
+    DesktopNumberModifier,
+    MoveDesktopModifier,
+    SilentMoveDesktopModifier,
     OverlayPosition,
     OverlayAppearance,
     OverlayMonitor,
@@ -75,6 +78,7 @@ pub enum PickerKind {
 pub enum PickerValue {
     Device(DeviceSelection),
     Role(EndpointRole),
+    Modifier(crate::keyboard::binding::ModifierMask),
     Position(OverlayPosition),
     Appearance(OverlayAppearance),
     Monitor(MonitorChoice),

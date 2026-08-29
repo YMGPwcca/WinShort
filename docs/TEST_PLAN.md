@@ -253,10 +253,16 @@ fuzz campaign is claimed or running.
 - Long multi-session volume values show an exact percentage or truthful min–max range
 
 ### Virtual desktop
-- Win+1..9 target changes (registry CurrentVirtualDesktop verification)
-- Target beyond desktop count (must NOT inject fallback keys)
-- External desktop add/remove/reorder
-- Elevated foreground app / UIPI fallback refusal log
+- Configurable numbered modifier family and `1..9` action derivation
+- Centralized conflicts between numbered families, previous-desktop, and ordinary hotkeys
+- Desktop 1 → Desktop 9 creates only missing desktops through the native backend
+- Unsupported native creation reports a capability error without synthetic creation
+- Move foreground + follow restores focus to the moved HWND
+- Silent foreground move leaves the source desktop active
+- Per-desktop last-focused HWND tracking excludes WinShort, shell, invisible, stale, and cloaked windows
+- Previous-desktop toggles back and forth and clears deleted identities
+- Scratchpad assignment/toggle/cleanup remains runtime-only
+- Opt-in executable routing never focuses or switches the user
 
 ### DPI / overlay
 - 100% → 150% monitor move (scale up)

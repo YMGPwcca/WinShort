@@ -821,6 +821,19 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
         virtual_desktops: SafeVirtualDesktops {
             enabled: config.virtual_desktops.enabled,
             win_number_switching: config.virtual_desktops.win_number_switching,
+            number_modifier: config.virtual_desktops.number_modifier.to_string(),
+            move_follow_modifier: config
+                .virtual_desktops
+                .move_follow_modifier
+                .map_or(String::new(), |modifier| modifier.to_string()),
+            move_silent_modifier: config
+                .virtual_desktops
+                .move_silent_modifier
+                .map_or(String::new(), |modifier| modifier.to_string()),
+            previous_desktop: config
+                .virtual_desktops
+                .previous_desktop
+                .map_or(String::new(), |hotkey| hotkey.to_string()),
         },
     };
     toml::to_string_pretty(&safe)
@@ -892,6 +905,10 @@ struct SafeHotkeys {
 struct SafeVirtualDesktops {
     enabled: bool,
     win_number_switching: bool,
+    number_modifier: String,
+    move_follow_modifier: String,
+    move_silent_modifier: String,
+    previous_desktop: String,
 }
 
 fn collect_logs(

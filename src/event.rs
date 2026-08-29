@@ -29,6 +29,12 @@ pub enum HotkeyAction {
     ForegroundVolumeDown,
     /// Virtual desktop index, 0-based internally (desktops are numbered 1..=9).
     SwitchDesktop(u8),
+    /// Switch to the previously active virtual desktop.
+    SwitchPreviousDesktop,
+    /// Move the foreground view to a numbered desktop and follow it.
+    MoveForegroundToDesktop(u8),
+    /// Move the foreground view silently without switching desktops.
+    MoveForegroundToDesktopSilent(u8),
 }
 
 impl HotkeyAction {
@@ -47,6 +53,9 @@ impl HotkeyAction {
         const KIND_CYCLE_OUTPUT: u32 = 6;
         const KIND_FOREGROUND_VOLUME_UP: u32 = 7;
         const KIND_FOREGROUND_VOLUME_DOWN: u32 = 8;
+        const KIND_PREVIOUS_DESKTOP: u32 = 9;
+        const KIND_MOVE_FOREGROUND: u32 = 10;
+        const KIND_MOVE_FOREGROUND_SILENT: u32 = 11;
         match self {
             HotkeyAction::ToggleMicrophone => KIND_MIC << 16,
             HotkeyAction::ToggleOutput => KIND_OUT << 16,
@@ -56,6 +65,11 @@ impl HotkeyAction {
             HotkeyAction::CycleOutputDevice => KIND_CYCLE_OUTPUT << 16,
             HotkeyAction::ForegroundVolumeUp => KIND_FOREGROUND_VOLUME_UP << 16,
             HotkeyAction::ForegroundVolumeDown => KIND_FOREGROUND_VOLUME_DOWN << 16,
+            HotkeyAction::SwitchPreviousDesktop => KIND_PREVIOUS_DESKTOP << 16,
+            HotkeyAction::MoveForegroundToDesktop(n) => (KIND_MOVE_FOREGROUND << 16) | n as u32,
+            HotkeyAction::MoveForegroundToDesktopSilent(n) => {
+                (KIND_MOVE_FOREGROUND_SILENT << 16) | n as u32
+            }
         }
     }
 
@@ -71,11 +85,14 @@ impl HotkeyAction {
             1 => Some(HotkeyAction::ToggleMicrophone),
             2 => Some(HotkeyAction::ToggleOutput),
             3 => Some(HotkeyAction::ToggleForegroundAppAudio),
-            4 => Some(HotkeyAction::SwitchDesktop(arg)),
+            4 if arg < 9 => Some(HotkeyAction::SwitchDesktop(arg)),
             5 => Some(HotkeyAction::CycleInputDevice),
             6 => Some(HotkeyAction::CycleOutputDevice),
             7 => Some(HotkeyAction::ForegroundVolumeUp),
             8 => Some(HotkeyAction::ForegroundVolumeDown),
+            9 => Some(HotkeyAction::SwitchPreviousDesktop),
+            10 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktop(arg)),
+            11 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktopSilent(arg)),
             _ => None,
         }
     }
@@ -124,6 +141,14 @@ pub enum AppEvent {
     ConfigApplied {
         seq: u64,
         stamp: crate::config::ConfigRevisionStamp,
+    },
+    /// Event-driven foreground HWND sample for desktop focus bookkeeping.
+    ForegroundWindowChanged {
+        hwnd_raw: isize,
+    },
+    DesktopActionFailed {
+        action: String,
+        reason: String,
     },
     DeviceCycleResolved {
         request_id: u64,
@@ -229,6 +254,11 @@ mod pack_tests {
             HotkeyAction::CycleOutputDevice,
             HotkeyAction::ForegroundVolumeUp,
             HotkeyAction::ForegroundVolumeDown,
+            HotkeyAction::SwitchPreviousDesktop,
+            HotkeyAction::MoveForegroundToDesktop(0),
+            HotkeyAction::MoveForegroundToDesktop(8),
+            HotkeyAction::MoveForegroundToDesktopSilent(0),
+            HotkeyAction::MoveForegroundToDesktopSilent(8),
             HotkeyAction::SwitchDesktop(0),
             HotkeyAction::SwitchDesktop(8),
         ];
@@ -239,7 +269,15 @@ mod pack_tests {
         assert_eq!(HotkeyAction::CycleInputDevice.pack_u32(), 5 << 16);
         assert_eq!(HotkeyAction::CycleOutputDevice.pack_u32(), 6 << 16);
         assert_eq!(HotkeyAction::ForegroundVolumeUp.pack_u32(), 7 << 16);
-        assert_eq!(HotkeyAction::ForegroundVolumeDown.pack_u32(), 8 << 16);
+        assert_eq!(HotkeyAction::SwitchPreviousDesktop.pack_u32(), 9 << 16);
+        assert_eq!(
+            HotkeyAction::MoveForegroundToDesktop(8).pack_u32(),
+            (10 << 16) | 8
+        );
+        assert_eq!(
+            HotkeyAction::MoveForegroundToDesktopSilent(8).pack_u32(),
+            (11 << 16) | 8
+        );
         for action in all {
             let packed = action.pack();
             assert!(

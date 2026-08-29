@@ -430,6 +430,18 @@ impl SettingsUi {
             ElementId::WinNumberEnabled => {
                 ControlValue::Toggle(self.draft.virtual_desktops.win_number_switching)
             }
+            ElementId::DesktopNumberModifier => ControlValue::Text(Cow::Owned(
+                modifier_family_label(Some(self.draft.virtual_desktops.number_modifier)),
+            )),
+            ElementId::MoveDesktopModifier => ControlValue::Text(Cow::Owned(
+                modifier_family_label(self.draft.virtual_desktops.move_follow_modifier),
+            )),
+            ElementId::SilentMoveDesktopModifier => ControlValue::Text(Cow::Owned(
+                modifier_family_label(self.draft.virtual_desktops.move_silent_modifier),
+            )),
+            ElementId::PreviousDesktopHotkey => {
+                self.hotkey_value(id, self.draft.virtual_desktops.previous_desktop)
+            }
             ElementId::OverlayEnabled => ControlValue::Toggle(self.draft.overlay.enabled),
             ElementId::OverlayAppearance => {
                 ControlValue::Text(Cow::Borrowed(self.draft.overlay.appearance.label()))
@@ -529,6 +541,13 @@ impl SettingsUi {
     fn is_disabled(&self, id: ElementId) -> bool {
         match id {
             ElementId::WinNumberEnabled => !self.draft.virtual_desktops.enabled,
+            ElementId::DesktopNumberModifier => {
+                !self.draft.virtual_desktops.enabled
+                    || !self.draft.virtual_desktops.win_number_switching
+            }
+            ElementId::MoveDesktopModifier
+            | ElementId::SilentMoveDesktopModifier
+            | ElementId::PreviousDesktopHotkey => !self.draft.virtual_desktops.enabled,
             ElementId::InputRole => !Self::endpoint_role_enabled(&self.draft.audio.input_device),
             ElementId::OutputRole => !Self::endpoint_role_enabled(&self.draft.audio.output_device),
             ElementId::OverlayAppearance
@@ -708,7 +727,8 @@ impl SettingsUi {
             | ElementId::CycleInputHotkey
             | ElementId::CycleOutputHotkey
             | ElementId::ForegroundVolumeUpHotkey
-            | ElementId::ForegroundVolumeDownHotkey => {
+            | ElementId::ForegroundVolumeDownHotkey
+            | ElementId::PreviousDesktopHotkey => {
                 self.recording = Some(id);
                 self.recording_modifiers = ModifierMask::NONE;
                 self.validation.clear();
@@ -748,6 +768,21 @@ impl SettingsUi {
                 self.draft.virtual_desktops.win_number_switching =
                     !self.draft.virtual_desktops.win_number_switching;
                 self.animate_toggle(hwnd, id, self.draft.virtual_desktops.win_number_switching);
+            }
+            ElementId::DesktopNumberModifier => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::DesktopNumberModifier,
+                ));
+            }
+            ElementId::MoveDesktopModifier => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::MoveDesktopModifier,
+                ));
+            }
+            ElementId::SilentMoveDesktopModifier => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::SilentMoveDesktopModifier,
+                ));
             }
             ElementId::OverlayEnabled => {
                 self.draft.overlay.enabled = !self.draft.overlay.enabled;
@@ -892,6 +927,9 @@ impl SettingsUi {
             ElementId::ForegroundVolumeDownHotkey => {
                 self.draft.hotkeys.foreground_volume_down = Some(hotkey)
             }
+            ElementId::PreviousDesktopHotkey => {
+                self.draft.virtual_desktops.previous_desktop = Some(hotkey)
+            }
             _ => {}
         }
         self.recording = None;
@@ -933,6 +971,9 @@ impl SettingsUi {
                         }
                         ElementId::ForegroundVolumeDownHotkey => {
                             self.draft.hotkeys.foreground_volume_down = Some(hotkey)
+                        }
+                        ElementId::PreviousDesktopHotkey => {
+                            self.draft.virtual_desktops.previous_desktop = Some(hotkey)
                         }
                         _ => {}
                     }
@@ -995,6 +1036,7 @@ impl SettingsUi {
                 (self.scroll + (element.rect.bottom() - bottom)).clamp(0.0, self.layout.max_scroll);
         }
     }
+
     fn apply_picker(&mut self, kind: PickerKind, value: PickerValue) {
         match (kind, value) {
             (PickerKind::InputDevice, PickerValue::Device(value)) => {
@@ -1008,6 +1050,17 @@ impl SettingsUi {
             }
             (PickerKind::OutputRole, PickerValue::Role(value)) => {
                 self.draft.audio.output_role = value;
+            }
+            (PickerKind::DesktopNumberModifier, PickerValue::Modifier(value)) => {
+                self.draft.virtual_desktops.number_modifier = value;
+            }
+            (PickerKind::MoveDesktopModifier, PickerValue::Modifier(value)) => {
+                self.draft.virtual_desktops.move_follow_modifier =
+                    (!value.is_empty()).then_some(value);
+            }
+            (PickerKind::SilentMoveDesktopModifier, PickerValue::Modifier(value)) => {
+                self.draft.virtual_desktops.move_silent_modifier =
+                    (!value.is_empty()).then_some(value);
             }
             (PickerKind::OverlayAppearance, PickerValue::Appearance(value)) => {
                 self.draft.overlay.appearance = value;
@@ -1577,6 +1630,9 @@ fn picker_element(kind: PickerKind) -> Option<ElementId> {
         PickerKind::OutputDevice => ElementId::OutputDevice,
         PickerKind::InputRole => ElementId::InputRole,
         PickerKind::OutputRole => ElementId::OutputRole,
+        PickerKind::DesktopNumberModifier => ElementId::DesktopNumberModifier,
+        PickerKind::MoveDesktopModifier => ElementId::MoveDesktopModifier,
+        PickerKind::SilentMoveDesktopModifier => ElementId::SilentMoveDesktopModifier,
         PickerKind::OverlayAppearance => ElementId::OverlayAppearance,
         PickerKind::OverlayPosition => ElementId::OverlayPosition,
         PickerKind::OverlayMonitor => ElementId::OverlayMonitor,
@@ -1664,6 +1720,15 @@ fn picker_choices(
                 });
             }
         }
+        PickerKind::DesktopNumberModifier => {
+            choices.extend(modifier_choices(false));
+        }
+        PickerKind::MoveDesktopModifier => {
+            choices.extend(modifier_choices(true));
+        }
+        PickerKind::SilentMoveDesktopModifier => {
+            choices.extend(modifier_choices(true));
+        }
         PickerKind::OverlayAppearance => {
             choices.extend(
                 OverlayAppearance::ALL
@@ -1744,6 +1809,24 @@ fn picker_choices(
     (choices, current_index)
 }
 
+fn modifier_choices(allow_unassigned: bool) -> Vec<PickerChoice> {
+    let mut choices = Vec::new();
+    if allow_unassigned {
+        choices.push(PickerChoice {
+            label: "Unassigned".into(),
+            value: PickerValue::Modifier(ModifierMask::NONE),
+        });
+    }
+    for bits in 1u8..=0b1111 {
+        let modifier = ModifierMask::from_bits(bits);
+        choices.push(PickerChoice {
+            label: modifier.to_string(),
+            value: PickerValue::Modifier(modifier),
+        });
+    }
+    choices
+}
+
 fn device_choices(
     devices: &[crate::audio::DeviceId],
     default: Option<&crate::audio::DeviceId>,
@@ -1795,6 +1878,21 @@ fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
         PickerKind::OutputDevice => PickerValue::Device(draft.audio.output_device.clone()),
         PickerKind::InputRole => PickerValue::Role(draft.audio.input_role),
         PickerKind::OutputRole => PickerValue::Role(draft.audio.output_role),
+        PickerKind::DesktopNumberModifier => {
+            PickerValue::Modifier(draft.virtual_desktops.number_modifier)
+        }
+        PickerKind::MoveDesktopModifier => PickerValue::Modifier(
+            draft
+                .virtual_desktops
+                .move_follow_modifier
+                .unwrap_or(ModifierMask::NONE),
+        ),
+        PickerKind::SilentMoveDesktopModifier => PickerValue::Modifier(
+            draft
+                .virtual_desktops
+                .move_silent_modifier
+                .unwrap_or(ModifierMask::NONE),
+        ),
         PickerKind::OverlayAppearance => PickerValue::Appearance(draft.overlay.appearance),
         PickerKind::OverlayPosition => PickerValue::Position(draft.overlay.position),
         PickerKind::OverlayMonitor => PickerValue::Monitor(draft.overlay.monitor.clone()),
@@ -2232,6 +2330,12 @@ fn start_timer(hwnd: HWND) {
     unsafe {
         let _ = SetTimer(Some(hwnd), UI_TIMER, UI_TIMER_MS, None);
     }
+}
+
+fn modifier_family_label(modifier: Option<ModifierMask>) -> String {
+    modifier
+        .map(|modifier| format!("{modifier} + 1..9"))
+        .unwrap_or_else(|| "Unassigned".into())
 }
 
 fn device_label(

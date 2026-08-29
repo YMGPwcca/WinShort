@@ -23,6 +23,13 @@ pub fn last_external_hwnd() -> Option<windows::Win32::Foundation::HWND> {
     (raw != 0).then_some(windows::Win32::Foundation::HWND(raw as *mut _))
 }
 
+/// Return the current foreground window when it belongs to another process.
+pub fn current_external_hwnd() -> Option<HWND> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    let pid = pid_for_window(hwnd);
+    (pid != 0 && pid != OWN_PID.load(Ordering::Acquire)).then_some(hwnd)
+}
+
 pub struct ForegroundTracker {
     hook: HWINEVENTHOOK,
 }
@@ -92,6 +99,9 @@ fn remember_if_external(hwnd: HWND) {
         // #26: remember the window itself for monitor targeting.
         if !hwnd.0.is_null() {
             LAST_EXTERNAL_HWND.store(hwnd.0 as usize, std::sync::atomic::Ordering::Release);
+            crate::event::post_main(crate::event::AppEvent::ForegroundWindowChanged {
+                hwnd_raw: hwnd.0 as isize,
+            });
         }
     }
 }

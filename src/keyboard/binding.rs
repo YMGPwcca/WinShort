@@ -29,6 +29,29 @@ impl ModifierMask {
         Self(bits)
     }
 
+    /// Parse a non-empty modifier-only chord such as `Win+Alt`.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let mut mask = Self::NONE;
+        for token in s.split('+') {
+            let token = token.trim();
+            let modifier = match token.to_ascii_uppercase().as_str() {
+                "CTRL" | "CONTROL" => Self::CTRL,
+                "ALT" => Self::ALT,
+                "SHIFT" => Self::SHIFT,
+                "WIN" | "SUPER" | "META" => Self::WIN,
+                _ => return Err(format!("unknown modifier `{token}` in `{s}`")),
+            };
+            if mask.contains(modifier) {
+                return Err(format!("duplicate modifier `{token}` in `{s}`"));
+            }
+            mask = mask.union(modifier);
+        }
+        if mask.is_empty() {
+            return Err(format!("modifier chord `{s}` is empty"));
+        }
+        Ok(mask)
+    }
+
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
@@ -305,11 +328,6 @@ impl BindingTable {
         self.map.get(&(mods, key)).copied()
     }
 
-    /// Exact-match probe used by the reserved-slot guard (#12).
-    pub fn conflicts(&self, candidate: &Hotkey) -> Option<HotkeyAction> {
-        self.lookup(candidate.modifiers, candidate.key)
-    }
-
     #[cfg(test)]
     #[allow(dead_code)] // test helper surface
     pub fn iter(&self) -> impl Iterator<Item = (Hotkey, HotkeyAction)> + '_ {
@@ -354,6 +372,24 @@ mod tests {
             let hk = Hotkey::parse(s).unwrap_or_else(|e| panic!("{s}: {e}"));
             assert_eq!(hk.to_string(), s, "round trip failed");
         }
+    }
+
+    #[test]
+    fn modifier_family_parse_display_round_trip() {
+        for text in [
+            "Win",
+            "Win+Alt",
+            "Ctrl+Alt",
+            "Ctrl+Win",
+            "Ctrl+Alt+Shift+Win",
+        ] {
+            let modifier = ModifierMask::parse(text).unwrap();
+            let rendered = modifier.to_string();
+            assert_eq!(ModifierMask::parse(&rendered), Ok(modifier));
+        }
+        assert!(ModifierMask::parse("Ctrl+Ctrl").is_err());
+        assert!(ModifierMask::parse("Win+1").is_err());
+        assert!(ModifierMask::parse("").is_err());
     }
 
     #[test]

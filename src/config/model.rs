@@ -3,12 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::keyboard::binding::Hotkey;
+use crate::keyboard::binding::{Hotkey, ModifierMask};
 
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 3;
+pub const CURRENT_SCHEMA_VERSION: u8 = 4;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,10 +56,14 @@ pub struct HotkeysCfg {
     pub foreground_volume_down: Option<Hotkey>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VdCfg {
     pub enabled: bool,
     pub win_number_switching: bool,
+    pub number_modifier: ModifierMask,
+    pub move_follow_modifier: Option<ModifierMask>,
+    pub move_silent_modifier: Option<ModifierMask>,
+    pub previous_desktop: Option<Hotkey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +284,10 @@ impl Default for Config {
             virtual_desktops: VdCfg {
                 enabled: true,
                 win_number_switching: true,
+                number_modifier: ModifierMask::WIN,
+                move_follow_modifier: None,
+                move_silent_modifier: None,
+                previous_desktop: None,
             },
         }
     }
@@ -434,6 +442,14 @@ pub struct VdToml {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub win_number_switching: bool,
+    #[serde(default = "default_number_modifier")]
+    pub number_modifier: String,
+    #[serde(default)]
+    pub move_follow_modifier: String,
+    #[serde(default)]
+    pub move_silent_modifier: String,
+    #[serde(default)]
+    pub previous_desktop: String,
 }
 
 impl Default for VdToml {
@@ -441,12 +457,19 @@ impl Default for VdToml {
         Self {
             enabled: true,
             win_number_switching: true,
+            number_modifier: default_number_modifier(),
+            move_follow_modifier: String::new(),
+            move_silent_modifier: String::new(),
+            previous_desktop: String::new(),
         }
     }
 }
 
 fn default_true() -> bool {
     true
+}
+fn default_number_modifier() -> String {
+    "Win".into()
 }
 fn default_duration() -> u32 {
     1300
@@ -480,6 +503,41 @@ fn default_out() -> String {
 }
 fn default_fg() -> String {
     DEFAULT_TOGGLE_FOREGROUND.into()
+}
+
+fn parse_modifier(
+    raw: &str,
+    default: ModifierMask,
+    field: &str,
+    warnings: &mut Vec<String>,
+) -> ModifierMask {
+    if raw.trim().is_empty() {
+        return default;
+    }
+    match ModifierMask::parse(raw) {
+        Ok(modifier) => modifier,
+        Err(error) => {
+            warnings.push(format!("virtual_desktops.{field}: {error}"));
+            default
+        }
+    }
+}
+
+fn parse_optional_modifier(
+    raw: &str,
+    field: &str,
+    warnings: &mut Vec<String>,
+) -> Option<ModifierMask> {
+    if raw.trim().is_empty() {
+        return None;
+    }
+    match ModifierMask::parse(raw) {
+        Ok(modifier) => Some(modifier),
+        Err(error) => {
+            warnings.push(format!("virtual_desktops.{field}: {error}"));
+            None
+        }
+    }
 }
 
 impl Config {
@@ -546,6 +604,19 @@ impl Config {
             virtual_desktops: VdToml {
                 enabled: self.virtual_desktops.enabled,
                 win_number_switching: self.virtual_desktops.win_number_switching,
+                number_modifier: self.virtual_desktops.number_modifier.to_string(),
+                move_follow_modifier: self
+                    .virtual_desktops
+                    .move_follow_modifier
+                    .map_or(String::new(), |modifier| modifier.to_string()),
+                move_silent_modifier: self
+                    .virtual_desktops
+                    .move_silent_modifier
+                    .map_or(String::new(), |modifier| modifier.to_string()),
+                previous_desktop: self
+                    .virtual_desktops
+                    .previous_desktop
+                    .map_or(String::new(), |hotkey| hotkey.to_string()),
             },
         }
     }
@@ -673,6 +744,28 @@ impl Config {
 
         c.virtual_desktops.enabled = t.virtual_desktops.enabled;
         c.virtual_desktops.win_number_switching = t.virtual_desktops.win_number_switching;
+        c.virtual_desktops.number_modifier = parse_modifier(
+            &t.virtual_desktops.number_modifier,
+            ModifierMask::WIN,
+            "number_modifier",
+            &mut warnings,
+        );
+        c.virtual_desktops.move_follow_modifier = parse_optional_modifier(
+            &t.virtual_desktops.move_follow_modifier,
+            "move_follow_modifier",
+            &mut warnings,
+        );
+        c.virtual_desktops.move_silent_modifier = parse_optional_modifier(
+            &t.virtual_desktops.move_silent_modifier,
+            "move_silent_modifier",
+            &mut warnings,
+        );
+        if !t.virtual_desktops.previous_desktop.trim().is_empty() {
+            match Hotkey::parse(&t.virtual_desktops.previous_desktop) {
+                Ok(hotkey) => c.virtual_desktops.previous_desktop = Some(hotkey),
+                Err(error) => warnings.push(format!("virtual_desktops.previous_desktop: {error}")),
+            }
+        }
 
         (c, warnings)
     }
@@ -702,7 +795,14 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "foreground_volume_up",
             "foreground_volume_down",
         ]),
-        "virtual_desktops" => Some(&["enabled", "win_number_switching"]),
+        "virtual_desktops" => Some(&[
+            "enabled",
+            "win_number_switching",
+            "number_modifier",
+            "move_follow_modifier",
+            "move_silent_modifier",
+            "previous_desktop",
+        ]),
         _ => None,
     }
 }
@@ -716,7 +816,17 @@ impl Config {
             match v.field.as_str() {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
                 "overlay.scale" => self.overlay.scale = 1.0,
+
                 "overlay.opacity" => self.overlay.opacity = 0.85,
+                "virtual_desktops.number_modifier" => {
+                    self.virtual_desktops.number_modifier = ModifierMask::WIN
+                }
+                "virtual_desktops.move_follow_modifier" if v.message.contains("conflicts") => {
+                    self.virtual_desktops.move_follow_modifier = None;
+                }
+                "virtual_desktops.move_silent_modifier" if v.message.contains("conflicts") => {
+                    self.virtual_desktops.move_silent_modifier = None;
+                }
                 f if f.starts_with("hotkeys.") && v.message.contains("conflicts") => {
                     // Conflict-class violations: drop the offending binding.
                     drop_hotkeys.push(f.trim_start_matches("hotkeys.").to_string());
@@ -733,6 +843,7 @@ impl Config {
                 "cycle_output_device" => self.hotkeys.cycle_output_device = None,
                 "foreground_volume_up" => self.hotkeys.foreground_volume_up = None,
                 "foreground_volume_down" => self.hotkeys.foreground_volume_down = None,
+                "previous_desktop" => self.virtual_desktops.previous_desktop = None,
                 _ => {}
             }
         }
@@ -814,5 +925,40 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
         let (round_tripped, warnings) = Config::from_toml(&boundary);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn desktop_chord_fields_round_trip_through_schema_v4() {
+        let mut config = Config::default();
+        config.virtual_desktops.number_modifier = ModifierMask::CTRL.union(ModifierMask::ALT);
+        config.virtual_desktops.move_follow_modifier = Some(ModifierMask::WIN);
+        config.virtual_desktops.move_silent_modifier =
+            Some(ModifierMask::CTRL.union(ModifierMask::WIN));
+        config.virtual_desktops.previous_desktop = Some(Hotkey::parse("Ctrl+Alt+F8").unwrap());
+
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(boundary.virtual_desktops.number_modifier, "Ctrl+Alt");
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn schema_v3_defaults_new_desktop_controls() {
+        let raw = r#"
+schema_version = 3
+[virtual_desktops]
+enabled = true
+win_number_switching = true
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.virtual_desktops.number_modifier, ModifierMask::WIN);
+        assert!(config.virtual_desktops.move_follow_modifier.is_none());
+        assert!(config.virtual_desktops.move_silent_modifier.is_none());
+        assert!(config.virtual_desktops.previous_desktop.is_none());
     }
 }

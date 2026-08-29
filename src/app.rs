@@ -607,9 +607,59 @@ impl App {
             HotkeyAction::SwitchDesktop(n) => {
                 if let Some(desktop) = &self.desktop {
                     desktop.switch_to(n as usize);
+                } else {
+                    self.report_desktop_failure("switch desktop", "desktop subsystem unavailable");
                 }
             }
+            HotkeyAction::MoveForegroundToDesktop(n) => {
+                self.dispatch_move_foreground(n as usize, true);
+            }
+            HotkeyAction::MoveForegroundToDesktopSilent(n) => {
+                self.dispatch_move_foreground(n as usize, false);
+            }
+            HotkeyAction::SwitchPreviousDesktop => self.dispatch_previous_desktop(),
         }
+    }
+
+    fn dispatch_move_foreground(&mut self, index: usize, follow: bool) {
+        let Some(desktop) = &self.desktop else {
+            self.report_desktop_failure(
+                if follow {
+                    "move and follow foreground window"
+                } else {
+                    "move foreground window silently"
+                },
+                "desktop subsystem unavailable",
+            );
+            return;
+        };
+        let Some(hwnd) = crate::platform::foreground::current_external_hwnd() else {
+            self.report_desktop_failure(
+                if follow {
+                    "move and follow foreground window"
+                } else {
+                    "move foreground window silently"
+                },
+                "no eligible foreground application window",
+            );
+            return;
+        };
+        desktop.move_foreground_to(index, hwnd.0 as isize, follow);
+    }
+
+    fn dispatch_previous_desktop(&mut self) {
+        if let Some(desktop) = &self.desktop {
+            desktop.switch_previous();
+        } else {
+            self.report_desktop_failure("switch previous desktop", "desktop subsystem unavailable");
+        }
+    }
+
+    fn report_desktop_failure(&mut self, action: &str, reason: &str) {
+        self.route_event(AppEvent::DesktopActionFailed {
+            action: action.into(),
+            reason: reason.into(),
+        });
     }
 
     fn dispatch_device_cycle(&mut self, flow: crate::audio::DeviceCycleFlow) {
@@ -799,6 +849,22 @@ impl App {
                     audio.send(crate::audio::AudioCommand::ConfigChanged { stamp });
                 }
                 info!("config applied (seq {seq}, origin {:?})", stamp.origin);
+            }
+            AppEvent::ForegroundWindowChanged { hwnd_raw } => {
+                if let Some(desktop) = &self.desktop {
+                    desktop.remember_foreground(hwnd_raw);
+                }
+            }
+            AppEvent::DesktopActionFailed { action, reason } => {
+                error_!("desktop action {action} failed: {reason}");
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::OverlayRow {
+                        icon: crate::ui::overlay::OverlayIcon::Info,
+                        tone: crate::ui::overlay::OverlayTone::Unavailable,
+                        title: "Virtual desktop".into(),
+                        detail: format!("{action}: {reason}"),
+                    },
+                ));
             }
             AppEvent::DeviceCycleResolved { request_id, result } => {
                 self.handle_device_cycle_result(request_id, result);

@@ -9,7 +9,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 No backup copies are kept.
 
 ```toml
-schema_version = 3              # u8; CURRENT value is 3 (v1/v2 files migrate on load)
+schema_version = 4              # u8; CURRENT value is 4 (v1/v2/v3 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -42,8 +42,11 @@ foreground_volume_down = ""
 
 [virtual_desktops]
 enabled = true
-win_number_switching = true     # reserves Win+1..9 while true
-```
+win_number_switching = true     # numbered family enabled
+number_modifier = "Win"         # one modifier family for 1..9
+move_follow_modifier = ""       # optional modifier family
+move_silent_modifier = ""       # optional modifier family
+previous_desktop = ""           # optional ordinary hotkey
 
 ## Internal representation
 
@@ -66,6 +69,9 @@ required — bare keys are rejected** (#35). Numpad tokens (`Numpad0`–`Numpad9
 `NumpadAdd`, …) stay distinct from top-row siblings (#11). Supported key universe:
 letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no media keys.
 
+`VdCfg` stores the numbered modifier family, optional move/follow and silent
+modifier families, and an optional previous-desktop hotkey as typed values.
+
 `HotkeysCfg` retains the three existing defaulted toggle bindings and adds four
 optional fields (`cycle_input_device`, `cycle_output_device`,
 `foreground_volume_up`, `foreground_volume_down`). The new fields default to
@@ -73,14 +79,14 @@ optional fields (`cycle_input_device`, `cycle_output_device`,
 
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 3` (`config/load.rs::load`):
+Loading a document with `schema_version > 4` (`config/load.rs::load`):
 
 An absent `schema_version` is treated as legacy source schema v1. New files
-serialized by `Config::to_toml()` always write schema v3.
+serialized by `Config::to_toml()` always write schema v4.
 
 Diagnostics separates `source_schema_version` from `effective_schema_version`:
-missing/corrupt input has no source version and effective v3; v1/v2 input has
-its source version and effective v3; v3 input has source and effective v3. A
+missing/corrupt input has no source version and effective v4; v1/v2/v3 input has
+its source version and effective v4; v4 input has source and effective v4. A
 future source version is retained while runtime state falls back to safe defaults
 and the read-only latch remains active.
 
@@ -103,15 +109,17 @@ Serde does not deny unknown fields; instead load performs a manual double-parse 
 
 `config/validate.rs::validate` produces `Vec<Violation>` (dotted field paths):
 
-* hotkeys must parse, be pairwise distinct across all seven configurable actions (conflict message names both actions), and require a modifier (#35)
-* reserved slots: when `virtual_desktops.enabled && win_number_switching`, exactly
-  `Win + digit 1..9` conflicts ("conflicts with reserved virtual-desktop shortcut Win+n");
-  allowed again when the reserve is off; other modifiers+digits never conflict
+* hotkeys must parse, be pairwise distinct across all configurable actions and numbered modifier families, and require a modifier (#35)
+* when `virtual_desktops.enabled && win_number_switching`, `number_modifier + digit 1..9` is reserved;
+  collisions with explicit hotkeys are rejected using the configured modifier family
+* optional move/follow and silent modifier families must not overlap each other, the numbered family,
+  or explicit hotkeys
+* `previous_desktop` participates in the same centralized conflict validation
 
 `Config::repair` then fixes violations in-memory so the app stays usable:
 out-of-range `duration_ms → 2000`, `scale → 1.0`, `opacity → 0.85`; conflicting hotkey binding
-→ `None`. Repair is idempotent (repaired values are themselves valid). Whitespace-only endpoint
-IDs are rejected as defense-in-depth.
+→ `None`; an invalid numbered modifier returns to `Win`. Repair is idempotent (repaired values are
+themselves valid). Whitespace-only endpoint IDs are rejected as defense-in-depth.
 
 ## Endpoint device IDs
 
@@ -140,7 +148,7 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 | existing toggle hotkeys | Ctrl+Alt+M / Ctrl+Alt+O / Ctrl+Alt+P |
 | cycle and foreground-volume hotkeys | unassigned |
 | `start_hotkeys_enabled` | true |
-| virtual desktops | enabled, `win_number_switching` true |
+| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous unassigned |
 
 Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
@@ -150,14 +158,13 @@ Runtime logging level is operational state, not configuration. Release builds
 start at Info; debug builds start at Debug. Advanced Settings can enable
 temporary Debug logging until restart, but no logging level field is persisted
 in `config.toml` and #32 does not require a schema bump.
-
 ## Migration
 
 Schema v1 files, including versionless legacy files, load with the v2 defaults for
-`overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`)
-and v3 defaults for the four new hotkeys (unassigned). Schema v2 files preserve
-all existing values and default only the new v3 hotkey fields to unassigned.
-Load diagnostics records the source/effective transition. A successful Save
-writes schema v3 and updates active load diagnostics to source v3. Legacy
-`overlay.monitor = "index:N"` still maps to `primary`, and
+`overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`),
+v3 defaults for the four Phase-1 hotkeys, and v4 defaults for the Virtual Desktop
+workflow fields. Schema v2/v3 files preserve all existing values and default only
+the newly introduced fields. Load diagnostics records the source/effective
+transition. A successful Save writes schema v4 and updates active load diagnostics
+to source v4. Legacy `overlay.monitor = "index:N"` still maps to `primary`, and
 `general.start_with_windows` remains ignored because startup is registry-owned.

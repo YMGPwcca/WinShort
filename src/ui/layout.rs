@@ -72,6 +72,10 @@ pub enum ElementId {
     OutputRole,
     DesktopsEnabled,
     WinNumberEnabled,
+    DesktopNumberModifier,
+    MoveDesktopModifier,
+    SilentMoveDesktopModifier,
+    PreviousDesktopHotkey,
     OverlayEnabled,
     OverlayAppearance,
     OverlayExternalChanges,
@@ -88,7 +92,7 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 29] = [
+    pub const FOCUS_ORDER: [ElementId; 33] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
@@ -104,6 +108,10 @@ impl ElementId {
         ElementId::OutputRole,
         ElementId::DesktopsEnabled,
         ElementId::WinNumberEnabled,
+        ElementId::DesktopNumberModifier,
+        ElementId::MoveDesktopModifier,
+        ElementId::SilentMoveDesktopModifier,
+        ElementId::PreviousDesktopHotkey,
         ElementId::OverlayEnabled,
         ElementId::OverlayAppearance,
         ElementId::OverlayExternalChanges,
@@ -306,6 +314,30 @@ impl SettingsLayout {
                     ElementKind::Toggle,
                     "Win + number switching",
                     "Replace taskbar shortcuts with Desktop 1–9",
+                ),
+                row(
+                    ElementId::DesktopNumberModifier,
+                    ElementKind::Value,
+                    "Desktop number chord",
+                    "Modifier family for Desktop 1–9",
+                ),
+                row(
+                    ElementId::MoveDesktopModifier,
+                    ElementKind::Value,
+                    "Move and follow chord",
+                    "Move the foreground window to Desktop 1–9",
+                ),
+                row(
+                    ElementId::SilentMoveDesktopModifier,
+                    ElementKind::Value,
+                    "Silent move chord",
+                    "Move without switching away",
+                ),
+                row(
+                    ElementId::PreviousDesktopHotkey,
+                    ElementKind::Hotkey,
+                    "Previous desktop",
+                    "Return to the previously active desktop",
                 ),
             ],
         );

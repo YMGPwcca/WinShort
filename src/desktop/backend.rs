@@ -60,10 +60,11 @@ pub struct BackendStatus {
 /// Typed desktop operation failures (#20). The error CLASS decides policy:
 /// only Shell/RPC unavailability may trigger the keyboard fallback; semantic
 /// refusals (target out of range, unsupported build, ABI mismatch, switch
-/// rejection) never inject synthetic keystrokes.
+/// rejection, creation/move/navigation limitations) never inject synthetic
+/// keystrokes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopError {
-    /// Requested desktop does not exist. Never falls back.
+    /// Requested desktop does not exist after a bounded ensure attempt.
     TargetOutOfRange { requested: usize, count: usize },
     /// Backend cannot operate right now (not activated, safety limit).
     BackendUnavailable(String),
@@ -80,6 +81,16 @@ pub enum DesktopError {
     AbiMismatch(String),
     /// Shell rejected the switch with this HRESULT.
     SwitchFailed(i32),
+    /// Creating missing desktops requires the native backend.
+    CreationUnavailable(String),
+    /// Moving a top-level window requires the native window manager.
+    MoveUnavailable(String),
+    /// A remembered or requested HWND is no longer eligible.
+    WindowUnavailable(String),
+    /// Foreground activation was rejected after a move.
+    FocusFailed(String),
+    /// Previous-desktop state cannot be resolved safely.
+    NavigationUnavailable(String),
 }
 
 impl DesktopError {
@@ -106,6 +117,19 @@ impl std::fmt::Display for DesktopError {
             DesktopError::RpcDisconnected => write!(f, "Shell RPC disconnected"),
             DesktopError::AbiMismatch(reason) => write!(f, "ABI mismatch: {reason}"),
             DesktopError::SwitchFailed(hr) => write!(f, "SwitchDesktop failed 0x{hr:08X}"),
+            DesktopError::CreationUnavailable(reason) => {
+                write!(f, "desktop creation unavailable: {reason}")
+            }
+            DesktopError::MoveUnavailable(reason) => {
+                write!(f, "desktop move unavailable: {reason}")
+            }
+            DesktopError::WindowUnavailable(reason) => write!(f, "window unavailable: {reason}"),
+            DesktopError::FocusFailed(reason) => {
+                write!(f, "foreground activation failed: {reason}")
+            }
+            DesktopError::NavigationUnavailable(reason) => {
+                write!(f, "desktop navigation unavailable: {reason}")
+            }
         }
     }
 }

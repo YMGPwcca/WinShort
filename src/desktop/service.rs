@@ -1,10 +1,18 @@
 //! STA-owned virtual desktop controller: build-pinned Shell backend with
 //! automatic best-effort keyboard fallback.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
+    IsWindow, IsWindowVisible, SetForegroundWindow, GWL_STYLE, WS_DISABLED,
+};
+use windows_core::GUID;
 
 use crate::desktop::backend::{
-    BackendAvailability, BackendKind, BackendStatus, VirtualDesktopBackend,
+    BackendAvailability, BackendKind, BackendStatus, DesktopError, VirtualDesktopBackend,
 };
 use crate::desktop::detect::{detect, OsBuild};
 use crate::desktop::internal_api::InternalBackend;
@@ -12,17 +20,17 @@ use crate::desktop::keyboard_fallback::KeyboardFallback;
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
 
-/// Result of attempting the native backend for one switch (#20).
-enum NativeOutcome {
-    Served,
-    /// Semantic refusal: log and never inject.
-    Refused,
-    MayFallback,
-}
-
-#[derive(Debug)]
 pub enum DesktopCommand {
     SwitchTo(usize),
+    MoveForeground {
+        index: usize,
+        hwnd_raw: isize,
+        follow: bool,
+    },
+    SwitchPrevious,
+    RememberForeground {
+        hwnd_raw: isize,
+    },
     Shutdown,
 }
 
@@ -56,6 +64,24 @@ impl DesktopService {
         })
     }
 
+    pub fn move_foreground_to(&self, index: usize, hwnd_raw: isize, follow: bool) {
+        let _ = self.sender.send(DesktopCommand::MoveForeground {
+            index,
+            hwnd_raw,
+            follow,
+        });
+    }
+
+    pub fn switch_previous(&self) {
+        let _ = self.sender.send(DesktopCommand::SwitchPrevious);
+    }
+
+    pub fn remember_foreground(&self, hwnd_raw: isize) {
+        let _ = self
+            .sender
+            .send(DesktopCommand::RememberForeground { hwnd_raw });
+    }
+
     pub fn switch_to(&self, index: usize) {
         let _ = self.sender.send(DesktopCommand::SwitchTo(index));
     }
@@ -80,8 +106,13 @@ struct DesktopController {
     native: Option<InternalBackend>,
     native_availability: BackendAvailability,
     fallback: KeyboardFallback,
+    known_count: Option<usize>,
     /// Backend that actually completed the last switch (#21).
     last_served: Option<BackendKind>,
+    /// Last eligible foreground window observed for each stable desktop ID.
+    last_focused: HashMap<windows_core::GUID, HWND>,
+    /// Stable desktop ID used by the previous-desktop action.
+    previous_desktop: Option<windows_core::GUID>,
 }
 
 impl DesktopController {
@@ -103,115 +134,293 @@ impl DesktopController {
                 BackendAvailability::UnsupportedBuild { build: build.build },
             )
         };
+        let known_count = native
+            .as_ref()
+            .and_then(|native| native.desktop_count().ok());
         let controller = Self {
             hwnd_raw,
             build,
             native,
             native_availability,
             fallback: KeyboardFallback::new(),
+            known_count,
             last_served: None,
+            last_focused: HashMap::new(),
+            previous_desktop: None,
         };
         controller.publish_status();
         Ok(controller)
     }
 
     fn switch_to(&mut self, index: usize) {
-        match self.try_native(index) {
-            // Served or refused: no synthetic input.
-            NativeOutcome::Served => {
+        self.remember_current_foreground();
+        let previous = self
+            .native
+            .as_ref()
+            .and_then(|native| native.current_desktop_id().ok());
+        match self.native_ensure_switch(index) {
+            Ok(target) => {
+                if previous != Some(target) {
+                    self.previous_desktop = previous;
+                }
+                if let Err(error) = self.restore_focus(target, false) {
+                    crate::warn_!("desktop focus restoration failed: {error}");
+                }
                 self.last_served = Some(BackendKind::NativeShell);
                 self.publish_status();
-                return;
             }
-            NativeOutcome::Refused => {
-                self.publish_status();
-                return;
-            }
-            NativeOutcome::MayFallback => {}
-        }
-        match self.fallback.switch_to(index) {
-            Ok(()) => {
-                crate::info!(
-                    "switched toward virtual desktop {} via keyboard fallback (best effort)",
-                    index + 1
-                );
-                self.last_served = Some(BackendKind::KeyboardFallback);
-            }
-            Err(e) => crate::error_!(
-                "keyboard desktop fallback failed: {e} — target not verified (possible UIPI block)"
-            ),
-        }
-        self.publish_status();
-    }
-
-    /// Attempt the native backend. Only RPC-class failures return
-    /// [`NativeOutcome::MayFallback`] — and only after one proxy rebuild
-    /// (#20/#21).
-    fn try_native(&mut self, index: usize) -> NativeOutcome {
-        if self.native.is_none() && self.build.native_shell_supported() {
-            // One bounded create attempt per action (#21): a transient startup
-            // failure must not permanently disable the native backend.
-            match InternalBackend::create(self.build) {
-                Ok(backend) => {
-                    self.native = Some(backend);
-                    self.native_availability = BackendAvailability::Available;
-                    crate::info!("native desktop backend recovered on demand");
-                }
-                Err(e) => {
-                    self.native_availability = BackendAvailability::Failed {
-                        reason: e.to_string(),
-                    };
-                    return NativeOutcome::MayFallback;
-                }
-            }
-        }
-        let Some(native) = &self.native else {
-            return NativeOutcome::MayFallback;
-        };
-        match native.switch_to(index) {
-            Ok(()) => {
-                crate::info!("switched to virtual desktop {} via Native Shell", index + 1);
-                self.last_served = Some(BackendKind::NativeShell);
-                return NativeOutcome::Served;
-            }
-            Err(e) if e.permits_fallback() => {
-                crate::warn_!("native desktop switch failed: {e}; rebuilding Shell proxy");
-            }
-            Err(e) => {
-                // Semantic/ABI refusal (#20): never inject keystrokes for a
-                // target that does not exist or a build we cannot serve.
-                crate::error_!("native desktop switch refused: {e}");
-                return NativeOutcome::Refused;
-            }
-        }
-        // Explorer may have restarted; rebuild the STA proxy once.
-        match InternalBackend::create(self.build) {
-            Ok(rebuilt) => {
-                self.native = Some(rebuilt);
-                match self.native.as_ref().expect("just set").switch_to(index) {
+            Err(error)
+                if error.permits_fallback()
+                    && self.known_count.is_some_and(|count| index < count) =>
+            {
+                match self.fallback.switch_to(index) {
                     Ok(()) => {
                         crate::info!(
-                            "switched to desktop {} after Shell proxy rebuild",
+                            "switched to virtual desktop {} via keyboard fallback (target existed)",
                             index + 1
                         );
-                        self.last_served = Some(BackendKind::NativeShell);
-                        return NativeOutcome::Served;
+                        self.last_served = Some(BackendKind::KeyboardFallback);
+                        self.publish_status();
                     }
-                    Err(e) if !e.permits_fallback() => {
-                        crate::error_!("native desktop switch refused after rebuild: {e}");
-                        return NativeOutcome::Refused;
-                    }
-                    Err(_) => {} // still unavailable: fallback permitted
+                    Err(fallback_error) => self.publish_failure("switch desktop", fallback_error),
                 }
             }
-            Err(e) => {
-                self.native_availability = BackendAvailability::Failed {
-                    reason: e.to_string(),
-                };
-                self.native = None;
+            Err(error) => self.publish_failure("switch desktop", error),
+        }
+    }
+
+    fn move_foreground(&mut self, index: usize, hwnd_raw: isize, follow: bool) {
+        let hwnd = raw_hwnd(hwnd_raw);
+        if !eligible_window(hwnd) {
+            self.publish_failure(
+                "move foreground window",
+                DesktopError::WindowUnavailable("foreground HWND is not eligible".into()),
+            );
+            return;
+        }
+        self.remember_current_foreground();
+        let previous = self
+            .native
+            .as_ref()
+            .and_then(|native| native.current_desktop_id().ok());
+        let result = (|| {
+            self.native_ensure_count(index + 1)?;
+            let native = self.native.as_ref().ok_or_else(|| {
+                DesktopError::MoveUnavailable("native backend is unavailable".into())
+            })?;
+            let ids = native.desktop_ids()?;
+            let target = ids
+                .get(index)
+                .copied()
+                .ok_or(DesktopError::TargetOutOfRange {
+                    requested: index,
+                    count: ids.len(),
+                })?;
+            let current = native.window_desktop_id(hwnd)?;
+            if current != target {
+                native.move_window_to_desktop(hwnd, index)?;
+            }
+            if follow {
+                native.switch_to(index)?;
+                if !unsafe { SetForegroundWindow(hwnd) }.as_bool() {
+                    return Err(DesktopError::FocusFailed(
+                        "SetForegroundWindow rejected the moved window".into(),
+                    ));
+                }
+                if previous != Some(target) {
+                    self.previous_desktop = previous;
+                }
+                self.last_focused.insert(target, hwnd);
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.last_served = Some(BackendKind::NativeShell);
+                self.publish_status();
+            }
+            Err(error) => self.publish_failure(
+                if follow {
+                    "move and follow foreground window"
+                } else {
+                    "move foreground window silently"
+                },
+                error,
+            ),
+        }
+    }
+
+    fn switch_previous(&mut self) {
+        let result = (|| {
+            let native = self.native.as_ref().ok_or_else(|| {
+                DesktopError::NavigationUnavailable("native desktop identity is unavailable".into())
+            })?;
+            let current = native.current_desktop_id()?;
+            let target = self.previous_desktop.ok_or_else(|| {
+                DesktopError::NavigationUnavailable("no previous desktop is remembered".into())
+            })?;
+            let ids = native.desktop_ids()?;
+            let index = ids.iter().position(|id| *id == target).ok_or_else(|| {
+                DesktopError::NavigationUnavailable("remembered desktop was deleted".into())
+            })?;
+            native.switch_to(index)?;
+            self.previous_desktop = Some(current);
+            Ok(target)
+        })();
+        match result {
+            Ok(target) => {
+                if let Err(error) = self.restore_focus(target, false) {
+                    crate::warn_!("previous-desktop focus restoration failed: {error}");
+                }
+                self.last_served = Some(BackendKind::NativeShell);
+                self.publish_status();
+            }
+            Err(error) => {
+                if matches!(error, DesktopError::NavigationUnavailable(_)) {
+                    self.previous_desktop = None;
+                }
+                self.publish_failure("switch previous desktop", error);
             }
         }
-        NativeOutcome::MayFallback
+    }
+
+    fn remember_foreground(&mut self, hwnd_raw: isize) {
+        let hwnd = raw_hwnd(hwnd_raw);
+        if !eligible_window(hwnd) {
+            return;
+        }
+        let Some(native) = &self.native else {
+            return;
+        };
+        if let Ok(desktop) = native.window_desktop_id(hwnd) {
+            self.last_focused.insert(desktop, hwnd);
+        }
+    }
+
+    fn remember_current_foreground(&mut self) {
+        let hwnd = unsafe { GetForegroundWindow() };
+        self.remember_foreground(hwnd.0 as isize);
+    }
+
+    fn restore_focus(
+        &mut self,
+        target: windows_core::GUID,
+        strict: bool,
+    ) -> std::result::Result<(), DesktopError> {
+        let native = self.native.as_ref().ok_or_else(|| {
+            DesktopError::FocusFailed("native desktop identity is unavailable".into())
+        })?;
+        let mut candidate = self.last_focused.get(&target).copied();
+        if candidate.is_some_and(|hwnd| {
+            !eligible_window(hwnd) || native.window_desktop_id(hwnd).ok() != Some(target)
+        }) {
+            if let Some(hwnd) = candidate {
+                self.last_focused.remove(&target);
+                self.last_focused
+                    .retain(|_, remembered| *remembered != hwnd);
+            }
+            candidate = None;
+        }
+        if candidate.is_none() {
+            candidate = enumerate_windows().into_iter().find(|hwnd| {
+                eligible_window(*hwnd) && native.window_desktop_id(*hwnd).ok() == Some(target)
+            });
+        }
+        let Some(hwnd) = candidate else {
+            return if strict {
+                Err(DesktopError::FocusFailed(
+                    "no visible foreground-capable window exists on the destination desktop".into(),
+                ))
+            } else {
+                Ok(())
+            };
+        };
+        if unsafe { SetForegroundWindow(hwnd) }.as_bool() {
+            self.last_focused.insert(target, hwnd);
+            Ok(())
+        } else if strict {
+            Err(DesktopError::FocusFailed(
+                "SetForegroundWindow rejected the destination window".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn native_ensure_count(
+        &mut self,
+        target_count: usize,
+    ) -> std::result::Result<(), DesktopError> {
+        let first = match self.native.as_ref() {
+            Some(native) => native.ensure_desktop_count(target_count),
+            None => Err(self.native_unavailable_error("desktop creation")),
+        };
+        match first {
+            Ok(()) => {
+                self.known_count = Some(self.known_count.unwrap_or(0).max(target_count));
+                Ok(())
+            }
+            Err(error) if error.permits_fallback() => {
+                crate::warn_!("native desktop operation failed: {error}; rebuilding Shell proxy");
+                self.recreate_native()?;
+                self.native
+                    .as_ref()
+                    .expect("native backend recreated")
+                    .ensure_desktop_count(target_count)?;
+                self.known_count = Some(self.known_count.unwrap_or(0).max(target_count));
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn native_ensure_switch(&mut self, index: usize) -> std::result::Result<GUID, DesktopError> {
+        self.native_ensure_count(index + 1)?;
+        let native = self
+            .native
+            .as_ref()
+            .ok_or_else(|| self.native_unavailable_error("desktop switching"))?;
+        let ids = native.desktop_ids()?;
+        let target = ids
+            .get(index)
+            .copied()
+            .ok_or(DesktopError::TargetOutOfRange {
+                requested: index,
+                count: ids.len(),
+            })?;
+        native.switch_to(index)?;
+        Ok(target)
+    }
+
+    fn recreate_native(&mut self) -> std::result::Result<(), DesktopError> {
+        match InternalBackend::create(self.build) {
+            Ok(native) => {
+                self.native = Some(native);
+                self.native_availability = BackendAvailability::Available;
+                Ok(())
+            }
+            Err(error) => {
+                self.native = None;
+                self.native_availability = BackendAvailability::Failed {
+                    reason: error.to_string(),
+                };
+                Err(DesktopError::BackendUnavailable(error.to_string()))
+            }
+        }
+    }
+
+    fn native_unavailable_error(&self, operation: &str) -> DesktopError {
+        match &self.native_availability {
+            BackendAvailability::UnsupportedBuild { build } => {
+                DesktopError::UnsupportedBuild(*build)
+            }
+            BackendAvailability::Failed { reason } => {
+                DesktopError::BackendUnavailable(format!("{operation}: {reason}"))
+            }
+            BackendAvailability::Available => {
+                DesktopError::BackendUnavailable(format!("{operation}: native backend unavailable"))
+            }
+        }
     }
 
     fn status(&self) -> BackendStatus {
@@ -232,12 +441,98 @@ impl DesktopController {
         }
     }
 
+    fn publish_failure(&self, action: &str, error: DesktopError) {
+        crate::error_!("desktop action {action} failed: {error}");
+        let hwnd = HWND(self.hwnd_raw as *mut _);
+        unsafe {
+            let _ = crate::event::post_event(
+                hwnd,
+                AppEvent::DesktopActionFailed {
+                    action: action.into(),
+                    reason: error.to_string(),
+                },
+            );
+        }
+    }
+
     fn publish_status(&self) {
         let hwnd = windows::Win32::Foundation::HWND(self.hwnd_raw as *mut _);
         unsafe {
             let _ = crate::event::post_event(hwnd, AppEvent::DesktopBackendChanged(self.status()));
         }
     }
+}
+
+fn raw_hwnd(raw: isize) -> HWND {
+    HWND(raw as *mut _)
+}
+
+fn eligible_window(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() {
+        return false;
+    }
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool()
+            || !IsWindowVisible(hwnd).as_bool()
+            || GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & WS_DISABLED.0 != 0
+        {
+            return false;
+        }
+        let mut pid = 0u32;
+        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || pid == std::process::id() {
+            return false;
+        }
+        let mut cloaked = 0u32;
+        if DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+        .is_ok()
+            && cloaked != 0
+        {
+            return false;
+        }
+        let mut class = [0u16; 128];
+        let length = GetClassNameW(hwnd, &mut class);
+        if length <= 0 {
+            return false;
+        }
+        let class = String::from_utf16_lossy(&class[..length as usize]);
+        !matches!(
+            class.as_str(),
+            "Progman"
+                | "WorkerW"
+                | "Shell_TrayWnd"
+                | "Shell_SecondaryTrayWnd"
+                | "DV2ControlHost"
+                | "Windows.UI.Core.CoreWindow"
+        )
+    }
+}
+
+fn enumerate_windows() -> Vec<HWND> {
+    let mut windows = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_windows_proc),
+            windows::Win32::Foundation::LPARAM(&mut windows as *mut _ as isize),
+        );
+    }
+    windows
+}
+
+unsafe extern "system" fn enum_windows_proc(
+    hwnd: HWND,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    // SAFETY: EnumWindows invokes this callback synchronously with the caller
+    // owned collection passed through LPARAM.
+    let windows = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
+    windows.push(hwnd);
+    true.into()
 }
 
 fn desktop_thread(
@@ -277,6 +572,15 @@ fn desktop_thread(
     while let Ok(command) = receiver.recv() {
         match command {
             DesktopCommand::SwitchTo(index) => controller.switch_to(index),
+            DesktopCommand::MoveForeground {
+                index,
+                hwnd_raw,
+                follow,
+            } => controller.move_foreground(index, hwnd_raw, follow),
+            DesktopCommand::SwitchPrevious => controller.switch_previous(),
+            DesktopCommand::RememberForeground { hwnd_raw } => {
+                controller.remember_foreground(hwnd_raw)
+            }
             DesktopCommand::Shutdown => break,
         }
     }
@@ -329,8 +633,12 @@ mod policy_tests {
         assert!(!DesktopError::SwitchFailed(-2_147_024_846).permits_fallback());
         assert!(!DesktopError::UnsupportedBuild(19041).permits_fallback());
         assert!(!DesktopError::AbiMismatch("slot".into()).permits_fallback());
+        assert!(!DesktopError::CreationUnavailable("unsupported".into()).permits_fallback());
+        assert!(!DesktopError::MoveUnavailable("unsupported".into()).permits_fallback());
+        assert!(!DesktopError::WindowUnavailable("stale".into()).permits_fallback());
+        assert!(!DesktopError::FocusFailed("blocked".into()).permits_fallback());
+        assert!(!DesktopError::NavigationUnavailable("deleted".into()).permits_fallback());
     }
-
     #[test]
     fn scripted_backend_surfaces_typed_error() {
         let backend = ScriptedBackend {

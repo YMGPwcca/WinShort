@@ -527,6 +527,24 @@ unsafe extern "system" fn low_level_keyboard_proc(
     }
 }
 
+fn insert_number_family<F>(table: &mut BindingTable, modifier: ModifierMask, make: F)
+where
+    F: Fn(u8) -> HotkeyAction,
+{
+    if modifier.is_empty() {
+        return;
+    }
+    for number in 1u16..=9 {
+        let hotkey = Hotkey {
+            modifiers: modifier,
+            key: VirtualKey(0x30 + number),
+        };
+        if !table.insert(hotkey, make((number - 1) as u8)) {
+            crate::warn_!("duplicate virtual-desktop family binding ignored: {hotkey}");
+        }
+    }
+}
+
 pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
     let mut table = BindingTable::default();
     let configured = [
@@ -564,25 +582,28 @@ pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
             crate::warn_!("duplicate hotkey binding ignored: {hotkey}");
         }
     }
-    // Reserved Win+1..9 desktop shortcuts: insert only into vacant slots.
-    // A user hotkey occupying the same (mods, key) keeps priority; validate()
-    // rejects that combination when win_number_switching is on, so this is
-    // defense in depth — never silently overwrite (#12).
-    if config.virtual_desktops.enabled && config.virtual_desktops.win_number_switching {
-        for number in 1u16..=9 {
-            let reserved = Hotkey {
-                modifiers: ModifierMask::WIN,
-                key: VirtualKey(0x30 + number),
-            };
-            if table.conflicts(&reserved).is_none() {
-                table.insert(reserved, HotkeyAction::SwitchDesktop((number - 1) as u8));
-            } else {
-                // User binding keeps the slot; validate() flags this config.
-                crate::warn_!(concat!(
-                    "user hotkey occupies a reserved Win+digit slot; ",
-                    "desktop shortcut disabled for it"
-                ));
+    if config.virtual_desktops.enabled {
+        if let Some(previous) = config.virtual_desktops.previous_desktop {
+            if !table.insert(previous, HotkeyAction::SwitchPreviousDesktop) {
+                crate::warn_!("duplicate previous-desktop binding ignored: {previous}");
             }
+        }
+        if config.virtual_desktops.win_number_switching {
+            insert_number_family(
+                &mut table,
+                config.virtual_desktops.number_modifier,
+                HotkeyAction::SwitchDesktop,
+            );
+        }
+        if let Some(modifier) = config.virtual_desktops.move_follow_modifier {
+            insert_number_family(&mut table, modifier, HotkeyAction::MoveForegroundToDesktop);
+        }
+        if let Some(modifier) = config.virtual_desktops.move_silent_modifier {
+            insert_number_family(
+                &mut table,
+                modifier,
+                HotkeyAction::MoveForegroundToDesktopSilent,
+            );
         }
     }
     table
@@ -609,6 +630,42 @@ mod tests {
         assert_eq!(
             table.lookup(ModifierMask::WIN, VirtualKey(b'9' as u16)),
             Some(HotkeyAction::SwitchDesktop(8))
+        );
+    }
+
+    #[test]
+    fn configurable_desktop_families_bind_all_number_keys() {
+        let mut config = crate::config::Config::default();
+        config.virtual_desktops.number_modifier = ModifierMask::WIN.union(ModifierMask::ALT);
+        config.virtual_desktops.move_follow_modifier = Some(ModifierMask::CTRL);
+        config.virtual_desktops.move_silent_modifier =
+            Some(ModifierMask::CTRL.union(ModifierMask::ALT));
+        config.virtual_desktops.previous_desktop = Some(Hotkey::parse("Ctrl+Alt+F12").unwrap());
+        let table = build_bindings(&config);
+        assert_eq!(
+            table.lookup(
+                ModifierMask::WIN.union(ModifierMask::ALT),
+                VirtualKey(b'9' as u16)
+            ),
+            Some(HotkeyAction::SwitchDesktop(8))
+        );
+        assert_eq!(
+            table.lookup(ModifierMask::CTRL, VirtualKey(b'1' as u16)),
+            Some(HotkeyAction::MoveForegroundToDesktop(0))
+        );
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(b'9' as u16)
+            ),
+            Some(HotkeyAction::MoveForegroundToDesktopSilent(8))
+        );
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x7B)
+            ),
+            Some(HotkeyAction::SwitchPreviousDesktop)
         );
     }
 
