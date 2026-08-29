@@ -1,12 +1,14 @@
 //! Build script: embed the application manifest (PerMonitorV2 DPI awareness,
-//! asInvoker execution level, supported-OS entries) and version metadata
-//! into the executable (#26).
+//! asInvoker execution level, supported-OS entries), application icon, and
+//! version metadata into the executable (#26, #50).
 
 fn main() {
     println!("cargo:rerun-if-changed=winshort.manifest");
+    println!("cargo:rerun-if-changed=assets/winshort.ico");
     if cfg!(target_os = "windows") {
         use winresource::WindowsResource;
         let mut res = WindowsResource::new();
+        res.set_icon("assets/winshort.ico");
         res.set_manifest_file("winshort.manifest");
         res.set("FileDescription", "WinShort");
         res.set("ProductName", "WinShort");

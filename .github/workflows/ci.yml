@@ -74,6 +74,8 @@ jobs:
           assert b'asInvoker' in data, 'asInvoker missing from manifest'
           print('manifest OK')
           PY
+      - name: Verify embedded application icon
+        run: python tools/verify_pe_icon.py target/release/winshort.exe
       - name: release UIA nullable ABI regression
         run: cargo test --release --all-features nullable_provider_abi_regression -- --nocapture
 
