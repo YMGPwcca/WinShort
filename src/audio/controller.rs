@@ -15,7 +15,7 @@ use crate::audio::state::{
     AppVolumeState, AudioRuntimeSnapshot, AudioState, DeviceCycleFlow, DeviceCycleResult,
     OutputState,
 };
-use crate::config::ConfigHandle;
+use crate::config::{ConfigHandle, ConfigRevisionStamp};
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
 
@@ -31,31 +31,33 @@ pub enum EndpointFlow {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PendingRebuild {
     external_refresh: bool,
-    config_origin: Option<crate::event::ConfigCommitOrigin>,
+    config_revision: Option<u64>,
 }
 
 impl PendingRebuild {
     fn external() -> Self {
         Self {
             external_refresh: true,
-            config_origin: None,
+            config_revision: None,
         }
     }
 
-    fn config(origin: crate::event::ConfigCommitOrigin) -> Self {
+    fn config(stamp: ConfigRevisionStamp) -> Self {
         Self {
             external_refresh: false,
-            config_origin: Some(origin),
+            config_revision: Some(stamp.revision),
         }
     }
 
     fn is_empty(self) -> bool {
-        !self.external_refresh && self.config_origin.is_none()
+        !self.external_refresh && self.config_revision.is_none()
     }
 }
 
 /// Decide and consume one pending rebuild against the worker's revision.
 ///
+/// The live revision stamp is authoritative: a config command's stamp is only
+/// a wake/synchronization hint and cannot override a newer live publication.
 /// A newer live revision consumes the revision and performs one rebuild. Once
 /// the revision is already consumed, only an external refresh can request a
 /// rebuild; a stale ConfigChanged alone is a no-op.
@@ -66,16 +68,15 @@ enum PendingRebuildDecision {
 }
 
 fn decide_pending_rebuild(
-    live_revision: u64,
+    live_stamp: ConfigRevisionStamp,
     consumed_revision: u64,
     pending: PendingRebuild,
 ) -> (u64, PendingRebuildDecision) {
-    if live_revision != consumed_revision {
-        let origin = pending
-            .config_origin
-            .map(config_event_origin)
-            .unwrap_or(crate::event::AudioEventOrigin::External);
-        (live_revision, PendingRebuildDecision::Rebuild(origin))
+    if live_stamp.revision != consumed_revision {
+        (
+            live_stamp.revision,
+            PendingRebuildDecision::Rebuild(config_event_origin(live_stamp.origin)),
+        )
     } else if pending.external_refresh {
         (
             consumed_revision,
@@ -106,7 +107,7 @@ pub enum AudioCommand {
     RefreshEndpoint(EndpointFlow),
     RefreshAll,
     ConfigChanged {
-        origin: crate::event::ConfigCommitOrigin,
+        stamp: ConfigRevisionStamp,
     },
     /// Live read-only foreground resolver for Show Status (#18).
     QueryForeground {
@@ -250,10 +251,10 @@ impl AudioController {
 
     fn handle(&mut self, command: AudioCommand) -> bool {
         match command {
-            // ConfigChanged carries the revision bump with it — consume the
-            // revision and decide whether this batch still needs a rebuild.
-            AudioCommand::ConfigChanged { origin } => {
-                self.apply_pending_rebuild(PendingRebuild::config(origin));
+            // ConfigChanged carries the publication stamp as a wake signal;
+            // the central policy rereads the authoritative live stamp.
+            AudioCommand::ConfigChanged { stamp } => {
+                self.apply_pending_rebuild(PendingRebuild::config(stamp));
             }
             other => return self.handle_other(other),
         }
@@ -348,9 +349,9 @@ impl AudioController {
         if pending.is_empty() {
             return;
         }
-        let live_revision = self.config.revision();
+        let live_stamp = self.config.revision_stamp();
         let (revision, decision) =
-            decide_pending_rebuild(live_revision, self.config_revision, pending);
+            decide_pending_rebuild(live_stamp, self.config_revision, pending);
         self.config_revision = revision;
         if let PendingRebuildDecision::Rebuild(origin) = decision {
             self.rebuild_all(false, origin);
@@ -372,8 +373,9 @@ impl AudioController {
     }
 
     fn refresh_config_if_needed(&mut self) {
-        if self.config.revision() != self.config_revision {
-            self.apply_pending_rebuild(PendingRebuild::external());
+        let live_stamp = self.config.revision_stamp();
+        if live_stamp.revision != self.config_revision {
+            self.apply_pending_rebuild(PendingRebuild::config(live_stamp));
         }
     }
 
@@ -612,7 +614,7 @@ fn coalesce_backlog(backlog: Vec<AudioCommand>) -> (PendingRebuild, Vec<AudioCom
     for cmd in backlog {
         match cmd {
             AudioCommand::RefreshAll => pending.external_refresh = true,
-            AudioCommand::ConfigChanged { origin } => pending.config_origin = Some(origin),
+            AudioCommand::ConfigChanged { stamp } => pending.config_revision = Some(stamp.revision),
             other => rest.push(other),
         }
     }
@@ -623,6 +625,16 @@ fn coalesce_backlog(backlog: Vec<AudioCommand>) -> (PendingRebuild, Vec<AudioCom
 mod tests {
     use super::*;
 
+    fn stamp(revision: u64, origin: crate::event::ConfigCommitOrigin) -> ConfigRevisionStamp {
+        ConfigRevisionStamp { revision, origin }
+    }
+
+    fn config_changed(revision: u64, origin: crate::event::ConfigCommitOrigin) -> AudioCommand {
+        AudioCommand::ConfigChanged {
+            stamp: stamp(revision, origin),
+        }
+    }
+
     #[test]
     fn refresh_burst_collapses_to_single_rebuild() {
         let backlog = vec![
@@ -631,17 +643,12 @@ mod tests {
             AudioCommand::RefreshAll,
             AudioCommand::ToggleOutput(1),
             AudioCommand::RefreshAll,
-            AudioCommand::ConfigChanged {
-                origin: crate::event::ConfigCommitOrigin::Settings,
-            },
+            config_changed(7, crate::event::ConfigCommitOrigin::Settings),
             AudioCommand::Shutdown,
         ];
         let (pending, rest) = coalesce_backlog(backlog);
         assert!(pending.external_refresh);
-        assert_eq!(
-            pending.config_origin,
-            Some(crate::event::ConfigCommitOrigin::Settings)
-        );
+        assert_eq!(pending.config_revision, Some(7));
         assert_eq!(
             rest,
             vec![
@@ -654,22 +661,206 @@ mod tests {
     }
 
     #[test]
-    fn stale_config_changed_alone_does_not_rebuild() {
-        let (revision, decision) = decide_pending_rebuild(
-            6,
-            6,
-            PendingRebuild::config(crate::event::ConfigCommitOrigin::DeviceCycle),
+    fn device_cycle_live_revision_observed_before_config_changed_rebuilds_quietly() {
+        let pending =
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle));
+        let (consumed, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            5,
+            pending,
         );
-        assert_eq!(revision, 6);
+        assert_eq!(consumed, 6);
+        assert_eq!(
+            decision,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
+        );
+    }
+
+    #[test]
+    fn delayed_device_cycle_config_changed_for_consumed_revision_is_noop() {
+        let (consumed, first) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            5,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
+        );
+        assert!(matches!(
+            first,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
+        ));
+        let (same_revision, delayed) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            consumed,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
+        );
+        assert_eq!(same_revision, 6);
+        assert_eq!(delayed, PendingRebuildDecision::None);
+    }
+
+    #[test]
+    fn settings_live_revision_observed_before_config_changed_uses_external_origin() {
+        let (consumed, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::Settings),
+            5,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::Settings)),
+        );
+        assert_eq!(consumed, 6);
+        assert_eq!(
+            decision,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::External)
+        );
+    }
+
+    #[test]
+    fn rapid_device_cycle_then_settings_uses_latest_live_origin() {
+        let (pending, rest) = coalesce_backlog(vec![
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            config_changed(7, crate::event::ConfigCommitOrigin::Settings),
+        ]);
+        assert!(rest.is_empty());
+        assert_eq!(pending.config_revision, Some(7));
+        let (consumed, decision) = decide_pending_rebuild(
+            stamp(7, crate::event::ConfigCommitOrigin::Settings),
+            5,
+            pending,
+        );
+        assert_eq!(consumed, 7);
+        assert_eq!(
+            decision,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::External)
+        );
+
+        let (_, stale) = decide_pending_rebuild(
+            stamp(7, crate::event::ConfigCommitOrigin::Settings),
+            consumed,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
+        );
+        assert_eq!(stale, PendingRebuildDecision::None);
+    }
+
+    #[test]
+    fn rapid_settings_then_device_cycle_uses_latest_live_origin() {
+        let (pending, _) = coalesce_backlog(vec![
+            config_changed(6, crate::event::ConfigCommitOrigin::Settings),
+            config_changed(7, crate::event::ConfigCommitOrigin::DeviceCycle),
+        ]);
+        let (consumed, decision) = decide_pending_rebuild(
+            stamp(7, crate::event::ConfigCommitOrigin::DeviceCycle),
+            5,
+            pending,
+        );
+        assert_eq!(consumed, 7);
+        assert_eq!(
+            decision,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
+        );
+    }
+
+    #[test]
+    fn stale_config_changed_plus_real_refresh_is_one_external_rebuild() {
+        let (pending, rest) = coalesce_backlog(vec![
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            AudioCommand::RefreshAll,
+        ]);
+        assert!(rest.is_empty());
+        let (consumed, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            6,
+            pending,
+        );
+        assert_eq!(consumed, 6);
+        assert_eq!(
+            decision,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::External)
+        );
+    }
+
+    #[test]
+    fn new_device_cycle_revision_plus_real_refresh_is_one_quiet_rebuild() {
+        let (pending, rest) = coalesce_backlog(vec![
+            AudioCommand::RefreshAll,
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+        ]);
+        assert!(rest.is_empty());
+        let (consumed, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            5,
+            pending,
+        );
+        assert_eq!(consumed, 6);
+        assert_eq!(
+            decision,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
+        );
+    }
+
+    #[test]
+    fn preflight_consumption_makes_later_config_changed_noop() {
+        let (pending, rest) = coalesce_backlog(vec![
+            AudioCommand::ToggleOutput(1),
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+        ]);
+        assert_eq!(rest, vec![AudioCommand::ToggleOutput(1)]);
+
+        let (consumed, preflight) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            5,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
+        );
+        assert_eq!(
+            preflight,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
+        );
+        let (same_revision, delayed) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            consumed,
+            pending,
+        );
+        assert_eq!(same_revision, 6);
+        assert_eq!(delayed, PendingRebuildDecision::None);
+    }
+
+    #[test]
+    fn stale_config_command_origin_cannot_describe_newer_live_revision() {
+        let (revision, decision) = decide_pending_rebuild(
+            stamp(7, crate::event::ConfigCommitOrigin::DeviceCycle),
+            6,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::Settings)),
+        );
+        assert_eq!(revision, 7);
+        assert_eq!(
+            decision,
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
+        );
+    }
+
+    #[test]
+    fn stale_config_changed_alone_does_not_rebuild() {
+        let (_, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            6,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
+        );
         assert_eq!(decision, PendingRebuildDecision::None);
     }
 
     #[test]
     fn pending_config_change_consumes_revision_and_rebuilds_once() {
         let (revision, decision) = decide_pending_rebuild(
-            6,
+            stamp(6, crate::event::ConfigCommitOrigin::Settings),
             5,
-            PendingRebuild::config(crate::event::ConfigCommitOrigin::Settings),
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::Settings)),
         );
         assert_eq!(revision, 6);
         assert_eq!(
@@ -682,13 +873,14 @@ mod tests {
     fn device_cycle_origin_suppresses_concurrent_external_refresh() {
         let (pending, rest) = coalesce_backlog(vec![
             AudioCommand::RefreshAll,
-            AudioCommand::ConfigChanged {
-                origin: crate::event::ConfigCommitOrigin::DeviceCycle,
-            },
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
         ]);
         assert!(rest.is_empty());
-        assert!(pending.external_refresh);
-        let (revision, decision) = decide_pending_rebuild(6, 5, pending);
+        let (revision, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            5,
+            pending,
+        );
         assert_eq!(revision, 6);
         assert_eq!(
             decision,
@@ -701,13 +893,15 @@ mod tests {
     #[test]
     fn stale_device_cycle_config_and_real_refresh_use_one_external_rebuild() {
         let (pending, rest) = coalesce_backlog(vec![
-            AudioCommand::ConfigChanged {
-                origin: crate::event::ConfigCommitOrigin::DeviceCycle,
-            },
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
             AudioCommand::RefreshAll,
         ]);
         assert!(rest.is_empty());
-        let (revision, decision) = decide_pending_rebuild(6, 6, pending);
+        let (revision, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            6,
+            pending,
+        );
         assert_eq!(revision, 6);
         assert_eq!(
             decision,
@@ -719,20 +913,26 @@ mod tests {
     fn stale_config_after_revision_drift_consumed_before_final_batch_is_noop() {
         let (pending, rest) = coalesce_backlog(vec![
             AudioCommand::ToggleOutput(1),
-            AudioCommand::ConfigChanged {
-                origin: crate::event::ConfigCommitOrigin::DeviceCycle,
-            },
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
         ]);
         assert_eq!(rest, vec![AudioCommand::ToggleOutput(1)]);
 
-        // The non-refresh command's preflight consumed revision 6 and rebuilt
-        // once; the delayed ConfigChanged is stale when the batch is applied.
-        let (consumed, first_decision) = decide_pending_rebuild(6, 5, PendingRebuild::external());
+        let (consumed, first_decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            5,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
+        );
         assert_eq!(
             first_decision,
-            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::External)
+            PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
+                crate::event::ConfigCommitOrigin::DeviceCycle
+            ))
         );
-        let (same_revision, final_decision) = decide_pending_rebuild(6, consumed, pending);
+        let (same_revision, final_decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            consumed,
+            pending,
+        );
         assert_eq!(same_revision, 6);
         assert_eq!(final_decision, PendingRebuildDecision::None);
     }
@@ -740,9 +940,9 @@ mod tests {
     #[test]
     fn coalesced_config_consumption_prevents_later_revision_drift_rebuild() {
         let (consumed, decision) = decide_pending_rebuild(
-            6,
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
             5,
-            PendingRebuild::config(crate::event::ConfigCommitOrigin::DeviceCycle),
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
         );
         assert_eq!(
             decision,
@@ -751,9 +951,9 @@ mod tests {
             ))
         );
         let (same_revision, later_decision) = decide_pending_rebuild(
-            6,
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
             consumed,
-            PendingRebuild::config(crate::event::ConfigCommitOrigin::DeviceCycle),
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle)),
         );
         assert_eq!(same_revision, 6);
         assert_eq!(later_decision, PendingRebuildDecision::None);
@@ -762,18 +962,15 @@ mod tests {
     #[test]
     fn latest_config_origin_wins_within_one_batch() {
         let (pending, _) = coalesce_backlog(vec![
-            AudioCommand::ConfigChanged {
-                origin: crate::event::ConfigCommitOrigin::DeviceCycle,
-            },
-            AudioCommand::ConfigChanged {
-                origin: crate::event::ConfigCommitOrigin::Settings,
-            },
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            config_changed(7, crate::event::ConfigCommitOrigin::Settings),
         ]);
-        assert_eq!(
-            pending.config_origin,
-            Some(crate::event::ConfigCommitOrigin::Settings)
+        assert_eq!(pending.config_revision, Some(7));
+        let (_, decision) = decide_pending_rebuild(
+            stamp(7, crate::event::ConfigCommitOrigin::Settings),
+            5,
+            pending,
         );
-        let (_, decision) = decide_pending_rebuild(6, 5, pending);
         assert_eq!(
             decision,
             PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::External)
@@ -785,19 +982,19 @@ mod tests {
         for backlog in [
             vec![
                 AudioCommand::RefreshAll,
-                AudioCommand::ConfigChanged {
-                    origin: crate::event::ConfigCommitOrigin::DeviceCycle,
-                },
+                config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
             ],
             vec![
-                AudioCommand::ConfigChanged {
-                    origin: crate::event::ConfigCommitOrigin::DeviceCycle,
-                },
+                config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
                 AudioCommand::RefreshAll,
             ],
         ] {
             let (pending, _) = coalesce_backlog(backlog);
-            let (_, decision) = decide_pending_rebuild(6, 5, pending);
+            let (_, decision) = decide_pending_rebuild(
+                stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+                5,
+                pending,
+            );
             assert_eq!(
                 decision,
                 PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::Config(
@@ -808,11 +1005,13 @@ mod tests {
 
         let (pending, _) = coalesce_backlog(vec![
             AudioCommand::RefreshAll,
-            AudioCommand::ConfigChanged {
-                origin: crate::event::ConfigCommitOrigin::DeviceCycle,
-            },
+            config_changed(6, crate::event::ConfigCommitOrigin::DeviceCycle),
         ]);
-        let (_, decision) = decide_pending_rebuild(6, 6, pending);
+        let (_, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::DeviceCycle),
+            6,
+            pending,
+        );
         assert_eq!(
             decision,
             PendingRebuildDecision::Rebuild(crate::event::AudioEventOrigin::External)
@@ -821,7 +1020,11 @@ mod tests {
 
     #[test]
     fn direct_external_refresh_combines_new_config_drift_once() {
-        let (revision, decision) = decide_pending_rebuild(6, 5, PendingRebuild::external());
+        let (revision, decision) = decide_pending_rebuild(
+            stamp(6, crate::event::ConfigCommitOrigin::Settings),
+            5,
+            PendingRebuild::external(),
+        );
         assert_eq!(revision, 6);
         assert_eq!(
             decision,

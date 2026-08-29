@@ -62,7 +62,7 @@ enum AppEvent {
   DeviceCycleResolved(DeviceCycleResult), ForegroundVolumeChanged(AppVolumeState),
   MicrophoneStateChanged(AudioState), OutputStateChanged(OutputState),
   ForegroundAudioChanged(AppAudioState), DesktopBackendChanged(BackendStatus),
-  ConfigApplied { seq: u64, origin: ConfigCommitOrigin }, ShowSettings, ...
+  ConfigApplied { seq: u64, stamp: ConfigRevisionStamp }, ShowSettings, ...
 }
 ```
 
@@ -70,13 +70,15 @@ enum AppEvent {
 
 | Layer | Type | Mutability |
 |---|---|---|
-| Desired config | `ConfigHandle`: `RwLock<Arc<Config>>` value + `revision: AtomicU64` | replaced atomically after every successful main-thread commit |
+| Desired config | `ConfigHandle`: locked `Config` + `ConfigRevisionStamp` metadata, plus lock-free `ArcSwap<BindingTable>` | replaced atomically after every successful main-thread commit |
 | Runtime state | suspended flag, overlay model, foreground pid slot, desktop status | event-driven updates |
 | Observed Windows state | audio endpoint states, desktop backend status | owned by worker threads, published as events |
 | UI draft | `Config` clone inside settings window | user edits only |
 
-Each successful main-thread config commit persists atomically, rebuilds the `BindingTable`, swaps
-the `ArcSwap` pointer, and sends one typed `ConfigApplied` event; the hook is never reinstalled.
+Each successful main-thread config commit persists atomically, publishes a coherent
+`ConfigRevisionStamp { revision, origin }` with the live configuration, rebuilds the
+`BindingTable`, swaps the `ArcSwap` pointer, and sends one typed `ConfigApplied` event; the
+hook is never reinstalled.
 Suspension selects a shared empty table.
 
 ## Diagnostics & support

@@ -32,6 +32,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Bounded Settings value text uses DirectWrite character trimming and reserves
   the dropdown chevron area; the applied footer uses generic "Changes applied"
   status copy.
+- Associated every published config revision with its commit origin in one
+  coherent live stamp, so audio preflight drift preserves DeviceCycle
+  provenance and delayed ConfigChanged notifications remain stale-safe.
 
 ### Added
 

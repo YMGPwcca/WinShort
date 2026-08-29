@@ -49,11 +49,11 @@ pub(crate) fn commit_config(
     let handle = CONFIG
         .get()
         .ok_or_else(|| Error::config("configuration handle unavailable"))?;
-    handle.replace_after_save(candidate, |config| {
+    let stamp = handle.replace_after_save(candidate, origin, |config| {
         crate::config::save::save(&crate::config::data_dir(), config)
     })?;
     let seq = CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
-    event::post_main(AppEvent::ConfigApplied { seq, origin });
+    event::post_main(AppEvent::ConfigApplied { seq, stamp });
     Ok(())
 }
 
@@ -844,13 +844,13 @@ impl App {
                     window.set_action_status(status);
                 }
             }
-            AppEvent::ConfigApplied { seq, origin } => {
+            AppEvent::ConfigApplied { seq, stamp } => {
                 let config = crate::app::config();
                 self.set_suspended(!config.general.start_hotkeys_enabled);
                 if let Some(audio) = &self.audio {
-                    audio.send(crate::audio::AudioCommand::ConfigChanged { origin });
+                    audio.send(crate::audio::AudioCommand::ConfigChanged { stamp });
                 }
-                info!("config applied (seq {seq}, origin {origin:?})");
+                info!("config applied (seq {seq}, origin {:?})", stamp.origin);
             }
             AppEvent::DeviceCycleResolved { request_id, result } => {
                 self.handle_device_cycle_result(request_id, result);

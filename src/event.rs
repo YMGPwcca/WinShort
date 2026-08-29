@@ -81,11 +81,7 @@ impl HotkeyAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigCommitOrigin {
-    Settings,
-    DeviceCycle,
-}
+pub use crate::config::ConfigCommitOrigin;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioEventOrigin {
@@ -127,7 +123,7 @@ pub enum AppEvent {
     CreateSupportBundle,
     ConfigApplied {
         seq: u64,
-        origin: ConfigCommitOrigin,
+        stamp: crate::config::ConfigRevisionStamp,
     },
     DeviceCycleResolved {
         request_id: u64,
@@ -272,7 +268,10 @@ mod tests {
         q.push(AppEvent::ShowSettings);
         q.push(AppEvent::ConfigApplied {
             seq: 7,
-            origin: ConfigCommitOrigin::Settings,
+            stamp: crate::config::ConfigRevisionStamp {
+                revision: 7,
+                origin: ConfigCommitOrigin::Settings,
+            },
         });
         q.push(AppEvent::DevicesChanged);
         let drained = q.drain();
@@ -282,7 +281,10 @@ mod tests {
             drained[1],
             AppEvent::ConfigApplied {
                 seq: 7,
-                origin: ConfigCommitOrigin::Settings
+                stamp: crate::config::ConfigRevisionStamp {
+                    revision: 7,
+                    origin: ConfigCommitOrigin::Settings,
+                }
             }
         ));
         assert!(matches!(drained[2], AppEvent::DevicesChanged));
@@ -305,7 +307,10 @@ mod tests {
                 for i in 0..per {
                     q.push(AppEvent::ConfigApplied {
                         seq: ((p * 1000 + i) + 1) as u64,
-                        origin: ConfigCommitOrigin::Settings,
+                        stamp: crate::config::ConfigRevisionStamp {
+                            revision: ((p * 1000 + i) + 1) as u64,
+                            origin: ConfigCommitOrigin::Settings,
+                        },
                     });
                 }
             }));
@@ -334,7 +339,10 @@ mod tests {
             for i in 0..10 {
                 q.push(AppEvent::ConfigApplied {
                     seq: cycle * 100 + i,
-                    origin: ConfigCommitOrigin::Settings,
+                    stamp: crate::config::ConfigRevisionStamp {
+                        revision: cycle * 100 + i,
+                        origin: ConfigCommitOrigin::Settings,
+                    },
                 });
             }
             assert_eq!(q.drain().len(), 10);
