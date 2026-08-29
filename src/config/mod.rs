@@ -69,6 +69,13 @@ pub struct ConfigRevisionStamp {
     pub origin: ConfigCommitOrigin,
 }
 
+/// One owned configuration snapshot and the metadata that published it.
+#[derive(Debug, Clone)]
+pub struct ConfigSnapshot {
+    pub value: std::sync::Arc<Config>,
+    pub stamp: ConfigRevisionStamp,
+}
+
 #[derive(Debug, Clone)]
 struct LiveConfigSnapshot {
     value: std::sync::Arc<Config>,
@@ -81,8 +88,8 @@ struct LiveConfigSnapshot {
 /// writer is a main-thread config commit (Settings Save or a device-cycle
 /// hotkey). Binding lookups in the keyboard hook go through
 /// [`ConfigHandle::bindings`] — an arc-swap snapshot rebuilt here on every
-/// `replace`, so the hook never takes a lock or rebuilds a table (#10). The
-/// hook itself is never reinstalled when this swaps.
+/// successful publication, so the hook never takes a lock or rebuilds a table
+/// (#10). The hook itself is never reinstalled when this swaps.
 pub struct ConfigHandle {
     live: std::sync::RwLock<LiveConfigSnapshot>,
     bindings: arc_swap::ArcSwap<crate::keyboard::binding::BindingTable>,
@@ -109,21 +116,20 @@ impl ConfigHandle {
         self.live.read().expect("config lock").value.clone()
     }
 
+    /// Clone the live configuration and its provenance under one read lock.
+    pub fn snapshot(&self) -> ConfigSnapshot {
+        let live = self.live.read().expect("config lock");
+        ConfigSnapshot {
+            value: live.value.clone(),
+            stamp: live.stamp,
+        }
+    }
+
     /// Snapshot of the active hotkey table; lock-free, wait-free read.
     pub fn bindings(
         &self,
     ) -> arc_swap::Guard<std::sync::Arc<crate::keyboard::binding::BindingTable>> {
         self.bindings.load()
-    }
-
-    /// Return the live revision and the origin that published it as one
-    /// coherent metadata snapshot.
-    pub fn revision_stamp(&self) -> ConfigRevisionStamp {
-        self.live.read().expect("config lock").stamp
-    }
-
-    pub fn revision(&self) -> u64 {
-        self.revision_stamp().revision
     }
 
     fn replace_with_origin(
@@ -260,18 +266,33 @@ mod tests {
         );
         assert_eq!(hit, Some(HotkeyAction::ToggleMicrophone));
     }
+
+    #[test]
+    fn snapshot_returns_value_and_stamp_from_one_publication() {
+        let mut candidate = Config::default();
+        candidate.overlay.duration_ms = 42;
+        let handle = ConfigHandle::new(Config::default());
+        handle
+            .replace_after_save(candidate, ConfigCommitOrigin::DeviceCycle, |_| Ok(()))
+            .unwrap();
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.value.overlay.duration_ms, 42);
+        assert_eq!(snapshot.stamp.revision, 2);
+        assert_eq!(snapshot.stamp.origin, ConfigCommitOrigin::DeviceCycle);
+    }
+
     #[test]
     fn failed_config_persist_does_not_replace_live_snapshot() {
         let handle = ConfigHandle::new(Config::default());
         let mut candidate = Config::default();
         candidate.general.start_hotkeys_enabled = false;
-        let before = handle.revision_stamp();
+        let before = handle.snapshot().stamp;
         let result = handle.replace_after_save(candidate, ConfigCommitOrigin::DeviceCycle, |_| {
             Err(crate::error::Error::config("simulated persistence failure"))
         });
         assert!(result.is_err());
         assert_eq!(*handle.get(), Config::default());
-        assert_eq!(handle.revision_stamp(), before);
+        assert_eq!(handle.snapshot().stamp, before);
     }
 
     #[test]
@@ -297,7 +318,7 @@ mod tests {
                 origin: ConfigCommitOrigin::DeviceCycle
             }
         );
-        assert_eq!(handle.revision_stamp(), published);
+        assert_eq!(handle.snapshot().stamp, published);
     }
 
     #[test]
@@ -309,14 +330,14 @@ mod tests {
         let mut candidate = Config::default();
         candidate.general.start_hotkeys_enabled = false;
         let dir = std::env::temp_dir().join(format!("winshort-readonly-{}", std::process::id()));
-        let before = handle.revision_stamp();
+        let before = handle.snapshot().stamp;
         let result =
             handle.replace_after_save(candidate, ConfigCommitOrigin::DeviceCycle, |config| {
                 crate::config::save::save(&dir, config)
             });
         assert!(result.is_err());
         assert_eq!(*handle.get(), Config::default());
-        assert_eq!(handle.revision_stamp(), before);
+        assert_eq!(handle.snapshot().stamp, before);
     }
 
     #[test]
@@ -324,7 +345,9 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        let handle = Arc::new(ConfigHandle::new(Config::default()));
+        let mut initial = Config::default();
+        initial.overlay.duration_ms = 1;
+        let handle = Arc::new(ConfigHandle::new(initial));
         let writer_handle = Arc::clone(&handle);
         let writer_done = Arc::new(AtomicBool::new(false));
         let writer_done_flag = Arc::clone(&writer_done);
@@ -335,25 +358,31 @@ mod tests {
                 } else {
                     ConfigCommitOrigin::Settings
                 };
+                let mut candidate = Config::default();
+                candidate.overlay.duration_ms = revision as u32;
                 writer_handle
-                    .replace_after_save(Config::default(), origin, |_| Ok(()))
+                    .replace_after_save(candidate, origin, |_| Ok(()))
                     .unwrap();
             }
             writer_done_flag.store(true, Ordering::Release);
         });
 
         while !writer_done.load(Ordering::Acquire) {
-            let stamp = handle.revision_stamp();
-            let expected = if stamp.revision == 1 || stamp.revision % 2 == 1 {
+            let snapshot = handle.snapshot();
+            assert_eq!(
+                snapshot.value.overlay.duration_ms,
+                snapshot.stamp.revision as u32
+            );
+            let expected = if snapshot.stamp.revision == 1 || snapshot.stamp.revision % 2 == 1 {
                 ConfigCommitOrigin::Settings
             } else {
                 ConfigCommitOrigin::DeviceCycle
             };
-            assert_eq!(stamp.origin, expected);
+            assert_eq!(snapshot.stamp.origin, expected);
             std::thread::yield_now();
         }
         writer.join().unwrap();
-        let final_stamp = handle.revision_stamp();
+        let final_stamp = handle.snapshot().stamp;
         assert_eq!(final_stamp.revision, 1_001);
         assert_eq!(final_stamp.origin, ConfigCommitOrigin::Settings);
     }

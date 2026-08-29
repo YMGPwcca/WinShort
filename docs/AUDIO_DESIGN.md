@@ -53,6 +53,9 @@ dropped so toggles never echo back as external changes.
 **Coalescing (#19):** the worker drains its command backlog after each command; any burst of
 `RefreshAll`/config-changed commands collapses into a single rebuild.
 
+Each rebuild obtains one owned `ConfigSnapshot`; Capture and Render use its same
+`Arc<Config>` and provenance stamp, then release the config lock before Core Audio work.
+
 ## Foreground-app toggle
 
 Executed on the audio worker when the foreground action fires

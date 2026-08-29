@@ -35,6 +35,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Associated every published config revision with its commit origin in one
   coherent live stamp, so audio preflight drift preserves DeviceCycle
   provenance and delayed ConfigChanged notifications remain stale-safe.
+- Audio endpoint rebuilds now own one `ConfigSnapshot` for Capture and Render,
+  preventing a newer publication from entering a rebuild already planned for
+  an older revision.
 
 ### Added
 

@@ -75,10 +75,11 @@ enum AppEvent {
 | Observed Windows state | audio endpoint states, desktop backend status | owned by worker threads, published as events |
 | UI draft | `Config` clone inside settings window | user edits only |
 
-Each successful main-thread config commit persists atomically, publishes a coherent
-`ConfigRevisionStamp { revision, origin }` with the live configuration, rebuilds the
-`BindingTable`, swaps the `ArcSwap` pointer, and sends one typed `ConfigApplied` event; the
-hook is never reinstalled.
+After persistence succeeds, `ConfigHandle` takes one live write lock to replace the `Config`, update
+the lock-free `ArcSwap<BindingTable>`, and record the matching `ConfigRevisionStamp` before
+releasing the lock. The commit then sends one typed `ConfigApplied` event carrying that stamp; the
+hook is never reinstalled. The audio worker clones `ConfigSnapshot { value, stamp }` under one
+live read lock for each rebuild.
 Suspension selects a shared empty table.
 
 ## Diagnostics & support

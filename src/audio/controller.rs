@@ -15,7 +15,7 @@ use crate::audio::state::{
     AppVolumeState, AudioRuntimeSnapshot, AudioState, DeviceCycleFlow, DeviceCycleResult,
     OutputState,
 };
-use crate::config::{ConfigHandle, ConfigRevisionStamp};
+use crate::config::{ConfigHandle, ConfigRevisionStamp, ConfigSnapshot};
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
 
@@ -85,6 +85,27 @@ fn decide_pending_rebuild(
     } else {
         (consumed_revision, PendingRebuildDecision::None)
     }
+}
+
+/// A decided rebuild owns the exact config snapshot used for every endpoint
+/// flow in that rebuild.
+#[derive(Debug, Clone)]
+struct RebuildPlan {
+    snapshot: ConfigSnapshot,
+    origin: crate::event::AudioEventOrigin,
+}
+
+fn plan_pending_rebuild(
+    snapshot: ConfigSnapshot,
+    consumed_revision: u64,
+    pending: PendingRebuild,
+) -> (u64, Option<RebuildPlan>) {
+    let (revision, decision) = decide_pending_rebuild(snapshot.stamp, consumed_revision, pending);
+    let plan = match decision {
+        PendingRebuildDecision::None => None,
+        PendingRebuildDecision::Rebuild(origin) => Some(RebuildPlan { snapshot, origin }),
+    };
+    (revision, plan)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,7 +251,8 @@ impl AudioController {
                 .RegisterEndpointNotificationCallback(&device_callback)
                 .map_err(|e| Error::win("RegisterEndpointNotificationCallback", &e))?;
         }
-        let revision = config.revision();
+        let initial = config.snapshot();
+        let revision = initial.stamp.revision;
         let mut controller = Self {
             main_hwnd_raw,
             config,
@@ -245,7 +267,7 @@ impl AudioController {
             capture_error: None,
             render_error: None,
         };
-        controller.rebuild_all(true, crate::event::AudioEventOrigin::Initial);
+        controller.rebuild_all(true, initial.value, crate::event::AudioEventOrigin::Initial);
         Ok(controller)
     }
 
@@ -336,9 +358,7 @@ impl AudioController {
                     origin: crate::event::AudioEventOrigin::StatusRequest(request_id),
                 });
             }
-            AudioCommand::RefreshAll => {
-                self.rebuild_all(false, crate::event::AudioEventOrigin::External)
-            }
+            AudioCommand::RefreshAll => self.apply_pending_rebuild(PendingRebuild::external()),
             AudioCommand::ConfigChanged { .. } => {}
             AudioCommand::Shutdown => return false,
         }
@@ -349,12 +369,19 @@ impl AudioController {
         if pending.is_empty() {
             return;
         }
-        let live_stamp = self.config.revision_stamp();
-        let (revision, decision) =
-            decide_pending_rebuild(live_stamp, self.config_revision, pending);
+        let snapshot = self.config.snapshot();
+        self.apply_pending_rebuild_snapshot(snapshot, pending);
+    }
+
+    fn apply_pending_rebuild_snapshot(
+        &mut self,
+        snapshot: ConfigSnapshot,
+        pending: PendingRebuild,
+    ) {
+        let (revision, plan) = plan_pending_rebuild(snapshot, self.config_revision, pending);
         self.config_revision = revision;
-        if let PendingRebuildDecision::Rebuild(origin) = decision {
-            self.rebuild_all(false, origin);
+        if let Some(plan) = plan {
+            self.rebuild_all(false, plan.snapshot.value, plan.origin);
         }
     }
 
@@ -373,16 +400,22 @@ impl AudioController {
     }
 
     fn refresh_config_if_needed(&mut self) {
-        let live_stamp = self.config.revision_stamp();
-        if live_stamp.revision != self.config_revision {
-            self.apply_pending_rebuild(PendingRebuild::config(live_stamp));
+        let snapshot = self.config.snapshot();
+        if snapshot.stamp.revision != self.config_revision {
+            let pending = PendingRebuild::config(snapshot.stamp);
+            self.apply_pending_rebuild_snapshot(snapshot, pending);
         }
     }
 
-    fn rebuild_all(&mut self, startup: bool, origin: crate::event::AudioEventOrigin) {
+    fn rebuild_all(
+        &mut self,
+        startup: bool,
+        config: Arc<crate::config::Config>,
+        origin: crate::event::AudioEventOrigin,
+    ) {
         let old_render = self.render.as_ref().map(|e| e.identity.clone());
-        self.rebuild(EndpointFlow::Capture);
-        self.rebuild(EndpointFlow::Render);
+        self.rebuild(EndpointFlow::Capture, config.as_ref());
+        self.rebuild(EndpointFlow::Render, config.as_ref());
         // Partial-failure tolerant enumeration (#36): a failed flow yields
         // warnings, not the loss of both lists. Poisoned lock recovery: the
         // guarded DeviceLists is always structurally valid.
@@ -411,7 +444,7 @@ impl AudioController {
         self.publish(EndpointFlow::Render, origin);
     }
 
-    fn rebuild(&mut self, flow: EndpointFlow) {
+    fn rebuild(&mut self, flow: EndpointFlow, config: &crate::config::Config) {
         match flow {
             EndpointFlow::Capture => {
                 let _ = self.capture.take();
@@ -422,7 +455,6 @@ impl AudioController {
                 self.render_error = None;
             }
         }
-        let config = self.config.get();
         let (selection, role) = match flow {
             EndpointFlow::Capture => (&config.audio.input_device, config.audio.input_role),
             EndpointFlow::Render => (&config.audio.output_device, config.audio.output_role),
@@ -472,7 +504,8 @@ impl AudioController {
             EndpointFlow::Render => self.render.is_none(),
         };
         if missing {
-            self.rebuild(flow);
+            let snapshot = self.config.snapshot();
+            self.rebuild(flow, snapshot.value.as_ref());
         }
         let endpoint = match flow {
             EndpointFlow::Capture => self.capture.as_ref(),
@@ -633,6 +666,139 @@ mod tests {
         AudioCommand::ConfigChanged {
             stamp: stamp(revision, origin),
         }
+    }
+
+    fn snapshot(
+        revision: u64,
+        origin: crate::event::ConfigCommitOrigin,
+        marker: u32,
+    ) -> ConfigSnapshot {
+        let mut config = crate::config::Config::default();
+        config.overlay.duration_ms = marker;
+        ConfigSnapshot {
+            value: std::sync::Arc::new(config),
+            stamp: stamp(revision, origin),
+        }
+    }
+
+    #[test]
+    fn rebuild_plan_owns_one_config_snapshot_and_origin() {
+        let snapshot = snapshot(6, crate::event::ConfigCommitOrigin::DeviceCycle, 600);
+        let (consumed, plan) =
+            plan_pending_rebuild(snapshot.clone(), 5, PendingRebuild::config(snapshot.stamp));
+        let plan = plan.expect("new revision plans one rebuild");
+        assert_eq!(consumed, 6);
+        assert_eq!(plan.snapshot.stamp, snapshot.stamp);
+        assert_eq!(plan.snapshot.value.overlay.duration_ms, 600);
+        assert_eq!(
+            plan.origin,
+            crate::event::AudioEventOrigin::Config(crate::event::ConfigCommitOrigin::DeviceCycle)
+        );
+    }
+
+    #[test]
+    fn newer_publication_does_not_mutate_existing_rebuild_plan() {
+        let handle = crate::config::ConfigHandle::new(crate::config::Config::default());
+        let mut rev6_config = crate::config::Config::default();
+        rev6_config.overlay.duration_ms = 600;
+        handle
+            .replace_after_save(
+                rev6_config,
+                crate::event::ConfigCommitOrigin::Settings,
+                |_| Ok(()),
+            )
+            .unwrap();
+        let rev6 = handle.snapshot();
+        let (consumed6, plan6) =
+            plan_pending_rebuild(rev6.clone(), 1, PendingRebuild::config(rev6.stamp));
+        let plan6 = plan6.expect("rev6 needs one rebuild");
+
+        let mut rev7_config = crate::config::Config::default();
+        rev7_config.overlay.duration_ms = 700;
+        handle
+            .replace_after_save(
+                rev7_config,
+                crate::event::ConfigCommitOrigin::DeviceCycle,
+                |_| Ok(()),
+            )
+            .unwrap();
+        let rev7 = handle.snapshot();
+
+        assert_eq!(consumed6, 2);
+        assert_eq!(plan6.snapshot.stamp, rev6.stamp);
+        assert_eq!(plan6.snapshot.value.overlay.duration_ms, 600);
+        assert_eq!(plan6.origin, crate::event::AudioEventOrigin::External);
+
+        let (consumed7, plan7) =
+            plan_pending_rebuild(rev7.clone(), consumed6, PendingRebuild::config(rev7.stamp));
+        let plan7 = plan7.expect("rev7 needs one later rebuild");
+        assert_eq!(consumed7, 3);
+        assert_eq!(plan7.snapshot.stamp, rev7.stamp);
+        assert_eq!(plan7.snapshot.value.overlay.duration_ms, 700);
+        assert_eq!(
+            plan7.origin,
+            crate::event::AudioEventOrigin::Config(crate::event::ConfigCommitOrigin::DeviceCycle)
+        );
+    }
+
+    #[test]
+    fn capture_and_render_share_the_planned_config_arc() {
+        let snapshot = snapshot(6, crate::event::ConfigCommitOrigin::Settings, 600);
+        let (_, plan) = plan_pending_rebuild(
+            snapshot,
+            5,
+            PendingRebuild::config(stamp(6, crate::event::ConfigCommitOrigin::Settings)),
+        );
+        let plan = plan.expect("new revision plans one rebuild");
+        let capture_config = std::sync::Arc::clone(&plan.snapshot.value);
+        let render_config = std::sync::Arc::clone(&plan.snapshot.value);
+        assert!(std::sync::Arc::ptr_eq(&capture_config, &render_config));
+        assert_eq!(capture_config.overlay.duration_ms, 600);
+        assert_eq!(render_config.overlay.duration_ms, 600);
+    }
+
+    #[test]
+    fn settings_plan_then_device_cycle_publication_rebuilds_both_revisions_coherently() {
+        let rev6 = snapshot(6, crate::event::ConfigCommitOrigin::Settings, 600);
+        let (consumed6, plan6) =
+            plan_pending_rebuild(rev6.clone(), 5, PendingRebuild::config(rev6.stamp));
+        let plan6 = plan6.expect("rev6 needs one rebuild");
+        assert_eq!(consumed6, 6);
+        assert_eq!(plan6.snapshot.value.overlay.duration_ms, 600);
+        assert_eq!(plan6.origin, crate::event::AudioEventOrigin::External);
+
+        let rev7 = snapshot(7, crate::event::ConfigCommitOrigin::DeviceCycle, 700);
+        let (consumed7, plan7) =
+            plan_pending_rebuild(rev7.clone(), consumed6, PendingRebuild::config(rev7.stamp));
+        let plan7 = plan7.expect("rev7 needs one rebuild");
+        assert_eq!(consumed7, 7);
+        assert_eq!(plan7.snapshot.value.overlay.duration_ms, 700);
+        assert_eq!(
+            plan7.origin,
+            crate::event::AudioEventOrigin::Config(crate::event::ConfigCommitOrigin::DeviceCycle)
+        );
+    }
+
+    #[test]
+    fn device_cycle_plan_then_settings_publication_rebuilds_both_revisions_coherently() {
+        let rev6 = snapshot(6, crate::event::ConfigCommitOrigin::DeviceCycle, 600);
+        let (consumed6, plan6) =
+            plan_pending_rebuild(rev6.clone(), 5, PendingRebuild::config(rev6.stamp));
+        let plan6 = plan6.expect("rev6 needs one rebuild");
+        assert_eq!(consumed6, 6);
+        assert_eq!(plan6.snapshot.value.overlay.duration_ms, 600);
+        assert_eq!(
+            plan6.origin,
+            crate::event::AudioEventOrigin::Config(crate::event::ConfigCommitOrigin::DeviceCycle)
+        );
+
+        let rev7 = snapshot(7, crate::event::ConfigCommitOrigin::Settings, 700);
+        let (consumed7, plan7) =
+            plan_pending_rebuild(rev7.clone(), consumed6, PendingRebuild::config(rev7.stamp));
+        let plan7 = plan7.expect("rev7 needs one rebuild");
+        assert_eq!(consumed7, 7);
+        assert_eq!(plan7.snapshot.value.overlay.duration_ms, 700);
+        assert_eq!(plan7.origin, crate::event::AudioEventOrigin::External);
     }
 
     #[test]
