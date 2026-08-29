@@ -16,8 +16,8 @@ use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_TOPOLOGY_CLONE, DISPLAYCONFIG_TOPOLOGY_EXTEND, DISPLAYCONFIG_TOPOLOGY_EXTERNAL,
     DISPLAYCONFIG_TOPOLOGY_ID, DISPLAYCONFIG_TOPOLOGY_INTERNAL, DISPLAYCONFIG_VIDEO_SIGNAL_INFO,
     DISPLAYCONFIG_VIDEO_SIGNAL_INFO_0, QDC_DATABASE_CURRENT, QDC_ONLY_ACTIVE_PATHS,
-    SDC_ALLOW_CHANGES, SDC_APPLY, SDC_PATH_PERSIST_IF_REQUIRED, SDC_SAVE_TO_DATABASE,
-    SDC_USE_SUPPLIED_DISPLAY_CONFIG, SDC_VALIDATE,
+    QDC_VIRTUAL_MODE_AWARE, SDC_ALLOW_CHANGES, SDC_APPLY, SDC_PATH_PERSIST_IF_REQUIRED,
+    SDC_SAVE_TO_DATABASE, SDC_USE_SUPPLIED_DISPLAY_CONFIG, SDC_VALIDATE, SDC_VIRTUAL_MODE_AWARE,
 };
 use windows::Win32::Foundation::{LUID, POINTL};
 
@@ -37,6 +37,7 @@ pub enum DisplayTopology {
     #[default]
     Extend,
     External,
+    #[serde(other)]
     Custom,
 }
 
@@ -509,7 +510,7 @@ fn utf16_string(value: &[u16]) -> Option<String> {
 }
 
 fn query_current_topology() -> Result<DISPLAYCONFIG_TOPOLOGY_ID> {
-    let flags = QDC_DATABASE_CURRENT;
+    let flags = QDC_DATABASE_CURRENT | QDC_VIRTUAL_MODE_AWARE;
     let mut path_count = 0u32;
     let mut mode_count = 0u32;
     let status = unsafe { GetDisplayConfigBufferSizes(flags, &mut path_count, &mut mode_count) };
@@ -542,7 +543,7 @@ fn query_current_topology() -> Result<DISPLAYCONFIG_TOPOLOGY_ID> {
 
 fn query_state() -> Result<DisplayState> {
     for _ in 0..QUERY_RETRIES {
-        let flags = QDC_ONLY_ACTIVE_PATHS;
+        let flags = QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE;
         let mut path_count = 0u32;
         let mut mode_count = 0u32;
         let status =
@@ -599,8 +600,10 @@ fn set_display_config(
     modes: &[DISPLAYCONFIG_MODE_INFO],
     apply: bool,
 ) -> Result<()> {
-    let mut flags =
-        SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_PATH_PERSIST_IF_REQUIRED;
+    let mut flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG
+        | SDC_ALLOW_CHANGES
+        | SDC_PATH_PERSIST_IF_REQUIRED
+        | SDC_VIRTUAL_MODE_AWARE;
     if apply {
         flags |= SDC_APPLY | SDC_SAVE_TO_DATABASE;
     } else {
