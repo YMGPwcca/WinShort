@@ -35,6 +35,10 @@ pub enum HotkeyAction {
     MoveForegroundToDesktop(u8),
     /// Move the foreground view silently without switching desktops.
     MoveForegroundToDesktopSilent(u8),
+    /// Assign the current foreground window to the runtime scratchpad.
+    AssignScratchpad,
+    /// Toggle the runtime scratchpad window.
+    ToggleScratchpad,
 }
 
 impl HotkeyAction {
@@ -56,6 +60,8 @@ impl HotkeyAction {
         const KIND_PREVIOUS_DESKTOP: u32 = 9;
         const KIND_MOVE_FOREGROUND: u32 = 10;
         const KIND_MOVE_FOREGROUND_SILENT: u32 = 11;
+        const KIND_ASSIGN_SCRATCHPAD: u32 = 12;
+        const KIND_TOGGLE_SCRATCHPAD: u32 = 13;
         match self {
             HotkeyAction::ToggleMicrophone => KIND_MIC << 16,
             HotkeyAction::ToggleOutput => KIND_OUT << 16,
@@ -70,6 +76,8 @@ impl HotkeyAction {
             HotkeyAction::MoveForegroundToDesktopSilent(n) => {
                 (KIND_MOVE_FOREGROUND_SILENT << 16) | n as u32
             }
+            HotkeyAction::AssignScratchpad => KIND_ASSIGN_SCRATCHPAD << 16,
+            HotkeyAction::ToggleScratchpad => KIND_TOGGLE_SCRATCHPAD << 16,
         }
     }
 
@@ -93,6 +101,8 @@ impl HotkeyAction {
             9 => Some(HotkeyAction::SwitchPreviousDesktop),
             10 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktop(arg)),
             11 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktopSilent(arg)),
+            12 => Some(HotkeyAction::AssignScratchpad),
+            13 => Some(HotkeyAction::ToggleScratchpad),
             _ => None,
         }
     }
@@ -259,6 +269,8 @@ mod pack_tests {
             HotkeyAction::MoveForegroundToDesktop(8),
             HotkeyAction::MoveForegroundToDesktopSilent(0),
             HotkeyAction::MoveForegroundToDesktopSilent(8),
+            HotkeyAction::AssignScratchpad,
+            HotkeyAction::ToggleScratchpad,
             HotkeyAction::SwitchDesktop(0),
             HotkeyAction::SwitchDesktop(8),
         ];
@@ -278,6 +290,8 @@ mod pack_tests {
             HotkeyAction::MoveForegroundToDesktopSilent(8).pack_u32(),
             (11 << 16) | 8
         );
+        assert_eq!(HotkeyAction::AssignScratchpad.pack_u32(), 12 << 16);
+        assert_eq!(HotkeyAction::ToggleScratchpad.pack_u32(), 13 << 16);
         for action in all {
             let packed = action.pack();
             assert!(

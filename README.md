@@ -34,9 +34,10 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
   (all sessions of the owning PID toggle together; mixed state mutes all).
 - **Status overlay** — per-pixel-alpha HUD: topmost, no-activate, click-through, fade/slide
   animation, monitor-aware placement. Never steals focus from games.
-- **Virtual desktop switching** — `Win+1`…`Win+9` jump directly to Desktop 1–9 via the
-  undocumented Shell COM interface (build-pinned to Windows 11 24H2/25H2) with a
-  best-effort `Ctrl+Win+Arrow` fallback when the native backend is unavailable.
+- **Virtual desktop workflow** — configurable numbered switching creates only missing
+  desktops through the build-pinned Shell COM backend; optional move/follow, silent
+  move, previous-desktop focus restoration, executable routing, and runtime scratchpad
+  show/hide actions stay disabled or unassigned by default.
 - **Hot-reload config** — typed TOML model, atomic writes, inline validation, draft/live
   separation. Cancel always restores the live snapshot.
 - **Diagnostics & support** — separate native status page, passive self-test, Unicode
@@ -52,6 +53,9 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
 | `Ctrl+Alt+O` | Toggle output mute |
 | `Ctrl+Alt+P` | Toggle foreground app audio |
 | `Win+1`…`Win+9` | Switch to virtual desktop 1–9 |
+Optional desktop workflow and scratchpad shortcuts are unassigned by default and can be
+configured in Settings; the scratchpad assignment is runtime-only and is forgotten when
+the window closes.
 
 `Win+E`, `Win+R`, `Win+D`, `Win+L`, `Win+Shift+S` and every other Windows shortcut pass
 through untouched.

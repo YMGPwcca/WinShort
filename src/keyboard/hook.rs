@@ -588,6 +588,24 @@ pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
                 crate::warn_!("duplicate previous-desktop binding ignored: {previous}");
             }
         }
+        for (hotkey, action, label) in [
+            (
+                config.virtual_desktops.scratchpad_assign,
+                HotkeyAction::AssignScratchpad,
+                "scratchpad assignment",
+            ),
+            (
+                config.virtual_desktops.scratchpad_toggle,
+                HotkeyAction::ToggleScratchpad,
+                "scratchpad toggle",
+            ),
+        ] {
+            if let Some(hotkey) = hotkey {
+                if !table.insert(hotkey, action) {
+                    crate::warn_!("duplicate {label} binding ignored: {hotkey}");
+                }
+            }
+        }
         if config.virtual_desktops.win_number_switching {
             insert_number_family(
                 &mut table,
@@ -641,6 +659,8 @@ mod tests {
         config.virtual_desktops.move_silent_modifier =
             Some(ModifierMask::CTRL.union(ModifierMask::ALT));
         config.virtual_desktops.previous_desktop = Some(Hotkey::parse("Ctrl+Alt+F12").unwrap());
+        config.virtual_desktops.scratchpad_assign = Some(Hotkey::parse("Ctrl+Alt+F13").unwrap());
+        config.virtual_desktops.scratchpad_toggle = Some(Hotkey::parse("Ctrl+Alt+F14").unwrap());
         let table = build_bindings(&config);
         assert_eq!(
             table.lookup(
@@ -666,6 +686,20 @@ mod tests {
                 VirtualKey(0x7B)
             ),
             Some(HotkeyAction::SwitchPreviousDesktop)
+        );
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x7C)
+            ),
+            Some(HotkeyAction::AssignScratchpad)
+        );
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x7D)
+            ),
+            Some(HotkeyAction::ToggleScratchpad)
         );
     }
 

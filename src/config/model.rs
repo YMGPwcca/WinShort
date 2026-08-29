@@ -8,7 +8,7 @@ use crate::keyboard::binding::{Hotkey, ModifierMask};
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 4;
+pub const CURRENT_SCHEMA_VERSION: u8 = 5;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +64,8 @@ pub struct VdCfg {
     pub move_follow_modifier: Option<ModifierMask>,
     pub move_silent_modifier: Option<ModifierMask>,
     pub previous_desktop: Option<Hotkey>,
+    pub scratchpad_assign: Option<Hotkey>,
+    pub scratchpad_toggle: Option<Hotkey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +290,8 @@ impl Default for Config {
                 move_follow_modifier: None,
                 move_silent_modifier: None,
                 previous_desktop: None,
+                scratchpad_assign: None,
+                scratchpad_toggle: None,
             },
         }
     }
@@ -450,6 +454,10 @@ pub struct VdToml {
     pub move_silent_modifier: String,
     #[serde(default)]
     pub previous_desktop: String,
+    #[serde(default)]
+    pub scratchpad_assign: String,
+    #[serde(default)]
+    pub scratchpad_toggle: String,
 }
 
 impl Default for VdToml {
@@ -461,6 +469,8 @@ impl Default for VdToml {
             move_follow_modifier: String::new(),
             move_silent_modifier: String::new(),
             previous_desktop: String::new(),
+            scratchpad_assign: String::new(),
+            scratchpad_toggle: String::new(),
         }
     }
 }
@@ -617,6 +627,14 @@ impl Config {
                     .virtual_desktops
                     .previous_desktop
                     .map_or(String::new(), |hotkey| hotkey.to_string()),
+                scratchpad_assign: self
+                    .virtual_desktops
+                    .scratchpad_assign
+                    .map_or(String::new(), |hotkey| hotkey.to_string()),
+                scratchpad_toggle: self
+                    .virtual_desktops
+                    .scratchpad_toggle
+                    .map_or(String::new(), |hotkey| hotkey.to_string()),
             },
         }
     }
@@ -766,6 +784,27 @@ impl Config {
                 Err(error) => warnings.push(format!("virtual_desktops.previous_desktop: {error}")),
             }
         }
+        for (field, raw, slot) in [
+            (
+                "scratchpad_assign",
+                &t.virtual_desktops.scratchpad_assign,
+                &mut c.virtual_desktops.scratchpad_assign,
+            ),
+            (
+                "scratchpad_toggle",
+                &t.virtual_desktops.scratchpad_toggle,
+                &mut c.virtual_desktops.scratchpad_toggle,
+            ),
+        ] {
+            if raw.trim().is_empty() {
+                *slot = None;
+            } else {
+                match Hotkey::parse(raw) {
+                    Ok(hotkey) => *slot = Some(hotkey),
+                    Err(error) => warnings.push(format!("virtual_desktops.{field}: {error}")),
+                }
+            }
+        }
 
         (c, warnings)
     }
@@ -802,6 +841,8 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "move_follow_modifier",
             "move_silent_modifier",
             "previous_desktop",
+            "scratchpad_assign",
+            "scratchpad_toggle",
         ]),
         _ => None,
     }
@@ -844,6 +885,8 @@ impl Config {
                 "foreground_volume_up" => self.hotkeys.foreground_volume_up = None,
                 "foreground_volume_down" => self.hotkeys.foreground_volume_down = None,
                 "previous_desktop" => self.virtual_desktops.previous_desktop = None,
+                "scratchpad_assign" => self.virtual_desktops.scratchpad_assign = None,
+                "scratchpad_toggle" => self.virtual_desktops.scratchpad_toggle = None,
                 _ => {}
             }
         }
@@ -943,6 +986,36 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
         let (round_tripped, warnings) = Config::from_toml(&boundary);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn scratchpad_hotkeys_round_trip_through_schema_v5() {
+        let mut config = Config::default();
+        config.virtual_desktops.scratchpad_assign = Some(Hotkey::parse("Ctrl+Alt+F9").unwrap());
+        config.virtual_desktops.scratchpad_toggle = Some(Hotkey::parse("Ctrl+Alt+F10").unwrap());
+
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn schema_v4_defaults_new_scratchpad_hotkeys() {
+        let raw = r#"
+schema_version = 4
+[virtual_desktops]
+enabled = true
+win_number_switching = true
+number_modifier = "Win"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(config.virtual_desktops.scratchpad_assign.is_none());
+        assert!(config.virtual_desktops.scratchpad_toggle.is_none());
     }
 
     #[test]

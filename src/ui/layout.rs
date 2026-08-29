@@ -76,6 +76,8 @@ pub enum ElementId {
     MoveDesktopModifier,
     SilentMoveDesktopModifier,
     PreviousDesktopHotkey,
+    AssignScratchpadHotkey,
+    ToggleScratchpadHotkey,
     OverlayEnabled,
     OverlayAppearance,
     OverlayExternalChanges,
@@ -92,7 +94,7 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 33] = [
+    pub const FOCUS_ORDER: [ElementId; 35] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
@@ -112,6 +114,8 @@ impl ElementId {
         ElementId::MoveDesktopModifier,
         ElementId::SilentMoveDesktopModifier,
         ElementId::PreviousDesktopHotkey,
+        ElementId::AssignScratchpadHotkey,
+        ElementId::ToggleScratchpadHotkey,
         ElementId::OverlayEnabled,
         ElementId::OverlayAppearance,
         ElementId::OverlayExternalChanges,
@@ -338,6 +342,18 @@ impl SettingsLayout {
                     ElementKind::Hotkey,
                     "Previous desktop",
                     "Return to the previously active desktop",
+                ),
+                row(
+                    ElementId::AssignScratchpadHotkey,
+                    ElementKind::Hotkey,
+                    "Assign scratchpad",
+                    "Assign the current foreground window",
+                ),
+                row(
+                    ElementId::ToggleScratchpadHotkey,
+                    ElementKind::Hotkey,
+                    "Toggle scratchpad",
+                    "Show or hide the assigned window",
                 ),
             ],
         );

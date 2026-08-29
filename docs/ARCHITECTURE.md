@@ -2,9 +2,10 @@
 
 **Status: Implemented** (this document describes current `main`; forward-looking ideas live in the issue tracker, not here).
 
-Native Windows tray utility: audio hotkeys, status overlay, virtual desktop switching.
-Pure Rust against Win32/COM via the Microsoft `windows` crate. No GUI framework, no WebView,
-no other-language components.
+Native Windows tray utility: audio hotkeys, status overlay, virtual desktop
+workflow, and a runtime scratchpad window.
+Pure Rust against Win32/COM via the Microsoft `windows` crate. No GUI framework,
+no WebView, no other-language components.
 
 ## Subsystems
 
@@ -19,9 +20,7 @@ App Runtime (main thread, STA)
 Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 ├── WH_KEYBOARD_LL       ├── IMMDeviceEnumerator    ├── ImmersiveShell IServiceProvider
 ├── modifier tracking    ├── IAudioEndpointVolume   ├── IVirtualDesktopManagerInternal
-├── binding recognition   ├── IMMNotificationClient  ├── IVirtualDesktopManager / HWND focus
-└── PostMessage only      └── command channel loop   └── stable desktop focus history
-```
+└── PostMessage only      └── command channel loop   └── focus history + scratchpad
 
 ## Threading model
 
@@ -30,7 +29,7 @@ Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 | Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), timers |
 | Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
 | Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
-| Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable desktop focus history |
+| Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable desktop focus history, runtime scratchpad HWND |
 | Instance watcher | none | waits on named activate/shutdown events |
 
 Rules:
@@ -47,6 +46,8 @@ Rules:
   classified by `DesktopError::permits_fallback` (VIRTUAL_DESKTOP_COMPAT.md).
 * Missing numbered desktops are created only through the native backend; the keyboard fallback is
   used only when a previously known existing target can be safely walked.
+* Scratchpad assignment stores only the HWND in the desktop STA worker. It is never persisted;
+  hidden/closed handles are validated before every toggle and cleared when stale.
 
 ## Events
 

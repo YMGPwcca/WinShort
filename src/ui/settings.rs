@@ -442,6 +442,12 @@ impl SettingsUi {
             ElementId::PreviousDesktopHotkey => {
                 self.hotkey_value(id, self.draft.virtual_desktops.previous_desktop)
             }
+            ElementId::AssignScratchpadHotkey => {
+                self.hotkey_value(id, self.draft.virtual_desktops.scratchpad_assign)
+            }
+            ElementId::ToggleScratchpadHotkey => {
+                self.hotkey_value(id, self.draft.virtual_desktops.scratchpad_toggle)
+            }
             ElementId::OverlayEnabled => ControlValue::Toggle(self.draft.overlay.enabled),
             ElementId::OverlayAppearance => {
                 ControlValue::Text(Cow::Borrowed(self.draft.overlay.appearance.label()))
@@ -547,7 +553,9 @@ impl SettingsUi {
             }
             ElementId::MoveDesktopModifier
             | ElementId::SilentMoveDesktopModifier
-            | ElementId::PreviousDesktopHotkey => !self.draft.virtual_desktops.enabled,
+            | ElementId::PreviousDesktopHotkey
+            | ElementId::AssignScratchpadHotkey
+            | ElementId::ToggleScratchpadHotkey => !self.draft.virtual_desktops.enabled,
             ElementId::InputRole => !Self::endpoint_role_enabled(&self.draft.audio.input_device),
             ElementId::OutputRole => !Self::endpoint_role_enabled(&self.draft.audio.output_device),
             ElementId::OverlayAppearance
@@ -728,7 +736,9 @@ impl SettingsUi {
             | ElementId::CycleOutputHotkey
             | ElementId::ForegroundVolumeUpHotkey
             | ElementId::ForegroundVolumeDownHotkey
-            | ElementId::PreviousDesktopHotkey => {
+            | ElementId::PreviousDesktopHotkey
+            | ElementId::AssignScratchpadHotkey
+            | ElementId::ToggleScratchpadHotkey => {
                 self.recording = Some(id);
                 self.recording_modifiers = ModifierMask::NONE;
                 self.validation.clear();
@@ -930,6 +940,12 @@ impl SettingsUi {
             ElementId::PreviousDesktopHotkey => {
                 self.draft.virtual_desktops.previous_desktop = Some(hotkey)
             }
+            ElementId::AssignScratchpadHotkey => {
+                self.draft.virtual_desktops.scratchpad_assign = Some(hotkey)
+            }
+            ElementId::ToggleScratchpadHotkey => {
+                self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
+            }
             _ => {}
         }
         self.recording = None;
@@ -974,6 +990,12 @@ impl SettingsUi {
                         }
                         ElementId::PreviousDesktopHotkey => {
                             self.draft.virtual_desktops.previous_desktop = Some(hotkey)
+                        }
+                        ElementId::AssignScratchpadHotkey => {
+                            self.draft.virtual_desktops.scratchpad_assign = Some(hotkey)
+                        }
+                        ElementId::ToggleScratchpadHotkey => {
+                            self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
                         }
                         _ => {}
                     }

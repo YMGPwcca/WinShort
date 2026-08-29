@@ -21,7 +21,7 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
                     // Versionless documents deserialize as the legacy v1
-                    // baseline; newly serialized documents always include v4.
+                    // baseline; newly serialized documents always include v5.
                     let parsed_schema = toml.schema_version;
                     if parsed_schema > CURRENT_SCHEMA_VERSION {
                         let msg = format!(
@@ -58,9 +58,10 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     let mut migrations = Vec::new();
                     if parsed_schema < CURRENT_SCHEMA_VERSION {
                         let detail = match parsed_schema {
-                            1 => "v2 overlay defaults, v3 hotkey fields, and v4 desktop controls defaulted",
-                            2 => "v3 hotkey fields and v4 desktop controls defaulted",
-                            3 => "v4 desktop workflow fields defaulted",
+                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, and v5 scratchpad fields defaulted",
+                            2 => "v3 hotkey fields, v4 desktop controls, and v5 scratchpad fields defaulted",
+                            3 => "v4 desktop workflow and v5 scratchpad fields defaulted",
+                            4 => "v5 scratchpad fields defaulted",
                             _ => "newer fields defaulted",
                         };
                         migrations.push(format!(
@@ -220,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_defaults_new_hotkeys_and_records_v4_migration() {
+    fn schema_v2_defaults_new_hotkeys_and_records_v5_migration() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_v2_{}", std::process::id()));
@@ -248,7 +249,7 @@ mod tests {
         assert!(diagnostics
             .migrations
             .iter()
-            .any(|value| value.contains("schema v2 migrated") && value.contains("v4")));
+            .any(|value| value.contains("schema v2 migrated") && value.contains("v5")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -315,7 +316,7 @@ mod tests {
     }
     #[test]
 
-    fn saving_migrated_config_updates_diagnostics_to_v4() {
+    fn saving_migrated_config_updates_diagnostics_to_v5() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_save_{}", std::process::id()));

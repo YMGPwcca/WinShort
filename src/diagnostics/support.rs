@@ -834,6 +834,14 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                 .virtual_desktops
                 .previous_desktop
                 .map_or(String::new(), |hotkey| hotkey.to_string()),
+            scratchpad_assign: config
+                .virtual_desktops
+                .scratchpad_assign
+                .map_or(String::new(), |hotkey| hotkey.to_string()),
+            scratchpad_toggle: config
+                .virtual_desktops
+                .scratchpad_toggle
+                .map_or(String::new(), |hotkey| hotkey.to_string()),
         },
     };
     toml::to_string_pretty(&safe)
@@ -909,8 +917,9 @@ struct SafeVirtualDesktops {
     move_follow_modifier: String,
     move_silent_modifier: String,
     previous_desktop: String,
+    scratchpad_assign: String,
+    scratchpad_toggle: String,
 }
-
 fn collect_logs(
     directory: Option<&Path>,
     sanitizer: &mut Sanitizer,

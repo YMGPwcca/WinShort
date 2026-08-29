@@ -55,6 +55,8 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
             &cfg.hotkeys.foreground_volume_down,
         ),
         ("previous_desktop", &cfg.virtual_desktops.previous_desktop),
+        ("scratchpad_assign", &cfg.virtual_desktops.scratchpad_assign),
+        ("scratchpad_toggle", &cfg.virtual_desktops.scratchpad_toggle),
     ] {
         if let Some(hk) = hk {
             if let Some(other) = seen.insert(*hk, name) {

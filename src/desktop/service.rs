@@ -7,7 +7,8 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
-    IsWindow, IsWindowVisible, SetForegroundWindow, GWL_STYLE, WS_DISABLED,
+    IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GWL_STYLE, SW_HIDE, SW_RESTORE,
+    SW_SHOW, WS_DISABLED,
 };
 use windows_core::GUID;
 
@@ -31,6 +32,10 @@ pub enum DesktopCommand {
     RememberForeground {
         hwnd_raw: isize,
     },
+    AssignScratchpad {
+        hwnd_raw: isize,
+    },
+    ToggleScratchpad,
     Shutdown,
 }
 
@@ -86,6 +91,16 @@ impl DesktopService {
         let _ = self.sender.send(DesktopCommand::SwitchTo(index));
     }
 
+    pub fn assign_scratchpad(&self, hwnd_raw: isize) {
+        let _ = self
+            .sender
+            .send(DesktopCommand::AssignScratchpad { hwnd_raw });
+    }
+
+    pub fn toggle_scratchpad(&self) {
+        let _ = self.sender.send(DesktopCommand::ToggleScratchpad);
+    }
+
     pub fn shutdown(&mut self) {
         let _ = self.sender.send(DesktopCommand::Shutdown);
         if let Some(join) = self.join.take() {
@@ -113,6 +128,8 @@ struct DesktopController {
     last_focused: HashMap<windows_core::GUID, HWND>,
     /// Stable desktop ID used by the previous-desktop action.
     previous_desktop: Option<windows_core::GUID>,
+    /// Runtime-only scratchpad window; never persisted as an HWND.
+    scratchpad: Option<HWND>,
 }
 
 impl DesktopController {
@@ -147,13 +164,14 @@ impl DesktopController {
             last_served: None,
             last_focused: HashMap::new(),
             previous_desktop: None,
+            scratchpad: None,
         };
         controller.publish_status();
         Ok(controller)
     }
 
     fn switch_to(&mut self, index: usize) {
-        self.remember_current_foreground();
+        self.clear_stale_scratchpad();
         let previous = self
             .native
             .as_ref()
@@ -190,6 +208,7 @@ impl DesktopController {
     }
 
     fn move_foreground(&mut self, index: usize, hwnd_raw: isize, follow: bool) {
+        self.clear_stale_scratchpad();
         let hwnd = raw_hwnd(hwnd_raw);
         if !eligible_window(hwnd) {
             self.publish_failure(
@@ -251,6 +270,7 @@ impl DesktopController {
     }
 
     fn switch_previous(&mut self) {
+        self.clear_stale_scratchpad();
         let result = (|| {
             let native = self.native.as_ref().ok_or_else(|| {
                 DesktopError::NavigationUnavailable("native desktop identity is unavailable".into())
@@ -285,6 +305,7 @@ impl DesktopController {
     }
 
     fn remember_foreground(&mut self, hwnd_raw: isize) {
+        self.clear_stale_scratchpad();
         let hwnd = raw_hwnd(hwnd_raw);
         if !eligible_window(hwnd) {
             return;
@@ -300,6 +321,89 @@ impl DesktopController {
     fn remember_current_foreground(&mut self) {
         let hwnd = unsafe { GetForegroundWindow() };
         self.remember_foreground(hwnd.0 as isize);
+    }
+    fn assign_scratchpad(&mut self, hwnd_raw: isize) {
+        let hwnd = raw_hwnd(hwnd_raw);
+        if !eligible_window(hwnd) {
+            self.publish_failure(
+                "assign scratchpad",
+                DesktopError::WindowUnavailable("foreground HWND is not eligible".into()),
+            );
+            return;
+        }
+        match self.ensure_window_on_current_desktop(hwnd) {
+            Ok(()) => {
+                self.scratchpad = Some(hwnd);
+                crate::info!("scratchpad assigned to HWND {:?}", hwnd);
+            }
+            Err(error) => self.publish_failure("assign scratchpad", error),
+        }
+    }
+
+    fn toggle_scratchpad(&mut self) {
+        let Some(hwnd) = self.scratchpad else {
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::WindowUnavailable("no scratchpad window is assigned".into()),
+            );
+            return;
+        };
+        if !scratchpad_window(hwnd) {
+            self.scratchpad = None;
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::WindowUnavailable("assigned scratchpad window is stale".into()),
+            );
+            return;
+        }
+        if unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            crate::info!("scratchpad hidden");
+            return;
+        }
+
+        match self.ensure_window_on_current_desktop(hwnd) {
+            Ok(()) => {
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                    if !SetForegroundWindow(hwnd).as_bool() {
+                        crate::warn_!("scratchpad shown but foreground activation was rejected");
+                    }
+                }
+                crate::info!("scratchpad shown");
+            }
+            Err(error) => self.publish_failure("toggle scratchpad", error),
+        }
+    }
+
+    fn ensure_window_on_current_desktop(
+        &self,
+        hwnd: HWND,
+    ) -> std::result::Result<(), DesktopError> {
+        let native = self.native.as_ref().ok_or_else(|| {
+            DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
+        })?;
+        let current = native.current_desktop_id()?;
+        let ids = native.desktop_ids()?;
+        let current_index = ids.iter().position(|id| *id == current).ok_or_else(|| {
+            DesktopError::NavigationUnavailable(
+                "current desktop was not found in Shell ordering".into(),
+            )
+        })?;
+        if native.window_desktop_id(hwnd)? != current {
+            native.move_window_to_desktop(hwnd, current_index)?;
+        }
+        Ok(())
+    }
+
+    fn clear_stale_scratchpad(&mut self) {
+        if self.scratchpad.is_some_and(|hwnd| !scratchpad_window(hwnd)) {
+            self.scratchpad = None;
+            crate::info!("cleared stale scratchpad window");
+        }
     }
 
     fn restore_focus(
@@ -468,12 +572,20 @@ fn raw_hwnd(raw: isize) -> HWND {
 }
 
 fn eligible_window(hwnd: HWND) -> bool {
+    valid_external_window(hwnd, true)
+}
+
+fn scratchpad_window(hwnd: HWND) -> bool {
+    valid_external_window(hwnd, false)
+}
+
+fn valid_external_window(hwnd: HWND, require_visible: bool) -> bool {
     if hwnd.0.is_null() {
         return false;
     }
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool()
-            || !IsWindowVisible(hwnd).as_bool()
+            || (require_visible && !IsWindowVisible(hwnd).as_bool())
             || GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & WS_DISABLED.0 != 0
         {
             return false;
@@ -581,6 +693,8 @@ fn desktop_thread(
             DesktopCommand::RememberForeground { hwnd_raw } => {
                 controller.remember_foreground(hwnd_raw)
             }
+            DesktopCommand::AssignScratchpad { hwnd_raw } => controller.assign_scratchpad(hwnd_raw),
+            DesktopCommand::ToggleScratchpad => controller.toggle_scratchpad(),
             DesktopCommand::Shutdown => break,
         }
     }
@@ -657,5 +771,27 @@ mod policy_tests {
             })
         );
         assert!(!*backend.fallback_used.borrow());
+    }
+    #[test]
+    fn stale_scratchpad_handle_is_cleared_without_shell_calls() {
+        let mut controller = DesktopController {
+            hwnd_raw: 0,
+            build: OsBuild {
+                build: 0,
+                update_revision: 0,
+            },
+            native: None,
+            native_availability: BackendAvailability::UnsupportedBuild { build: 0 },
+            fallback: KeyboardFallback::new(),
+            known_count: None,
+            last_served: None,
+            last_focused: HashMap::new(),
+            previous_desktop: None,
+            scratchpad: Some(HWND::default()),
+        };
+
+        controller.clear_stale_scratchpad();
+
+        assert!(controller.scratchpad.is_none());
     }
 }

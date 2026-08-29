@@ -618,6 +618,8 @@ impl App {
                 self.dispatch_move_foreground(n as usize, false);
             }
             HotkeyAction::SwitchPreviousDesktop => self.dispatch_previous_desktop(),
+            HotkeyAction::AssignScratchpad => self.dispatch_assign_scratchpad(),
+            HotkeyAction::ToggleScratchpad => self.dispatch_toggle_scratchpad(),
         }
     }
 
@@ -652,6 +654,28 @@ impl App {
             desktop.switch_previous();
         } else {
             self.report_desktop_failure("switch previous desktop", "desktop subsystem unavailable");
+        }
+    }
+    fn dispatch_assign_scratchpad(&mut self) {
+        let Some(desktop) = &self.desktop else {
+            self.report_desktop_failure("assign scratchpad", "desktop subsystem unavailable");
+            return;
+        };
+        let Some(hwnd) = crate::platform::foreground::current_external_hwnd() else {
+            self.report_desktop_failure(
+                "assign scratchpad",
+                "no eligible foreground application window",
+            );
+            return;
+        };
+        desktop.assign_scratchpad(hwnd.0 as isize);
+    }
+
+    fn dispatch_toggle_scratchpad(&mut self) {
+        if let Some(desktop) = &self.desktop {
+            desktop.toggle_scratchpad();
+        } else {
+            self.report_desktop_failure("toggle scratchpad", "desktop subsystem unavailable");
         }
     }
 

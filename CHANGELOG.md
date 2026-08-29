@@ -47,10 +47,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
   optional move/follow, silent-move, and previous-desktop actions without
   stealing existing hotkey slots. Explicit Settings endpoint selections remain
   persistently saved; desktop workflow hotkeys remain unassigned by default.
+- Schema v5 adds optional scratchpad assignment and toggle hotkeys. The assigned
+  window handle remains runtime-only and is cleared when the window closes.
 - Numbered Virtual Desktop switching now ensures missing desktops through the
   native Shell backend; move/follow, silent move, previous-desktop navigation,
-  and per-desktop foreground restoration are available as conservative
-  configurable actions.
+  per-desktop foreground restoration, and runtime scratchpad show/hide are
+  available as conservative configurable actions.
 
 ## [0.1.0] - 2026-08-24
 
