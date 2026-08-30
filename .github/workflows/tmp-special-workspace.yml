@@ -21,6 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           python tools/tmp_special_workspace.py
+          python tools/tmp_special_workspace_cleanup.py
           cargo fmt --all
           cargo fmt --all -- --check
           cargo check --all-targets --all-features
@@ -33,7 +34,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm tools/tmp_special_workspace.py .github/workflows/tmp-special-workspace.yml
+          git rm tools/tmp_special_workspace.py tools/tmp_special_workspace_cleanup.py .github/workflows/tmp-special-workspace.yml
           git add src/desktop/internal_api.rs src/desktop/service.rs src/desktop/state.rs src/ui/layout.rs
           git commit -m "feat(desktop): use dedicated special workspace"
           git push origin HEAD:wip/special-workspace-build
