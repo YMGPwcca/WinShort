@@ -45,8 +45,10 @@ what WinShort supports and why.
 7 IsRemote(BOOL*)
 ```
 
-WinShort calls only: `GetCount`, `GetDesktops`, `GetCurrentDesktop`, `SwitchDesktop`,
-`GetId`. Nothing else — smaller surface, fewer breakage points.
+WinShort calls `GetCount`, `GetDesktops`, `GetCurrentDesktop`, `GetId`, `SwitchDesktop`,
+and the build-pinned `CreateDesktop` slot. Window moves use the documented
+`IVirtualDesktopManager::{GetWindowDesktopId,MoveWindowToDesktop}` API; the internal
+`MoveViewToDesktop` slot is not guessed from an arbitrary HWND.
 
 ## Critical caveat: IID reuse across a vtable change
 
@@ -88,8 +90,10 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 * Whitelisted build → native backend available; `SwitchDesktop(n)` resolves index n−1 through
   `GetDesktops` ordering and calls `SwitchDesktop`. A request equal to the current desktop is
   an early no-op.
-* Unknown build or setup failure → status `UnsupportedBuild { build }`, diagnostics logged,
-  switches route to the keyboard fallback.
+* Unknown build or native setup failure → status `UnsupportedBuild { build }`/`Failed`,
+  diagnostics logged. Creation, window movement, and identity navigation refuse without
+  synthetic input; switching may use the keyboard fallback only for a previously enumerated
+  existing target after a transient Shell/RPC failure.
 * Explorer restart kills the STA proxies (RPC-class error); the controller performs one inline
   proxy rebuild + retry, and if that fails it re-probes lazily once per subsequent command —
   never permanently disabled, never infinitely retried within one command.
@@ -104,6 +108,8 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 | `BackendUnavailable` (not activated / safety limit) | `UnsupportedBuild` — fail closed |
 | | `AbiMismatch` — retained for typed matching; currently surfaced via BackendUnavailable |
 | | `SwitchFailed(hr)` — Shell rejected the switch |
+| | `CreationUnavailable`, `MoveUnavailable`, `WindowUnavailable`, `FocusFailed` |
+| | `Partial` — a later step failed after an earlier step completed |
 
 The exact partition is proptested (`policy_props.rs`, #37). `index >= count` refuses **before**
 any input injection (#20): a too-large target never triggers SendInput keys.
