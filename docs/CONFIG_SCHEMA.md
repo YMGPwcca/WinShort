@@ -52,8 +52,8 @@ number_modifier = "Win"         # one modifier family for 1..9
 move_follow_modifier = ""       # optional modifier family
 move_silent_modifier = ""       # optional modifier family
 previous_desktop = ""           # optional ordinary hotkey
-scratchpad_assign = ""          # optional hotkey; runtime-only window assignment
-scratchpad_toggle = ""           # optional hotkey; runtime-only show/hide
+scratchpad_assign = ""          # optional hotkey; legacy wire name: send foreground window to Special Workspace
+scratchpad_toggle = ""           # optional hotkey; legacy wire name: toggle Special Workspace / return desktop
 
 [display_profiles]
 enabled = true
@@ -104,9 +104,11 @@ required — bare keys are rejected** (#35). Numpad tokens (`Numpad0`–`Numpad9
 letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no media keys.
 
 `VdCfg` stores the numbered modifier family, optional move/follow and silent
-modifier families, an optional previous-desktop hotkey, and optional scratchpad
-hotkeys. Scratchpad HWND/ownership state is runtime-only and is never serialized.
-Legacy schema-v6 `routing_rules` tables are accepted only at the TOML boundary,
+modifier families, an optional previous-desktop hotkey, and the two legacy-named
+`scratchpad_*` hotkeys. Those wire names are retained for schema compatibility, but
+the actions now send the foreground window to a dedicated Special Workspace and
+toggle that Virtual Desktop. The workspace GUID and return-desktop GUID are
+runtime-only and are never serialized. Legacy schema-v6 `routing_rules` tables are accepted only at the TOML boundary,
 ignored with a warning, and omitted on the next Save.
 
 `AudioCfg` stores optional endpoint-ID allowlists for input and output cycling.
@@ -210,7 +212,7 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 | cycle and foreground-volume hotkeys | unassigned |
 | display profiles | enabled, no active profile, no stored profiles; profile hotkeys empty |
 | `start_hotkeys_enabled` | true |
-| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/scratchpad unassigned |
+| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/Special Workspace hotkeys unassigned |
 
 Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
@@ -226,7 +228,8 @@ in `config.toml` and #32 does not require a schema bump.
 Schema v1 files, including versionless legacy files, load with the v2 defaults for
 `overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`),
 v3 defaults for the four Phase-1 hotkeys, v4 defaults for the Virtual Desktop
-workflow fields, v5 defaults for the scratchpad hotkeys, v7 defaults for
+workflow fields, v5 defaults for the legacy-named `scratchpad_*` hotkeys (now Special
+Workspace actions), v7 defaults for
 input/output allowlists, v8 defaults for display profiles, and v9 defaults for
 display profile hotkeys plus
 `confirmed = false` on profiles that predate the safety bit. Schema v2/v3/v4/v5/v6/v7/v8
