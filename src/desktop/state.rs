@@ -58,6 +58,20 @@ impl DesktopHistory {
         self.previous_desktop
     }
 
+    pub(crate) fn current(&self) -> Option<GUID> {
+        self.current_desktop
+    }
+
+    pub(crate) fn forget_desktop(&mut self, desktop: GUID) {
+        self.last_focused.remove(&desktop);
+        if self.current_desktop == Some(desktop) {
+            self.current_desktop = None;
+        }
+        if self.previous_desktop == Some(desktop) {
+            self.previous_desktop = None;
+        }
+    }
+
     pub(crate) fn clear_previous(&mut self) {
         self.previous_desktop = None;
     }

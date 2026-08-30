@@ -7,7 +7,7 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
     IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-    SW_HIDE, SW_RESTORE, SW_SHOWNA, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    SW_RESTORE, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows_core::GUID;
 
@@ -45,14 +45,6 @@ pub enum DesktopCommand {
 pub struct DesktopService {
     sender: Sender<DesktopCommand>,
     join: Option<std::thread::JoinHandle<()>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ScratchpadState {
-    hwnd: HWND,
-    owner_pid: u32,
-    /// True only when WinShort itself issued the successful hide operation.
-    hidden_by_winshort: bool,
 }
 
 impl DesktopService {
@@ -142,8 +134,10 @@ struct DesktopController {
     last_served: Option<BackendKind>,
     /// Process-lifetime focus and previous-desktop identity state.
     history: DesktopHistory,
-    /// Runtime-only scratchpad ownership; never persisted.
-    scratchpad: Option<ScratchpadState>,
+    /// Runtime-only identity of WinShort's dedicated special workspace.
+    special_workspace: Option<GUID>,
+    /// Normal desktop to return to when leaving the special workspace.
+    special_return: Option<GUID>,
 }
 
 impl DesktopController {
@@ -183,17 +177,14 @@ impl DesktopController {
             known_count,
             last_served: None,
             history,
-            scratchpad: None,
+            special_workspace: None,
+            special_return: None,
         };
         controller.publish_status();
         Ok(controller)
     }
 
     fn switch_to(&mut self, index: usize) {
-        self.clear_stale_scratchpad();
-        // A hotkey can arrive before the asynchronous foreground event. Take
-        // one event-driven sample here so the source desktop is not forgotten
-        // during a rapid switch.
         self.remember_current_foreground();
         let previous = self
             .native
@@ -201,7 +192,12 @@ impl DesktopController {
             .and_then(|native| native.current_desktop_id().ok());
         match self.native_ensure_switch(index) {
             Ok(target) => {
-                self.history.note_numbered_switch(previous, target);
+                if previous == self.special_workspace {
+                    self.special_return = None;
+                    self.history.observe_desktop(target);
+                } else {
+                    self.history.note_numbered_switch(previous, target);
+                }
                 self.last_served = Some(BackendKind::NativeShell);
                 if let Err(error) = self.restore_focus(target) {
                     self.publish_failure("restore desktop focus", error);
@@ -209,7 +205,8 @@ impl DesktopController {
                 self.publish_status();
             }
             Err(error)
-                if error.permits_fallback()
+                if self.special_workspace.is_none()
+                    && error.permits_fallback()
                     && self.known_count.is_some_and(|count| index < count) =>
             {
                 match self.fallback.switch_to(index) {
@@ -218,9 +215,6 @@ impl DesktopController {
                             "switched to virtual desktop {} via keyboard fallback (target existed)",
                             index + 1
                         );
-                        // Keyboard fallback cannot identify the destination;
-                        // discard identity-based navigation rather than
-                        // pointing Previous Desktop at an unknown desktop.
                         self.history.clear_identity();
                         self.last_served = Some(BackendKind::KeyboardFallback);
                         self.publish_status();
@@ -232,7 +226,6 @@ impl DesktopController {
         }
     }
     fn move_foreground(&mut self, index: usize, hwnd_raw: isize, follow: bool) {
-        self.clear_stale_scratchpad();
         let hwnd = raw_hwnd(hwnd_raw);
         if !eligible_window(hwnd) {
             self.publish_failure(
@@ -251,14 +244,8 @@ impl DesktopController {
             .as_ref()
             .and_then(|native| native.current_desktop_id().ok());
         let result = (|| {
-            // Creation is deliberately native-only. A move action must never
-            // synthesize Ctrl+Win+N because that changes the requested
-            // semantics and cannot report which desktop was created.
             self.native_ensure_count(index + 1)?;
-            let native = self.native.as_ref().ok_or_else(|| {
-                DesktopError::MoveUnavailable("native backend is unavailable".into())
-            })?;
-            let ids = native.desktop_ids()?;
+            let ids = self.normal_desktop_ids()?;
             let target = ids
                 .get(index)
                 .copied()
@@ -266,26 +253,24 @@ impl DesktopController {
                     requested: index,
                     count: ids.len(),
                 })?;
+            let native = self.native.as_ref().ok_or_else(|| {
+                DesktopError::MoveUnavailable("native backend is unavailable".into())
+            })?;
             let current = native.window_desktop_id(hwnd)?;
             if current != target {
-                native.move_window_to_desktop(hwnd, index)?;
+                native.move_window_to_desktop_id(hwnd, target)?;
             }
-            // The moved window is the preferred target window even for a
-            // silent move; it will be restored when that desktop is visited.
             self.history.remember(target, hwnd.0 as isize);
 
             if follow {
-                if let Err(error) = native.switch_to(index) {
-                    return Err(DesktopError::Partial {
-                        completed: format!("window moved to Desktop {}", index + 1),
-                        failure: format!("desktop switch failed: {error}"),
-                    });
-                }
-                // The switch completed even if foreground activation is
-                // rejected; retain truthful backend status for that partial
-                // outcome.
+                native.switch_to_id(target)?;
                 self.last_served = Some(BackendKind::NativeShell);
-                self.history.note_numbered_switch(previous, target);
+                if previous == self.special_workspace {
+                    self.special_return = None;
+                    self.history.observe_desktop(target);
+                } else {
+                    self.history.note_numbered_switch(previous, target);
+                }
                 if !activate_window(hwnd) {
                     return Err(DesktopError::Partial {
                         completed: format!(
@@ -296,9 +281,6 @@ impl DesktopController {
                     });
                 }
             } else if previous.is_some() && previous != Some(target) {
-                // Moving the foreground window can leave the source desktop
-                // with shell focus. Restore its remembered application when
-                // Windows permits it, without navigating to the destination.
                 if let Err(error) = self.restore_focus(previous.expect("checked above")) {
                     return Err(DesktopError::Partial {
                         completed: format!("window moved silently to Desktop {}", index + 1),
@@ -328,20 +310,39 @@ impl DesktopController {
             }
         }
     }
-
     fn switch_previous(&mut self) {
-        self.clear_stale_scratchpad();
         self.remember_current_foreground();
         let result = (|| {
-            let native = self.native.as_ref().ok_or_else(|| {
-                DesktopError::NavigationUnavailable("native desktop identity is unavailable".into())
-            })?;
-            let current = native.current_desktop_id()?;
-            // Reconcile an external desktop visit before consuming the
-            // previous target; foreground events can be queued behind this
-            // hotkey message.
+            let current = self
+                .native
+                .as_ref()
+                .ok_or_else(|| {
+                    DesktopError::NavigationUnavailable(
+                        "native desktop identity is unavailable".into(),
+                    )
+                })?
+                .current_desktop_id()?;
+            let ids = self.normal_desktop_ids()?;
+
+            if Some(current) == self.special_workspace {
+                let target =
+                    choose_special_return_target(self.special_return, self.history.current(), &ids)
+                        .ok_or_else(|| {
+                            DesktopError::NavigationUnavailable(
+                                "no normal desktop is available to leave the special workspace"
+                                    .into(),
+                            )
+                        })?;
+                self.native
+                    .as_ref()
+                    .expect("native backend was checked above")
+                    .switch_to_id(target)?;
+                self.special_return = None;
+                self.history.observe_desktop(target);
+                return Ok(target);
+            }
+
             self.history.observe_desktop(current);
-            let ids = native.desktop_ids()?;
             if self.history.previous().is_none() {
                 return Err(DesktopError::NavigationUnavailable(
                     "no previous desktop is remembered".into(),
@@ -355,11 +356,10 @@ impl DesktopController {
                     "remembered desktop is already active".into(),
                 ));
             }
-            let index = ids
-                .iter()
-                .position(|id| *id == target)
-                .expect("target was checked in the Shell desktop list");
-            native.switch_to(index)?;
+            self.native
+                .as_ref()
+                .expect("native backend was checked above")
+                .switch_to_id(target)?;
             self.history.note_previous_switch(current, target);
             Ok(target)
         })();
@@ -372,16 +372,16 @@ impl DesktopController {
                 self.publish_status();
             }
             Err(error) => {
-                if matches!(error, DesktopError::NavigationUnavailable(_)) {
+                if matches!(error, DesktopError::NavigationUnavailable(_))
+                    && self.special_workspace.is_none()
+                {
                     self.history.clear_previous();
                 }
                 self.publish_failure("switch previous desktop", error);
             }
         }
     }
-
     fn remember_foreground(&mut self, hwnd_raw: isize) {
-        self.clear_stale_scratchpad();
         let hwnd = raw_hwnd(hwnd_raw);
         if !eligible_window(hwnd) {
             return;
@@ -402,7 +402,9 @@ impl DesktopController {
     fn observe_current_desktop(&mut self) {
         if let Some(native) = &self.native {
             if let Ok(current) = native.current_desktop_id() {
-                self.history.observe_desktop(current);
+                if Some(current) != self.special_workspace {
+                    self.history.observe_desktop(current);
+                }
             }
         }
     }
@@ -417,298 +419,209 @@ impl DesktopController {
         if managed {
             return;
         }
-        if let Err(error) = self.release_scratchpad() {
-            self.publish_failure("release scratchpad", error);
+        if let Err(error) = self.release_special_workspace() {
+            self.publish_failure("release special workspace", error);
         }
     }
 
-    fn release_scratchpad(&mut self) -> std::result::Result<(), DesktopError> {
-        let Some(state) = self.scratchpad else {
+    fn reconcile_special_workspace_ids(&mut self, ids: &[GUID]) {
+        if self
+            .special_workspace
+            .is_some_and(|workspace| !ids.contains(&workspace))
+        {
+            crate::info!(
+                "special workspace was removed outside WinShort; clearing runtime identity"
+            );
+            self.special_workspace = None;
+            self.special_return = None;
+        }
+        if self.special_return.is_some_and(|return_to| {
+            !ids.contains(&return_to) || Some(return_to) == self.special_workspace
+        }) {
+            self.special_return = None;
+        }
+    }
+
+    fn native_desktop_ids(&mut self) -> std::result::Result<Vec<GUID>, DesktopError> {
+        let first = match self.native.as_ref() {
+            Some(native) => native.desktop_ids(),
+            None => Err(self.native_unavailable_error("desktop identity")),
+        };
+        let ids = match first {
+            Ok(ids) => ids,
+            Err(error) if error.permits_fallback() => {
+                crate::warn_!("native desktop operation failed: {error}; rebuilding Shell proxy");
+                self.recreate_native()?;
+                self.native
+                    .as_ref()
+                    .expect("native backend recreated")
+                    .desktop_ids()?
+            }
+            Err(error) => return Err(error),
+        };
+        self.reconcile_special_workspace_ids(&ids);
+        Ok(ids)
+    }
+
+    fn normal_desktop_ids(&mut self) -> std::result::Result<Vec<GUID>, DesktopError> {
+        let ids = self.native_desktop_ids()?;
+        Ok(numbered_desktop_ids(&ids, self.special_workspace))
+    }
+
+    fn ensure_special_workspace(&mut self) -> std::result::Result<GUID, DesktopError> {
+        let ids = self.native_desktop_ids()?;
+        if let Some(workspace) = self.special_workspace {
+            return Ok(workspace);
+        }
+        if ids.len() >= 256 {
+            return Err(DesktopError::CreationUnavailable(
+                "cannot create special workspace because Windows already has 256 desktops".into(),
+            ));
+        }
+        let workspace = self
+            .native
+            .as_ref()
+            .ok_or_else(|| self.native_unavailable_error("special workspace creation"))?
+            .create_desktop()?;
+        self.special_workspace = Some(workspace);
+        self.special_return = None;
+        self.known_count = Some(ids.len());
+        crate::info!("created dedicated special workspace {workspace:?}");
+        Ok(workspace)
+    }
+
+    fn release_special_workspace(&mut self) -> std::result::Result<(), DesktopError> {
+        let Some(workspace) = self.special_workspace else {
+            self.special_return = None;
             return Ok(());
         };
-        if !scratchpad_window(state.hwnd, state.owner_pid) {
-            self.scratchpad = None;
+        let ids = self.native_desktop_ids()?;
+        if !ids.contains(&workspace) {
+            self.special_workspace = None;
+            self.special_return = None;
+            self.history.forget_desktop(workspace);
             return Ok(());
         }
-        if state.hidden_by_winshort {
-            // Recheck the process identity immediately before mutating the
-            // HWND. PID tracking blocks cross-process recycling; a same-process
-            // HWND reuse remains an unavoidable Win32 handle-generation limit.
-            if !scratchpad_window(state.hwnd, state.owner_pid) {
-                self.scratchpad = None;
-                return Ok(());
-            }
-            unsafe {
-                let _ = ShowWindow(state.hwnd, SW_SHOWNA);
-            }
-            if !scratchpad_window(state.hwnd, state.owner_pid) {
-                self.scratchpad = None;
-                return Ok(());
-            }
-            let visible = unsafe { IsWindowVisible(state.hwnd) }.as_bool();
-            if !visible {
-                return Err(DesktopError::WindowUnavailable(
-                    "WinShort could not reveal the hidden scratchpad window".into(),
-                ));
-            }
+        let normal = numbered_desktop_ids(&ids, Some(workspace));
+        let fallback =
+            choose_special_return_target(self.special_return, self.history.current(), &normal)
+                .ok_or_else(|| {
+                    DesktopError::NavigationUnavailable(
+                        "no normal desktop is available for special workspace cleanup".into(),
+                    )
+                })?;
+        let current = self
+            .native
+            .as_ref()
+            .expect("native backend was checked above")
+            .current_desktop_id()?;
+        self.native
+            .as_ref()
+            .expect("native backend was checked above")
+            .remove_desktop_id(workspace, fallback)?;
+        self.history.forget_desktop(workspace);
+        if current == workspace {
+            self.history.observe_desktop(fallback);
         }
-        self.scratchpad = None;
+        self.special_workspace = None;
+        self.special_return = None;
+        self.known_count = Some(normal.len());
+        crate::info!("removed dedicated special workspace");
         Ok(())
     }
 
     fn assign_scratchpad(&mut self, hwnd_raw: isize) {
         let hwnd = raw_hwnd(hwnd_raw);
-        let Some(owner_pid) = valid_external_window(hwnd, true, true) else {
+        if !eligible_window(hwnd) {
             self.publish_failure(
-                "assign scratchpad",
+                "send to special workspace",
                 DesktopError::WindowUnavailable("foreground HWND is not eligible".into()),
             );
             return;
-        };
-        if self.scratchpad.is_some() {
-            // Release the old assignment before moving the new window so a
-            // failed reveal cannot leave both a moved new window and a hidden old one.
-            if let Err(error) = self.release_scratchpad() {
-                self.publish_failure("assign scratchpad", error);
-                return;
+        }
+        self.remember_current_foreground();
+        let result = (|| {
+            let workspace = self.ensure_special_workspace()?;
+            let native = self.native.as_ref().ok_or_else(|| {
+                DesktopError::MoveUnavailable(
+                    "special workspace requires the native desktop backend".into(),
+                )
+            })?;
+            if native.window_desktop_id(hwnd)? != workspace {
+                native.move_window_to_desktop_id(hwnd, workspace)?;
             }
+            self.history.remember(workspace, hwnd.0 as isize);
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.last_served = Some(BackendKind::NativeShell);
+                self.publish_status();
+                crate::info!("moved foreground window into the special workspace");
+            }
+            Err(error) => self.publish_failure("send to special workspace", error),
         }
-        // The old reveal can yield to HWND destruction/recycling. Do not
-        // capture a replacement process as the new assignment.
-        if valid_external_window(hwnd, true, true) != Some(owner_pid) {
-            self.publish_failure(
-                "assign scratchpad",
-                DesktopError::WindowUnavailable(
-                    "foreground HWND changed while assigning scratchpad".into(),
-                ),
-            );
-            return;
-        }
-        if let Err(error) = self.ensure_window_on_current_desktop(hwnd, owner_pid) {
-            self.publish_failure("assign scratchpad", error);
-            return;
-        }
-        self.scratchpad = Some(ScratchpadState {
-            hwnd,
-            owner_pid,
-            hidden_by_winshort: false,
-        });
-        crate::info!("scratchpad assigned to HWND {:?}", hwnd);
     }
 
     fn toggle_scratchpad(&mut self) {
-        let Some(mut state) = self.scratchpad else {
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::WindowUnavailable("no scratchpad window is assigned".into()),
-            );
-            return;
-        };
-        if !scratchpad_window(state.hwnd, state.owner_pid) {
-            self.scratchpad = None;
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::WindowUnavailable("assigned scratchpad window is stale".into()),
-            );
-            return;
-        }
-
-        let visible = unsafe { IsWindowVisible(state.hwnd) }.as_bool();
-        if visible {
-            // If another component made the window visible, WinShort no longer
-            // owns a hidden state. A visible Scratchpad on another VD should be
-            // brought here, not hidden on the remote desktop.
-            state.hidden_by_winshort = false;
-            match self.window_on_current_desktop(state.hwnd, state.owner_pid) {
-                Ok(true) => {
-                    if !scratchpad_window(state.hwnd, state.owner_pid) {
-                        self.scratchpad = None;
-                        self.publish_failure(
-                            "toggle scratchpad",
-                            DesktopError::WindowUnavailable(
-                                "assigned scratchpad window became stale".into(),
-                            ),
-                        );
-                        return;
-                    }
-                    unsafe {
-                        let _ = ShowWindow(state.hwnd, SW_HIDE);
-                    }
-                    if !scratchpad_window(state.hwnd, state.owner_pid) {
-                        self.scratchpad = None;
-                        self.publish_failure(
-                            "toggle scratchpad",
-                            DesktopError::WindowUnavailable(
-                                "assigned scratchpad window became stale while hiding".into(),
-                            ),
-                        );
-                        return;
-                    }
-                    if unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
-                        self.scratchpad = Some(state);
-                        self.publish_failure(
-                            "toggle scratchpad",
-                            DesktopError::WindowUnavailable(
-                                "WinShort could not hide the scratchpad window".into(),
-                            ),
-                        );
-                        return;
-                    }
-                    state.hidden_by_winshort = true;
-                    self.scratchpad = Some(state);
-                    crate::info!("scratchpad hidden");
-                    return;
+        self.remember_current_foreground();
+        let result = (|| {
+            let workspace = self.ensure_special_workspace()?;
+            let current = self
+                .native
+                .as_ref()
+                .ok_or_else(|| {
+                    DesktopError::NavigationUnavailable(
+                        "special workspace requires the native desktop backend".into(),
+                    )
+                })?
+                .current_desktop_id()?;
+            let ids = self.normal_desktop_ids()?;
+            if current == workspace {
+                let target =
+                    choose_special_return_target(self.special_return, self.history.current(), &ids)
+                        .ok_or_else(|| {
+                            DesktopError::NavigationUnavailable(
+                                "no normal desktop is available to leave the special workspace"
+                                    .into(),
+                            )
+                        })?;
+                self.native
+                    .as_ref()
+                    .expect("native backend was checked above")
+                    .switch_to_id(target)?;
+                self.special_return = None;
+                self.history.observe_desktop(target);
+                Ok((target, false))
+            } else {
+                self.native
+                    .as_ref()
+                    .expect("native backend was checked above")
+                    .switch_to_id(workspace)?;
+                self.special_return = Some(current);
+                Ok((workspace, true))
+            }
+        })();
+        match result {
+            Ok((target, entering)) => {
+                self.last_served = Some(BackendKind::NativeShell);
+                if let Err(error) = self.restore_focus(target) {
+                    self.publish_failure(
+                        if entering {
+                            "restore special workspace focus"
+                        } else {
+                            "restore normal desktop focus"
+                        },
+                        error,
+                    );
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    self.scratchpad = Some(state);
-                    self.publish_failure("toggle scratchpad", error);
-                    return;
-                }
+                self.publish_status();
+                crate::info!(
+                    "{} special workspace",
+                    if entering { "entered" } else { "left" }
+                );
             }
-        } else if !state.hidden_by_winshort {
-            // Do not take ownership of a window hidden by its application or
-            // some other component. Releasing the assignment avoids surprising
-            // resurrection later.
-            self.scratchpad = None;
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::WindowUnavailable(
-                    "assigned window was hidden outside WinShort; scratchpad assignment released"
-                        .into(),
-                ),
-            );
-            return;
-        }
-
-        if let Err(error) = self.ensure_window_on_current_desktop(state.hwnd, state.owner_pid) {
-            self.scratchpad = Some(state);
-            if state.hidden_by_winshort {
-                // A failed desktop query/move must not leave an application
-                // invisible under WinShort's ownership. Reveal and release
-                // even when the native backend is no longer usable.
-                if let Err(release_error) = self.release_scratchpad() {
-                    self.publish_failure("release scratchpad", release_error);
-                }
-            }
-            self.publish_failure("toggle scratchpad", error);
-            return;
-        }
-        if !scratchpad_window(state.hwnd, state.owner_pid) {
-            self.scratchpad = None;
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
-            );
-            return;
-        }
-        if !unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
-            unsafe {
-                // SW_SHOWNA separates visibility restoration from the explicit
-                // foreground request and does not force a maximized window back
-                // to its normal placement as SW_RESTORE would.
-                let _ = ShowWindow(state.hwnd, SW_SHOWNA);
-            }
-        }
-        if !scratchpad_window(state.hwnd, state.owner_pid) {
-            self.scratchpad = None;
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
-            );
-            return;
-        }
-        if !unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
-            self.scratchpad = Some(state);
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::WindowUnavailable("scratchpad could not be shown".into()),
-            );
-            return;
-        }
-
-        state.hidden_by_winshort = false;
-        self.scratchpad = Some(state);
-        if !scratchpad_window(state.hwnd, state.owner_pid) {
-            self.scratchpad = None;
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
-            );
-            return;
-        }
-        if !unsafe { SetForegroundWindow(state.hwnd) }.as_bool() {
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::Partial {
-                    completed: "scratchpad shown on the current desktop".into(),
-                    failure: "SetForegroundWindow rejected scratchpad activation".into(),
-                },
-            );
-            return;
-        }
-        crate::info!("scratchpad shown and focused");
-    }
-
-    fn window_on_current_desktop(
-        &self,
-        hwnd: HWND,
-        owner_pid: u32,
-    ) -> std::result::Result<bool, DesktopError> {
-        if !scratchpad_window(hwnd, owner_pid) {
-            return Err(DesktopError::WindowUnavailable(
-                "assigned scratchpad window became stale".into(),
-            ));
-        }
-        let native = self.native.as_ref().ok_or_else(|| {
-            DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
-        })?;
-        Ok(native.window_desktop_id(hwnd)? == native.current_desktop_id()?)
-    }
-
-    fn ensure_window_on_current_desktop(
-        &self,
-        hwnd: HWND,
-        owner_pid: u32,
-    ) -> std::result::Result<(), DesktopError> {
-        if !scratchpad_window(hwnd, owner_pid) {
-            return Err(DesktopError::WindowUnavailable(
-                "assigned scratchpad window became stale".into(),
-            ));
-        }
-        let native = self.native.as_ref().ok_or_else(|| {
-            DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
-        })?;
-        let current = native.current_desktop_id()?;
-        let ids = native.desktop_ids()?;
-        let current_index = ids.iter().position(|id| *id == current).ok_or_else(|| {
-            DesktopError::NavigationUnavailable(
-                "current desktop was not found in Shell ordering".into(),
-            )
-        })?;
-        if !scratchpad_window(hwnd, owner_pid) {
-            return Err(DesktopError::WindowUnavailable(
-                "assigned scratchpad window became stale".into(),
-            ));
-        }
-        if native.window_desktop_id(hwnd)? != current {
-            if !scratchpad_window(hwnd, owner_pid) {
-                return Err(DesktopError::WindowUnavailable(
-                    "assigned scratchpad window became stale while moving".into(),
-                ));
-            }
-            native.move_window_to_desktop(hwnd, current_index)?;
-        }
-        Ok(())
-    }
-
-    fn clear_stale_scratchpad(&mut self) {
-        if self
-            .scratchpad
-            .is_some_and(|state| !scratchpad_window(state.hwnd, state.owner_pid))
-        {
-            self.scratchpad = None;
-            crate::info!("cleared stale scratchpad window");
+            Err(error) => self.publish_failure("toggle special workspace", error),
         }
     }
 
@@ -752,36 +665,34 @@ impl DesktopController {
         &mut self,
         target_count: usize,
     ) -> std::result::Result<(), DesktopError> {
-        let first = match self.native.as_ref() {
-            Some(native) => native.ensure_desktop_count(target_count),
-            None => Err(self.native_unavailable_error("desktop creation")),
-        };
-        match first {
-            Ok(()) => {
-                self.known_count = Some(self.known_count.unwrap_or(0).max(target_count));
-                Ok(())
-            }
-            Err(error) if error.permits_fallback() => {
-                crate::warn_!("native desktop operation failed: {error}; rebuilding Shell proxy");
-                self.recreate_native()?;
-                self.native
-                    .as_ref()
-                    .expect("native backend recreated")
-                    .ensure_desktop_count(target_count)?;
-                self.known_count = Some(self.known_count.unwrap_or(0).max(target_count));
-                Ok(())
-            }
-            Err(error) => Err(error),
+        let current = self.normal_desktop_ids()?;
+        let reserved = usize::from(self.special_workspace.is_some());
+        if target_count.saturating_add(reserved) > 256 {
+            return Err(DesktopError::CreationUnavailable(format!(
+                "requested {target_count} normal desktops plus the special workspace exceeds the 256-desktop safety limit"
+            )));
         }
+        let missing = target_count.saturating_sub(current.len());
+        for _ in 0..missing {
+            self.native
+                .as_ref()
+                .ok_or_else(|| self.native_unavailable_error("desktop creation"))?
+                .create_desktop()?;
+        }
+        let final_ids = self.normal_desktop_ids()?;
+        if final_ids.len() < target_count {
+            return Err(DesktopError::CreationUnavailable(format!(
+                "CreateDesktop stopped at {} normal desktops; target was {target_count}",
+                final_ids.len()
+            )));
+        }
+        self.known_count = Some(final_ids.len());
+        Ok(())
     }
 
     fn native_ensure_switch(&mut self, index: usize) -> std::result::Result<GUID, DesktopError> {
         self.native_ensure_count(index + 1)?;
-        let native = self
-            .native
-            .as_ref()
-            .ok_or_else(|| self.native_unavailable_error("desktop switching"))?;
-        let ids = native.desktop_ids()?;
+        let ids = self.normal_desktop_ids()?;
         let target = ids
             .get(index)
             .copied()
@@ -789,7 +700,10 @@ impl DesktopController {
                 requested: index,
                 count: ids.len(),
             })?;
-        native.switch_to(index)?;
+        self.native
+            .as_ref()
+            .ok_or_else(|| self.native_unavailable_error("desktop switching"))?
+            .switch_to_id(target)?;
         Ok(target)
     }
 
@@ -798,6 +712,16 @@ impl DesktopController {
             Ok(native) => {
                 self.native = Some(native);
                 self.native_availability = BackendAvailability::Available;
+                if let Ok(ids) = self
+                    .native
+                    .as_ref()
+                    .expect("native backend was just recreated")
+                    .desktop_ids()
+                {
+                    self.reconcile_special_workspace_ids(&ids);
+                    self.known_count =
+                        Some(numbered_desktop_ids(&ids, self.special_workspace).len());
+                }
                 Ok(())
             }
             Err(error) => {
@@ -805,9 +729,6 @@ impl DesktopController {
                 self.native_availability = BackendAvailability::Failed {
                     reason: error.to_string(),
                 };
-                if let Err(release_error) = self.release_scratchpad() {
-                    crate::error_!("native desktop backend unavailable and scratchpad release failed: {release_error}");
-                }
                 Err(DesktopError::BackendUnavailable(error.to_string()))
             }
         }
@@ -828,10 +749,12 @@ impl DesktopController {
     }
 
     fn status(&self) -> BackendStatus {
-        let count = self
-            .native
-            .as_ref()
-            .and_then(|native| native.desktop_count().ok());
+        let count = self.native.as_ref().and_then(|native| {
+            native
+                .desktop_ids()
+                .ok()
+                .map(|ids| numbered_desktop_ids(&ids, self.special_workspace).len())
+        });
         BackendStatus {
             native: self.native_availability.clone(),
             fallback: BackendAvailability::Available,
@@ -880,6 +803,24 @@ fn activate_window(hwnd: HWND) -> bool {
     }
 }
 
+fn numbered_desktop_ids(ids: &[GUID], special_workspace: Option<GUID>) -> Vec<GUID> {
+    ids.iter()
+        .copied()
+        .filter(|id| Some(*id) != special_workspace)
+        .collect()
+}
+
+fn choose_special_return_target(
+    explicit_return: Option<GUID>,
+    last_normal: Option<GUID>,
+    normal_desktops: &[GUID],
+) -> Option<GUID> {
+    explicit_return
+        .filter(|id| normal_desktops.contains(id))
+        .or_else(|| last_normal.filter(|id| normal_desktops.contains(id)))
+        .or_else(|| normal_desktops.first().copied())
+}
+
 fn is_shell_surface_class(class: &str) -> bool {
     matches!(
         class,
@@ -893,32 +834,6 @@ fn is_shell_surface_class(class: &str) -> bool {
 }
 fn eligible_window(hwnd: HWND) -> bool {
     valid_external_window(hwnd, true, true).is_some()
-}
-
-fn scratchpad_window(hwnd: HWND, owner_pid: u32) -> bool {
-    // Retained Scratchpad ownership is intentionally broader than assignment
-    // eligibility. Once WinShort hides a window, temporary disabled,
-    // no-activate, tool-window, hidden, or off-desktop/cloaked state must not
-    // make us forget the obligation to reveal it later. The process identity
-    // prevents a recycled HWND from targeting an unrelated process.
-    if hwnd.0.is_null() {
-        return false;
-    }
-    unsafe {
-        if !IsWindow(Some(hwnd)).as_bool() {
-            return false;
-        }
-        if window_process_id(hwnd) != Some(owner_pid) || owner_pid == std::process::id() {
-            return false;
-        }
-        let mut class = [0u16; 128];
-        let length = GetClassNameW(hwnd, &mut class);
-        if length <= 0 {
-            return false;
-        }
-        let class = String::from_utf16_lossy(&class[..length as usize]);
-        !is_shell_surface_class(&class)
-    }
 }
 
 fn window_process_id(hwnd: HWND) -> Option<u32> {
@@ -1045,10 +960,12 @@ fn desktop_thread(
             DesktopCommand::Shutdown => break,
         }
     }
-    // The worker owns Scratchpad hide state. Always make a best-effort reveal
-    // before releasing that ownership, including receiver-disconnect shutdown.
-    if let Err(error) = controller.release_scratchpad() {
-        crate::error_!("failed to restore hidden scratchpad during shutdown: {error}");
+    // The special workspace is process-lifetime state. On graceful shutdown,
+    // remove its dedicated desktop and let Shell move its windows to the
+    // remembered normal fallback. A hard process crash can still leave that
+    // desktop behind; WinShort deliberately does not guess at orphan identity.
+    if let Err(error) = controller.release_special_workspace() {
+        crate::error_!("failed to remove special workspace during shutdown: {error}");
     }
     drop(controller);
     drop(com);
@@ -1144,28 +1061,33 @@ mod policy_tests {
         assert!(!is_shell_surface_class("Chrome_WidgetWin_1"));
     }
     #[test]
-    fn stale_scratchpad_handle_is_cleared_without_shell_calls() {
-        let mut controller = DesktopController {
-            hwnd_raw: 0,
-            build: OsBuild {
-                build: 0,
-                update_revision: 0,
-            },
-            native: None,
-            native_availability: BackendAvailability::UnsupportedBuild { build: 0 },
-            fallback: KeyboardFallback::new(),
-            known_count: None,
-            last_served: None,
-            history: DesktopHistory::default(),
-            scratchpad: Some(ScratchpadState {
-                hwnd: HWND::default(),
-                owner_pid: u32::MAX,
-                hidden_by_winshort: true,
-            }),
-        };
+    fn special_workspace_is_excluded_from_numbered_desktop_ordinals() {
+        let first = GUID::from_u128(1);
+        let special = GUID::from_u128(2);
+        let second = GUID::from_u128(3);
+        assert_eq!(
+            numbered_desktop_ids(&[first, special, second], Some(special)),
+            vec![first, second]
+        );
+    }
 
-        controller.clear_stale_scratchpad();
-
-        assert!(controller.scratchpad.is_none());
+    #[test]
+    fn special_workspace_return_prefers_explicit_then_history_then_first() {
+        let first = GUID::from_u128(1);
+        let second = GUID::from_u128(2);
+        let stale = GUID::from_u128(9);
+        let normal = [first, second];
+        assert_eq!(
+            choose_special_return_target(Some(second), Some(first), &normal),
+            Some(second)
+        );
+        assert_eq!(
+            choose_special_return_target(Some(stale), Some(first), &normal),
+            Some(first)
+        );
+        assert_eq!(
+            choose_special_return_target(Some(stale), Some(stale), &normal),
+            Some(first)
+        );
     }
 }
