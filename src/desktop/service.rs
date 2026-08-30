@@ -18,8 +18,11 @@ use crate::desktop::detect::{detect, OsBuild};
 use crate::desktop::internal_api::InternalBackend;
 use crate::desktop::keyboard_fallback::KeyboardFallback;
 use crate::desktop::state::DesktopHistory;
+use crate::desktop::workspace_state;
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
+
+const SPECIAL_WORKSPACE_NAME: &str = "WinShort Special Workspace";
 
 pub enum DesktopCommand {
     SwitchTo(usize),
@@ -134,7 +137,9 @@ struct DesktopController {
     last_served: Option<BackendKind>,
     /// Process-lifetime focus and previous-desktop identity state.
     history: DesktopHistory,
-    /// Runtime-only identity of WinShort's dedicated special workspace.
+    /// Durable identity of WinShort's dedicated special workspace when Shell
+    /// still exposes that GUID. Persisting it prevents duplicate workspaces
+    /// after a hard process kill or Windows reboot.
     special_workspace: Option<GUID>,
     /// Normal desktop to return to when leaving the special workspace.
     special_return: Option<GUID>,
@@ -159,13 +164,19 @@ impl DesktopController {
                 BackendAvailability::UnsupportedBuild { build: build.build },
             )
         };
-        let known_count = native
-            .as_ref()
-            .and_then(|native| native.desktop_count().ok());
+        let special_workspace = reclaim_persisted_special_workspace(native.as_ref());
+        let known_count = native.as_ref().and_then(|native| {
+            native
+                .desktop_ids()
+                .ok()
+                .map(|ids| numbered_desktop_ids(&ids, special_workspace).len())
+        });
         let mut history = DesktopHistory::default();
         if let Some(native) = &native {
             if let Ok(current) = native.current_desktop_id() {
-                history.observe_desktop(current);
+                if Some(current) != special_workspace {
+                    history.observe_desktop(current);
+                }
             }
         }
         let controller = Self {
@@ -177,7 +188,7 @@ impl DesktopController {
             known_count,
             last_served: None,
             history,
-            special_workspace: None,
+            special_workspace,
             special_return: None,
         };
         controller.publish_status();
@@ -419,6 +430,12 @@ impl DesktopController {
 
     fn configure_scratchpad(&mut self, managed: bool) {
         if managed {
+            if self.special_workspace.is_none() {
+                self.special_workspace = reclaim_persisted_special_workspace(self.native.as_ref());
+            }
+            if let Some(workspace) = self.special_workspace {
+                self.normalize_special_workspace(workspace);
+            }
             return;
         }
         if let Err(error) = self.release_special_workspace() {
@@ -431,11 +448,15 @@ impl DesktopController {
             .special_workspace
             .is_some_and(|workspace| !ids.contains(&workspace))
         {
+            let removed = self.special_workspace.take().expect("checked above");
             crate::info!(
-                "special workspace was removed outside WinShort; clearing runtime identity"
+                "special workspace was removed outside WinShort; clearing persisted identity"
             );
-            self.special_workspace = None;
             self.special_return = None;
+            self.history.forget_desktop(removed);
+            if let Err(error) = workspace_state::clear() {
+                crate::warn_!("failed to clear stale special workspace identity: {error}");
+            }
         }
         if self.special_return.is_some_and(|return_to| {
             !ids.contains(&return_to) || Some(return_to) == self.special_workspace
@@ -470,9 +491,40 @@ impl DesktopController {
         Ok(numbered_desktop_ids(&ids, self.special_workspace))
     }
 
+    fn normalize_special_workspace(&mut self, workspace: GUID) {
+        let ids = match self.native_desktop_ids() {
+            Ok(ids) if ids.contains(&workspace) => ids,
+            Ok(_) => return,
+            Err(error) => {
+                crate::warn_!("cannot normalize special workspace ordering/name: {error}");
+                return;
+            }
+        };
+        let Some(native) = self.native.as_ref() else {
+            return;
+        };
+
+        match native.desktop_name(workspace) {
+            Ok(name) if name == SPECIAL_WORKSPACE_NAME => {}
+            Ok(_) => match native.set_desktop_name(workspace, SPECIAL_WORKSPACE_NAME) {
+                Ok(()) => crate::info!("named special workspace '{SPECIAL_WORKSPACE_NAME}'"),
+                Err(error) => crate::warn_!("failed to name special workspace: {error}"),
+            },
+            Err(error) => crate::warn_!("failed to read special workspace name: {error}"),
+        }
+
+        if ids.last().copied() != Some(workspace) {
+            match native.move_desktop_id(workspace, ids.len() - 1) {
+                Ok(()) => crate::info!("moved special workspace to the end of Shell ordering"),
+                Err(error) => crate::warn_!("failed to move special workspace to the end: {error}"),
+            }
+        }
+    }
+
     fn ensure_special_workspace(&mut self) -> std::result::Result<GUID, DesktopError> {
         let ids = self.native_desktop_ids()?;
         if let Some(workspace) = self.special_workspace {
+            self.normalize_special_workspace(workspace);
             return Ok(workspace);
         }
         if ids.len() >= 256 {
@@ -485,10 +537,25 @@ impl DesktopController {
             .as_ref()
             .ok_or_else(|| self.native_unavailable_error("special workspace creation"))?
             .create_desktop()?;
+        if let Err(error) = workspace_state::store(workspace) {
+            if let Some(fallback) = ids.first().copied() {
+                if let Some(native) = self.native.as_ref() {
+                    if let Err(cleanup_error) = native.remove_desktop_id(workspace, fallback) {
+                        crate::warn_!(
+                            "failed to remove unpersisted special workspace after state error: {cleanup_error}"
+                        );
+                    }
+                }
+            }
+            return Err(DesktopError::CreationUnavailable(format!(
+                "created special workspace but could not persist its GUID: {error}"
+            )));
+        }
         self.special_workspace = Some(workspace);
         self.special_return = None;
         self.known_count = Some(ids.len());
         crate::info!("created dedicated special workspace {workspace:?}");
+        self.normalize_special_workspace(workspace);
         Ok(workspace)
     }
 
@@ -502,6 +569,9 @@ impl DesktopController {
             self.special_workspace = None;
             self.special_return = None;
             self.history.forget_desktop(workspace);
+            if let Err(error) = workspace_state::clear() {
+                crate::warn_!("failed to clear removed special workspace identity: {error}");
+            }
             return Ok(());
         }
         let normal = numbered_desktop_ids(&ids, Some(workspace));
@@ -528,6 +598,9 @@ impl DesktopController {
         self.special_workspace = None;
         self.special_return = None;
         self.known_count = Some(normal.len());
+        if let Err(error) = workspace_state::clear() {
+            crate::warn_!("failed to clear released special workspace identity: {error}");
+        }
         crate::info!("removed dedicated special workspace");
         Ok(())
     }
@@ -674,6 +747,13 @@ impl DesktopController {
                 .ok_or_else(|| self.native_unavailable_error("desktop creation"))?
                 .create_desktop()?;
         }
+        if let Some(workspace) = self.special_workspace {
+            // CreateDesktop appends after the current tail. If the Special
+            // Workspace used to be last, new normal desktops therefore land
+            // behind it. Re-pin Special to the tail before resolving ordinals
+            // so Windows' visible Desktop 1..N labels match WinShort's 1..N.
+            self.normalize_special_workspace(workspace);
+        }
         let final_ids = self.normal_desktop_ids()?;
         if final_ids.len() < target_count {
             return Err(DesktopError::CreationUnavailable(format!(
@@ -707,6 +787,10 @@ impl DesktopController {
             Ok(native) => {
                 self.native = Some(native);
                 self.native_availability = BackendAvailability::Available;
+                if self.special_workspace.is_none() {
+                    self.special_workspace =
+                        reclaim_persisted_special_workspace(self.native.as_ref());
+                }
                 if let Ok(ids) = self
                     .native
                     .as_ref()
@@ -781,6 +865,43 @@ impl DesktopController {
         let hwnd = windows::Win32::Foundation::HWND(self.hwnd_raw as *mut _);
         unsafe {
             let _ = crate::event::post_event(hwnd, AppEvent::DesktopBackendChanged(self.status()));
+        }
+    }
+}
+
+fn reclaim_persisted_special_workspace(native: Option<&InternalBackend>) -> Option<GUID> {
+    let persisted = match workspace_state::load() {
+        Ok(persisted) => persisted,
+        Err(error) => {
+            crate::warn_!("discarding unreadable special workspace identity: {error}");
+            if let Err(clear_error) = workspace_state::clear() {
+                crate::warn_!("failed to clear unreadable special workspace identity: {clear_error}");
+            }
+            None
+        }
+    }?;
+    let Some(native) = native else {
+        // Keep the durable identity intact. A later Shell-proxy rebuild can
+        // still reclaim it; absence of a backend is not evidence of deletion.
+        return None;
+    };
+    match native.desktop_ids() {
+        Ok(ids) if ids.contains(&persisted) => {
+            crate::info!("reclaimed persisted special workspace {persisted:?}");
+            Some(persisted)
+        }
+        Ok(_) => {
+            crate::info!(
+                "persisted special workspace no longer exists in Shell ordering; forgetting it"
+            );
+            if let Err(error) = workspace_state::clear() {
+                crate::warn_!("failed to clear missing special workspace identity: {error}");
+            }
+            None
+        }
+        Err(error) => {
+            crate::warn_!("could not verify persisted special workspace identity: {error}");
+            None
         }
     }
 }
@@ -959,10 +1080,9 @@ fn desktop_thread(
             DesktopCommand::Shutdown => break,
         }
     }
-    // The special workspace is process-lifetime state. On graceful shutdown,
-    // remove its dedicated desktop and let Shell move its windows to the
-    // remembered normal fallback. A hard process crash can still leave that
-    // desktop behind; WinShort deliberately does not guess at orphan identity.
+    // Graceful shutdown still removes the dedicated desktop. The persisted GUID
+    // is crash/reboot recovery: if teardown never runs, the next process can
+    // reclaim the surviving desktop instead of creating a duplicate.
     if let Err(error) = controller.release_special_workspace() {
         crate::error_!("failed to remove special workspace during shutdown: {error}");
     }
@@ -1074,6 +1194,19 @@ mod policy_tests {
         assert_eq!(
             numbered_desktop_ids(&[first, special, second], Some(special)),
             vec![first, second]
+        );
+    }
+
+    #[test]
+    fn special_workspace_at_tail_aligns_shell_and_logical_normal_ordinals() {
+        let first = GUID::from_u128(1);
+        let second = GUID::from_u128(2);
+        let third = GUID::from_u128(3);
+        let special = GUID::from_u128(99);
+        let shell = [first, second, third, special];
+        assert_eq!(
+            numbered_desktop_ids(&shell, Some(special)),
+            shell[..3].to_vec()
         );
     }
 

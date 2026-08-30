@@ -92,7 +92,9 @@ pub unsafe trait IVirtualDesktop: IUnknown {
 }
 
 /// Build 26100+ layout. Slot 10 (`switch_desktop_and_move_foreground_view`)
-/// is intentionally present; omitting it shifts every later method.
+/// is intentionally present; omitting it shifts every later method. The two
+/// declarations after `find_desktop` preserve the verified 26100+ positions of
+/// `SetDesktopName`; WinShort does not call the include/exclude slot itself.
 #[windows_core::interface("53F5CA0B-158F-4124-900C-057158060B27")]
 pub unsafe trait IVirtualDesktopManagerInternal: IUnknown {
     pub unsafe fn get_count(&self, count: *mut u32) -> HRESULT;
@@ -127,6 +129,17 @@ pub unsafe trait IVirtualDesktopManagerInternal: IUnknown {
         id: *const GUID,
         desktop: *mut Option<IVirtualDesktop>,
     ) -> HRESULT;
+    pub unsafe fn get_desktop_switch_include_exclude_views(
+        &self,
+        desktop: ComIn<IVirtualDesktop>,
+        include: *mut *mut c_void,
+        exclude: *mut *mut c_void,
+    ) -> HRESULT;
+    pub unsafe fn set_desktop_name(
+        &self,
+        desktop: ComIn<IVirtualDesktop>,
+        name: HSTRING,
+    ) -> HRESULT;
 }
 
 /// Classify a Win32/HRESULT failure into the typed desktop error (#20).
@@ -151,6 +164,19 @@ fn classify_move(e: &crate::error::Error) -> DesktopError {
             DesktopError::RpcDisconnected
         }
         other => DesktopError::MoveUnavailable(other.to_string()),
+    }
+}
+
+/// Naming/reordering are workspace-management operations, not switches. They
+/// must never authorize keyboard fallback if Shell rejects the mutation.
+fn classify_workspace_management(e: &crate::error::Error) -> DesktopError {
+    match e {
+        crate::error::Error::Os { code, .. }
+            if matches!(*code, 0x8001_0108 | 0x8007_06BA | 0x8007_06BE) =>
+        {
+            DesktopError::RpcDisconnected
+        }
+        other => DesktopError::NavigationUnavailable(other.to_string()),
     }
 }
 
@@ -318,6 +344,70 @@ impl InternalBackend {
         inner.map_err(|error| {
             DesktopError::CreationUnavailable(format!("CreateDesktop failed: {error}"))
         })
+    }
+
+    pub fn desktop_name(&self, id: GUID) -> std::result::Result<String, DesktopError> {
+        let desktop = self.desktop_for_id(id)?;
+        let mut name = HSTRING::new();
+        unsafe {
+            desktop.get_name(&mut name).ok().map_err(|error| {
+                classify_workspace_management(&Error::win("IVirtualDesktop::GetName", &error))
+            })?;
+        }
+        Ok(name.to_string_lossy())
+    }
+
+    pub fn set_desktop_name(
+        &self,
+        id: GUID,
+        name: &str,
+    ) -> std::result::Result<(), DesktopError> {
+        let desktop = self.desktop_for_id(id)?;
+        let name = HSTRING::from(name);
+        unsafe {
+            self.manager
+                .set_desktop_name(ComIn::new(&desktop), name)
+                .ok()
+                .map_err(|error| {
+                    classify_workspace_management(&Error::win(
+                        "IVirtualDesktopManagerInternal::SetDesktopName",
+                        &error,
+                    ))
+                })
+        }
+    }
+
+    pub fn move_desktop_id(
+        &self,
+        id: GUID,
+        index: usize,
+    ) -> std::result::Result<(), DesktopError> {
+        let ids = self.desktop_ids()?;
+        if index >= ids.len() {
+            return Err(DesktopError::NavigationUnavailable(format!(
+                "desktop reorder target {} is outside Shell ordering of {} desktops",
+                index + 1,
+                ids.len()
+            )));
+        }
+        if ids.get(index).copied() == Some(id) {
+            return Ok(());
+        }
+        let index = u32::try_from(index).map_err(|_| {
+            DesktopError::NavigationUnavailable("desktop reorder index overflowed u32".into())
+        })?;
+        let desktop = self.desktop_for_id(id)?;
+        unsafe {
+            self.manager
+                .move_desktop(ComIn::new(&desktop), index)
+                .ok()
+                .map_err(|error| {
+                    classify_workspace_management(&Error::win(
+                        "IVirtualDesktopManagerInternal::MoveDesktop",
+                        &error,
+                    ))
+                })
+        }
     }
 
     pub fn switch_to_id(&self, id: GUID) -> std::result::Result<(), DesktopError> {
@@ -576,5 +666,15 @@ mod tests {
             0x8007_06BA,
         ));
         assert_eq!(classified, DesktopError::RpcDisconnected);
+    }
+
+    #[test]
+    fn workspace_management_failure_never_looks_like_switch_failure() {
+        let error = Error::os("IVirtualDesktopManagerInternal::MoveDesktop", 0x8007_0005);
+        assert!(matches!(
+            classify_workspace_management(&error),
+            DesktopError::NavigationUnavailable(message)
+                if message.contains("E_ACCESSDENIED") && message.contains("MoveDesktop")
+        ));
     }
 }
