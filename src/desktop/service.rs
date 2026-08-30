@@ -137,6 +137,10 @@ struct DesktopController {
     last_served: Option<BackendKind>,
     /// Process-lifetime focus and previous-desktop identity state.
     history: DesktopHistory,
+    /// Whether the currently applied config owns Special Workspace behavior.
+    /// This survives a transient Shell-proxy outage so a later rebuild cannot
+    /// accidentally reclaim a workspace after the feature was disabled.
+    special_managed: bool,
     /// Durable identity of WinShort's dedicated special workspace when Shell
     /// still exposes that GUID. Persisting it prevents duplicate workspaces
     /// after a hard process kill or Windows reboot.
@@ -188,6 +192,7 @@ impl DesktopController {
             known_count,
             last_served: None,
             history,
+            special_managed: false,
             special_workspace,
             special_return: None,
         };
@@ -429,6 +434,7 @@ impl DesktopController {
     }
 
     fn configure_scratchpad(&mut self, managed: bool) {
+        self.special_managed = managed;
         if managed {
             if self.special_workspace.is_none() {
                 self.special_workspace = reclaim_persisted_special_workspace(self.native.as_ref());
@@ -790,6 +796,14 @@ impl DesktopController {
                 if self.special_workspace.is_none() {
                     self.special_workspace =
                         reclaim_persisted_special_workspace(self.native.as_ref());
+                }
+                // If the feature was disabled while the Shell proxy was down,
+                // the persisted identity is intentionally retained so we can
+                // remove that exact desktop once the proxy comes back. Do the
+                // deferred cleanup before any normal numbered operation uses
+                // the rebuilt backend.
+                if !self.special_managed && self.special_workspace.is_some() {
+                    self.release_special_workspace()?;
                 }
                 if let Ok(ids) = self
                     .native
