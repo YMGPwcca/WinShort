@@ -500,7 +500,7 @@ impl InternalBackend {
                 .remove_desktop(ComIn::new(&desktop), ComIn::new(&fallback))
                 .ok()
                 .map_err(|e| {
-                    classify(&Error::win(
+                    classify_workspace_management(&Error::win(
                         "IVirtualDesktopManagerInternal::RemoveDesktop",
                         &e,
                     ))
@@ -516,7 +516,7 @@ impl InternalBackend {
         };
         unsafe {
             window_manager.GetWindowDesktopId(hwnd).map_err(|e| {
-                classify(&Error::win(
+                classify_move(&Error::win(
                     "IVirtualDesktopManager::GetWindowDesktopId",
                     &e,
                 ))
