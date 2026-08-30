@@ -39,11 +39,13 @@ pub enum HotkeyAction {
     AssignScratchpad,
     /// Toggle the runtime scratchpad window.
     ToggleScratchpad,
+    /// Apply a confirmed profile-hotkey binding by stable profile-ID key.
+    ApplyDisplayProfile(u16),
 }
 
 impl HotkeyAction {
-    /// Fixed-width 32-bit encoding (issue #28): kind in the high half, arg in
-    /// the low byte. Safe on any pointer width — no `usize`-shift assumptions.
+    /// Fixed-width 32-bit encoding (issue #28): kind in the high half and
+    /// arguments in the low 16 bits. Desktop arguments remain bounded to 1..9.
     pub fn pack(self) -> usize {
         (self.pack_u32()) as usize
     }
@@ -62,6 +64,7 @@ impl HotkeyAction {
         const KIND_MOVE_FOREGROUND_SILENT: u32 = 11;
         const KIND_ASSIGN_SCRATCHPAD: u32 = 12;
         const KIND_TOGGLE_SCRATCHPAD: u32 = 13;
+        const KIND_APPLY_DISPLAY_PROFILE: u32 = 14;
         match self {
             HotkeyAction::ToggleMicrophone => KIND_MIC << 16,
             HotkeyAction::ToggleOutput => KIND_OUT << 16,
@@ -78,6 +81,9 @@ impl HotkeyAction {
             }
             HotkeyAction::AssignScratchpad => KIND_ASSIGN_SCRATCHPAD << 16,
             HotkeyAction::ToggleScratchpad => KIND_TOGGLE_SCRATCHPAD << 16,
+            HotkeyAction::ApplyDisplayProfile(index) => {
+                (KIND_APPLY_DISPLAY_PROFILE << 16) | index as u32
+            }
         }
     }
 
@@ -88,21 +94,22 @@ impl HotkeyAction {
 
     pub fn unpack_u32(word: u32) -> Option<Self> {
         let kind = word >> 16;
-        let arg = word as u8;
+        let arg = word as u16;
         match kind {
             1 => Some(HotkeyAction::ToggleMicrophone),
             2 => Some(HotkeyAction::ToggleOutput),
             3 => Some(HotkeyAction::ToggleForegroundAppAudio),
-            4 if arg < 9 => Some(HotkeyAction::SwitchDesktop(arg)),
+            4 if arg < 9 => Some(HotkeyAction::SwitchDesktop(arg as u8)),
             5 => Some(HotkeyAction::CycleInputDevice),
             6 => Some(HotkeyAction::CycleOutputDevice),
             7 => Some(HotkeyAction::ForegroundVolumeUp),
             8 => Some(HotkeyAction::ForegroundVolumeDown),
             9 => Some(HotkeyAction::SwitchPreviousDesktop),
-            10 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktop(arg)),
-            11 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktopSilent(arg)),
+            10 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktop(arg as u8)),
+            11 if arg < 9 => Some(HotkeyAction::MoveForegroundToDesktopSilent(arg as u8)),
             12 => Some(HotkeyAction::AssignScratchpad),
             13 => Some(HotkeyAction::ToggleScratchpad),
+            14 if arg != 0 => Some(HotkeyAction::ApplyDisplayProfile(arg)),
             _ => None,
         }
     }
@@ -144,9 +151,32 @@ pub enum AppEvent {
         restore_focus: bool,
     },
     SettingsWindowClosed,
+    OpenDisplayRenamePrompt {
+        profile_id: String,
+        current_name: String,
+    },
+    DisplayProfileRenameSubmitted {
+        profile_id: String,
+        name: String,
+    },
+    OpenDisplayRouteEditPrompt {
+        profile_id: String,
+        route_index: usize,
+        initial: String,
+    },
+    DisplayProfileRouteEditSubmitted {
+        profile_id: String,
+        route_index: usize,
+        value: String,
+    },
+    DisplayProfileRenameCancelled,
+    TestApplyDisplayProfile {
+        profile: crate::config::model::DisplayProfile,
+    },
     ApplyDisplayProfile {
         profile: crate::config::model::DisplayProfile,
     },
+    KeepDisplayProfile,
     RevertDisplayProfile,
     RunDiagnosticsSelfTest,
     CopyDiagnostics,
@@ -275,6 +305,8 @@ mod pack_tests {
             HotkeyAction::MoveForegroundToDesktopSilent(8),
             HotkeyAction::AssignScratchpad,
             HotkeyAction::ToggleScratchpad,
+            HotkeyAction::ApplyDisplayProfile(1),
+            HotkeyAction::ApplyDisplayProfile(u16::MAX),
             HotkeyAction::SwitchDesktop(0),
             HotkeyAction::SwitchDesktop(8),
         ];
@@ -296,6 +328,10 @@ mod pack_tests {
         );
         assert_eq!(HotkeyAction::AssignScratchpad.pack_u32(), 12 << 16);
         assert_eq!(HotkeyAction::ToggleScratchpad.pack_u32(), 13 << 16);
+        assert_eq!(
+            HotkeyAction::ApplyDisplayProfile(255).pack_u32(),
+            (14 << 16) | 255
+        );
         for action in all {
             let packed = action.pack();
             assert!(
