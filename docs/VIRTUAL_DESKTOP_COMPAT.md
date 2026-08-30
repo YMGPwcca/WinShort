@@ -1,9 +1,9 @@
 # Virtual Desktop Compatibility
 
 **Status: Implemented** (native backend on whitelisted builds; bounded fallback elsewhere).
-The public `IVirtualDesktopManager` cannot switch desktops (spec §19). Absolute switching uses
-undocumented Shell COM interfaces whose layout changes between builds. This file records exactly
-what WinShort supports and why.
+The public `IVirtualDesktopManager` cannot switch desktops (spec §19). Absolute switching and
+cross-process window movement use undocumented Shell COM interfaces whose layouts can change
+between builds. This file records exactly what WinShort supports and why.
 
 ## Supported layout — Windows 11 24H2 / 25H2 (builds 26100–262xx)
 
@@ -12,10 +12,14 @@ what WinShort supports and why.
 | CLSID ImmersiveShell | `C2F03A33-21F5-47FA-B4BB-156362A2F239` (`CLSCTX_LOCAL_SERVER`) |
 | QueryService service | `C5E0CDCA-7B6E-41B2-9FC4-D93975CC467B` |
 | IID IVirtualDesktopManagerInternal | `53F5CA0B-158F-4124-900C-057158060B27` |
+| IID IApplicationViewCollection | `1841C6D7-4F9D-42C0-AF41-8747538F10E5` |
+| IID IApplicationView | `372E1D3B-38D3-42E4-A15B-8AB2B178F513` |
 | IID IVirtualDesktop | `3F07F4BE-B107-441A-AF0F-39D82529072C` |
 | IID IObjectArray | `92CA9DCD-5622-4BBA-A805-5E9F541BD8C9` |
 
 `IServiceProvider` from ImmersiveShell → `QueryService(service, IID_IVirtualDesktopManagerInternal)`.
+`IApplicationViewCollection` is acquired from the same provider with
+`QueryService(IID_IApplicationViewCollection, IID_IApplicationViewCollection)`.
 
 ### IVirtualDesktopManagerInternal vtable (slots after IUnknown)
 
@@ -46,9 +50,13 @@ what WinShort supports and why.
 ```
 
 WinShort calls `GetCount`, `GetDesktops`, `GetCurrentDesktop`, `GetId`, `SwitchDesktop`,
-and the build-pinned `CreateDesktop` slot. Window moves use the documented
-`IVirtualDesktopManager::{GetWindowDesktopId,MoveWindowToDesktop}` API; the internal
-`MoveViewToDesktop` slot is not guessed from an arbitrary HWND.
+`CreateDesktop`, `CanViewMoveDesktops`, and `MoveViewToDesktop`. The documented
+`IVirtualDesktopManager::GetWindowDesktopId` remains the cross-process reader. The documented
+`MoveWindowToDesktop(HWND, GUID)` is deliberately not used for WinShort move actions because it
+returns `E_ACCESSDENIED` for HWNDs owned by another process on the tested Windows 25H2 build.
+Instead, WinShort resolves the HWND to an `IApplicationView` with
+`IApplicationViewCollection::GetViewForHwnd`, checks `CanViewMoveDesktops`, and passes that exact
+view pointer to the build-pinned `MoveViewToDesktop` slot.
 
 ## Critical caveat: IID reuse across a vtable change
 
@@ -80,8 +88,14 @@ unavailable, fail closed, keyboard fallback used. No probing unknown layouts "to
    raw vtable indices; tested on build 26200.8875.
 3. **MScholtes/VirtualDesktop** v1.21 (2025-08): `VirtualDesktop11-24H2.cs` targeting 26100+.
 4. **limyiheng gist** (plain C, 2024-10): same 53F5CA0B layout.
+5. **WillyGarage/roost** engineering spike on build 26200.8875: independently observed
+   cross-process `MoveWindowToDesktop` returning `E_ACCESSDENIED` and verified
+   `GetViewForHwnd` → `CanViewMoveDesktops` → `MoveViewToDesktop` for cross-process moves.
+6. **LGUG2Z/komorebi** Rust COM declarations: corroborates the stable
+   `IApplicationViewCollection` IID and `GetViewForHwnd` vtable position.
 
-Sources 1–2 independently confirm the exact build this utility targets (26200).
+Sources 1–2 independently confirm the exact build family this utility targets; sources 5–6
+corroborate the cross-process application-view move path used by WinShort.
 
 ## Runtime behavior
 
@@ -90,6 +104,9 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 * Whitelisted build → native backend available; `SwitchDesktop(n)` resolves index n−1 through
   `GetDesktops` ordering and calls `SwitchDesktop`. A request equal to the current desktop is
   an early no-op.
+* Native window move → `GetViewForHwnd` resolves the foreign HWND, `CanViewMoveDesktops` rejects
+  pinned/unmovable views, then `MoveViewToDesktop` performs the move. No synthetic-input fallback
+  exists for moving a window.
 * Unknown build or native setup failure → status `UnsupportedBuild { build }`/`Failed`,
   diagnostics logged. Creation, window movement, and identity navigation refuse without
   synthetic input; switching may use the keyboard fallback only for a previously enumerated
@@ -107,9 +124,13 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 | `RpcDisconnected` (Explorer RPC gone) | `TargetOutOfRange { requested, count }` — target doesn't exist |
 | `BackendUnavailable` (not activated / safety limit) | `UnsupportedBuild` — fail closed |
 | | `AbiMismatch` — retained for typed matching; currently surfaced via BackendUnavailable |
-| | `SwitchFailed(hr)` — Shell rejected the switch |
+| | `SwitchFailed(hr)` — Shell rejected a switch operation |
 | | `CreationUnavailable`, `MoveUnavailable`, `WindowUnavailable`, `FocusFailed` |
 | | `Partial` — a later step failed after an earlier step completed |
+
+Move-operation HRESULTs use a move-specific classifier: Shell/RPC disconnects remain retryable,
+while ordinary failures retain their API context inside `MoveUnavailable` rather than being
+misreported as `SwitchDesktop failed`.
 
 The exact partition is proptested (`policy_props.rs`, #37). `index >= count` refuses **before**
 any input injection (#20): a too-large target never triggers SendInput keys.
@@ -148,6 +169,9 @@ it unchanged.
 | `SwitchDesktop` 1↔2 | registry `CurrentVirtualDesktop` GUID changed both ways |
 | Startup log | `virtual desktop backend: Native Shell`, `count=9, current=1` |
 | Win+1..9 routing | binding table → `SwitchDesktop(n)` → Native Shell |
+| Cross-process Special Workspace move | implementation corrected to application-view path; real-Windows re-test pending |
 | Fallback path | compiled in; active only when native setup fails (fail closed) |
 
-Tested 2026-08-24 against the layout above; re-verify after any Windows update.
+Original switching checks were tested 2026-08-24. Cross-process Special Workspace movement was
+corrected after manual `E_ACCESSDENIED` acceptance failure on 2026-08-31 and remains pending
+real-Windows re-verification after this fix.
