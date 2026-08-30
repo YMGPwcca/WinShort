@@ -130,6 +130,33 @@ fn desktops_to_create(current_count: usize, target_count: usize) -> usize {
     target_count.saturating_sub(current_count)
 }
 
+fn ensure_desktop_count_with<Create, Count>(
+    current_count: usize,
+    target_count: usize,
+    mut create: Create,
+    mut count: Count,
+) -> std::result::Result<(), DesktopError>
+where
+    Create: FnMut() -> std::result::Result<(), DesktopError>,
+    Count: FnMut() -> std::result::Result<usize, DesktopError>,
+{
+    if target_count > 256 {
+        return Err(DesktopError::CreationUnavailable(format!(
+            "requested desktop count {target_count} exceeds safety limit"
+        )));
+    }
+    for _ in 0..desktops_to_create(current_count, target_count) {
+        create()?;
+    }
+    let final_count = count()?;
+    if final_count < target_count {
+        return Err(DesktopError::CreationUnavailable(format!(
+            "CreateDesktop stopped at {final_count}; target was {target_count}"
+        )));
+    }
+    Ok(())
+}
+
 impl InternalBackend {
     pub fn create(build: OsBuild) -> Result<Self> {
         if !build.native_shell_supported() {
@@ -208,43 +235,39 @@ impl InternalBackend {
         })();
         inner.classify()
     }
-
     pub fn ensure_desktop_count(
         &self,
         target_count: usize,
     ) -> std::result::Result<(), DesktopError> {
-        if target_count > 256 {
-            return Err(DesktopError::CreationUnavailable(format!(
-                "requested desktop count {target_count} exceeds safety limit"
-            )));
-        }
         let count = self.desktop_count()?;
-        for _ in 0..desktops_to_create(count, target_count) {
-            let mut desktop = None;
-            unsafe {
-                self.manager
-                    .create_desktop(&mut desktop)
-                    .ok()
-                    .map_err(|e| {
-                        DesktopError::CreationUnavailable(format!(
-                            "CreateDesktop failed: {}",
-                            Error::win("IVirtualDesktopManagerInternal::CreateDesktop", &e)
-                        ))
-                    })?;
-            }
-            if desktop.is_none() {
-                return Err(DesktopError::CreationUnavailable(
-                    "CreateDesktop returned a null desktop".into(),
-                ));
-            }
-        }
-        let final_count = self.desktop_count()?;
-        if final_count < target_count {
-            return Err(DesktopError::CreationUnavailable(format!(
-                "CreateDesktop stopped at {final_count}; target was {target_count}"
-            )));
-        }
-        Ok(())
+        ensure_desktop_count_with(
+            count,
+            target_count,
+            || {
+                // This slot is safe only after `create` has pinned and
+                // validated the 26100+/262xx ABI; unknown builds never reach
+                // this closure.
+                let mut desktop = None;
+                unsafe {
+                    self.manager
+                        .create_desktop(&mut desktop)
+                        .ok()
+                        .map_err(|e| {
+                            DesktopError::CreationUnavailable(format!(
+                                "CreateDesktop failed: {}",
+                                Error::win("IVirtualDesktopManagerInternal::CreateDesktop", &e)
+                            ))
+                        })?;
+                }
+                if desktop.is_none() {
+                    return Err(DesktopError::CreationUnavailable(
+                        "CreateDesktop returned a null desktop".into(),
+                    ));
+                }
+                Ok(())
+            },
+            || self.desktop_count(),
+        )
     }
 
     fn desktop_id_for_index(&self, index: usize) -> std::result::Result<GUID, DesktopError> {
@@ -286,6 +309,9 @@ impl InternalBackend {
                 "public VirtualDesktopManager is unavailable".into(),
             ));
         };
+        // The documented manager is the supported HWND→desktop operation.
+        // The internal MoveViewToDesktop slot requires an IApplicationView
+        // that cannot be safely derived from an arbitrary foreground HWND.
         let desktop_id = self.desktop_id_for_index(index)?;
         unsafe {
             window_manager
@@ -417,5 +443,64 @@ mod tests {
         assert_eq!(desktops_to_create(3, 9), 6);
         assert_eq!(desktops_to_create(9, 9), 0);
         assert_eq!(desktops_to_create(0, 1), 1);
+    }
+    #[test]
+    fn ensure_existing_target_performs_no_creation() {
+        let creations = std::cell::Cell::new(0);
+        ensure_desktop_count_with(
+            9,
+            9,
+            || {
+                creations.set(creations.get() + 1);
+                Ok(())
+            },
+            || Ok(9),
+        )
+        .unwrap();
+        assert_eq!(creations.get(), 0);
+    }
+
+    #[test]
+    fn ensure_creates_exactly_the_missing_desktops() {
+        let creations = std::cell::Cell::new(0);
+        let count = std::cell::Cell::new(3);
+        ensure_desktop_count_with(
+            count.get(),
+            9,
+            || {
+                creations.set(creations.get() + 1);
+                count.set(count.get() + 1);
+                Ok(())
+            },
+            || Ok(count.get()),
+        )
+        .unwrap();
+        assert_eq!(creations.get(), 6);
+        assert_eq!(count.get(), 9);
+    }
+
+    #[test]
+    fn ensure_surfaces_native_creation_failure_without_keyboard_fallback() {
+        let result = ensure_desktop_count_with(
+            3,
+            4,
+            || Err(DesktopError::CreationUnavailable("denied".into())),
+            || Ok(3),
+        );
+        assert_eq!(
+            result,
+            Err(DesktopError::CreationUnavailable("denied".into()))
+        );
+        assert!(!result.unwrap_err().permits_fallback());
+    }
+
+    #[test]
+    fn ensure_rejects_a_native_backend_that_stops_short() {
+        let result = ensure_desktop_count_with(3, 4, || Ok(()), || Ok(3));
+        assert!(matches!(
+            result,
+            Err(DesktopError::CreationUnavailable(message))
+                if message.contains("stopped at 3")
+        ));
     }
 }

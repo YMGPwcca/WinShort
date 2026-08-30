@@ -6,6 +6,7 @@ pub mod detect;
 pub mod internal_api;
 pub mod keyboard_fallback;
 pub mod service;
+mod state;
 
 pub use backend::{BackendAvailability, BackendKind, BackendStatus};
 pub use service::DesktopService;

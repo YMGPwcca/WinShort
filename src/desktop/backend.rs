@@ -89,6 +89,9 @@ pub enum DesktopError {
     WindowUnavailable(String),
     /// Foreground activation was rejected after a move.
     FocusFailed(String),
+    /// A native operation completed part of a multi-step action, but a later
+    /// step failed. This is never eligible for keyboard fallback.
+    Partial { completed: String, failure: String },
     /// Previous-desktop state cannot be resolved safely.
     NavigationUnavailable(String),
 }
@@ -126,6 +129,9 @@ impl std::fmt::Display for DesktopError {
             DesktopError::WindowUnavailable(reason) => write!(f, "window unavailable: {reason}"),
             DesktopError::FocusFailed(reason) => {
                 write!(f, "foreground activation failed: {reason}")
+            }
+            DesktopError::Partial { completed, failure } => {
+                write!(f, "partial desktop action: {completed}; {failure}")
             }
             DesktopError::NavigationUnavailable(reason) => {
                 write!(f, "desktop navigation unavailable: {reason}")

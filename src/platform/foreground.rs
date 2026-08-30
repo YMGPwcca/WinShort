@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS,
+    GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, GA_ROOT,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::error::{Error, Result};
@@ -23,9 +23,25 @@ pub fn last_external_hwnd() -> Option<windows::Win32::Foundation::HWND> {
     (raw != 0).then_some(windows::Win32::Foundation::HWND(raw as *mut _))
 }
 
-/// Return the current foreground window when it belongs to another process.
+/// Normalize a foreground/event HWND to its top-level root window.
+///
+/// WinEvent normally supplies a top-level handle, but normalizing here keeps
+/// the move/focus path from treating a child control as an application view.
+pub fn normalize_foreground_hwnd(hwnd: HWND) -> HWND {
+    if hwnd.0.is_null() {
+        return hwnd;
+    }
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if root.0.is_null() {
+        hwnd
+    } else {
+        root
+    }
+}
+
+/// Return the current external top-level foreground window.
 pub fn current_external_hwnd() -> Option<HWND> {
-    let hwnd = unsafe { GetForegroundWindow() };
+    let hwnd = normalize_foreground_hwnd(unsafe { GetForegroundWindow() });
     let pid = pid_for_window(hwnd);
     (pid != 0 && pid != OWN_PID.load(Ordering::Acquire)).then_some(hwnd)
 }
@@ -93,6 +109,7 @@ unsafe extern "system" fn win_event_proc(
 }
 
 fn remember_if_external(hwnd: HWND) {
+    let hwnd = normalize_foreground_hwnd(hwnd);
     let pid = pid_for_window(hwnd);
     if pid != 0 && pid != OWN_PID.load(Ordering::Acquire) {
         LAST_EXTERNAL_PID.store(pid, Ordering::Release);
@@ -168,5 +185,16 @@ pub fn process_name(pid: u32) -> Option<String> {
         std::path::Path::new(&path)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_foreground_handles_are_preserved_by_normalization() {
+        let hwnd = HWND::default();
+        assert!(normalize_foreground_hwnd(hwnd).0.is_null());
     }
 }

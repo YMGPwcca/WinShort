@@ -1,14 +1,13 @@
 //! STA-owned virtual desktop controller: build-pinned Shell backend with
 //! automatic best-effort keyboard fallback.
 
-use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
-    IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GWL_STYLE, SW_HIDE, SW_RESTORE,
-    SW_SHOW, WS_DISABLED,
+    IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
+    SW_HIDE, SW_RESTORE, SW_SHOW, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows_core::GUID;
 
@@ -19,6 +18,7 @@ use crate::desktop::backend::{
 use crate::desktop::detect::{detect, OsBuild};
 use crate::desktop::internal_api::InternalBackend;
 use crate::desktop::keyboard_fallback::KeyboardFallback;
+use crate::desktop::state::DesktopHistory;
 use crate::error::{Error, Result};
 use crate::event::AppEvent;
 
@@ -55,15 +55,14 @@ impl DesktopService {
             .name("winshort-desktop".into())
             .spawn(move || desktop_thread(hwnd_raw, receiver, ready_tx))
             .map_err(|e| Error::internal(format!("spawn desktop thread: {e}")))?;
-        if ready_rx
-            .recv_timeout(std::time::Duration::from_secs(8))
-            .map_err(|_| Error::desktop("desktop startup timed out"))
-            .and_then(|r| r)
-            .is_err()
-        {
+        let ready = match ready_rx.recv_timeout(std::time::Duration::from_secs(8)) {
+            Ok(result) => result,
+            Err(_) => Err(Error::desktop("desktop startup timed out")),
+        };
+        if let Err(error) = ready {
             let _ = sender.send(DesktopCommand::Shutdown);
             let _ = join.join();
-            return Err(Error::desktop("desktop startup timed out"));
+            return Err(error);
         }
         Ok(Self {
             sender,
@@ -130,10 +129,8 @@ struct DesktopController {
     known_count: Option<usize>,
     /// Backend that actually completed the last switch (#21).
     last_served: Option<BackendKind>,
-    /// Last eligible foreground window observed for each stable desktop ID.
-    last_focused: HashMap<windows_core::GUID, HWND>,
-    /// Stable desktop ID used by the previous-desktop action.
-    previous_desktop: Option<windows_core::GUID>,
+    /// Process-lifetime focus and previous-desktop identity state.
+    history: DesktopHistory,
     /// Runtime-only scratchpad window; never persisted as an HWND.
     scratchpad: Option<HWND>,
     /// Opt-in foreground executable routing rules, replaced on ConfigApplied.
@@ -162,6 +159,12 @@ impl DesktopController {
         let known_count = native
             .as_ref()
             .and_then(|native| native.desktop_count().ok());
+        let mut history = DesktopHistory::default();
+        if let Some(native) = &native {
+            if let Ok(current) = native.current_desktop_id() {
+                history.observe_desktop(current);
+            }
+        }
         let controller = Self {
             hwnd_raw,
             build,
@@ -170,8 +173,7 @@ impl DesktopController {
             fallback: KeyboardFallback::new(),
             known_count,
             last_served: None,
-            last_focused: HashMap::new(),
-            previous_desktop: None,
+            history,
             scratchpad: None,
             routing_rules: Vec::new(),
         };
@@ -181,19 +183,21 @@ impl DesktopController {
 
     fn switch_to(&mut self, index: usize) {
         self.clear_stale_scratchpad();
+        // A hotkey can arrive before the asynchronous foreground event. Take
+        // one event-driven sample here so the source desktop is not forgotten
+        // during a rapid switch.
+        self.remember_current_foreground();
         let previous = self
             .native
             .as_ref()
             .and_then(|native| native.current_desktop_id().ok());
         match self.native_ensure_switch(index) {
             Ok(target) => {
-                if previous != Some(target) {
-                    self.previous_desktop = previous;
-                }
-                if let Err(error) = self.restore_focus(target, false) {
-                    crate::warn_!("desktop focus restoration failed: {error}");
-                }
+                self.history.note_numbered_switch(previous, target);
                 self.last_served = Some(BackendKind::NativeShell);
+                if let Err(error) = self.restore_focus(target) {
+                    self.publish_failure("restore desktop focus", error);
+                }
                 self.publish_status();
             }
             Err(error)
@@ -206,6 +210,10 @@ impl DesktopController {
                             "switched to virtual desktop {} via keyboard fallback (target existed)",
                             index + 1
                         );
+                        // Keyboard fallback cannot identify the destination;
+                        // discard identity-based navigation rather than
+                        // pointing Previous Desktop at an unknown desktop.
+                        self.history.clear_identity();
                         self.last_served = Some(BackendKind::KeyboardFallback);
                         self.publish_status();
                     }
@@ -215,13 +223,16 @@ impl DesktopController {
             Err(error) => self.publish_failure("switch desktop", error),
         }
     }
-
     fn move_foreground(&mut self, index: usize, hwnd_raw: isize, follow: bool) {
         self.clear_stale_scratchpad();
         let hwnd = raw_hwnd(hwnd_raw);
         if !eligible_window(hwnd) {
             self.publish_failure(
-                "move foreground window",
+                if follow {
+                    "move and follow foreground window"
+                } else {
+                    "move foreground window silently"
+                },
                 DesktopError::WindowUnavailable("foreground HWND is not eligible".into()),
             );
             return;
@@ -232,6 +243,9 @@ impl DesktopController {
             .as_ref()
             .and_then(|native| native.current_desktop_id().ok());
         let result = (|| {
+            // Creation is deliberately native-only. A move action must never
+            // synthesize Ctrl+Win+N because that changes the requested
+            // semantics and cannot report which desktop was created.
             self.native_ensure_count(index + 1)?;
             let native = self.native.as_ref().ok_or_else(|| {
                 DesktopError::MoveUnavailable("native backend is unavailable".into())
@@ -248,17 +262,41 @@ impl DesktopController {
             if current != target {
                 native.move_window_to_desktop(hwnd, index)?;
             }
+            // The moved window is the preferred target window even for a
+            // silent move; it will be restored when that desktop is visited.
+            self.history.remember(target, hwnd.0 as isize);
+
             if follow {
-                native.switch_to(index)?;
-                if !unsafe { SetForegroundWindow(hwnd) }.as_bool() {
-                    return Err(DesktopError::FocusFailed(
-                        "SetForegroundWindow rejected the moved window".into(),
-                    ));
+                if let Err(error) = native.switch_to(index) {
+                    return Err(DesktopError::Partial {
+                        completed: format!("window moved to Desktop {}", index + 1),
+                        failure: format!("desktop switch failed: {error}"),
+                    });
                 }
-                if previous != Some(target) {
-                    self.previous_desktop = previous;
+                // The switch completed even if foreground activation is
+                // rejected; retain truthful backend status for that partial
+                // outcome.
+                self.last_served = Some(BackendKind::NativeShell);
+                self.history.note_numbered_switch(previous, target);
+                if !activate_window(hwnd) {
+                    return Err(DesktopError::Partial {
+                        completed: format!(
+                            "window moved to Desktop {} and the desktop switch completed",
+                            index + 1
+                        ),
+                        failure: "SetForegroundWindow rejected the moved window".into(),
+                    });
                 }
-                self.last_focused.insert(target, hwnd);
+            } else if previous.is_some() && previous != Some(target) {
+                // Moving the foreground window can leave the source desktop
+                // with shell focus. Restore its remembered application when
+                // Windows permits it, without navigating to the destination.
+                if let Err(error) = self.restore_focus(previous.expect("checked above")) {
+                    return Err(DesktopError::Partial {
+                        completed: format!("window moved silently to Desktop {}", index + 1),
+                        failure: format!("source desktop focus restoration failed: {error}"),
+                    });
+                }
             }
             Ok(())
         })();
@@ -267,46 +305,67 @@ impl DesktopController {
                 self.last_served = Some(BackendKind::NativeShell);
                 self.publish_status();
             }
-            Err(error) => self.publish_failure(
-                if follow {
-                    "move and follow foreground window"
-                } else {
-                    "move foreground window silently"
-                },
-                error,
-            ),
+            Err(error) => {
+                if follow && matches!(&error, DesktopError::Partial { .. }) {
+                    self.publish_status();
+                }
+                self.publish_failure(
+                    if follow {
+                        "move and follow foreground window"
+                    } else {
+                        "move foreground window silently"
+                    },
+                    error,
+                );
+            }
         }
     }
 
     fn switch_previous(&mut self) {
         self.clear_stale_scratchpad();
+        self.remember_current_foreground();
         let result = (|| {
             let native = self.native.as_ref().ok_or_else(|| {
                 DesktopError::NavigationUnavailable("native desktop identity is unavailable".into())
             })?;
             let current = native.current_desktop_id()?;
-            let target = self.previous_desktop.ok_or_else(|| {
-                DesktopError::NavigationUnavailable("no previous desktop is remembered".into())
-            })?;
+            // Reconcile an external desktop visit before consuming the
+            // previous target; foreground events can be queued behind this
+            // hotkey message.
+            self.history.observe_desktop(current);
             let ids = native.desktop_ids()?;
-            let index = ids.iter().position(|id| *id == target).ok_or_else(|| {
+            if self.history.previous().is_none() {
+                return Err(DesktopError::NavigationUnavailable(
+                    "no previous desktop is remembered".into(),
+                ));
+            }
+            let target = self.history.previous_if_present(&ids).ok_or_else(|| {
                 DesktopError::NavigationUnavailable("remembered desktop was deleted".into())
             })?;
+            if target == current {
+                return Err(DesktopError::NavigationUnavailable(
+                    "remembered desktop is already active".into(),
+                ));
+            }
+            let index = ids
+                .iter()
+                .position(|id| *id == target)
+                .expect("target was checked in the Shell desktop list");
             native.switch_to(index)?;
-            self.previous_desktop = Some(current);
+            self.history.note_previous_switch(current, target);
             Ok(target)
         })();
         match result {
             Ok(target) => {
-                if let Err(error) = self.restore_focus(target, false) {
-                    crate::warn_!("previous-desktop focus restoration failed: {error}");
-                }
                 self.last_served = Some(BackendKind::NativeShell);
+                if let Err(error) = self.restore_focus(target) {
+                    self.publish_failure("restore previous desktop focus", error);
+                }
                 self.publish_status();
             }
             Err(error) => {
                 if matches!(error, DesktopError::NavigationUnavailable(_)) {
-                    self.previous_desktop = None;
+                    self.history.clear_previous();
                 }
                 self.publish_failure("switch previous desktop", error);
             }
@@ -323,13 +382,21 @@ impl DesktopController {
             return;
         };
         if let Ok(desktop) = native.window_desktop_id(hwnd) {
-            self.last_focused.insert(desktop, hwnd);
+            self.history.remember(desktop, hwnd.0 as isize);
         }
     }
 
     fn remember_current_foreground(&mut self) {
         let hwnd = unsafe { GetForegroundWindow() };
         self.remember_foreground(hwnd.0 as isize);
+    }
+
+    fn observe_current_desktop(&mut self) {
+        if let Some(native) = &self.native {
+            if let Ok(current) = native.current_desktop_id() {
+                self.history.observe_desktop(current);
+            }
+        }
     }
     fn set_routing_rules(&mut self, rules: Vec<DesktopRule>) {
         self.routing_rules = rules;
@@ -341,6 +408,10 @@ impl DesktopController {
 
     fn foreground_changed(&mut self, hwnd_raw: isize) {
         self.remember_foreground(hwnd_raw);
+        // A foreground event is also the only practical notification for
+        // desktop switches made outside WinShort. Observe identity without
+        // polling so Previous Desktop follows those visits too.
+        self.observe_current_desktop();
         self.route_foreground(hwnd_raw);
     }
 
@@ -390,7 +461,7 @@ impl DesktopController {
             let current = native.window_desktop_id(hwnd)?;
             if current != target {
                 native.move_window_to_desktop(hwnd, index)?;
-                self.last_focused.insert(target, hwnd);
+                self.history.remember(target, hwnd.0 as isize);
                 crate::info!(
                     "routed {} to virtual desktop {} without switching focus",
                     image_path,
@@ -490,19 +561,16 @@ impl DesktopController {
     fn restore_focus(
         &mut self,
         target: windows_core::GUID,
-        strict: bool,
     ) -> std::result::Result<(), DesktopError> {
         let native = self.native.as_ref().ok_or_else(|| {
             DesktopError::FocusFailed("native desktop identity is unavailable".into())
         })?;
-        let mut candidate = self.last_focused.get(&target).copied();
+        let mut candidate = self.history.remembered(target).map(raw_hwnd);
         if candidate.is_some_and(|hwnd| {
             !eligible_window(hwnd) || native.window_desktop_id(hwnd).ok() != Some(target)
         }) {
             if let Some(hwnd) = candidate {
-                self.last_focused.remove(&target);
-                self.last_focused
-                    .retain(|_, remembered| *remembered != hwnd);
+                self.history.forget_window(hwnd.0 as isize);
             }
             candidate = None;
         }
@@ -512,23 +580,17 @@ impl DesktopController {
             });
         }
         let Some(hwnd) = candidate else {
-            return if strict {
-                Err(DesktopError::FocusFailed(
-                    "no visible foreground-capable window exists on the destination desktop".into(),
-                ))
-            } else {
-                Ok(())
-            };
+            // A desktop with no usable application window is a successful
+            // switch; there is simply nothing meaningful to activate.
+            return Ok(());
         };
-        if unsafe { SetForegroundWindow(hwnd) }.as_bool() {
-            self.last_focused.insert(target, hwnd);
+        if activate_window(hwnd) {
+            self.history.remember(target, hwnd.0 as isize);
             Ok(())
-        } else if strict {
+        } else {
             Err(DesktopError::FocusFailed(
                 "SetForegroundWindow rejected the destination window".into(),
             ))
-        } else {
-            Ok(())
         }
     }
 
@@ -649,7 +711,28 @@ impl DesktopController {
 }
 
 fn raw_hwnd(raw: isize) -> HWND {
-    HWND(raw as *mut _)
+    crate::platform::foreground::normalize_foreground_hwnd(HWND(raw as *mut _))
+}
+
+fn activate_window(hwnd: HWND) -> bool {
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        SetForegroundWindow(hwnd).as_bool()
+    }
+}
+
+fn is_shell_surface_class(class: &str) -> bool {
+    matches!(
+        class,
+        "Progman"
+            | "WorkerW"
+            | "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "DV2ControlHost"
+            | "Windows.UI.Core.CoreWindow"
+    )
 }
 fn rule_matches_image(rule: &DesktopRule, image_path: &str) -> bool {
     let configured = rule.executable.trim();
@@ -690,9 +773,14 @@ fn valid_external_window(hwnd: HWND, require_visible: bool) -> bool {
         return false;
     }
     unsafe {
-        if !IsWindow(Some(hwnd)).as_bool()
-            || (require_visible && !IsWindowVisible(hwnd).as_bool())
-            || GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & WS_DISABLED.0 != 0
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return false;
+        }
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        if (require_visible && !IsWindowVisible(hwnd).as_bool())
+            || style & WS_DISABLED.0 != 0
+            || ex_style & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0
         {
             return false;
         }
@@ -719,15 +807,7 @@ fn valid_external_window(hwnd: HWND, require_visible: bool) -> bool {
             return false;
         }
         let class = String::from_utf16_lossy(&class[..length as usize]);
-        !matches!(
-            class.as_str(),
-            "Progman"
-                | "WorkerW"
-                | "Shell_TrayWnd"
-                | "Shell_SecondaryTrayWnd"
-                | "DV2ControlHost"
-                | "Windows.UI.Core.CoreWindow"
-        )
+        !is_shell_surface_class(&class)
     }
 }
 
@@ -859,6 +939,11 @@ mod policy_tests {
         assert!(!DesktopError::WindowUnavailable("stale".into()).permits_fallback());
         assert!(!DesktopError::FocusFailed("blocked".into()).permits_fallback());
         assert!(!DesktopError::NavigationUnavailable("deleted".into()).permits_fallback());
+        assert!(!DesktopError::Partial {
+            completed: "move".into(),
+            failure: "switch".into(),
+        }
+        .permits_fallback());
     }
     #[test]
     fn scripted_backend_surfaces_typed_error() {
@@ -897,6 +982,20 @@ mod policy_tests {
     }
 
     #[test]
+    fn shell_surface_classes_are_never_meaningful_focus_candidates() {
+        for class in [
+            "Progman",
+            "WorkerW",
+            "Shell_TrayWnd",
+            "Shell_SecondaryTrayWnd",
+            "DV2ControlHost",
+            "Windows.UI.Core.CoreWindow",
+        ] {
+            assert!(is_shell_surface_class(class), "{class}");
+        }
+        assert!(!is_shell_surface_class("Chrome_WidgetWin_1"));
+    }
+    #[test]
     fn stale_scratchpad_handle_is_cleared_without_shell_calls() {
         let mut controller = DesktopController {
             hwnd_raw: 0,
@@ -909,8 +1008,7 @@ mod policy_tests {
             fallback: KeyboardFallback::new(),
             known_count: None,
             last_served: None,
-            last_focused: HashMap::new(),
-            previous_desktop: None,
+            history: DesktopHistory::default(),
             scratchpad: Some(HWND::default()),
             routing_rules: Vec::new(),
         };
