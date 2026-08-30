@@ -339,7 +339,7 @@ impl DesktopController {
                     .switch_to_id(target)?;
                 self.special_return = None;
                 self.history.observe_desktop(target);
-                return Ok(target);
+                return Ok((target, true));
             }
 
             self.history.observe_desktop(current);
@@ -361,13 +361,15 @@ impl DesktopController {
                 .expect("native backend was checked above")
                 .switch_to_id(target)?;
             self.history.note_previous_switch(current, target);
-            Ok(target)
+            Ok((target, false))
         })();
         match result {
-            Ok(target) => {
+            Ok((target, left_special_workspace)) => {
                 self.last_served = Some(BackendKind::NativeShell);
-                if let Err(error) = self.restore_focus(target) {
-                    self.publish_failure("restore previous desktop focus", error);
+                if !left_special_workspace {
+                    if let Err(error) = self.restore_focus(target) {
+                        self.publish_failure("restore previous desktop focus", error);
+                    }
                 }
                 self.publish_status();
             }
@@ -592,29 +594,22 @@ impl DesktopController {
                     .switch_to_id(target)?;
                 self.special_return = None;
                 self.history.observe_desktop(target);
-                Ok((target, false))
+                Ok(false)
             } else {
                 self.native
                     .as_ref()
                     .expect("native backend was checked above")
                     .switch_to_id(workspace)?;
                 self.special_return = Some(current);
-                Ok((workspace, true))
+                Ok(true)
             }
         })();
         match result {
-            Ok((target, entering)) => {
+            Ok(entering) => {
                 self.last_served = Some(BackendKind::NativeShell);
-                if let Err(error) = self.restore_focus(target) {
-                    self.publish_failure(
-                        if entering {
-                            "restore special workspace focus"
-                        } else {
-                            "restore normal desktop focus"
-                        },
-                        error,
-                    );
-                }
+                // This is a real Virtual Desktop transition. Deliberately let
+                // Shell own foreground/focus selection instead of replaying
+                // Phase-1 SetForegroundWindow restoration here.
                 self.publish_status();
                 crate::info!(
                     "{} special workspace",
