@@ -73,6 +73,7 @@ pub enum PickerKind {
     InputAllowlist,
     OutputAllowlist,
     DisplayProfile,
+    DisplayOutputs,
     DisplayTopology,
     DisplayRoute,
     InputRole,
@@ -87,7 +88,10 @@ pub enum PickerKind {
 
 impl PickerKind {
     pub const fn is_multi_select(self) -> bool {
-        matches!(self, Self::InputAllowlist | Self::OutputAllowlist)
+        matches!(
+            self,
+            Self::InputAllowlist | Self::OutputAllowlist | Self::DisplayOutputs
+        )
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +101,8 @@ pub enum PickerValue {
     Device(DeviceSelection),
     Role(EndpointRole),
     DisplayProfile(Option<String>),
+    DisplayOutput(crate::display::DisplayRoute),
+    DisplayOutputs(Vec<crate::display::DisplayRoute>),
     DisplayTopology(DisplayTopology),
     DisplayRoute(usize),
     Modifier(crate::keyboard::binding::ModifierMask),
@@ -368,6 +374,7 @@ unsafe fn draw_picker_item(
     label: &str,
     hovered: bool,
     font: HFONT,
+    multi_select: bool,
 ) -> LRESULT {
     let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
     let focus = item.itemState.0 & ODS_FOCUS.0 != 0;
@@ -377,8 +384,24 @@ unsafe fn draw_picker_item(
     let border = unsafe { CreateSolidBrush(to_colorref(colors.border)) };
     let _ = unsafe { FillRect(item.hDC, &item.rcItem, background) };
     let mut text_rect = item.rcItem;
-    text_rect.left += 12;
+    text_rect.left += if multi_select { 34 } else { 12 };
     text_rect.right -= 12;
+    if multi_select {
+        let mut box_rect = item.rcItem;
+        box_rect.left += 10;
+        box_rect.right = box_rect.left + 14;
+        box_rect.top += (box_rect.bottom - box_rect.top - 14) / 2;
+        box_rect.bottom = box_rect.top + 14;
+        let _ = unsafe { FrameRect(item.hDC, &box_rect, border) };
+        if selected {
+            let mut mark = box_rect;
+            mark.left += 3;
+            mark.top += 3;
+            mark.right -= 3;
+            mark.bottom -= 3;
+            let _ = unsafe { FillRect(item.hDC, &mark, border) };
+        }
+    }
     let mut text = label.encode_utf16().collect::<Vec<_>>();
     let old_font = if !font.is_invalid() {
         unsafe { SelectObject(item.hDC, font.into()) }
@@ -616,7 +639,13 @@ fn set_picker_hover(parent: HWND, list: HWND, hovered: Option<usize>) {
         }
     }
 }
-fn normalize_allowlist_selection(list: HWND) {
+fn normalize_multi_selection(kind: PickerKind, list: HWND) {
+    if !matches!(
+        kind,
+        PickerKind::InputAllowlist | PickerKind::OutputAllowlist
+    ) {
+        return;
+    }
     let focused = unsafe {
         windows::Win32::UI::WindowsAndMessaging::SendMessageW(
             list,
@@ -739,10 +768,10 @@ unsafe extern "system" fn picker_list_subclass(
         }
         WM_LBUTTONUP => {
             let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-            let multi_select = unsafe { win::state_cell::<PickerUi>(parent) }
-                .is_some_and(|cell| cell.borrow().kind.is_multi_select());
-            if multi_select {
-                normalize_allowlist_selection(hwnd);
+            let kind =
+                unsafe { win::state_cell::<PickerUi>(parent) }.map(|cell| cell.borrow().kind);
+            if kind.is_some_and(PickerKind::is_multi_select) {
+                normalize_multi_selection(kind.expect("picker kind"), hwnd);
             } else {
                 commit_selected(parent, hwnd);
             }
@@ -829,7 +858,7 @@ unsafe extern "system" fn picker_wndproc(
                 if item.CtlType != ODT_LISTBOX {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
-                let (list, hovered, label, font) = {
+                let (list, hovered, label, font, multi_select) = {
                     let ui = cell.borrow();
                     (
                         ui.list,
@@ -838,29 +867,30 @@ unsafe extern "system" fn picker_wndproc(
                             .get(item.itemID as usize)
                             .map(|choice| choice.label.clone()),
                         ui.font,
+                        ui.kind.is_multi_select(),
                     )
                 };
                 if item.hwndItem != list {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
                 label.map_or(LRESULT(1), |value| {
-                    draw_picker_item(item, &value, hovered, font)
+                    draw_picker_item(item, &value, hovered, font, multi_select)
                 })
             }
             WM_COMMAND => {
                 let _control_id = loword(wparam.0);
                 let notification = hiword(wparam.0);
                 let source = HWND(lparam.0 as *mut _);
-                let (list, multi_select) = {
+                let (list, kind) = {
                     let ui = cell.borrow();
-                    (ui.list, ui.kind.is_multi_select())
+                    (ui.list, ui.kind)
                 };
-                if source == list && notification == LBN_DBLCLK && !multi_select {
+                if source == list && notification == LBN_DBLCLK && !kind.is_multi_select() {
                     commit_selected(hwnd, source);
                     LRESULT(0)
                 } else if source == list && notification == LBN_SELCHANGE {
-                    if multi_select {
-                        normalize_allowlist_selection(source);
+                    if kind.is_multi_select() {
+                        normalize_multi_selection(kind, source);
                     }
                     LRESULT(0)
                 } else {
@@ -925,6 +955,17 @@ fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)>
             indices.truncate(copied as usize);
         }
         let ui = cell.borrow();
+        if kind == PickerKind::DisplayOutputs {
+            let outputs = indices
+                .into_iter()
+                .filter_map(|index| ui.choices.get(index as usize))
+                .filter_map(|choice| match &choice.value {
+                    PickerValue::DisplayOutput(route) => Some(route.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            return Some((kind, PickerValue::DisplayOutputs(outputs)));
+        }
         let mut use_all = false;
         let mut endpoints = Vec::new();
         for index in indices {

@@ -1062,20 +1062,16 @@ impl Config {
                     && profile.routes.len() <= 32
                     && profile.routes.iter().all(|route| {
                         !route.target_path.trim().is_empty()
-                            && route.source_width > 0
-                            && route.source_height > 0
-                            && route.active_width > 0
-                            && route.active_height > 0
-                            && route.refresh_numerator > 0
-                            && route.refresh_denominator > 0
-                            && matches!(route.rotation, 1..=4)
+                            && (!crate::display::route_has_any_mode(route)
+                                || crate::display::route_has_complete_mode(route))
+                            && (!profile.confirmed
+                                || crate::display::route_has_complete_mode(route))
                             && seen_routes.insert(format!(
-                                "{}|{}|{}|{}|{}",
+                                "{}|{}|{}|{}",
                                 route.target_path.trim().to_ascii_lowercase(),
-                                route.source_adapter,
-                                route.source_id,
                                 route.target_adapter,
-                                route.target_id
+                                route.target_id,
+                                route.output_technology
                             ))
                     })
                     && crate::display::validate_profile(profile).is_ok()

@@ -119,6 +119,7 @@ pub struct SettingsUi {
     layout: SettingsLayout,
     draft: Config,
     selected_display_route: usize,
+    display_outputs: Vec<crate::display::DisplayOutput>,
     display_rollback_active: bool,
     display_keep_available: bool,
     devices: crate::audio::devices::DeviceLists,
@@ -151,6 +152,7 @@ impl SettingsUi {
             layout: SettingsLayout::build(DESIGN_WIDTH, DESIGN_HEIGHT, 0.0),
             draft,
             selected_display_route: 0,
+            display_outputs: Vec::new(),
             display_rollback_active: false,
             display_keep_available: false,
             devices,
@@ -252,18 +254,40 @@ impl SettingsUi {
             .map(|route| (profile, route))
     }
 
+    fn refresh_display_outputs(&mut self) {
+        match crate::display::output_inventory() {
+            Ok(outputs) => self.display_outputs = outputs,
+            Err(error) => {
+                crate::warn_!("display output inventory unavailable: {error}");
+                self.display_outputs.clear();
+            }
+        }
+    }
+
+    fn output_label(&self, route: &crate::display::DisplayRoute) -> String {
+        self.display_outputs
+            .iter()
+            .find(|output| crate::display::same_output(&output.route, route))
+            .map(crate::display::DisplayOutput::label)
+            .unwrap_or_else(|| "Configured output — currently unavailable".into())
+    }
+
+    fn display_outputs_label(&self) -> String {
+        let Some(profile) = self.draft.display_profiles.active() else {
+            return "No profile selected".into();
+        };
+        match profile.routes.as_slice() {
+            [] => "No outputs selected".into(),
+            [route] => self.output_label(route),
+            routes => format!("{} outputs selected", routes.len()),
+        }
+    }
+
     fn selected_display_route_label(&self) -> String {
         let Some((_, route)) = self.selected_display_route() else {
-            return "No route selected".into();
+            return "No output selected".into();
         };
-        format!(
-            "GPU {:016X} → {:016X} source {} → target {} · {}",
-            route.source_adapter,
-            route.target_adapter,
-            route.source_id,
-            route.target_id,
-            route.target_path
-        )
+        self.output_label(route)
     }
 
     fn selected_display_route_edit_value(&self) -> Option<String> {
@@ -540,20 +564,29 @@ impl SettingsUi {
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "No profile selected".into()),
             )),
-            ElementId::NewDisplayProfile => ControlValue::Action(Cow::Borrowed("Capture")),
+            ElementId::NewDisplayProfile => ControlValue::Action(Cow::Borrowed("Create")),
             ElementId::DisplayProfileHotkey => self.hotkey_value(id, self.active_profile_hotkey()),
+            ElementId::DisplayOutputs => {
+                ControlValue::Text(Cow::Owned(self.display_outputs_label()))
+            }
             ElementId::DisplayTopology => ControlValue::Text(Cow::Owned(
                 self.draft
                     .display_profiles
                     .active()
-                    .map(|profile| profile.topology.label().to_string())
+                    .map(|profile| {
+                        if profile.routes.len() <= 1 {
+                            "Single output".to_string()
+                        } else {
+                            profile.topology.label().to_string()
+                        }
+                    })
                     .unwrap_or_else(|| "No profile selected".into()),
             )),
             ElementId::DisplayRoute => {
                 ControlValue::Text(Cow::Owned(self.selected_display_route_label()))
             }
             ElementId::EditDisplayRoute => ControlValue::Action(Cow::Borrowed("Edit")),
-            ElementId::UpdateDisplayProfile => ControlValue::Action(Cow::Borrowed("Update")),
+            ElementId::UpdateDisplayProfile => ControlValue::Action(Cow::Borrowed("Capture")),
             ElementId::RenameDisplayProfile => ControlValue::Action(Cow::Borrowed("Rename")),
             ElementId::DuplicateDisplayProfile => ControlValue::Action(Cow::Borrowed("Duplicate")),
             ElementId::TestApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Test")),
@@ -709,11 +742,20 @@ impl SettingsUi {
                     || self.draft.display_profiles.active().is_none()
             }
             ElementId::DisplayProfileHotkey
-            | ElementId::DisplayTopology
+            | ElementId::DisplayOutputs
             | ElementId::DisplayRoute
             | ElementId::EditDisplayRoute => {
                 !self.draft.display_profiles.enabled
                     || self.draft.display_profiles.active().is_none()
+                    || self.display_rollback_active
+            }
+            ElementId::DisplayTopology => {
+                !self.draft.display_profiles.enabled
+                    || self
+                        .draft
+                        .display_profiles
+                        .active()
+                        .is_none_or(|profile| profile.routes.len() <= 1)
                     || self.display_rollback_active
             }
             ElementId::NewDisplayProfile => {
@@ -971,6 +1013,11 @@ impl SettingsUi {
             ElementId::DisplayProfile => {
                 post_main(crate::event::AppEvent::OpenSettingsPicker(
                     PickerKind::DisplayProfile,
+                ));
+            }
+            ElementId::DisplayOutputs => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::DisplayOutputs,
                 ));
             }
             ElementId::DisplayTopology => {
@@ -1522,6 +1569,55 @@ impl SettingsUi {
                 self.draft.display_profiles.active_profile = value;
                 self.selected_display_route = 0;
             }
+            (PickerKind::DisplayOutputs, PickerValue::DisplayOutputs(routes)) => {
+                if routes.is_empty() {
+                    self.validation = vec![Violation {
+                        field: "display_profiles.outputs".into(),
+                        message: "Select at least one output for this profile".into(),
+                    }];
+                    return;
+                }
+                if let Some(profile) = self
+                    .draft
+                    .display_profiles
+                    .active_profile
+                    .as_deref()
+                    .and_then(|id| {
+                        self.draft
+                            .display_profiles
+                            .profiles
+                            .iter_mut()
+                            .find(|profile| profile.id.eq_ignore_ascii_case(id))
+                    })
+                {
+                    let mut merged = Vec::with_capacity(routes.len());
+                    for selected in routes {
+                        if let Some(existing) = profile
+                            .routes
+                            .iter()
+                            .find(|route| crate::display::same_output(route, &selected))
+                        {
+                            merged.push(existing.clone());
+                        } else {
+                            merged.push(selected);
+                        }
+                    }
+                    profile.routes = merged;
+                    profile.confirmed = false;
+                    if profile.routes.len() <= 1 {
+                        profile.topology = crate::display::DisplayTopology::Custom;
+                    } else if !matches!(
+                        profile.topology,
+                        crate::display::DisplayTopology::Extend
+                            | crate::display::DisplayTopology::Clone
+                    ) {
+                        profile.topology = crate::display::DisplayTopology::Extend;
+                    }
+                    self.selected_display_route = self
+                        .selected_display_route
+                        .min(profile.routes.len().saturating_sub(1));
+                }
+            }
             (PickerKind::DisplayTopology, PickerValue::DisplayTopology(topology)) => {
                 if let Some(profile) = self
                     .draft
@@ -1910,6 +2006,7 @@ impl SettingsWindow {
             if !ui.dirty() {
                 ui.replace_draft((*crate::app::config()).clone());
             }
+            ui.refresh_display_outputs();
             ui.validation.clear();
             invalidate(self.hwnd);
             ui.publish_automation_snapshot(self.hwnd);
@@ -1975,21 +2072,31 @@ impl SettingsWindow {
             return Ok(());
         }
         self.cancel_picker();
-        let (draft, control_rect, dpi, selected_display_route) = {
+        if matches!(kind, PickerKind::DisplayOutputs | PickerKind::DisplayRoute) {
+            cell.borrow_mut().refresh_display_outputs();
+        }
+        let (draft, display_outputs, control_rect, dpi, selected_display_route) = {
             let ui = cell.borrow();
             let element = picker_element(kind)
                 .and_then(|id| ui.layout.element(id))
                 .ok_or_else(|| Error::internal("settings picker row missing"))?;
             (
                 ui.draft.clone(),
+                ui.display_outputs.clone(),
                 controls::value_control_rect(element.rect, element.kind),
                 ui.dpi,
                 ui.selected_display_route,
             )
         };
         let anchor = screen_rect(self.hwnd, control_rect, dpi)?;
-        let (choices, current) =
-            picker_choices(kind, &draft, &devices, &monitors, selected_display_route);
+        let (choices, current) = picker_choices(
+            kind,
+            &draft,
+            &devices,
+            &monitors,
+            &display_outputs,
+            selected_display_route,
+        );
         let selected_indices = picker_selection_indices(kind, &draft, &choices);
         if choices.is_empty() {
             return Err(Error::config("no choices available"));
@@ -2250,6 +2357,7 @@ fn picker_element(kind: PickerKind) -> Option<ElementId> {
         PickerKind::InputAllowlist => ElementId::InputAllowlist,
         PickerKind::OutputAllowlist => ElementId::OutputAllowlist,
         PickerKind::DisplayProfile => ElementId::DisplayProfile,
+        PickerKind::DisplayOutputs => ElementId::DisplayOutputs,
         PickerKind::DisplayTopology => ElementId::DisplayTopology,
         PickerKind::DisplayRoute => ElementId::DisplayRoute,
         PickerKind::InputRole => ElementId::InputRole,
@@ -2305,6 +2413,7 @@ fn picker_choices(
     draft: &Config,
     devices: &crate::audio::devices::DeviceLists,
     monitors: &[crate::platform::monitor::MonitorGeometry],
+    display_outputs: &[crate::display::DisplayOutput],
     selected_display_route: usize,
 ) -> (Vec<PickerChoice>, usize) {
     let mut choices = Vec::new();
@@ -2336,29 +2445,33 @@ fn picker_choices(
         PickerKind::DisplayProfile => {
             choices.extend(display_profile_choices(&draft.display_profiles));
         }
+        PickerKind::DisplayOutputs => {
+            choices.extend(display_outputs.iter().map(|output| PickerChoice {
+                label: output.label(),
+                value: PickerValue::DisplayOutput(output.route.clone()),
+            }));
+        }
         PickerKind::DisplayTopology => {
-            choices.extend(
-                crate::display::DisplayTopology::ALL
-                    .into_iter()
-                    .map(|topology| PickerChoice {
-                        label: topology.label().into(),
-                        value: PickerValue::DisplayTopology(topology),
-                    }),
-            );
+            for topology in [
+                crate::display::DisplayTopology::Extend,
+                crate::display::DisplayTopology::Clone,
+            ] {
+                choices.push(PickerChoice {
+                    label: topology.label().into(),
+                    value: PickerValue::DisplayTopology(topology),
+                });
+            }
         }
         PickerKind::DisplayRoute => {
             if let Some(profile) = draft.display_profiles.active() {
                 choices.extend(profile.routes.iter().enumerate().map(|(index, route)| {
+                    let label = display_outputs
+                        .iter()
+                        .find(|output| crate::display::same_output(&output.route, route))
+                        .map(crate::display::DisplayOutput::label)
+                        .unwrap_or_else(|| format!("Output {} — currently unavailable", index + 1));
                     PickerChoice {
-                        label: format!(
-                            "Route {} — GPU {:016X} → {:016X}, source {}, target {} · {}",
-                            index + 1,
-                            route.source_adapter,
-                            route.target_adapter,
-                            route.source_id,
-                            route.target_id,
-                            route.target_path
-                        ),
+                        label,
                         value: PickerValue::DisplayRoute(index),
                     }
                 }));
@@ -2466,7 +2579,7 @@ fn picker_choices(
             devices.output_defaults.for_role(draft.audio.output_role),
             &choices,
         ),
-        PickerKind::InputAllowlist | PickerKind::OutputAllowlist => 0,
+        PickerKind::InputAllowlist | PickerKind::OutputAllowlist | PickerKind::DisplayOutputs => 0,
         _ => {
             let current = current_picker_value(kind, draft, selected_display_route);
             choices
@@ -2482,6 +2595,26 @@ fn picker_selection_indices(
     draft: &Config,
     choices: &[PickerChoice],
 ) -> Vec<usize> {
+    if kind == PickerKind::DisplayOutputs {
+        let Some(profile) = draft.display_profiles.active() else {
+            return Vec::new();
+        };
+        return choices
+            .iter()
+            .enumerate()
+            .filter_map(|(index, choice)| match &choice.value {
+                PickerValue::DisplayOutput(route)
+                    if profile
+                        .routes
+                        .iter()
+                        .any(|configured| crate::display::same_output(configured, route)) =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect();
+    }
     let configured = match kind {
         PickerKind::InputAllowlist => draft.audio.cycle_input_allowlist.as_deref(),
         PickerKind::OutputAllowlist => draft.audio.cycle_output_allowlist.as_deref(),
@@ -2641,6 +2774,7 @@ fn current_picker_value(
         PickerKind::DisplayProfile => {
             PickerValue::DisplayProfile(draft.display_profiles.active_profile.clone())
         }
+        PickerKind::DisplayOutputs => PickerValue::DisplayOutputs(Vec::new()),
         PickerKind::DisplayTopology => PickerValue::DisplayTopology(
             draft
                 .display_profiles
@@ -3375,7 +3509,8 @@ mod interaction_tests {
             output_defaults: Default::default(),
             warnings: Vec::new(),
         };
-        let (choices, current) = picker_choices(PickerKind::InputDevice, &config, &devices, &[], 0);
+        let (choices, current) =
+            picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], 0);
         assert_eq!(choices.len(), 1);
         assert_eq!(current, 0);
         assert_eq!(choices[current].label, "Current microphone");
@@ -3407,7 +3542,7 @@ mod interaction_tests {
         };
         let config = Config::default();
         let (choices, selected) =
-            picker_choices(PickerKind::InputDevice, &config, &devices, &[], 0);
+            picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], 0);
         assert_eq!(choices.len(), 1);
         assert_eq!(selected, 0);
         assert_eq!(choices[0].label, "Current microphone (System Default)");
@@ -3443,7 +3578,7 @@ mod interaction_tests {
             warnings: Vec::new(),
         };
         let (choices, current) =
-            picker_choices(PickerKind::InputAllowlist, &config, &devices, &[], 0);
+            picker_choices(PickerKind::InputAllowlist, &config, &devices, &[], &[], 0);
         assert_eq!(current, 0);
         assert_eq!(choices[0].label, "All active endpoints (allowlist off)");
         assert_eq!(choices[1].label, "No endpoints (disable cycling)");
@@ -3541,6 +3676,41 @@ mod interaction_tests {
         assert_eq!(scaled_saved_size(rect, 96, 144), (900, 600));
         assert_eq!(scaled_saved_size(rect, 144, 96), (400, 267));
         assert_eq!(scaled_saved_size(rect, 0, 144), (900, 600));
+    }
+
+    #[test]
+    fn display_outputs_value_hides_raw_displayconfig_identity() {
+        let mut ui = empty_settings_ui();
+        let route = crate::display::DisplayRoute {
+            target_path: r"\\?\DISPLAY#MONITOR-A".into(),
+            target_adapter: 1,
+            target_id: 2,
+            output_technology: 5,
+            ..Default::default()
+        };
+        ui.display_outputs = vec![crate::display::DisplayOutput {
+            route: route.clone(),
+            monitor_name: "Desk Monitor".into(),
+            adapter_name: "AMD Radeon Graphics".into(),
+            connector_name: "HDMI".into(),
+            active: true,
+        }];
+        ui.draft.display_profiles.profiles = vec![crate::display::DisplayProfile {
+            id: "ai".into(),
+            name: "AI".into(),
+            topology: crate::display::DisplayTopology::Custom,
+            confirmed: false,
+            routes: vec![route],
+        }];
+        ui.draft.display_profiles.active_profile = Some("ai".into());
+        match ui.value_for(ElementId::DisplayOutputs) {
+            ControlValue::Text(value) => {
+                assert!(value.contains("Desk Monitor"));
+                assert!(value.contains("AMD Radeon Graphics"));
+                assert!(!value.contains("DISPLAY#"));
+            }
+            _ => panic!("unexpected control value variant"),
+        }
     }
 
     #[test]
