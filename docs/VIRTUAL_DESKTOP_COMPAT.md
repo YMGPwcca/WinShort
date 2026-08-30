@@ -147,12 +147,11 @@ corroborate the application-view move path and workspace-management slots used b
 | | `NavigationUnavailable` — identity, naming, ordering, or navigation refused |
 | | `Partial` — a later step failed after an earlier step completed |
 
-Move-operation HRESULTs use a move-specific classifier: Shell/RPC disconnects remain retryable,
-while ordinary failures retain their API context inside `MoveUnavailable` rather than being
-misreported as `SwitchDesktop failed`. Workspace naming/reordering failures retain RPC disconnect
-classification but otherwise become non-fallback `NavigationUnavailable` errors; those cosmetic
-normalization failures are logged without turning an otherwise valid Special Workspace move into
-synthetic keyboard input.
+Move/window-identity HRESULTs use a move-specific classifier: Shell/RPC disconnects remain
+retryable, while ordinary failures retain their API context inside `MoveUnavailable` rather than
+being misreported as `SwitchDesktop failed`. Workspace naming/reordering/removal failures retain
+RPC disconnect classification but otherwise become non-fallback `NavigationUnavailable` errors;
+those failures never authorize synthetic keyboard input.
 
 The exact partition is proptested (`policy_props.rs`, #37). `index >= count` refuses **before**
 any input injection (#20): a too-large target never triggers SendInput keys.
@@ -191,12 +190,17 @@ it unchanged.
 | `SwitchDesktop` 1↔2 | registry `CurrentVirtualDesktop` GUID changed both ways |
 | Startup log | `virtual desktop backend: Native Shell` |
 | Win+1..9 routing | binding table → `SwitchDesktop(n)` → Native Shell |
-| Cross-process Special Workspace move | manual send → enter → return re-test passed after application-view fix |
-| Virtual Desktop GUID reboot persistence | 10/10 GUIDs unchanged and in the same order across a Windows reboot |
-| Special Workspace naming + tail pinning | implementation added; real-Windows acceptance pending |
-| Abrupt-exit GUID reclaim | implementation added; real-Windows acceptance pending |
+| Cross-process Special Workspace move | PASS — send → enter → return on real Windows after application-view fix |
+| Virtual Desktop GUID reboot persistence | PASS — 10/10 GUIDs unchanged and in the same order across a Windows reboot |
+| Special Workspace naming + tail pinning | PASS — workspace named correctly; two manually-created desktops and Win+9 both caused Special to re-pin to the tail while normal ordinals stayed aligned |
+| Abrupt-exit GUID reclaim | PASS — `Stop-Process -Force` → relaunch → Toggle reused the existing workspace without increasing desktop count |
+| External workspace deletion recovery | PASS — deleting Special in Task View caused the next Toggle to discard the stale GUID, create exactly one replacement, and pin it to the tail |
+| Orderly exit / feature disable cleanup | PASS — Special was removed and contained windows survived on the selected normal fallback desktop |
+| Multiple Special Workspace windows | PASS — multiple assigned windows remained together and survived enter/leave transitions |
+| Previous Desktop isolation | PASS — `VD1 → VD3 → VDS → Toggle out → Previous Desktop` returned through `VDS → VD3 → VD1`, leaving the normal VD1↔VD3 history intact |
 | Fallback path | compiled in; active only when native setup fails (fail closed) |
 
-Original switching checks were tested 2026-08-24. Cross-process Special Workspace movement and
-Virtual Desktop GUID reboot persistence were manually re-verified on 2026-08-31. Naming/tail
-ordering and abrupt-exit reclaim require a fresh real-Windows acceptance pass before merge.
+Original switching checks were tested 2026-08-24. Cross-process Special Workspace movement,
+GUID reboot persistence, naming/tail ordering, abrupt-exit reclaim, external-deletion recovery,
+cleanup, multiple-window behavior, and Previous Desktop isolation were manually verified on
+2026-08-31 on the whitelisted 26200 build family.
