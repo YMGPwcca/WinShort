@@ -284,30 +284,26 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
                     format!("duplicates display route at index {previous}"),
                 ));
             }
-            if route.source_width == 0
-                || route.source_height == 0
-                || route.active_width == 0
-                || route.active_height == 0
+            if crate::display::route_has_any_mode(route)
+                && !crate::display::route_has_complete_mode(route)
             {
                 v.push(Violation::new(
-                    &format!("{field}.routes[{route_index}].resolution"),
-                    "display route resolution must be positive",
+                    &format!("{field}.routes[{route_index}].mode"),
+                    "display output mode must be either unresolved or complete",
                 ));
-            }
-            if route.refresh_numerator == 0 || route.refresh_denominator == 0 {
+            } else if profile.confirmed && !crate::display::route_has_complete_mode(route) {
                 v.push(Violation::new(
-                    &format!("{field}.routes[{route_index}].refresh"),
-                    "display route refresh rate must be positive",
-                ));
-            }
-            if !matches!(route.rotation, 1..=4) {
-                v.push(Violation::new(
-                    &format!("{field}.routes[{route_index}].rotation"),
-                    "display route rotation must be 1..=4",
+                    &format!("{field}.routes[{route_index}].mode"),
+                    "confirmed display output must have a resolved mode",
                 ));
             }
         }
-        if profile.routes.len() > 1 {
+        if profile.routes.len() > 1
+            && profile
+                .routes
+                .iter()
+                .all(crate::display::route_has_complete_mode)
+        {
             let distinct_sources = profile
                 .routes
                 .iter()

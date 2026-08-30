@@ -71,6 +71,7 @@ pub enum ElementId {
     DisplayProfilesEnabled,
     DisplayProfile,
     DisplayProfileHotkey,
+    DisplayOutputs,
     DisplayTopology,
     DisplayRoute,
     EditDisplayRoute,
@@ -111,7 +112,7 @@ pub enum ElementId {
 }
 
 impl ElementId {
-    pub const FOCUS_ORDER: [ElementId; 52] = [
+    pub const FOCUS_ORDER: [ElementId; 53] = [
         ElementId::StartWithWindows,
         ElementId::StartHotkeysEnabled,
         ElementId::MicHotkey,
@@ -130,6 +131,7 @@ impl ElementId {
         ElementId::DisplayProfilesEnabled,
         ElementId::DisplayProfile,
         ElementId::DisplayProfileHotkey,
+        ElementId::DisplayOutputs,
         ElementId::DisplayTopology,
         ElementId::DisplayRoute,
         ElementId::EditDisplayRoute,
@@ -355,50 +357,56 @@ impl SettingsLayout {
                 row(
                     ElementId::DisplayProfilesEnabled,
                     ElementKind::Toggle,
-                    "Display profile engine",
-                    "Store and apply documented DisplayConfig snapshots",
+                    "Display profiles",
+                    "Switch monitor and TV layouts with saved profiles",
                 ),
                 row(
                     ElementId::DisplayProfile,
                     ElementKind::Value,
-                    "Active display profile",
-                    "Choose the profile used by Test Apply or Apply",
+                    "Profile",
+                    "Choose the display layout you want to edit or apply",
                 ),
                 row(
                     ElementId::DisplayProfileHotkey,
                     ElementKind::Hotkey,
                     "Profile hotkey",
-                    "Apply the selected confirmed profile from any app",
+                    "Apply this tested profile from any app",
+                ),
+                row(
+                    ElementId::DisplayOutputs,
+                    ElementKind::Value,
+                    "Outputs",
+                    "Choose which connected monitor/TV outputs this profile uses",
                 ),
                 row(
                     ElementId::DisplayTopology,
                     ElementKind::Value,
-                    "Topology",
-                    "Extend, Duplicate, Internal, External, or custom",
+                    "Mode",
+                    "Choose Extend or Duplicate when more than one output is enabled",
                 ),
                 row(
                     ElementId::DisplayRoute,
                     ElementKind::Value,
-                    "Selected route",
-                    "Physical route identity, including adapter and connector IDs",
+                    "Advanced output",
+                    "Optional per-output resolution, refresh, position, and orientation",
                 ),
                 row(
                     ElementId::EditDisplayRoute,
                     ElementKind::Action,
-                    "Edit route values",
-                    "Edit position, resolution, refresh rate, and orientation",
+                    "Advanced output settings",
+                    "Optional fine tuning; normal profile switching does not require this",
                 ),
                 row(
                     ElementId::NewDisplayProfile,
                     ElementKind::Action,
-                    "New from Current",
-                    "Capture the current topology into a new profile",
+                    "New profile",
+                    "Start from the current layout, then choose outputs",
                 ),
                 row(
                     ElementId::UpdateDisplayProfile,
                     ElementKind::Action,
-                    "Update from Current",
-                    "Explicitly replace the selected profile topology",
+                    "Capture current layout",
+                    "Replace this profile with the layout Windows is using now",
                 ),
                 row(
                     ElementId::RenameDisplayProfile,
@@ -415,14 +423,14 @@ impl SettingsLayout {
                 row(
                     ElementId::TestApplyDisplayProfile,
                     ElementKind::ButtonPrimary,
-                    "Test Apply",
-                    "Apply temporarily; Keep or Revert is required",
+                    "Test configuration",
+                    "Try this layout for 15 seconds before keeping it",
                 ),
                 row(
                     ElementId::ApplyDisplayProfile,
                     ElementKind::Action,
-                    "Apply confirmed profile",
-                    "Apply a previously tested and kept profile",
+                    "Apply profile",
+                    "Switch to this previously tested layout",
                 ),
                 row(
                     ElementId::DeleteDisplayProfile,
