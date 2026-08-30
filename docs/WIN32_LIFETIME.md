@@ -29,6 +29,7 @@ Every OS handle/interface has exactly one owner thread or struct.
 | Settings renderer (D2D factory, `ID2D1HwndRenderTarget`, brushes, text formats) | main thread | `ui::renderer::Renderer` | dropped with the settings UI; any `EndDraw` failure drops the whole Renderer so the next paint rebuilds it from scratch |
 | Overlay surface (WIC bitmap, DIB section, compatible DC) | main thread | `OverlayGraphics`/`LayeredSurface` | re-created per `show()`; released with the overlay |
 | Diagnostics HWND | main thread | `DiagnosticsWindow` / main thread | hidden on close; destroyed during `App::begin_shutdown` |
+| Scratchpad HWND + ownership | desktop thread | `DesktopController::scratchpad` | PID-checked before every mutation; WinShort-hidden windows revealed before reassignment, disable, and orderly shutdown; stale identities are cleared |
 | Support worker | one-shot filesystem thread | `App::support_bundle: Option<JoinHandle<()>>` | completion posts an event; App joins it before diagnostics HWND teardown |
 | Clipboard HGLOBAL | main thread during Copy Diagnostics | Windows after successful `SetClipboardData(CF_UNICODETEXT, ...)` | WinShort frees it only when allocation/clipboard transfer fails |
 | Settings picker HWND + LISTBOX | main thread | `PickerPopup` | focus loss/Escape/commit drops popup; Settings shutdown drops it before process exit |

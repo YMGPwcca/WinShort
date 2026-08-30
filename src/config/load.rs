@@ -164,6 +164,7 @@ fn unknown_keys(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::model::*;
+    use crate::keyboard::binding::{Hotkey, ModifierMask};
 
     #[test]
     fn newer_schema_version_refuses_overwrite() {
@@ -343,6 +344,76 @@ mod tests {
             Some(CURRENT_SCHEMA_VERSION)
         );
         assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_routing_is_warned_ignored_and_stripped_on_save() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir =
+            std::env::temp_dir().join(format!("ws_schema_legacy_routing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            r#"schema_version = 6
+[virtual_desktops]
+enabled = false
+win_number_switching = false
+number_modifier = "Ctrl+Alt"
+move_follow_modifier = "Shift"
+move_silent_modifier = "Ctrl+Shift"
+previous_desktop = "Ctrl+Alt+F12"
+scratchpad_assign = "Ctrl+Alt+F13"
+scratchpad_toggle = "Ctrl+Alt+F14"
+[[virtual_desktops.routing_rules]]
+executable = "notepad.exe"
+desktop = 2
+"#,
+        )
+        .unwrap();
+
+        let (config, warnings) = load(&dir);
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("virtual_desktops.routing_rules")
+                && warning.contains("removed")
+                && warning.contains("ignored")
+        }));
+        assert_eq!(
+            config.virtual_desktops.number_modifier,
+            ModifierMask::CTRL.union(ModifierMask::ALT)
+        );
+        assert_eq!(
+            config.virtual_desktops.move_follow_modifier,
+            Some(ModifierMask::SHIFT)
+        );
+        assert_eq!(
+            config.virtual_desktops.move_silent_modifier,
+            Some(ModifierMask::CTRL.union(ModifierMask::SHIFT))
+        );
+        assert_eq!(
+            config.virtual_desktops.previous_desktop,
+            Some(Hotkey::parse("Ctrl+Alt+F12").unwrap())
+        );
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.source_schema_version, Some(6));
+        assert!(diagnostics
+            .warnings
+            .iter()
+            .any(|warning| { warning.contains("routing_rules") && warning.contains("ignored") }));
+
+        crate::config::save::save(&dir, &config).unwrap();
+        let saved_text = std::fs::read_to_string(config_path(&dir)).unwrap();
+        assert!(!saved_text.contains("routing_rules"), "{saved_text}");
+        let (saved, saved_warnings) = load(&dir);
+        assert!(saved_warnings.is_empty(), "{saved_warnings:?}");
+        assert_eq!(saved, config);
+        assert_eq!(
+            crate::config::load_diagnostics().source_schema_version,
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

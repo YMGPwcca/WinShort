@@ -1378,25 +1378,91 @@ topology = "extend"
     }
 
     #[test]
-    fn legacy_executable_routing_rules_are_ignored_and_not_serialized() {
+    fn legacy_executable_routing_rules_are_ignored_and_not_serialized_for_v6_and_v9() {
+        for schema_version in [6, 9] {
+            let raw = format!(
+                r#"
+schema_version = {schema_version}
+[virtual_desktops]
+enabled = false
+win_number_switching = false
+number_modifier = "Ctrl+Alt"
+move_follow_modifier = "Shift"
+move_silent_modifier = "Ctrl+Shift"
+previous_desktop = "Ctrl+Alt+F12"
+scratchpad_assign = "Ctrl+Alt+F13"
+scratchpad_toggle = "Ctrl+Alt+F14"
+[[virtual_desktops.routing_rules]]
+executable = "notepad.exe"
+desktop = 2
+"#
+            );
+            let boundary: ConfigToml = toml::from_str(&raw).unwrap();
+            let (config, warnings) = Config::from_toml(&boundary);
+            assert!(warnings.iter().any(|warning| {
+                warning.contains("virtual_desktops.routing_rules")
+                    && warning.contains("removed")
+                    && warning.contains("ignored")
+            }));
+            assert!(!config.virtual_desktops.enabled);
+            assert!(!config.virtual_desktops.win_number_switching);
+            assert_eq!(
+                config.virtual_desktops.number_modifier,
+                ModifierMask::CTRL.union(ModifierMask::ALT)
+            );
+            assert_eq!(
+                config.virtual_desktops.move_follow_modifier,
+                Some(ModifierMask::SHIFT)
+            );
+            assert_eq!(
+                config.virtual_desktops.move_silent_modifier,
+                Some(ModifierMask::CTRL.union(ModifierMask::SHIFT))
+            );
+            assert_eq!(
+                config.virtual_desktops.previous_desktop,
+                Some(Hotkey::parse("Ctrl+Alt+F12").unwrap())
+            );
+            assert_eq!(
+                config.virtual_desktops.scratchpad_assign,
+                Some(Hotkey::parse("Ctrl+Alt+F13").unwrap())
+            );
+            assert_eq!(
+                config.virtual_desktops.scratchpad_toggle,
+                Some(Hotkey::parse("Ctrl+Alt+F14").unwrap())
+            );
+
+            let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+            assert!(!text.contains("routing_rules"), "{text}");
+            let saved: ConfigToml = toml::from_str(&text).unwrap();
+            let (round_tripped, round_warnings) = Config::from_toml(&saved);
+            assert!(round_warnings.is_empty(), "{round_warnings:?}");
+            assert_eq!(round_tripped, config);
+        }
+    }
+
+    #[test]
+    fn current_v9_without_routing_round_trips_unchanged() {
         let raw = r#"
 schema_version = 9
 [virtual_desktops]
 enabled = true
-[[virtual_desktops.routing_rules]]
-executable = "notepad.exe"
-desktop = 2
+win_number_switching = true
+number_modifier = "Alt"
+move_follow_modifier = "Shift"
+move_silent_modifier = "Ctrl+Shift"
+previous_desktop = "Ctrl+Alt+F12"
+scratchpad_assign = "Ctrl+Alt+F13"
+scratchpad_toggle = "Ctrl+Alt+F14"
 "#;
         let boundary: ConfigToml = toml::from_str(raw).unwrap();
         let (config, warnings) = Config::from_toml(&boundary);
-        assert!(warnings.iter().any(|warning| {
-            warning.contains("virtual_desktops.routing_rules")
-                && warning.contains("removed")
-                && warning.contains("ignored")
-        }));
+        assert!(warnings.is_empty(), "{warnings:?}");
         let text = toml::to_string_pretty(&config.to_toml()).unwrap();
         assert!(!text.contains("routing_rules"), "{text}");
-        assert_eq!(config.virtual_desktops, Config::default().virtual_desktops);
+        let saved: ConfigToml = toml::from_str(&text).unwrap();
+        let (round_tripped, round_warnings) = Config::from_toml(&saved);
+        assert!(round_warnings.is_empty(), "{round_warnings:?}");
+        assert_eq!(round_tripped, config);
     }
 
     #[test]
