@@ -4,6 +4,7 @@
 use std::sync::mpsc::{self, Sender};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
     IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
@@ -670,12 +671,14 @@ impl DesktopController {
             );
             return;
         }
-        if !unsafe { SetForegroundWindow(state.hwnd) }.as_bool() {
+        if !activate_scratchpad_window(state.hwnd) {
             self.publish_failure(
                 "toggle scratchpad",
                 DesktopError::Partial {
                     completed: "scratchpad shown on the current desktop".into(),
-                    failure: "SetForegroundWindow rejected scratchpad activation".into(),
+                    failure:
+                        "foreground activation was rejected after direct and attached-input attempts"
+                            .into(),
                 },
             );
             return;
@@ -910,6 +913,37 @@ fn activate_window(hwnd: HWND) -> bool {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
         SetForegroundWindow(hwnd).as_bool()
+    }
+}
+
+fn activate_scratchpad_window(hwnd: HWND) -> bool {
+    unsafe {
+        // Keep the normal foreground path first. The attached-input fallback is
+        // only used when Windows' foreground-lock policy rejects that request.
+        if SetForegroundWindow(hwnd).as_bool() {
+            return true;
+        }
+
+        let foreground = GetForegroundWindow();
+        if foreground.0.is_null() {
+            return false;
+        }
+        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+        let current_thread = GetCurrentThreadId();
+        if foreground_thread == 0 || foreground_thread == current_thread {
+            return false;
+        }
+        if !AttachThreadInput(current_thread, foreground_thread, true).as_bool() {
+            return false;
+        }
+
+        let activated = SetForegroundWindow(hwnd).as_bool();
+        if !AttachThreadInput(current_thread, foreground_thread, false).as_bool() {
+            crate::error_!(
+                "failed to detach scratchpad foreground input queues after activation attempt"
+            );
+        }
+        activated
     }
 }
 
