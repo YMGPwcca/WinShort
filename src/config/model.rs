@@ -970,6 +970,9 @@ impl Config {
     /// ranges, drop conflicting hotkeys. Only violated fields are touched.
     pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
         let mut drop_hotkeys: Vec<String> = Vec::new();
+        let number_modifier_repaired = violations
+            .iter()
+            .any(|violation| violation.field == "virtual_desktops.number_modifier");
         let routing_rules_invalid = violations.iter().any(|violation| {
             violation
                 .field
@@ -1024,6 +1027,29 @@ impl Config {
                     drop_hotkeys.push(f.trim_start_matches("hotkeys.").to_string());
                 }
                 _ => {}
+            }
+        }
+        if number_modifier_repaired
+            && self.virtual_desktops.enabled
+            && self.virtual_desktops.win_number_switching
+        {
+            for hotkey in numbered_desktop_family(ModifierMask::WIN) {
+                for slot in [
+                    &mut self.hotkeys.toggle_microphone,
+                    &mut self.hotkeys.toggle_output,
+                    &mut self.hotkeys.toggle_foreground_audio,
+                    &mut self.hotkeys.cycle_input_device,
+                    &mut self.hotkeys.cycle_output_device,
+                    &mut self.hotkeys.foreground_volume_up,
+                    &mut self.hotkeys.foreground_volume_down,
+                    &mut self.virtual_desktops.previous_desktop,
+                    &mut self.virtual_desktops.scratchpad_assign,
+                    &mut self.virtual_desktops.scratchpad_toggle,
+                ] {
+                    if *slot == Some(hotkey) {
+                        *slot = None;
+                    }
+                }
             }
         }
         for field in drop_hotkeys {
@@ -1512,6 +1538,23 @@ move_silent_modifier = "Ctrl+Alt"
 
         assert_eq!(config.virtual_desktops.number_modifier, ModifierMask::WIN);
         assert!(config.virtual_desktops.move_follow_modifier.is_none());
+        assert!(crate::config::validate(&config).is_empty());
+    }
+
+    #[test]
+    fn repair_drops_explicit_shortcuts_colliding_with_repaired_number_family() {
+        let mut config = Config::default();
+        config.virtual_desktops.number_modifier = ModifierMask::from_bits(0x80);
+        config.hotkeys.toggle_output = Some(Hotkey {
+            modifiers: ModifierMask::WIN,
+            key: crate::keyboard::binding::VirtualKey(b'5' as u16),
+        });
+
+        let violations = crate::config::validate(&config);
+        config.repair(&violations);
+
+        assert_eq!(config.virtual_desktops.number_modifier, ModifierMask::WIN);
+        assert!(config.hotkeys.toggle_output.is_none());
         assert!(crate::config::validate(&config).is_empty());
     }
 }
