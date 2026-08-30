@@ -7,11 +7,10 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
     IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-    SW_HIDE, SW_RESTORE, SW_SHOW, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    SW_HIDE, SW_RESTORE, SW_SHOWNA, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows_core::GUID;
 
-use crate::config::model::DesktopRule;
 use crate::desktop::backend::{
     BackendAvailability, BackendKind, BackendStatus, DesktopError, VirtualDesktopBackend,
 };
@@ -33,7 +32,9 @@ pub enum DesktopCommand {
     ForegroundChanged {
         hwnd_raw: isize,
     },
-    SetRoutingRules(Vec<DesktopRule>),
+    ConfigureScratchpad {
+        managed: bool,
+    },
     AssignScratchpad {
         hwnd_raw: isize,
     },
@@ -44,6 +45,14 @@ pub enum DesktopCommand {
 pub struct DesktopService {
     sender: Sender<DesktopCommand>,
     join: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScratchpadState {
+    hwnd: HWND,
+    owner_pid: u32,
+    /// True only when WinShort itself issued the successful hide operation.
+    hidden_by_winshort: bool,
 }
 
 impl DesktopService {
@@ -88,8 +97,10 @@ impl DesktopService {
             .send(DesktopCommand::ForegroundChanged { hwnd_raw });
     }
 
-    pub fn set_routing_rules(&self, rules: Vec<DesktopRule>) {
-        let _ = self.sender.send(DesktopCommand::SetRoutingRules(rules));
+    pub fn configure_scratchpad(&self, managed: bool) {
+        let _ = self
+            .sender
+            .send(DesktopCommand::ConfigureScratchpad { managed });
     }
 
     pub fn switch_to(&self, index: usize) {
@@ -131,10 +142,8 @@ struct DesktopController {
     last_served: Option<BackendKind>,
     /// Process-lifetime focus and previous-desktop identity state.
     history: DesktopHistory,
-    /// Runtime-only scratchpad window; never persisted as an HWND.
-    scratchpad: Option<HWND>,
-    /// Opt-in foreground executable routing rules, replaced on ConfigApplied.
-    routing_rules: Vec<DesktopRule>,
+    /// Runtime-only scratchpad ownership; never persisted.
+    scratchpad: Option<ScratchpadState>,
 }
 
 impl DesktopController {
@@ -175,7 +184,6 @@ impl DesktopController {
             last_served: None,
             history,
             scratchpad: None,
-            routing_rules: Vec::new(),
         };
         controller.publish_status();
         Ok(controller)
@@ -398,82 +406,45 @@ impl DesktopController {
             }
         }
     }
-    fn set_routing_rules(&mut self, rules: Vec<DesktopRule>) {
-        self.routing_rules = rules;
-        crate::info!(
-            "virtual desktop executable routing rules updated: {} rule(s)",
-            self.routing_rules.len()
-        );
-    }
-
     fn foreground_changed(&mut self, hwnd_raw: isize) {
         self.remember_foreground(hwnd_raw);
-        // A foreground event is also the only practical notification for
-        // desktop switches made outside WinShort. Observe identity without
-        // polling so Previous Desktop follows those visits too.
+        // Foreground events also let Previous Desktop observe switches made
+        // outside WinShort without introducing a polling loop.
         self.observe_current_desktop();
-        self.route_foreground(hwnd_raw);
     }
 
-    fn route_foreground(&mut self, hwnd_raw: isize) {
-        if self.routing_rules.is_empty() {
+    fn configure_scratchpad(&mut self, managed: bool) {
+        if managed {
             return;
         }
-        let hwnd = raw_hwnd(hwnd_raw);
-        if !eligible_window(hwnd) {
-            return;
-        }
-        let pid = unsafe {
-            let mut pid = 0u32;
-            let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            pid
-        };
-        let Some(image_path) = crate::platform::foreground::process_image_path(pid) else {
-            crate::warn_!("unable to resolve executable path for routed foreground window");
-            return;
-        };
-        let Some(rule) = self
-            .routing_rules
-            .iter()
-            .find(|rule| rule_matches_image(rule, &image_path))
-            .cloned()
-        else {
-            return;
-        };
-        if rule.desktop == 0 {
-            crate::warn_!("ignoring invalid routing rule with desktop 0");
-            return;
-        }
-        let index = rule.desktop as usize - 1;
-        let result = (|| {
-            self.native_ensure_count(index + 1)?;
-            let native = self.native.as_ref().ok_or_else(|| {
-                DesktopError::MoveUnavailable("native desktop backend is unavailable".into())
-            })?;
-            let ids = native.desktop_ids()?;
-            let target = ids
-                .get(index)
-                .copied()
-                .ok_or(DesktopError::TargetOutOfRange {
-                    requested: index,
-                    count: ids.len(),
-                })?;
-            let current = native.window_desktop_id(hwnd)?;
-            if current != target {
-                native.move_window_to_desktop(hwnd, index)?;
-                self.history.remember(target, hwnd.0 as isize);
-                crate::info!(
-                    "routed {} to virtual desktop {} without switching focus",
-                    image_path,
-                    rule.desktop
-                );
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.publish_failure("route foreground window", error);
+        if let Err(error) = self.release_scratchpad() {
+            self.publish_failure("release scratchpad", error);
         }
     }
+
+    fn release_scratchpad(&mut self) -> std::result::Result<(), DesktopError> {
+        let Some(state) = self.scratchpad else {
+            return Ok(());
+        };
+        if !scratchpad_window(state.hwnd, state.owner_pid) {
+            self.scratchpad = None;
+            return Ok(());
+        }
+        if state.hidden_by_winshort {
+            unsafe {
+                let _ = ShowWindow(state.hwnd, SW_SHOWNA);
+            }
+            let visible = unsafe { IsWindowVisible(state.hwnd) }.as_bool();
+            if !visible {
+                return Err(DesktopError::WindowUnavailable(
+                    "WinShort could not reveal the hidden scratchpad window".into(),
+                ));
+            }
+        }
+        self.scratchpad = None;
+        Ok(())
+    }
+
     fn assign_scratchpad(&mut self, hwnd_raw: isize) {
         let hwnd = raw_hwnd(hwnd_raw);
         if !eligible_window(hwnd) {
@@ -483,24 +454,41 @@ impl DesktopController {
             );
             return;
         }
-        match self.ensure_window_on_current_desktop(hwnd) {
-            Ok(()) => {
-                self.scratchpad = Some(hwnd);
-                crate::info!("scratchpad assigned to HWND {:?}", hwnd);
+        let Some(owner_pid) = window_process_id(hwnd) else {
+            self.publish_failure(
+                "assign scratchpad",
+                DesktopError::WindowUnavailable("foreground HWND has no stable process identity".into()),
+            );
+            return;
+        };
+        if self.scratchpad.is_some_and(|state| state.hwnd != hwnd) {
+            // Release the old assignment before moving the new window so a
+            // failed reveal cannot leave both a moved new window and a hidden old one.
+            if let Err(error) = self.release_scratchpad() {
+                self.publish_failure("assign scratchpad", error);
+                return;
             }
-            Err(error) => self.publish_failure("assign scratchpad", error),
         }
+        if let Err(error) = self.ensure_window_on_current_desktop(hwnd) {
+            self.publish_failure("assign scratchpad", error);
+            return;
+        }
+        self.scratchpad = Some(ScratchpadState {
+            hwnd,
+            owner_pid,
+            hidden_by_winshort: false,
+        });
+        crate::info!("scratchpad assigned to HWND {:?}", hwnd);
     }
-
     fn toggle_scratchpad(&mut self) {
-        let Some(hwnd) = self.scratchpad else {
+        let Some(mut state) = self.scratchpad else {
             self.publish_failure(
                 "toggle scratchpad",
                 DesktopError::WindowUnavailable("no scratchpad window is assigned".into()),
             );
             return;
         };
-        if !scratchpad_window(hwnd) {
+        if !scratchpad_window(state.hwnd, state.owner_pid) {
             self.scratchpad = None;
             self.publish_failure(
                 "toggle scratchpad",
@@ -508,27 +496,100 @@ impl DesktopController {
             );
             return;
         }
-        if unsafe { IsWindowVisible(hwnd) }.as_bool() {
-            unsafe {
-                let _ = ShowWindow(hwnd, SW_HIDE);
+
+        let visible = unsafe { IsWindowVisible(state.hwnd) }.as_bool();
+        if visible {
+            // If another component made the window visible, WinShort no longer
+            // owns a hidden state. A visible Scratchpad on another VD should be
+            // brought here, not hidden on the remote desktop.
+            state.hidden_by_winshort = false;
+            match self.window_on_current_desktop(state.hwnd) {
+                Ok(true) => {
+                    unsafe {
+                        let _ = ShowWindow(state.hwnd, SW_HIDE);
+                    }
+                    if unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
+                        self.scratchpad = Some(state);
+                        self.publish_failure(
+                            "toggle scratchpad",
+                            DesktopError::WindowUnavailable(
+                                "WinShort could not hide the scratchpad window".into(),
+                            ),
+                        );
+                        return;
+                    }
+                    state.hidden_by_winshort = true;
+                    self.scratchpad = Some(state);
+                    crate::info!("scratchpad hidden");
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.scratchpad = Some(state);
+                    self.publish_failure("toggle scratchpad", error);
+                    return;
+                }
             }
-            crate::info!("scratchpad hidden");
+        } else if !state.hidden_by_winshort {
+            // Do not take ownership of a window hidden by its application or
+            // some other component. Releasing the assignment avoids surprising
+            // resurrection later.
+            self.scratchpad = None;
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::WindowUnavailable(
+                    "assigned window was hidden outside WinShort; scratchpad assignment released"
+                        .into(),
+                ),
+            );
             return;
         }
 
-        match self.ensure_window_on_current_desktop(hwnd) {
-            Ok(()) => {
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = ShowWindow(hwnd, SW_RESTORE);
-                    if !SetForegroundWindow(hwnd).as_bool() {
-                        crate::warn_!("scratchpad shown but foreground activation was rejected");
-                    }
-                }
-                crate::info!("scratchpad shown");
-            }
-            Err(error) => self.publish_failure("toggle scratchpad", error),
+        if let Err(error) = self.ensure_window_on_current_desktop(state.hwnd) {
+            self.scratchpad = Some(state);
+            self.publish_failure("toggle scratchpad", error);
+            return;
         }
+        if !unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
+            unsafe {
+                // SW_SHOWNA separates visibility restoration from the explicit
+                // foreground request and does not force a maximized window back
+                // to its normal placement as SW_RESTORE would.
+                let _ = ShowWindow(state.hwnd, SW_SHOWNA);
+            }
+        }
+        if !unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
+            self.scratchpad = Some(state);
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::WindowUnavailable("scratchpad could not be shown".into()),
+            );
+            return;
+        }
+
+        state.hidden_by_winshort = false;
+        self.scratchpad = Some(state);
+        if !unsafe { SetForegroundWindow(state.hwnd) }.as_bool() {
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::Partial {
+                    completed: "scratchpad shown on the current desktop".into(),
+                    failure: "SetForegroundWindow rejected scratchpad activation".into(),
+                },
+            );
+            return;
+        }
+        crate::info!("scratchpad shown and focused");
+    }
+
+    fn window_on_current_desktop(
+        &self,
+        hwnd: HWND,
+    ) -> std::result::Result<bool, DesktopError> {
+        let native = self.native.as_ref().ok_or_else(|| {
+            DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
+        })?;
+        Ok(native.window_desktop_id(hwnd)? == native.current_desktop_id()?)
     }
 
     fn ensure_window_on_current_desktop(
@@ -552,7 +613,10 @@ impl DesktopController {
     }
 
     fn clear_stale_scratchpad(&mut self) {
-        if self.scratchpad.is_some_and(|hwnd| !scratchpad_window(hwnd)) {
+        if self
+            .scratchpad
+            .is_some_and(|state| !scratchpad_window(state.hwnd, state.owner_pid))
+        {
             self.scratchpad = None;
             crate::info!("cleared stale scratchpad window");
         }
@@ -651,6 +715,9 @@ impl DesktopController {
                 self.native_availability = BackendAvailability::Failed {
                     reason: error.to_string(),
                 };
+                if let Err(release_error) = self.release_scratchpad() {
+                    crate::error_!("native desktop backend unavailable and scratchpad release failed: {release_error}");
+                }
                 Err(DesktopError::BackendUnavailable(error.to_string()))
             }
         }
@@ -734,41 +801,42 @@ fn is_shell_surface_class(class: &str) -> bool {
             | "Windows.UI.Core.CoreWindow"
     )
 }
-fn rule_matches_image(rule: &DesktopRule, image_path: &str) -> bool {
-    let configured = rule.executable.trim();
-    if configured.is_empty() {
+fn eligible_window(hwnd: HWND) -> bool {
+    valid_external_window(hwnd, true, true)
+}
+
+fn scratchpad_window(hwnd: HWND, owner_pid: u32) -> bool {
+    // Retained Scratchpad ownership is intentionally broader than assignment
+    // eligibility. Once WinShort hides a window, temporary disabled,
+    // no-activate, tool-window, hidden, or off-desktop/cloaked state must not
+    // make us forget the obligation to reveal it later. The process identity
+    // prevents a recycled HWND from targeting an unrelated process.
+    if hwnd.0.is_null() {
         return false;
     }
-    if configured.contains('\\') || configured.contains('/') || configured.contains(':') {
-        return normalize_windows_path(configured) == normalize_windows_path(image_path);
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return false;
+        }
+        if window_process_id(hwnd) != Some(owner_pid) || owner_pid == std::process::id() {
+            return false;
+        }
+        let mut class = [0u16; 128];
+        let length = GetClassNameW(hwnd, &mut class);
+        if length <= 0 {
+            return false;
+        }
+        let class = String::from_utf16_lossy(&class[..length as usize]);
+        !is_shell_surface_class(&class)
     }
-
-    let configured_name = configured.to_ascii_lowercase();
-    let image_name = image_path
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(image_path)
-        .to_ascii_lowercase();
-    if configured_name.contains('.') {
-        image_name == configured_name
-    } else {
-        image_name.strip_suffix(".exe").unwrap_or(&image_name) == configured_name
-    }
 }
 
-fn normalize_windows_path(value: &str) -> String {
-    value.trim().replace('/', "\\").to_ascii_lowercase()
+fn window_process_id(hwnd: HWND) -> Option<u32> {
+    let mut pid = 0u32;
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    (thread_id != 0 && pid != 0).then_some(pid)
 }
-
-fn eligible_window(hwnd: HWND) -> bool {
-    valid_external_window(hwnd, true)
-}
-
-fn scratchpad_window(hwnd: HWND) -> bool {
-    valid_external_window(hwnd, false)
-}
-
-fn valid_external_window(hwnd: HWND, require_visible: bool) -> bool {
+fn valid_external_window(hwnd: HWND, require_visible: bool, reject_cloaked: bool) -> bool {
     if hwnd.0.is_null() {
         return false;
     }
@@ -789,17 +857,19 @@ fn valid_external_window(hwnd: HWND, require_visible: bool) -> bool {
         if pid == 0 || pid == std::process::id() {
             return false;
         }
-        let mut cloaked = 0u32;
-        if DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            (&mut cloaked as *mut u32).cast(),
-            std::mem::size_of::<u32>() as u32,
-        )
-        .is_ok()
-            && cloaked != 0
-        {
-            return false;
+        if reject_cloaked {
+            let mut cloaked = 0u32;
+            if DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED,
+                (&mut cloaked as *mut u32).cast(),
+                std::mem::size_of::<u32>() as u32,
+            )
+            .is_ok()
+                && cloaked != 0
+            {
+                return false;
+            }
         }
         let mut class = [0u16; 128];
         let length = GetClassNameW(hwnd, &mut class);
@@ -879,11 +949,18 @@ fn desktop_thread(
             DesktopCommand::ForegroundChanged { hwnd_raw } => {
                 controller.foreground_changed(hwnd_raw)
             }
-            DesktopCommand::SetRoutingRules(rules) => controller.set_routing_rules(rules),
+            DesktopCommand::ConfigureScratchpad { managed } => {
+                controller.configure_scratchpad(managed)
+            }
             DesktopCommand::AssignScratchpad { hwnd_raw } => controller.assign_scratchpad(hwnd_raw),
             DesktopCommand::ToggleScratchpad => controller.toggle_scratchpad(),
             DesktopCommand::Shutdown => break,
         }
+    }
+    // The worker owns Scratchpad hide state. Always make a best-effort reveal
+    // before releasing that ownership, including receiver-disconnect shutdown.
+    if let Err(error) = controller.release_scratchpad() {
+        crate::error_!("failed to restore hidden scratchpad during shutdown: {error}");
     }
     drop(controller);
     drop(com);
@@ -965,23 +1042,6 @@ mod policy_tests {
         assert!(!*backend.fallback_used.borrow());
     }
     #[test]
-    fn executable_routing_matches_basename_and_full_path_without_case_sensitivity() {
-        let basename = DesktopRule {
-            executable: "Player".into(),
-            desktop: 2,
-        };
-        assert!(rule_matches_image(&basename, r"C:\Apps\PLAYER.EXE"));
-        assert!(!rule_matches_image(&basename, r"C:\Apps\PlayerHelper.exe"));
-
-        let full_path = DesktopRule {
-            executable: r"C:\Apps\Player.exe".into(),
-            desktop: 2,
-        };
-        assert!(rule_matches_image(&full_path, r"c:/apps/player.exe"));
-        assert!(!rule_matches_image(&full_path, r"C:\Other\Player.exe"));
-    }
-
-    #[test]
     fn shell_surface_classes_are_never_meaningful_focus_candidates() {
         for class in [
             "Progman",
@@ -1009,8 +1069,11 @@ mod policy_tests {
             known_count: None,
             last_served: None,
             history: DesktopHistory::default(),
-            scratchpad: Some(HWND::default()),
-            routing_rules: Vec::new(),
+            scratchpad: Some(ScratchpadState {
+                hwnd: HWND::default(),
+                owner_pid: u32::MAX,
+                hidden_by_winshort: true,
+            }),
         };
 
         controller.clear_stale_scratchpad();

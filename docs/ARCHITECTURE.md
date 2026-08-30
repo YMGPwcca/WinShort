@@ -58,11 +58,11 @@ Rules:
   classified by `DesktopError::permits_fallback` (VIRTUAL_DESKTOP_COMPAT.md).
 * Missing numbered desktops are created only through the native backend; the keyboard fallback is
   used only when a previously known existing target can be safely walked.
-* Scratchpad assignment stores only the HWND in the desktop STA worker. It is never persisted;
-  hidden/closed handles are validated before every toggle and cleared when stale.
-* Executable routing is replaced by `ConfigApplied`, matched from foreground WinEvents, and
-  performs only a native move. It excludes WinShort, shell classes, invisible, disabled, and
-  cloaked windows; it never switches desktops or calls `SetForegroundWindow`.
+* Scratchpad assignment is runtime-only in the desktop STA worker. WinShort separately tracks
+  whether it hid the assigned HWND, treats an off-desktop DWM cloak as valid runtime state, and
+  reveals WinShort-hidden windows before reassignment, feature disable, or orderly shutdown.
+  Showing moves the window to the current desktop first; visibility restoration does not force
+  `SW_RESTORE`, so normal/maximized placement is not rewritten by Scratchpad toggling.
 
 ## Events
 

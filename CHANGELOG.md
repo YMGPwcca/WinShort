@@ -42,6 +42,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   automatically restores the captured topology; Keep is explicit, Revert is immediate,
   timer-start/persistence failures are surfaced, and failed recovery retains a retryable
   rollback token.
+- Removed the unreleased executable-to-desktop routing experiment from active product scope;
+  legacy routing tables are parse-compatible, ignored, and omitted on the next Save.
+- Hardened Scratchpad ownership so WinShort-hidden windows are revealed before reassignment,
+  feature disable, or shutdown; off-desktop cloaking stays valid and show/hide no longer forces
+  `SW_RESTORE` over the application's existing placement.
 
 ### Added
 
@@ -53,13 +58,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   persistently saved; desktop workflow hotkeys remain unassigned by default.
 - Schema v5 adds optional scratchpad assignment and toggle hotkeys. The assigned
   window handle remains runtime-only and is cleared when the window closes.
-- Schema v6 adds opt-in executable desktop routing rules. Matching a configured
-  basename or full image path moves the foreground window without switching or
-  stealing focus; invalid or duplicate rules are rejected.
 - Numbered Virtual Desktop switching now ensures missing desktops through the
   native Shell backend; move/follow, silent move, previous-desktop navigation,
-  per-desktop foreground restoration, runtime scratchpad show/hide, and
-  executable routing are available as conservative configurable actions.
+  per-desktop foreground restoration, and runtime scratchpad show/hide are available
+  as conservative configurable actions.
 - Schema v7 adds independent input/output endpoint allowlists for device cycling.
   Omitted means all active endpoints, while an explicit empty list disables that
   direction; offline IDs remain configured and reconnects are notification-driven.

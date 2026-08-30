@@ -264,8 +264,10 @@ fuzz campaign is claimed or running.
 - Silent foreground move leaves the source desktop active
 - Per-desktop last-focused HWND tracking excludes WinShort, shell, invisible, stale, and cloaked windows
 - Previous-desktop toggles back and forth and clears deleted identities
-- Scratchpad assignment/toggle/cleanup remains runtime-only
-- Opt-in executable routing never focuses or switches the user
+- Scratchpad assign → hide → show remains runtime-only and moves the window to the current desktop
+- A WinShort-hidden Scratchpad is revealed before reassignment, feature disable, or orderly shutdown
+- Scratchpad toggling preserves normal/maximized placement and reports foreground rejection truthfully
+- A valid Scratchpad on another Virtual Desktop remains assigned even when DWM cloaks that window
 
 ### Display profiles
 - Capture Current on single/multi-monitor topology persists stable target paths,

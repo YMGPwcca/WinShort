@@ -38,8 +38,8 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
   animation, monitor-aware placement. Never steals focus from games.
 - **Virtual desktop workflow** — configurable numbered switching creates only missing
   desktops through the build-pinned Shell COM backend; optional move/follow, silent
-  move, previous-desktop focus restoration, executable routing, and runtime scratchpad
-  show/hide actions stay disabled or unassigned by default.
+  move, previous-desktop focus restoration, and runtime scratchpad show/hide actions
+  stay disabled or unassigned by default.
 - **Display profiles** — capture and persist documented Windows DisplayConfig topologies,
   edit routes, rename/duplicate/delete by stable profile ID, bind per-profile hotkeys, and use
   temporary Test Apply with explicit Keep, Revert, and automatic 15-second rollback.

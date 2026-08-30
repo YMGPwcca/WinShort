@@ -55,10 +55,6 @@ previous_desktop = ""           # optional ordinary hotkey
 scratchpad_assign = ""          # optional hotkey; runtime-only window assignment
 scratchpad_toggle = ""           # optional hotkey; runtime-only show/hide
 
-[[virtual_desktops.routing_rules]]
-executable = "notepad.exe"      # basename (optional .exe) or full image path
-desktop = 2                     # one-based; 1..=256
-
 [display_profiles]
 enabled = true
 active_profile = ""
@@ -94,7 +90,6 @@ struct AudioCfg {
 struct Config { general: GeneralCfg, overlay: OverlayCfg,
                 audio: AudioCfg, hotkeys: HotkeysCfg, virtual_desktops: VdCfg,
                 display_profiles: DisplayProfilesCfg }
-struct DesktopRule { executable: String, desktop: u16 }
 struct DisplayProfilesCfg { enabled: bool, active_profile: Option<String>,
                              profiles: Vec<DisplayProfile> }
 struct DisplayProfile { id: String, name: String, topology: DisplayTopology,
@@ -109,9 +104,10 @@ required — bare keys are rejected** (#35). Numpad tokens (`Numpad0`–`Numpad9
 letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no media keys.
 
 `VdCfg` stores the numbered modifier family, optional move/follow and silent
-modifier families, an optional previous-desktop hotkey, optional scratchpad
-hotkeys, and opt-in executable routing rules. Scratchpad HWND state is runtime-only
-and is never serialized.
+modifier families, an optional previous-desktop hotkey, and optional scratchpad
+hotkeys. Scratchpad HWND/ownership state is runtime-only and is never serialized.
+Legacy schema-v6 `routing_rules` tables are accepted only at the TOML boundary,
+ignored with a warning, and omitted on the next Save.
 
 `AudioCfg` stores optional endpoint-ID allowlists for input and output cycling.
 `None` means all currently active endpoints; `Some(empty)` is an explicit deny-all
@@ -174,16 +170,15 @@ Serde does not deny unknown fields; instead load performs a manual double-parse 
 * optional move/follow and silent modifier families must not overlap each other, the numbered family,
   or explicit hotkeys
 * `previous_desktop` participates in the same centralized conflict validation
-* routing rules require a non-empty executable, a desktop in `1..=256`, and unique executable identities
 * allowlist entries must be non-empty endpoint IDs with no duplicate exact IDs; an explicit empty list is valid
 * display profiles require unique non-empty IDs/names, at least one route, stable target paths, positive modes, valid rotation, a compatible clone/extend source shape, and an active profile that exists
 * display profile hotkeys require existing profile IDs, unique stable ID keys, and no conflict with any ordinary or virtual-desktop binding
 
 `Config::repair` then fixes violations in-memory so the app stays usable:
 out-of-range `duration_ms → 2000`, `scale → 1.0`, `opacity → 0.85`; conflicting hotkey binding
-→ `None`; an invalid numbered modifier returns to `Win`; invalid routing rules, allowlist
-entries, malformed/duplicate display profiles, and stale/conflicting display profile hotkeys
-are removed while preserving the first valid entry. Repair is idempotent (repaired values are
+→ `None`; an invalid numbered modifier returns to `Win`; invalid allowlist entries,
+malformed/duplicate display profiles, and stale/conflicting display profile hotkeys are removed
+while preserving the first valid entry. Repair is idempotent (repaired values are
 themselves valid).
 
 ## Endpoint device IDs
@@ -215,7 +210,7 @@ the tray writes/deletes immediately — it does **not** wait for Save. The legac
 | cycle and foreground-volume hotkeys | unassigned |
 | display profiles | enabled, no active profile, no stored profiles; profile hotkeys empty |
 | `start_hotkeys_enabled` | true |
-| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/scratchpad/routing unassigned |
+| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/scratchpad unassigned |
 
 Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
@@ -231,12 +226,14 @@ in `config.toml` and #32 does not require a schema bump.
 Schema v1 files, including versionless legacy files, load with the v2 defaults for
 `overlay.appearance` (`system`) and `overlay.show_external_audio_changes` (`true`),
 v3 defaults for the four Phase-1 hotkeys, v4 defaults for the Virtual Desktop
-workflow fields, v5 defaults for the scratchpad hotkeys, v6 defaults for
-executable routing rules, v7 defaults for input/output allowlists, v8 defaults
-for display profiles, and v9 defaults for display profile hotkeys plus
+workflow fields, v5 defaults for the scratchpad hotkeys, v7 defaults for
+input/output allowlists, v8 defaults for display profiles, and v9 defaults for
+display profile hotkeys plus
 `confirmed = false` on profiles that predate the safety bit. Schema v2/v3/v4/v5/v6/v7/v8
 files preserve all existing values and default only the newly introduced fields.
-Load diagnostics records the source/effective transition. A successful Save writes schema v9
+Schema-v6 executable-routing tables remain parse-compatible but are ignored as a removed,
+unreleased feature and are not serialized again. Load diagnostics records the source/effective
+transition. A successful Save writes schema v9
 and updates active load diagnostics to source v9. Legacy `overlay.monitor = "index:N"` still
 maps to `primary`, and `general.start_with_windows` remains ignored because startup is
 registry-owned.

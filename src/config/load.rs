@@ -58,11 +58,11 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     let mut migrations = Vec::new();
                     if parsed_schema < CURRENT_SCHEMA_VERSION {
                         let detail = match parsed_schema {
-                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            3 => "v4 desktop workflow, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            4 => "v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            5 => "v6 executable routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            3 => "v4 desktop workflow, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            4 => "v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            5 => "v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
                             6 => "v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
                             7 => "v8 display profiles and v9 profile hotkeys defaulted",
                             8 => "v9 display profile hotkeys and confirmation state defaulted",

@@ -870,15 +870,6 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                 .virtual_desktops
                 .scratchpad_toggle
                 .map_or(String::new(), |hotkey| hotkey.to_string()),
-            routing_rules: config
-                .virtual_desktops
-                .routing_rules
-                .iter()
-                .map(|rule| SafeDesktopRule {
-                    executable: safe_rule_executable(&rule.executable),
-                    desktop: rule.desktop,
-                })
-                .collect(),
         },
         display_profiles: SafeDisplayProfiles {
             enabled: config.display_profiles.enabled,
@@ -992,21 +983,6 @@ struct SafeVirtualDesktops {
     previous_desktop: String,
     scratchpad_assign: String,
     scratchpad_toggle: String,
-    routing_rules: Vec<SafeDesktopRule>,
-}
-#[derive(Debug, Serialize)]
-struct SafeDesktopRule {
-    executable: String,
-    desktop: u16,
-}
-
-fn safe_rule_executable(value: &str) -> String {
-    value
-        .trim()
-        .rsplit(['\\', '/'])
-        .next()
-        .unwrap_or_default()
-        .into()
 }
 #[derive(Debug, Serialize)]
 struct SafeDisplayProfiles {
@@ -1471,18 +1447,12 @@ safe=1"#,
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("opaque-endpoint".into());
         config.audio.cycle_input_allowlist = Some(vec!["opaque-allowlist".into()]);
-        config.virtual_desktops.routing_rules = vec![crate::config::model::DesktopRule {
-            executable: r"C:\Users\Alice\Apps\Player.exe".into(),
-            desktop: 3,
-        }];
         let output = format_config(&config, 1, &mut sanitizer);
         assert!(output.contains("schema_version = 1"));
         assert!(output.contains("endpoint#01"));
         assert!(!output.contains("opaque-endpoint"));
         assert!(output.contains("endpoint#02"));
         assert!(!output.contains("opaque-allowlist"));
-        assert!(output.contains("executable = \"Player.exe\""));
-        assert!(!output.contains("Alice"));
     }
 
     #[cfg(windows)]

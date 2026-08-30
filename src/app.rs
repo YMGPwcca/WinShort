@@ -259,9 +259,9 @@ impl App {
     pub fn install_desktop(&mut self) -> Result<()> {
         let service = crate::desktop::DesktopService::start(self.hwnd)?;
         let config = crate::app::config();
-        if config.virtual_desktops.enabled {
-            service.set_routing_rules(config.virtual_desktops.routing_rules.clone());
-        }
+        service.configure_scratchpad(
+            config.virtual_desktops.enabled && config.virtual_desktops.scratchpad_toggle.is_some(),
+        );
         self.desktop = Some(service);
         Ok(())
     }
@@ -1295,12 +1295,10 @@ impl App {
                     audio.send(crate::audio::AudioCommand::ConfigChanged { stamp });
                 }
                 if let Some(desktop) = &self.desktop {
-                    let rules = if config.virtual_desktops.enabled {
-                        config.virtual_desktops.routing_rules.clone()
-                    } else {
-                        Vec::new()
-                    };
-                    desktop.set_routing_rules(rules);
+                    desktop.configure_scratchpad(
+                        config.virtual_desktops.enabled
+                            && config.virtual_desktops.scratchpad_toggle.is_some(),
+                    );
                 }
                 info!("config applied (seq {seq}, origin {:?})", stamp.origin);
             }
