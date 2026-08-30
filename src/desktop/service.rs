@@ -589,7 +589,9 @@ impl DesktopController {
                 self.scratchpad = None;
                 self.publish_failure(
                     "toggle scratchpad",
-                    DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
+                    DesktopError::WindowUnavailable(
+                        "assigned scratchpad window became stale".into(),
+                    ),
                 );
                 return;
             }
@@ -1233,9 +1235,8 @@ mod policy_tests {
 
     #[test]
     fn scratchpad_desktop_lookup_failure_is_not_reported_as_switch_failure() {
-        let error = scratchpad_desktop_lookup_error(DesktopError::SwitchFailed(
-            0x8002_802Bu32 as i32,
-        ));
+        let error =
+            scratchpad_desktop_lookup_error(DesktopError::SwitchFailed(0x8002_802Bu32 as i32));
         assert!(matches!(
             error,
             DesktopError::WindowUnavailable(message)
