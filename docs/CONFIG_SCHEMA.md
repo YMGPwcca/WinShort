@@ -107,9 +107,13 @@ letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no m
 modifier families, an optional previous-desktop hotkey, and the two legacy-named
 `scratchpad_*` hotkeys. Those wire names are retained for schema compatibility, but
 the actions now send the foreground window to a dedicated Special Workspace and
-toggle that Virtual Desktop. The workspace GUID and return-desktop GUID are
-runtime-only and are never serialized. Legacy schema-v6 `routing_rules` tables are accepted only at the TOML boundary,
-ignored with a warning, and omitted on the next Save.
+toggle that Virtual Desktop. Neither workspace identity nor return-desktop identity
+is serialized into `config.toml`: the return GUID is process-only, while the exact
+Special Workspace GUID is stored separately as operational recovery state in
+`%LOCALAPPDATA%\WinShort\special-workspace.guid` so a surviving workspace can be
+reclaimed after a hard kill or Windows reboot. Legacy schema-v6 `routing_rules`
+tables are accepted only at the TOML boundary, ignored with a warning, and omitted
+on the next Save.
 
 `AudioCfg` stores optional endpoint-ID allowlists for input and output cycling.
 `None` means all currently active endpoints; `Some(empty)` is an explicit deny-all
