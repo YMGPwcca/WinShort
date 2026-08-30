@@ -22,6 +22,15 @@ Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 ├── WH_KEYBOARD_LL       ├── IMMDeviceEnumerator    ├── ImmersiveShell IServiceProvider
 ├── modifier tracking    ├── IAudioEndpointVolume   ├── IVirtualDesktopManagerInternal
 └── PostMessage only      └── command channel loop   └── focus history + scratchpad
+```
+
+The DisplayConfig subsystem captures stable target paths and source/target modes, deduplicates
+shared source modes for clone paths, validates route/topology shape before mutation, and keeps
+the pre-apply buffers plus route snapshot in a main-thread-only confirmation token. Test Apply
+is temporary; Keep persists the active configuration, while Revert and timeout restore it.
+Virtual-mode-aware paths decode and encode the source/target mode indexes from their documented
+bitfields; clone source modes are emitted once per source identity and target desktop indexes
+remain invalid when no desktop-image mode is supplied.
 
 ## Threading model
 
@@ -74,7 +83,13 @@ enum AppEvent {
   DesktopBackendChanged(BackendStatus), DesktopActionFailed { action, reason },
   ConfigApplied { seq: u64, stamp: ConfigRevisionStamp }, ShowSettings, ...
 }
+
 ```
+
+`HotkeyAction::ApplyDisplayProfile` carries a nonzero 16-bit case-insensitive key derived from
+the stable profile ID. The main thread resolves that key against the current persisted binding
+list, rejects ambiguity/stale or unconfirmed profiles, and only then invokes normal validated
+activation. Rename therefore leaves hotkeys intact; delete removes the binding before Save.
 
 ## State separation
 
@@ -128,6 +143,11 @@ main-thread-owned native picker popup hosts a real LISTBOX for enumerated choice
 copied from the current draft and commits back only on click/Enter. Escape/focus loss destroys
 the popup without changing the draft. Picker geometry is computed in screen pixels, prefers
 below-then-above placement, and clamps to the nearest monitor work area.
+
+Display profile CRUD stays in the same draft: New/Update capture active DisplayConfig state,
+Duplicate allocates a new ID, Rename edits only the name, Delete removes the profile hotkey,
+and route editing changes only supported mode/position fields. Rename and route editing use a
+native text prompt so keyboard and UI Automation focus do not depend on owner-drawn text input.
 
 The Settings surface exposes logical controls through a custom Windows UI Automation provider
 (`ui/settings_automation.rs`) rather than semantic child HWNDs. The provider publishes an

@@ -33,7 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::config::model::{
-    DeviceSelection, EndpointRole, MonitorChoice, OverlayAppearance, OverlayPosition,
+    DeviceSelection, DisplayTopology, EndpointRole, MonitorChoice, OverlayAppearance,
+    OverlayPosition,
 };
 use crate::error::{Error, Result};
 use crate::platform::visual::SystemVisualPreferences;
@@ -72,6 +73,8 @@ pub enum PickerKind {
     InputAllowlist,
     OutputAllowlist,
     DisplayProfile,
+    DisplayTopology,
+    DisplayRoute,
     InputRole,
     OutputRole,
     DesktopNumberModifier,
@@ -94,6 +97,8 @@ pub enum PickerValue {
     Device(DeviceSelection),
     Role(EndpointRole),
     DisplayProfile(Option<String>),
+    DisplayTopology(DisplayTopology),
+    DisplayRoute(usize),
     Modifier(crate::keyboard::binding::ModifierMask),
     Position(OverlayPosition),
     Appearance(OverlayAppearance),

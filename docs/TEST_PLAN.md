@@ -269,11 +269,27 @@ fuzz campaign is claimed or running.
 
 ### Display profiles
 - Capture Current on single/multi-monitor topology persists stable target paths,
-  positions, modes, and detected topology kind
-- Profile picker creates/updates/selects/deletes profiles and Save migrates config
-- Apply refuses missing/ambiguous routes before mutation
-- Apply presents 15-second Undo; failed verification or explicit Undo restores the
-  prior topology
+  source/target IDs, positions, modes, and detected topology kind
+- Profile picker supports New from Current, Update from Current, Select, Rename,
+  Duplicate with a new ID, Delete, and Save; rename preserves the profile hotkey
+  reference and delete removes it
+- Route editor accepts only bounded position, positive mode/refresh, and supported
+  rotation values; edits clear confirmation
+- Config validation rejects missing/ambiguous routes, invalid modes, incompatible
+  clone/extend source shapes, duplicate IDs/names, and hotkey conflicts; repair
+  removes malformed profiles and stale profile bindings
+- Test Apply validates before mutation, applies temporarily, and exposes explicit
+  Keep and Revert controls; timeout automatically restores the captured topology
+- Failed apply/verification or failed rollback surfaces an error and never reports
+  success; a failed rollback keeps Revert available
+- Profile hotkeys resolve stable profile IDs after rename, reject stale/unconfirmed
+  profiles, and reload through the lock-free binding snapshot
+
+Manual Windows hardware acceptance remains required before closing #91:
+iGPU HDMI → monitor; dGPU DP → same monitor; dGPU HDMI → TV; iGPU↔dGPU
+switching; monitor + TV Extend; Duplicate where supported; disconnect/reconnect;
+rejected invalid topology; explicit Keep/Revert; and automatic timeout rollback.
+Record each scenario only after direct observation; unobserved scenarios remain pending.
 
 ### DPI / overlay
 - 100% → 150% monitor move (scale up)

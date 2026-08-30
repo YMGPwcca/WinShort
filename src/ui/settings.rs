@@ -42,6 +42,7 @@ use crate::ui::animation::{Motion, MotionChannel};
 use crate::ui::controls::{self, ControlValue, Interaction};
 use crate::ui::layout::{ElementId, Rect as UiRect, SettingsLayout};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
+use crate::ui::prompt::{PromptAction, TextPrompt};
 use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
 use crate::ui::settings_automation::{
     node_has_invoke, snapshot_from_settings, AutomationFocusOwner, SettingsAutomation,
@@ -117,6 +118,9 @@ pub struct SettingsUi {
     renderer: Option<Renderer>,
     layout: SettingsLayout,
     draft: Config,
+    selected_display_route: usize,
+    display_rollback_active: bool,
+    display_keep_available: bool,
     devices: crate::audio::devices::DeviceLists,
     validation: Vec<Violation>,
     hovered: Option<ElementId>,
@@ -146,6 +150,9 @@ impl SettingsUi {
             renderer: None,
             layout: SettingsLayout::build(DESIGN_WIDTH, DESIGN_HEIGHT, 0.0),
             draft,
+            selected_display_route: 0,
+            display_rollback_active: false,
+            display_keep_available: false,
             devices,
             validation: Vec::new(),
             hovered: None,
@@ -183,7 +190,98 @@ impl SettingsUi {
     }
     fn replace_draft(&mut self, draft: Config) {
         self.draft = draft;
+        self.selected_display_route = 0;
         self.motion.clear_channel(MotionChannel::ToggleState);
+    }
+    fn set_display_rollback_state(&mut self, active: bool, keep_available: bool) {
+        self.display_rollback_active = active;
+        self.display_keep_available = keep_available;
+    }
+    fn active_profile_hotkey(&self) -> Option<Hotkey> {
+        let id = self.draft.display_profiles.active()?.id.as_str();
+        self.draft
+            .hotkeys
+            .display_profiles
+            .iter()
+            .find(|binding| binding.profile_id.eq_ignore_ascii_case(id))
+            .map(|binding| binding.hotkey)
+    }
+
+    fn set_active_profile_hotkey(&mut self, hotkey: Option<Hotkey>) {
+        let Some(id) = self
+            .draft
+            .display_profiles
+            .active()
+            .map(|profile| profile.id.clone())
+        else {
+            return;
+        };
+        self.draft
+            .hotkeys
+            .display_profiles
+            .retain(|binding| !binding.profile_id.eq_ignore_ascii_case(&id) || hotkey.is_some());
+        if let Some(hotkey) = hotkey {
+            if let Some(binding) = self
+                .draft
+                .hotkeys
+                .display_profiles
+                .iter_mut()
+                .find(|binding| binding.profile_id.eq_ignore_ascii_case(&id))
+            {
+                binding.hotkey = hotkey;
+            } else {
+                self.draft.hotkeys.display_profiles.push(
+                    crate::config::model::DisplayProfileHotkey {
+                        profile_id: id,
+                        hotkey,
+                    },
+                );
+            }
+        }
+    }
+    fn selected_display_route(
+        &self,
+    ) -> Option<(
+        &crate::display::DisplayProfile,
+        &crate::display::DisplayRoute,
+    )> {
+        let profile = self.draft.display_profiles.active()?;
+        profile
+            .routes
+            .get(self.selected_display_route)
+            .map(|route| (profile, route))
+    }
+
+    fn selected_display_route_label(&self) -> String {
+        let Some((_, route)) = self.selected_display_route() else {
+            return "No route selected".into();
+        };
+        format!(
+            "GPU {:016X} → {:016X} source {} → target {} · {}",
+            route.source_adapter,
+            route.target_adapter,
+            route.source_id,
+            route.target_id,
+            route.target_path
+        )
+    }
+
+    fn selected_display_route_edit_value(&self) -> Option<String> {
+        let (_, route) = self.selected_display_route()?;
+        let refresh = if route.refresh_denominator == 1 {
+            route.refresh_numerator.to_string()
+        } else {
+            format!("{}/{}", route.refresh_numerator, route.refresh_denominator)
+        };
+        Some(format!(
+            "{},{},{},{},{},{}",
+            route.source_position_x,
+            route.source_position_y,
+            route.source_width,
+            route.source_height,
+            refresh,
+            rotation_degrees(route.rotation)
+        ))
     }
 
     fn repair_focus(&mut self) {
@@ -442,14 +540,37 @@ impl SettingsUi {
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "No profile selected".into()),
             )),
-            ElementId::CaptureDisplayProfile => ControlValue::Action(Cow::Borrowed("Capture")),
+            ElementId::NewDisplayProfile => ControlValue::Action(Cow::Borrowed("Capture")),
+            ElementId::DisplayProfileHotkey => self.hotkey_value(id, self.active_profile_hotkey()),
+            ElementId::DisplayTopology => ControlValue::Text(Cow::Owned(
+                self.draft
+                    .display_profiles
+                    .active()
+                    .map(|profile| profile.topology.label().to_string())
+                    .unwrap_or_else(|| "No profile selected".into()),
+            )),
+            ElementId::DisplayRoute => {
+                ControlValue::Text(Cow::Owned(self.selected_display_route_label()))
+            }
+            ElementId::EditDisplayRoute => ControlValue::Action(Cow::Borrowed("Edit")),
+            ElementId::UpdateDisplayProfile => ControlValue::Action(Cow::Borrowed("Update")),
+            ElementId::RenameDisplayProfile => ControlValue::Action(Cow::Borrowed("Rename")),
+            ElementId::DuplicateDisplayProfile => ControlValue::Action(Cow::Borrowed("Duplicate")),
+            ElementId::TestApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Test")),
             ElementId::ApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Apply")),
             ElementId::DeleteDisplayProfile => ControlValue::Action(Cow::Borrowed("Delete")),
-            ElementId::UndoDisplayChange => {
-                ControlValue::Action(Cow::Borrowed(if crate::app::display_rollback_active() {
-                    "Undo"
+            ElementId::KeepDisplayChange => {
+                ControlValue::Action(Cow::Borrowed(if self.display_keep_available {
+                    "Keep"
                 } else {
-                    "No pending change"
+                    "No pending test"
+                }))
+            }
+            ElementId::UndoDisplayChange => {
+                ControlValue::Action(Cow::Borrowed(if self.display_rollback_active {
+                    "Revert"
+                } else {
+                    "No pending test"
                 }))
             }
             ElementId::DesktopsEnabled => ControlValue::Toggle(self.draft.virtual_desktops.enabled),
@@ -587,12 +708,37 @@ impl SettingsUi {
                 !self.draft.display_profiles.enabled
                     || self.draft.display_profiles.active().is_none()
             }
-            ElementId::CaptureDisplayProfile => !self.draft.display_profiles.enabled,
-            ElementId::ApplyDisplayProfile | ElementId::DeleteDisplayProfile => {
+            ElementId::DisplayProfileHotkey
+            | ElementId::DisplayTopology
+            | ElementId::DisplayRoute
+            | ElementId::EditDisplayRoute => {
                 !self.draft.display_profiles.enabled
                     || self.draft.display_profiles.active().is_none()
+                    || self.display_rollback_active
             }
-            ElementId::UndoDisplayChange => !crate::app::display_rollback_active(),
+            ElementId::NewDisplayProfile => {
+                !self.draft.display_profiles.enabled || self.display_rollback_active
+            }
+            ElementId::UpdateDisplayProfile
+            | ElementId::RenameDisplayProfile
+            | ElementId::DuplicateDisplayProfile
+            | ElementId::TestApplyDisplayProfile
+            | ElementId::DeleteDisplayProfile => {
+                !self.draft.display_profiles.enabled
+                    || self.draft.display_profiles.active().is_none()
+                    || self.display_rollback_active
+            }
+            ElementId::ApplyDisplayProfile => {
+                !self.draft.display_profiles.enabled
+                    || self
+                        .draft
+                        .display_profiles
+                        .active()
+                        .is_none_or(|profile| !profile.confirmed)
+                    || self.display_rollback_active
+            }
+            ElementId::KeepDisplayChange => !self.display_keep_available,
+            ElementId::UndoDisplayChange => !self.display_rollback_active,
             ElementId::InputRole => !Self::endpoint_role_enabled(&self.draft.audio.input_device),
             ElementId::OutputRole => !Self::endpoint_role_enabled(&self.draft.audio.output_device),
             ElementId::OverlayAppearance
@@ -775,7 +921,8 @@ impl SettingsUi {
             | ElementId::ForegroundVolumeDownHotkey
             | ElementId::PreviousDesktopHotkey
             | ElementId::AssignScratchpadHotkey
-            | ElementId::ToggleScratchpadHotkey => {
+            | ElementId::ToggleScratchpadHotkey
+            | ElementId::DisplayProfileHotkey => {
                 self.recording = Some(id);
                 self.recording_modifiers = ModifierMask::NONE;
                 self.validation.clear();
@@ -826,13 +973,53 @@ impl SettingsUi {
                     PickerKind::DisplayProfile,
                 ));
             }
-            ElementId::CaptureDisplayProfile => self.capture_display_profile(hwnd),
+            ElementId::DisplayTopology => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::DisplayTopology,
+                ));
+            }
+            ElementId::DisplayRoute => {
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::DisplayRoute,
+                ));
+            }
+            ElementId::EditDisplayRoute => {
+                if let (Some(profile), Some(initial)) = (
+                    self.draft.display_profiles.active(),
+                    self.selected_display_route_edit_value(),
+                ) {
+                    post_main(crate::event::AppEvent::OpenDisplayRouteEditPrompt {
+                        profile_id: profile.id.clone(),
+                        route_index: self.selected_display_route,
+                        initial,
+                    });
+                }
+            }
+            ElementId::NewDisplayProfile => self.capture_display_profile(hwnd, false),
+            ElementId::UpdateDisplayProfile => self.capture_display_profile(hwnd, true),
+            ElementId::RenameDisplayProfile => {
+                if let Some(profile) = self.draft.display_profiles.active() {
+                    post_main(crate::event::AppEvent::OpenDisplayRenamePrompt {
+                        profile_id: profile.id.clone(),
+                        current_name: profile.name.clone(),
+                    });
+                }
+            }
+            ElementId::DuplicateDisplayProfile => self.duplicate_active_display_profile(),
+            ElementId::TestApplyDisplayProfile => {
+                if let Some(profile) = self.draft.display_profiles.active().cloned() {
+                    post_main(crate::event::AppEvent::TestApplyDisplayProfile { profile });
+                }
+            }
             ElementId::ApplyDisplayProfile => {
                 if let Some(profile) = self.draft.display_profiles.active().cloned() {
                     post_main(crate::event::AppEvent::ApplyDisplayProfile { profile });
                 }
             }
             ElementId::DeleteDisplayProfile => self.delete_active_display_profile(),
+            ElementId::KeepDisplayChange => {
+                post_main(crate::event::AppEvent::KeepDisplayProfile);
+            }
             ElementId::UndoDisplayChange => {
                 post_main(crate::event::AppEvent::RevertDisplayProfile);
             }
@@ -913,48 +1100,183 @@ impl SettingsUi {
             ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale => {}
             ElementId::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
         }
-        if id != ElementId::CaptureDisplayProfile {
+        if !matches!(
+            id,
+            ElementId::NewDisplayProfile | ElementId::UpdateDisplayProfile
+        ) {
             self.validation.clear();
         }
         invalidate(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
-    fn capture_display_profile(&mut self, _hwnd: HWND) {
-        let (id, name) = if let Some(profile) = self.draft.display_profiles.active() {
+    fn capture_display_profile(&mut self, _hwnd: HWND, update_selected: bool) {
+        let (id, name) = if update_selected {
+            let Some(profile) = self.draft.display_profiles.active() else {
+                self.validation = vec![Violation {
+                    field: "display_profiles.active_profile".into(),
+                    message: "select a profile before Update from Current".into(),
+                }];
+                return;
+            };
             (profile.id.clone(), profile.name.clone())
         } else {
-            let mut number = 1usize;
-            loop {
-                let id = format!("profile-{number}");
-                if !self
-                    .draft
-                    .display_profiles
-                    .profiles
-                    .iter()
-                    .any(|profile| profile.id == id)
-                {
-                    break (id, format!("Profile {number}"));
-                }
-                number += 1;
-            }
+            next_display_profile_identity(&self.draft.display_profiles.profiles)
         };
         match crate::display::capture_current_profile(&id, &name) {
-            Ok(profile) => {
-                self.draft.display_profiles.upsert(profile);
-                self.validation.clear();
+            Ok(mut profile) => {
+                profile.confirmed = false;
+                if self.draft.display_profiles.upsert(profile) {
+                    self.selected_display_route = 0;
+                    self.validation.clear();
+                } else {
+                    self.validation = vec![Violation {
+                        field: "display_profiles.profiles".into(),
+                        message: format!(
+                            "at most {} display profiles are supported",
+                            crate::display::MAX_PROFILES
+                        ),
+                    }];
+                }
             }
             Err(error) => {
+                let reason = error.to_string();
+                crate::error_!("display profile capture failed: {reason}");
                 self.validation = vec![Violation {
                     field: "display_profiles".into(),
-                    message: error.to_string(),
+                    message: reason,
                 }];
             }
         }
     }
 
+    fn duplicate_active_display_profile(&mut self) {
+        let Some(source) = self.draft.display_profiles.active().cloned() else {
+            return;
+        };
+        let (id, _) = next_display_profile_identity(&self.draft.display_profiles.profiles);
+        let mut name = format!("{} Copy", source.name.trim());
+        let base = name.clone();
+        let mut suffix = 2usize;
+        while self
+            .draft
+            .display_profiles
+            .profiles
+            .iter()
+            .any(|profile| profile.name.eq_ignore_ascii_case(&name))
+        {
+            name = format!("{base} {suffix}");
+            suffix += 1;
+        }
+        let mut duplicate = source;
+        duplicate.id = id;
+        duplicate.name = name;
+        duplicate.confirmed = false;
+        if self.draft.display_profiles.upsert(duplicate) {
+            self.selected_display_route = 0;
+            self.validation.clear();
+        } else {
+            self.validation = vec![Violation {
+                field: "display_profiles.profiles".into(),
+                message: format!(
+                    "at most {} display profiles are supported",
+                    crate::display::MAX_PROFILES
+                ),
+            }];
+        }
+    }
+
+    fn rename_display_profile(&mut self, profile_id: &str, name: &str) {
+        let normalized = name.trim();
+        if normalized.is_empty() {
+            self.validation = vec![Violation {
+                field: "display_profiles.profiles.name".into(),
+                message: "profile name must not be empty".into(),
+            }];
+            return;
+        }
+        if self.draft.display_profiles.profiles.iter().any(|profile| {
+            !profile.id.eq_ignore_ascii_case(profile_id)
+                && profile.name.eq_ignore_ascii_case(normalized)
+        }) {
+            self.validation = vec![Violation {
+                field: "display_profiles.profiles.name".into(),
+                message: format!("profile name `{normalized}` is already in use"),
+            }];
+            return;
+        }
+        let Some(profile) = self
+            .draft
+            .display_profiles
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id.eq_ignore_ascii_case(profile_id))
+        else {
+            self.validation = vec![Violation {
+                field: "display_profiles.active_profile".into(),
+                message: "selected profile no longer exists".into(),
+            }];
+            return;
+        };
+        profile.name = normalized.to_string();
+        self.validation.clear();
+    }
+    fn edit_display_route(&mut self, profile_id: &str, route_index: usize, value: &str) {
+        let (x, y, width, height, refresh, refresh_denominator, rotation) =
+            match parse_display_route_values(value) {
+                Ok(values) => values,
+                Err(error) => {
+                    self.validation = vec![Violation {
+                        field: "display_profiles.routes".into(),
+                        message: error.into(),
+                    }];
+                    return;
+                }
+            };
+
+        let Some(profile) = self
+            .draft
+            .display_profiles
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id.eq_ignore_ascii_case(profile_id))
+        else {
+            self.validation = vec![Violation {
+                field: "display_profiles.active_profile".into(),
+                message: "selected profile no longer exists".into(),
+            }];
+            return;
+        };
+        let Some(route) = profile.routes.get_mut(route_index) else {
+            self.validation = vec![Violation {
+                field: "display_profiles.routes".into(),
+                message: "selected display route no longer exists".into(),
+            }];
+            return;
+        };
+        route.source_position_x = x;
+        route.source_position_y = y;
+        route.source_width = width;
+        route.source_height = height;
+        route.active_width = width;
+        route.active_height = height;
+        route.total_width = route.total_width.max(width);
+        route.total_height = route.total_height.max(height);
+        route.refresh_numerator = refresh;
+        route.refresh_denominator = refresh_denominator;
+        route.rotation = rotation;
+        profile.confirmed = false;
+        self.selected_display_route = route_index;
+        self.validation.clear();
+    }
+
     fn delete_active_display_profile(&mut self) {
         if let Some(active) = self.draft.display_profiles.active_profile.clone() {
             self.draft.display_profiles.remove(&active);
+            self.draft
+                .hotkeys
+                .display_profiles
+                .retain(|binding| !binding.profile_id.eq_ignore_ascii_case(&active));
+            self.selected_display_route = 0;
         }
         self.validation.clear();
     }
@@ -1002,6 +1324,14 @@ impl SettingsUi {
         if vk == 0x1B && down {
             self.recording = None;
             self.recording_modifiers = ModifierMask::NONE;
+            invalidate(hwnd);
+            return true;
+        }
+        if id == ElementId::DisplayProfileHotkey && vk == 0x2E && down {
+            self.set_active_profile_hotkey(None);
+            self.recording = None;
+            self.recording_modifiers = ModifierMask::NONE;
+            self.validation = crate::config::validate(&self.draft);
             invalidate(hwnd);
             return true;
         }
@@ -1053,6 +1383,7 @@ impl SettingsUi {
             ElementId::ToggleScratchpadHotkey => {
                 self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
             }
+            ElementId::DisplayProfileHotkey => self.set_active_profile_hotkey(Some(hotkey)),
             _ => {}
         }
         self.recording = None;
@@ -1103,6 +1434,13 @@ impl SettingsUi {
                         }
                         ElementId::ToggleScratchpadHotkey => {
                             self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
+                        }
+                        ElementId::DisplayProfileHotkey => {
+                            if key == VirtualKey(0x2E) && chord.modifiers.is_empty() {
+                                self.set_active_profile_hotkey(None);
+                            } else {
+                                self.set_active_profile_hotkey(Some(hotkey));
+                            }
                         }
                         _ => {}
                     }
@@ -1182,6 +1520,28 @@ impl SettingsUi {
             }
             (PickerKind::DisplayProfile, PickerValue::DisplayProfile(value)) => {
                 self.draft.display_profiles.active_profile = value;
+                self.selected_display_route = 0;
+            }
+            (PickerKind::DisplayTopology, PickerValue::DisplayTopology(topology)) => {
+                if let Some(profile) = self
+                    .draft
+                    .display_profiles
+                    .active_profile
+                    .as_deref()
+                    .and_then(|id| {
+                        self.draft
+                            .display_profiles
+                            .profiles
+                            .iter_mut()
+                            .find(|profile| profile.id.eq_ignore_ascii_case(id))
+                    })
+                {
+                    profile.topology = topology;
+                    profile.confirmed = false;
+                }
+            }
+            (PickerKind::DisplayRoute, PickerValue::DisplayRoute(index)) => {
+                self.selected_display_route = index;
             }
             (PickerKind::InputRole, PickerValue::Role(value)) => {
                 self.draft.audio.input_role = value;
@@ -1374,6 +1734,7 @@ pub struct SettingsWindow {
     pub hwnd: HWND,
     picker: Option<PickerPopup>,
     picker_owner: Option<ElementId>,
+    rename_prompt: Option<TextPrompt>,
     last_rect: Option<SavedSettingsRect>,
 }
 
@@ -1429,7 +1790,116 @@ impl SettingsWindow {
             picker: None,
             picker_owner: None,
             last_rect: saved,
+            rename_prompt: None,
         })
+    }
+    pub fn set_display_rollback_state(&mut self, active: bool, keep_available: bool) {
+        let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(self.hwnd) }) else {
+            return;
+        };
+        let changed = {
+            let mut ui = cell.borrow_mut();
+            let changed =
+                ui.display_rollback_active != active || ui.display_keep_available != keep_available;
+            if changed {
+                ui.set_display_rollback_state(active, keep_available);
+            }
+            changed
+        };
+        if changed {
+            invalidate(self.hwnd);
+            if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+                cell.borrow_mut().publish_automation_snapshot(self.hwnd);
+            }
+        }
+    }
+    pub fn open_display_profile_rename(
+        &mut self,
+        profile_id: String,
+        current_name: String,
+    ) -> Result<()> {
+        self.close_rename_prompt();
+        self.rename_prompt = Some(TextPrompt::create(
+            self.hwnd,
+            PromptAction::RenameProfile { profile_id },
+            "Rename display profile",
+            "Rename",
+            &current_name,
+        )?);
+        Ok(())
+    }
+    pub fn open_display_route_edit(
+        &mut self,
+        profile_id: String,
+        route_index: usize,
+        initial: String,
+    ) -> Result<()> {
+        self.close_rename_prompt();
+        self.rename_prompt = Some(TextPrompt::create(
+            self.hwnd,
+            PromptAction::EditRoute {
+                profile_id,
+                route_index,
+            },
+            "Edit display route",
+            "Apply",
+            &initial,
+        )?);
+        Ok(())
+    }
+
+    pub fn edit_display_route(&mut self, profile_id: &str, route_index: usize, value: &str) {
+        self.close_rename_prompt();
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut()
+                .edit_display_route(profile_id, route_index, value);
+        }
+        invalidate(self.hwnd);
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().publish_automation_snapshot(self.hwnd);
+        }
+    }
+
+    pub fn rename_display_profile(&mut self, profile_id: &str, name: &str) {
+        self.close_rename_prompt();
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().rename_display_profile(profile_id, name);
+        }
+        invalidate(self.hwnd);
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().publish_automation_snapshot(self.hwnd);
+        }
+    }
+
+    pub fn cancel_display_profile_rename(&mut self) {
+        self.close_rename_prompt();
+    }
+    pub fn update_display_profile_after_keep(
+        &mut self,
+        confirmed_profile: &crate::display::DisplayProfile,
+    ) {
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            let mut ui = cell.borrow_mut();
+            if let Some(existing) = ui
+                .draft
+                .display_profiles
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id.eq_ignore_ascii_case(&confirmed_profile.id))
+            {
+                *existing = confirmed_profile.clone();
+            }
+        }
+        invalidate(self.hwnd);
+        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
+            cell.borrow_mut().publish_automation_snapshot(self.hwnd);
+        }
+    }
+
+    fn close_rename_prompt(&mut self) {
+        if let Some(mut prompt) = self.rename_prompt.take() {
+            prompt.close();
+        }
     }
 
     pub fn show(&mut self) -> Result<()> {
@@ -1505,7 +1975,7 @@ impl SettingsWindow {
             return Ok(());
         }
         self.cancel_picker();
-        let (draft, control_rect, dpi) = {
+        let (draft, control_rect, dpi, selected_display_route) = {
             let ui = cell.borrow();
             let element = picker_element(kind)
                 .and_then(|id| ui.layout.element(id))
@@ -1514,10 +1984,12 @@ impl SettingsWindow {
                 ui.draft.clone(),
                 controls::value_control_rect(element.rect, element.kind),
                 ui.dpi,
+                ui.selected_display_route,
             )
         };
         let anchor = screen_rect(self.hwnd, control_rect, dpi)?;
-        let (choices, current) = picker_choices(kind, &draft, &devices, &monitors);
+        let (choices, current) =
+            picker_choices(kind, &draft, &devices, &monitors, selected_display_route);
         let selected_indices = picker_selection_indices(kind, &draft, &choices);
         if choices.is_empty() {
             return Err(Error::config("no choices available"));
@@ -1607,6 +2079,7 @@ impl SettingsWindow {
     }
 
     pub(crate) fn close_for_hide(&mut self) {
+        self.close_rename_prompt();
         let hwnd = self.hwnd;
         close_picker_before_settings_hide(
             || self.cancel_picker_without_focus(),
@@ -1777,6 +2250,8 @@ fn picker_element(kind: PickerKind) -> Option<ElementId> {
         PickerKind::InputAllowlist => ElementId::InputAllowlist,
         PickerKind::OutputAllowlist => ElementId::OutputAllowlist,
         PickerKind::DisplayProfile => ElementId::DisplayProfile,
+        PickerKind::DisplayTopology => ElementId::DisplayTopology,
+        PickerKind::DisplayRoute => ElementId::DisplayRoute,
         PickerKind::InputRole => ElementId::InputRole,
         PickerKind::OutputRole => ElementId::OutputRole,
         PickerKind::DesktopNumberModifier => ElementId::DesktopNumberModifier,
@@ -1830,6 +2305,7 @@ fn picker_choices(
     draft: &Config,
     devices: &crate::audio::devices::DeviceLists,
     monitors: &[crate::platform::monitor::MonitorGeometry],
+    selected_display_route: usize,
 ) -> (Vec<PickerChoice>, usize) {
     let mut choices = Vec::new();
     match kind {
@@ -1859,6 +2335,34 @@ fn picker_choices(
         }
         PickerKind::DisplayProfile => {
             choices.extend(display_profile_choices(&draft.display_profiles));
+        }
+        PickerKind::DisplayTopology => {
+            choices.extend(
+                crate::display::DisplayTopology::ALL
+                    .into_iter()
+                    .map(|topology| PickerChoice {
+                        label: topology.label().into(),
+                        value: PickerValue::DisplayTopology(topology),
+                    }),
+            );
+        }
+        PickerKind::DisplayRoute => {
+            if let Some(profile) = draft.display_profiles.active() {
+                choices.extend(profile.routes.iter().enumerate().map(|(index, route)| {
+                    PickerChoice {
+                        label: format!(
+                            "Route {} — GPU {:016X} → {:016X}, source {}, target {} · {}",
+                            index + 1,
+                            route.source_adapter,
+                            route.target_adapter,
+                            route.source_id,
+                            route.target_id,
+                            route.target_path
+                        ),
+                        value: PickerValue::DisplayRoute(index),
+                    }
+                }));
+            }
         }
         PickerKind::InputRole => {
             for role in [
@@ -1964,7 +2468,7 @@ fn picker_choices(
         ),
         PickerKind::InputAllowlist | PickerKind::OutputAllowlist => 0,
         _ => {
-            let current = current_picker_value(kind, draft);
+            let current = current_picker_value(kind, draft, selected_display_route);
             choices
                 .iter()
                 .position(|choice| choice.value == current)
@@ -2043,9 +2547,16 @@ fn display_profile_choices(profiles: &crate::display::DisplayProfilesCfg) -> Vec
         label: "No profile selected".into(),
         value: PickerValue::DisplayProfile(None),
     }];
-    choices.extend(profiles.profiles.iter().map(|profile| PickerChoice {
-        label: format!("{} — {}", profile.name, profile.topology.label()),
-        value: PickerValue::DisplayProfile(Some(profile.id.clone())),
+    choices.extend(profiles.profiles.iter().map(|profile| {
+        let status = if profile.confirmed {
+            "Confirmed"
+        } else {
+            "Needs Test"
+        };
+        PickerChoice {
+            label: format!("{} — {} ({status})", profile.name, profile.topology.label()),
+            value: PickerValue::DisplayProfile(Some(profile.id.clone())),
+        }
     }));
     choices
 }
@@ -2113,7 +2624,11 @@ fn device_choice_label(
     }
 }
 
-fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
+fn current_picker_value(
+    kind: PickerKind,
+    draft: &Config,
+    selected_display_route: usize,
+) -> PickerValue {
     match kind {
         PickerKind::InputDevice => PickerValue::Device(draft.audio.input_device.clone()),
         PickerKind::OutputDevice => PickerValue::Device(draft.audio.output_device.clone()),
@@ -2126,6 +2641,14 @@ fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
         PickerKind::DisplayProfile => {
             PickerValue::DisplayProfile(draft.display_profiles.active_profile.clone())
         }
+        PickerKind::DisplayTopology => PickerValue::DisplayTopology(
+            draft
+                .display_profiles
+                .active()
+                .map(|profile| profile.topology)
+                .unwrap_or_default(),
+        ),
+        PickerKind::DisplayRoute => PickerValue::DisplayRoute(selected_display_route),
         PickerKind::InputRole => PickerValue::Role(draft.audio.input_role),
         PickerKind::OutputRole => PickerValue::Role(draft.audio.output_role),
         PickerKind::DesktopNumberModifier => {
@@ -2581,6 +3104,99 @@ fn start_timer(hwnd: HWND) {
         let _ = SetTimer(Some(hwnd), UI_TIMER, UI_TIMER_MS, None);
     }
 }
+type DisplayRouteEditValues = (i32, i32, u32, u32, u32, u32, i32);
+
+fn parse_display_route_values(
+    value: &str,
+) -> std::result::Result<DisplayRouteEditValues, &'static str> {
+    let mut parts = value.split(',').map(str::trim);
+    let x = parts
+        .next()
+        .ok_or("route edit needs x,y,width,height,refresh,rotation")?
+        .parse()
+        .map_err(|_| "route x must be an integer")?;
+    let y = parts
+        .next()
+        .ok_or("route edit needs x,y,width,height,refresh,rotation")?
+        .parse()
+        .map_err(|_| "route y must be an integer")?;
+    let width = parts
+        .next()
+        .ok_or("route edit needs x,y,width,height,refresh,rotation")?
+        .parse::<u32>()
+        .map_err(|_| "route width must be a positive integer")?;
+    let height = parts
+        .next()
+        .ok_or("route edit needs x,y,width,height,refresh,rotation")?
+        .parse::<u32>()
+        .map_err(|_| "route height must be a positive integer")?;
+    let refresh = parts
+        .next()
+        .ok_or("route edit needs x,y,width,height,refresh,rotation")?;
+    let (refresh, refresh_denominator) = parse_display_refresh(refresh)?;
+    let rotation = match parts
+        .next()
+        .ok_or("route edit needs x,y,width,height,refresh,rotation")?
+        .parse::<i32>()
+        .map_err(|_| "route rotation must be 0, 90, 180, or 270 degrees")?
+    {
+        0 => 1,
+        90 => 2,
+        180 => 3,
+        270 => 4,
+        _ => return Err("route rotation must be 0, 90, 180, or 270 degrees"),
+    };
+    if parts.next().is_some() {
+        return Err("route edit has too many comma-separated values");
+    }
+    if width == 0 || height == 0 {
+        return Err("route width and height must be positive");
+    }
+    Ok((x, y, width, height, refresh, refresh_denominator, rotation))
+}
+
+fn parse_display_refresh(value: &str) -> std::result::Result<(u32, u32), &'static str> {
+    let mut values = value.split('/');
+    let numerator = values
+        .next()
+        .ok_or("route refresh must be a positive integer or numerator/denominator")?
+        .parse::<u32>()
+        .map_err(|_| "route refresh must be a positive integer or numerator/denominator")?;
+    let denominator = values.next().map_or(Ok(1), |value| {
+        value
+            .parse::<u32>()
+            .map_err(|_| "route refresh denominator must be positive")
+    })?;
+    if values.next().is_some() {
+        return Err("route refresh must be a positive integer or numerator/denominator");
+    }
+    if numerator == 0 || denominator == 0 {
+        return Err("route refresh must be positive");
+    }
+    Ok((numerator, denominator))
+}
+
+fn rotation_degrees(value: i32) -> i32 {
+    match value {
+        2 => 90,
+        3 => 180,
+        4 => 270,
+        _ => 0,
+    }
+}
+
+fn next_display_profile_identity(profiles: &[crate::display::DisplayProfile]) -> (String, String) {
+    for number in 1usize.. {
+        let id = format!("profile-{number}");
+        let name = format!("Profile {number}");
+        if profiles.iter().all(|profile| {
+            !profile.id.eq_ignore_ascii_case(&id) && !profile.name.eq_ignore_ascii_case(&name)
+        }) {
+            return (id, name);
+        }
+    }
+    unreachable!("profile identity space exhausted")
+}
 
 fn modifier_family_label(modifier: Option<ModifierMask>) -> String {
     modifier
@@ -2759,7 +3375,7 @@ mod interaction_tests {
             output_defaults: Default::default(),
             warnings: Vec::new(),
         };
-        let (choices, current) = picker_choices(PickerKind::InputDevice, &config, &devices, &[]);
+        let (choices, current) = picker_choices(PickerKind::InputDevice, &config, &devices, &[], 0);
         assert_eq!(choices.len(), 1);
         assert_eq!(current, 0);
         assert_eq!(choices[current].label, "Current microphone");
@@ -2790,7 +3406,8 @@ mod interaction_tests {
             warnings: Vec::new(),
         };
         let config = Config::default();
-        let (choices, selected) = picker_choices(PickerKind::InputDevice, &config, &devices, &[]);
+        let (choices, selected) =
+            picker_choices(PickerKind::InputDevice, &config, &devices, &[], 0);
         assert_eq!(choices.len(), 1);
         assert_eq!(selected, 0);
         assert_eq!(choices[0].label, "Current microphone (System Default)");
@@ -2825,7 +3442,8 @@ mod interaction_tests {
             output_defaults: Default::default(),
             warnings: Vec::new(),
         };
-        let (choices, current) = picker_choices(PickerKind::InputAllowlist, &config, &devices, &[]);
+        let (choices, current) =
+            picker_choices(PickerKind::InputAllowlist, &config, &devices, &[], 0);
         assert_eq!(current, 0);
         assert_eq!(choices[0].label, "All active endpoints (allowlist off)");
         assert_eq!(choices[1].label, "No endpoints (disable cycling)");
@@ -3268,6 +3886,152 @@ mod interaction_tests {
         let second = Cell::new(0);
         automation.flush_pending_events_for_test(|_| second.set(second.get() + 1));
         assert_eq!(second.get(), 0);
+    }
+
+    fn sample_profile(id: &str, name: &str, confirmed: bool) -> crate::display::DisplayProfile {
+        crate::display::DisplayProfile {
+            id: id.into(),
+            name: name.into(),
+            topology: crate::display::DisplayTopology::Extend,
+            confirmed,
+            routes: vec![crate::display::DisplayRoute {
+                target_path: format!("target-{id}"),
+                source_width: 1920,
+                source_height: 1080,
+                refresh_numerator: 60,
+                refresh_denominator: 1,
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn display_profile_rename_preserves_id_confirmation_and_hotkey_reference() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![sample_profile("a4c", "Gaming", true)];
+        ui.draft.display_profiles.active_profile = Some("a4c".into());
+        let hotkey = Hotkey::parse("Ctrl+Alt+F1").unwrap();
+        ui.draft
+            .hotkeys
+            .display_profiles
+            .push(crate::config::model::DisplayProfileHotkey {
+                profile_id: "a4c".into(),
+                hotkey,
+            });
+
+        ui.rename_display_profile("a4c", "  Gaming 240Hz  ");
+
+        let profile = ui.draft.display_profiles.active().unwrap();
+        assert_eq!(profile.id, "a4c");
+        assert_eq!(profile.name, "Gaming 240Hz");
+        assert!(profile.confirmed);
+        assert_eq!(ui.draft.hotkeys.display_profiles[0].profile_id, "a4c");
+    }
+
+    #[test]
+    fn display_profile_duplicate_gets_new_id_without_hotkey_or_confirmation() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![sample_profile("gaming", "Gaming", true)];
+        ui.draft.display_profiles.active_profile = Some("gaming".into());
+        ui.draft
+            .hotkeys
+            .display_profiles
+            .push(crate::config::model::DisplayProfileHotkey {
+                profile_id: "gaming".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F2").unwrap(),
+            });
+
+        ui.duplicate_active_display_profile();
+
+        let duplicate = ui.draft.display_profiles.active().unwrap();
+        assert_ne!(duplicate.id, "gaming");
+        assert_eq!(duplicate.name, "Gaming Copy");
+        assert!(!duplicate.confirmed);
+        assert_eq!(ui.draft.hotkeys.display_profiles.len(), 1);
+        assert_eq!(ui.draft.hotkeys.display_profiles[0].profile_id, "gaming");
+    }
+
+    #[test]
+    fn display_profile_delete_removes_hotkey_and_selects_remaining_profile() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![
+            sample_profile("first", "First", true),
+            sample_profile("second", "Second", true),
+        ];
+        ui.draft.display_profiles.active_profile = Some("first".into());
+        ui.draft
+            .hotkeys
+            .display_profiles
+            .push(crate::config::model::DisplayProfileHotkey {
+                profile_id: "first".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F3").unwrap(),
+            });
+
+        ui.delete_active_display_profile();
+
+        assert_eq!(
+            ui.draft.display_profiles.active_profile.as_deref(),
+            Some("second")
+        );
+        assert!(ui.draft.display_profiles.active().is_some());
+        assert!(ui.draft.hotkeys.display_profiles.is_empty());
+    }
+
+    #[test]
+    fn display_route_editor_changes_supported_values_and_untrusts_profile() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![sample_profile("work", "Work", true)];
+        ui.draft.display_profiles.active_profile = Some("work".into());
+
+        ui.edit_display_route("work", 0, "-1920,0,2560,1440,144,90");
+
+        let route = &ui.draft.display_profiles.active().unwrap().routes[0];
+        assert_eq!(route.source_position_x, -1920);
+        assert_eq!(route.source_width, 2560);
+        assert_eq!(route.source_height, 1440);
+        assert_eq!(route.refresh_numerator, 144);
+        assert_eq!(route.rotation, 2);
+        assert!(!ui.draft.display_profiles.active().unwrap().confirmed);
+    }
+
+    #[test]
+    fn display_route_editor_rejects_unsupported_values() {
+        assert!(parse_display_route_values("0,0,1920,1080,60,45").is_err());
+        assert!(parse_display_route_values("0,0,0,1080,60,0").is_err());
+        assert!(parse_display_route_values("0,0,1920,1080,60,0,extra").is_err());
+    }
+    #[test]
+    fn display_route_editor_preserves_refresh_rate_rationals() {
+        assert_eq!(
+            parse_display_route_values("0,0,1920,1080,60000/1001,0"),
+            Ok((0, 0, 1920, 1080, 60000, 1001, 1))
+        );
+        assert!(parse_display_route_values("0,0,1920,1080,60/0,0").is_err());
+        assert!(parse_display_route_values("0,0,1920,1080,60/1001/2,0").is_err());
+    }
+
+    #[test]
+    fn profile_hotkey_capture_and_clear_uses_stable_profile_id() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![sample_profile("ai-id", "AI", true)];
+        ui.draft.display_profiles.active_profile = Some("ai-id".into());
+        let hotkey = Hotkey::parse("Ctrl+Alt+F4").unwrap();
+
+        ui.recording = Some(ElementId::DisplayProfileHotkey);
+        ui.finish_recording(crate::keyboard::hook::CapturedChord {
+            modifiers: hotkey.modifiers,
+            key: Some(hotkey.key),
+        });
+        assert_eq!(ui.draft.hotkeys.display_profiles.len(), 1);
+        assert_eq!(ui.draft.hotkeys.display_profiles[0].profile_id, "ai-id");
+        assert_eq!(ui.draft.hotkeys.display_profiles[0].hotkey, hotkey);
+
+        ui.recording = Some(ElementId::DisplayProfileHotkey);
+        ui.finish_recording(crate::keyboard::hook::CapturedChord {
+            modifiers: ModifierMask::NONE,
+            key: Some(VirtualKey(0x2E)),
+        });
+        assert!(ui.draft.hotkeys.display_profiles.is_empty());
     }
 
     #[test]

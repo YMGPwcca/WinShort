@@ -41,7 +41,8 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
   move, previous-desktop focus restoration, executable routing, and runtime scratchpad
   show/hide actions stay disabled or unassigned by default.
 - **Display profiles** — capture and persist documented Windows DisplayConfig topologies,
-  resolve stable monitor paths, and apply with an explicit 15-second Undo window.
+  edit routes, rename/duplicate/delete by stable profile ID, bind per-profile hotkeys, and use
+  temporary Test Apply with explicit Keep, Revert, and automatic 15-second rollback.
 - **Hot-reload config** — typed TOML model, atomic writes, inline validation, draft/live
   separation. Cancel always restores the live snapshot.
 - **Diagnostics & support** — separate native status page, passive self-test, Unicode

@@ -33,6 +33,7 @@ Every OS handle/interface has exactly one owner thread or struct.
 | Clipboard HGLOBAL | main thread during Copy Diagnostics | Windows after successful `SetClipboardData(CF_UNICODETEXT, ...)` | WinShort frees it only when allocation/clipboard transfer fails |
 | Settings picker HWND + LISTBOX | main thread | `PickerPopup` | focus loss/Escape/commit drops popup; Settings shutdown drops it before process exit |
 | Settings UI Automation provider | main/UIA COM callers | `SettingsAutomation` shared snapshot + queued action mutex | provider owns only `Arc<RwLock<SettingsAutomationSnapshot>>`; reads never borrow `SettingsUi`, actions post `WM_APP_SETTINGS_AUTOMATION` to the Settings HWND |
+| Display rollback token | main thread | `App::display_rollback` | pre-apply paths/modes and route snapshot stay in memory; Keep commits, Revert/timeout restores, failed restore remains retryable |
 | WinEvent hook (foreground) | main thread | foreground tracker | unhooked when tracker drops in shutdown |
 
 ## COM interfaces

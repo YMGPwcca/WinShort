@@ -38,6 +38,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Audio endpoint rebuilds now own one `ConfigSnapshot` for Capture and Render,
   preventing a newer publication from entering a rebuild already planned for
   an older revision.
+- Corrected DisplayConfig confirmation expiry: Test Apply is temporary and timeout
+  automatically restores the captured topology; Keep is explicit, Revert is immediate,
+  timer-start/persistence failures are surfaced, and failed recovery retains a retryable
+  rollback token.
 
 ### Added
 
@@ -62,6 +66,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Schema v8 adds persisted DisplayConfig topology profiles with stable target-path
   identities, Capture Current, profile CRUD, route validation, and a bounded
   15-second Undo window after explicit Apply.
+- Schema v9 adds stable-ID display-profile hotkeys, complete New/Update/Rename/Duplicate/
+  Delete workflows, supported route editing, confirmation state, and centralized cleanup
+  and conflict repair.
 
 ## [0.1.0] - 2026-08-24
 

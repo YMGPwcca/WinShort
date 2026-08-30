@@ -45,6 +45,9 @@ only while motion or recording is active; idle UI has no render loop.
 * Picker rows — explicit native LISTBOX popup for input/output device, endpoint role, overlay
   appearance, position, and monitor; current selection is visible, keyboard navigable, Escape
   cancels, Enter/click commits, focus loss closes
+* Display profile rows — New/Update from Current, Select, stable-ID hotkey recorder,
+  route/topology selection, Rename, Duplicate, Delete, Test Apply, Keep, and Revert;
+  route editing uses a native text prompt with rational refresh input
 * Slider rows — duration / opacity / scale, mouse drag plus logical UI Automation RangeValue semantics
 * Buttons — footer Cancel / Save (Save disabled until draft differs from live)
 * Scrollable content column — wheel scrolling with slim custom scrollbar
