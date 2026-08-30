@@ -875,7 +875,9 @@ fn reclaim_persisted_special_workspace(native: Option<&InternalBackend>) -> Opti
         Err(error) => {
             crate::warn_!("discarding unreadable special workspace identity: {error}");
             if let Err(clear_error) = workspace_state::clear() {
-                crate::warn_!("failed to clear unreadable special workspace identity: {clear_error}");
+                crate::warn_!(
+                    "failed to clear unreadable special workspace identity: {clear_error}"
+                );
             }
             None
         }

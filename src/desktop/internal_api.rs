@@ -357,11 +357,7 @@ impl InternalBackend {
         Ok(name.to_string_lossy())
     }
 
-    pub fn set_desktop_name(
-        &self,
-        id: GUID,
-        name: &str,
-    ) -> std::result::Result<(), DesktopError> {
+    pub fn set_desktop_name(&self, id: GUID, name: &str) -> std::result::Result<(), DesktopError> {
         let desktop = self.desktop_for_id(id)?;
         let name = HSTRING::from(name);
         unsafe {
@@ -377,11 +373,7 @@ impl InternalBackend {
         }
     }
 
-    pub fn move_desktop_id(
-        &self,
-        id: GUID,
-        index: usize,
-    ) -> std::result::Result<(), DesktopError> {
+    pub fn move_desktop_id(&self, id: GUID, index: usize) -> std::result::Result<(), DesktopError> {
         let ids = self.desktop_ids()?;
         if index >= ids.len() {
             return Err(DesktopError::NavigationUnavailable(format!(
