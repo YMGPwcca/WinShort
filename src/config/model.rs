@@ -71,14 +71,6 @@ pub struct HotkeysCfg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesktopRule {
-    /// Executable basename (with optional `.exe`) or a full image path.
-    pub executable: String,
-    /// One-based virtual desktop number; missing desktops are created on demand.
-    pub desktop: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VdCfg {
     pub enabled: bool,
     pub win_number_switching: bool,
@@ -88,7 +80,6 @@ pub struct VdCfg {
     pub previous_desktop: Option<Hotkey>,
     pub scratchpad_assign: Option<Hotkey>,
     pub scratchpad_toggle: Option<Hotkey>,
-    pub routing_rules: Vec<DesktopRule>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,7 +309,6 @@ impl Default for Config {
                 previous_desktop: None,
                 scratchpad_assign: None,
                 scratchpad_toggle: None,
-                routing_rules: Vec::new(),
             },
             display_profiles: DisplayProfilesCfg::default(),
         }
@@ -511,7 +501,9 @@ pub struct VdToml {
     pub scratchpad_assign: String,
     #[serde(default)]
     pub scratchpad_toggle: String,
-    #[serde(default)]
+    /// Legacy schema-v6 compatibility tombstone. Routing is no longer an
+    /// active WinShort feature and is never serialized again.
+    #[serde(default, skip_serializing)]
     pub routing_rules: Vec<DesktopRuleToml>,
 }
 
@@ -702,15 +694,9 @@ impl Config {
                     .virtual_desktops
                     .scratchpad_toggle
                     .map_or(String::new(), |hotkey| hotkey.to_string()),
-                routing_rules: self
-                    .virtual_desktops
-                    .routing_rules
-                    .iter()
-                    .map(|rule| DesktopRuleToml {
-                        executable: rule.executable.clone(),
-                        desktop: rule.desktop,
-                    })
-                    .collect(),
+                // Keep the legacy boundary field empty; `skip_serializing`
+                // guarantees removed executable-routing rules never return on Save.
+                routing_rules: Vec::new(),
             },
             display_profiles: self.display_profiles.clone(),
         }
@@ -902,15 +888,12 @@ impl Config {
                 }
             }
         }
-        c.virtual_desktops.routing_rules = t
-            .virtual_desktops
-            .routing_rules
-            .iter()
-            .map(|rule| DesktopRule {
-                executable: rule.executable.clone(),
-                desktop: rule.desktop,
-            })
-            .collect();
+        if !t.virtual_desktops.routing_rules.is_empty() {
+            warnings.push(
+                "virtual_desktops.routing_rules: executable routing was removed; legacy rules ignored"
+                    .into(),
+            );
+        }
         c.display_profiles = t.display_profiles.clone();
 
         (c, warnings)
@@ -973,11 +956,6 @@ impl Config {
         let number_modifier_repaired = violations
             .iter()
             .any(|violation| violation.field == "virtual_desktops.number_modifier");
-        let routing_rules_invalid = violations.iter().any(|violation| {
-            violation
-                .field
-                .starts_with("virtual_desktops.routing_rules[")
-        });
         let input_allowlist_invalid = violations
             .iter()
             .any(|violation| violation.field.starts_with("audio.cycle_input_allowlist["));
@@ -1066,15 +1044,6 @@ impl Config {
                 "scratchpad_toggle" => self.virtual_desktops.scratchpad_toggle = None,
                 _ => {}
             }
-        }
-        if routing_rules_invalid {
-            let mut seen = std::collections::HashSet::new();
-            self.virtual_desktops.routing_rules.retain(|rule| {
-                let executable = rule.executable.trim();
-                (1..=256).contains(&rule.desktop)
-                    && !executable.is_empty()
-                    && seen.insert(executable.to_ascii_lowercase())
-            });
         }
         for (invalid, allowlist) in [
             (
@@ -1409,40 +1378,91 @@ topology = "extend"
     }
 
     #[test]
-    fn executable_routing_rules_round_trip_through_schema_v6() {
-        let mut config = Config::default();
-        config.virtual_desktops.routing_rules = vec![
-            DesktopRule {
-                executable: "notepad.exe".into(),
-                desktop: 2,
-            },
-            DesktopRule {
-                executable: r"C:\Apps\Player.exe".into(),
-                desktop: 8,
-            },
-        ];
+    fn legacy_executable_routing_rules_are_ignored_and_not_serialized_for_v6_and_v9() {
+        for schema_version in [6, 9] {
+            let raw = format!(
+                r#"
+schema_version = {schema_version}
+[virtual_desktops]
+enabled = false
+win_number_switching = false
+number_modifier = "Ctrl+Alt"
+move_follow_modifier = "Shift"
+move_silent_modifier = "Ctrl+Shift"
+previous_desktop = "Ctrl+Alt+F12"
+scratchpad_assign = "Ctrl+Alt+F13"
+scratchpad_toggle = "Ctrl+Alt+F14"
+[[virtual_desktops.routing_rules]]
+executable = "notepad.exe"
+desktop = 2
+"#
+            );
+            let boundary: ConfigToml = toml::from_str(&raw).unwrap();
+            let (config, warnings) = Config::from_toml(&boundary);
+            assert!(warnings.iter().any(|warning| {
+                warning.contains("virtual_desktops.routing_rules")
+                    && warning.contains("removed")
+                    && warning.contains("ignored")
+            }));
+            assert!(!config.virtual_desktops.enabled);
+            assert!(!config.virtual_desktops.win_number_switching);
+            assert_eq!(
+                config.virtual_desktops.number_modifier,
+                ModifierMask::CTRL.union(ModifierMask::ALT)
+            );
+            assert_eq!(
+                config.virtual_desktops.move_follow_modifier,
+                Some(ModifierMask::SHIFT)
+            );
+            assert_eq!(
+                config.virtual_desktops.move_silent_modifier,
+                Some(ModifierMask::CTRL.union(ModifierMask::SHIFT))
+            );
+            assert_eq!(
+                config.virtual_desktops.previous_desktop,
+                Some(Hotkey::parse("Ctrl+Alt+F12").unwrap())
+            );
+            assert_eq!(
+                config.virtual_desktops.scratchpad_assign,
+                Some(Hotkey::parse("Ctrl+Alt+F13").unwrap())
+            );
+            assert_eq!(
+                config.virtual_desktops.scratchpad_toggle,
+                Some(Hotkey::parse("Ctrl+Alt+F14").unwrap())
+            );
 
-        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
-        let boundary: ConfigToml = toml::from_str(&text).unwrap();
-        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
-        let (round_tripped, warnings) = Config::from_toml(&boundary);
-        assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(round_tripped, config);
+            let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+            assert!(!text.contains("routing_rules"), "{text}");
+            let saved: ConfigToml = toml::from_str(&text).unwrap();
+            let (round_tripped, round_warnings) = Config::from_toml(&saved);
+            assert!(round_warnings.is_empty(), "{round_warnings:?}");
+            assert_eq!(round_tripped, config);
+        }
     }
 
     #[test]
-    fn schema_v5_defaults_new_executable_routing_rules() {
+    fn current_v9_without_routing_round_trips_unchanged() {
         let raw = r#"
-schema_version = 5
+schema_version = 9
 [virtual_desktops]
 enabled = true
 win_number_switching = true
-number_modifier = "Win"
+number_modifier = "Alt"
+move_follow_modifier = "Shift"
+move_silent_modifier = "Ctrl+Shift"
+previous_desktop = "Ctrl+Alt+F12"
+scratchpad_assign = "Ctrl+Alt+F13"
+scratchpad_toggle = "Ctrl+Alt+F14"
 "#;
         let boundary: ConfigToml = toml::from_str(raw).unwrap();
         let (config, warnings) = Config::from_toml(&boundary);
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert!(config.virtual_desktops.routing_rules.is_empty());
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        assert!(!text.contains("routing_rules"), "{text}");
+        let saved: ConfigToml = toml::from_str(&text).unwrap();
+        let (round_tripped, round_warnings) = Config::from_toml(&saved);
+        assert!(round_warnings.is_empty(), "{round_warnings:?}");
+        assert_eq!(round_tripped, config);
     }
 
     #[test]

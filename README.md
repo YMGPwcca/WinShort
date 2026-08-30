@@ -37,9 +37,9 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
 - **Status overlay** — per-pixel-alpha HUD: topmost, no-activate, click-through, fade/slide
   animation, monitor-aware placement. Never steals focus from games.
 - **Virtual desktop workflow** — configurable numbered switching creates only missing
-  desktops through the build-pinned Shell COM backend; optional move/follow, silent
-  move, previous-desktop focus restoration, executable routing, and runtime scratchpad
-  show/hide actions stay disabled or unassigned by default.
+  normal desktops through the build-pinned Shell COM backend; optional move/follow, silent
+  move, previous-desktop focus restoration, and a native-only dedicated Special Workspace
+  stay disabled or unassigned by default. The Special Workspace is excluded from 1–9 ordinals.
 - **Display profiles** — capture and persist documented Windows DisplayConfig topologies,
   edit routes, rename/duplicate/delete by stable profile ID, bind per-profile hotkeys, and use
   temporary Test Apply with explicit Keep, Revert, and automatic 15-second rollback.
@@ -59,9 +59,12 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
 | `Ctrl+Alt+P` | Toggle foreground app audio |
 | `Win+1`…`Win+9` | Switch to virtual desktop 1–9 |
 
-Optional desktop workflow and scratchpad shortcuts are unassigned by default and can be
-configured in Settings; the scratchpad assignment is runtime-only and is forgotten when
-the window closes.
+Optional desktop workflow and Special Workspace shortcuts are unassigned by default and can
+be configured in Settings. Sending a window moves it into one dedicated Virtual Desktop;
+toggling switches to that workspace and back to the remembered normal desktop. WinShort keeps
+the workspace at the end of Shell ordering and persists its exact GUID as recovery state so a
+workspace that survives a hard kill or Windows reboot is reclaimed instead of duplicated.
+Orderly exit or feature disable removes it.
 
 `Win+E`, `Win+R`, `Win+D`, `Win+L`, `Win+Shift+S` and every other Windows shortcut pass
 through untouched.
@@ -102,7 +105,10 @@ fail-closed on unknown layouts:
 | anything else | Keyboard fallback (`Ctrl+Win+Arrow` walking, best effort) |
 
 The Settings → Advanced area opens Diagnostics & Support; the diagnostics page shows the active
-backend and reason. Details and test evidence: [docs/VIRTUAL_DESKTOP_COMPAT.md](docs/VIRTUAL_DESKTOP_COMPAT.md).
+backend and reason. The Special Workspace requires the native Shell backend; on unsupported builds
+normal numbered switching may still use keyboard fallback, but Special Workspace actions fail
+closed instead of simulating creation or GUID-addressed switching. Details and test evidence:
+[docs/VIRTUAL_DESKTOP_COMPAT.md](docs/VIRTUAL_DESKTOP_COMPAT.md).
 
 ## Documentation
 

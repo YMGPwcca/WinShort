@@ -264,8 +264,16 @@ fuzz campaign is claimed or running.
 - Silent foreground move leaves the source desktop active
 - Per-desktop last-focused HWND tracking excludes WinShort, shell, invisible, stale, and cloaked windows
 - Previous-desktop toggles back and forth and clears deleted identities
-- Scratchpad assignment/toggle/cleanup remains runtime-only
-- Opt-in executable routing never focuses or switches the user
+- Send foreground window → Special Workspace moves it off the current normal desktop without hiding it
+- Multiple sent windows coexist on the same dedicated Special Workspace
+- Toggle from a normal desktop → Special Workspace → toggle again returns to that exact normal desktop
+- Focus another application before entering the Special Workspace; the real desktop switch exposes usable workspace windows without hide/show focus hacks
+- Numbered Desktop 1..9 ordinals exclude the Special Workspace, including missing-normal-desktop creation
+- Previous Desktop history is not polluted by entering/leaving the Special Workspace
+- Disable the feature or exit cleanly removes the Special Workspace and Shell relocates its windows to a normal fallback desktop
+- External deletion of the Special Workspace clears stale runtime identity and the next use creates a fresh workspace
+- Unsupported/native-failed builds report Special Workspace unavailable; keyboard fallback never simulates its create/move/toggle semantics
+- Hard process termination or Windows reboot may leave the dedicated VD alive; relaunch must reclaim the exact persisted GUID without creating a duplicate, while a missing GUID is treated as external deletion
 
 ### Display profiles
 - Capture Current on single/multi-monitor topology persists stable target paths,

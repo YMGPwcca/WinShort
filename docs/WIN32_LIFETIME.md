@@ -29,6 +29,7 @@ Every OS handle/interface has exactly one owner thread or struct.
 | Settings renderer (D2D factory, `ID2D1HwndRenderTarget`, brushes, text formats) | main thread | `ui::renderer::Renderer` | dropped with the settings UI; any `EndDraw` failure drops the whole Renderer so the next paint rebuilds it from scratch |
 | Overlay surface (WIC bitmap, DIB section, compatible DC) | main thread | `OverlayGraphics`/`LayeredSurface` | re-created per `show()`; released with the overlay |
 | Diagnostics HWND | main thread | `DiagnosticsWindow` / main thread | hidden on close; destroyed during `App::begin_shutdown` |
+| Special Workspace GUID + return GUID | desktop thread | `DesktopController::{special_workspace,special_return}` plus `%LOCALAPPDATA%\WinShort\special-workspace.guid` for workspace identity only | `special_return` is process-only; external deletion clears stale identity; disable/orderly shutdown removes the dedicated VD and clears persisted identity; a hard kill/reboot can leave the VD alive, and the next process reclaims it only by the exact persisted GUID |
 | Support worker | one-shot filesystem thread | `App::support_bundle: Option<JoinHandle<()>>` | completion posts an event; App joins it before diagnostics HWND teardown |
 | Clipboard HGLOBAL | main thread during Copy Diagnostics | Windows after successful `SetClipboardData(CF_UNICODETEXT, ...)` | WinShort frees it only when allocation/clipboard transfer fails |
 | Settings picker HWND + LISTBOX | main thread | `PickerPopup` | focus loss/Escape/commit drops popup; Settings shutdown drops it before process exit |
@@ -72,7 +73,7 @@ Exact sequence of `App::begin_shutdown`:
 2. single_instance::signal_shutdown()    // watcher stops BEFORE windows disappear (#24)
 3. keyboard.set_suspended(true); shutdown()   // unhooks on the keyboard thread, joins
 4. audio.shutdown()                      // unregister callbacks, release COM, join
-5. desktop.shutdown()                    // release Shell COM, join
+5. desktop.shutdown()                    // remove Special Workspace if present, clear its persisted GUID, release Shell COM, join
 6. foreground tracker dropped            // WinEvent hook gone
 7. overlay.hide(); DestroyWindow(overlay)
 8. tray.remove()                         // NIM_DELETE (+ DestroyIcon via OwnedIcon drop)

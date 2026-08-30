@@ -3,7 +3,7 @@
 **Status: Implemented** (this document describes current `main`; forward-looking ideas live in the issue tracker, not here).
 
 Native Windows tray utility: audio hotkeys, status overlay, virtual desktop
-workflow, and a runtime scratchpad window.
+workflow, and a dedicated Special Workspace backed by a real Windows Virtual Desktop.
 Pure Rust against Win32/COM via the Microsoft `windows` crate. No GUI framework,
 no WebView, no other-language components.
 
@@ -21,7 +21,7 @@ App Runtime (main thread, STA)
 Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 ├── WH_KEYBOARD_LL       ├── IMMDeviceEnumerator    ├── ImmersiveShell IServiceProvider
 ├── modifier tracking    ├── IAudioEndpointVolume   ├── IVirtualDesktopManagerInternal
-└── PostMessage only      └── command channel loop   └── focus history + scratchpad
+└── PostMessage only      └── command channel loop   └── focus history + special-workspace identity
 ```
 
 The DisplayConfig subsystem captures stable target paths and source/target modes, deduplicates
@@ -38,8 +38,12 @@ remain invalid when no desktop-image mode is supplied.
 | Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), DisplayConfig profile capture/apply/rollback timer, timers |
 | Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
 | Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
-| Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable desktop focus history, runtime scratchpad HWND |
+| Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable normal-desktop focus history, runtime Special Workspace GUID + return GUID |
 | Instance watcher | none | waits on named activate/shutdown events |
+
+The Special Workspace GUID also has a durable identity copy in
+`%LOCALAPPDATA%\WinShort\special-workspace.guid`; the return GUID remains process-only.
+The state file is not user configuration and contains no HWND or COM object.
 
 Rules:
 
@@ -58,11 +62,23 @@ Rules:
   classified by `DesktopError::permits_fallback` (VIRTUAL_DESKTOP_COMPAT.md).
 * Missing numbered desktops are created only through the native backend; the keyboard fallback is
   used only when a previously known existing target can be safely walked.
-* Scratchpad assignment stores only the HWND in the desktop STA worker. It is never persisted;
-  hidden/closed handles are validated before every toggle and cleared when stale.
-* Executable routing is replaced by `ConfigApplied`, matched from foreground WinEvents, and
-  performs only a native move. It excludes WinShort, shell classes, invisible, disabled, and
-  cloaked windows; it never switches desktops or calls `SetForegroundWindow`.
+* The Special Workspace is a real Windows Virtual Desktop with its own GUID. Sending a foreground
+  window resolves the captured HWND through `IApplicationViewCollection::GetViewForHwnd`, checks
+  `CanViewMoveDesktops`, then uses the build-pinned Shell `MoveViewToDesktop` path. Toggling uses
+  the same native backend to switch between the workspace GUID and a remembered normal desktop.
+  No window is hidden, shown, restored, or force-focused as part of Special Workspace ownership.
+* Numbered Desktop 1–9 operations filter the Special Workspace GUID out of Shell ordering, so the
+  dedicated desktop never consumes a user-facing ordinal. WinShort names it
+  `WinShort Special Workspace` and re-pins it to the end of Shell ordering when necessary. Once it
+  exists, keyboard-arrow fallback is not used for numbered operations because it cannot safely
+  skip the extra Shell desktop.
+* The exact Special Workspace GUID is persisted outside `config.toml`. After a hard process kill or
+  Windows reboot, a later WinShort process reclaims that GUID only if Shell still enumerates it;
+  the workspace name is presentation only and is never used as identity. External deletion clears
+  stale runtime/persisted identity, and the next workspace action creates one replacement.
+* Disabling the feature or orderly shutdown removes the dedicated desktop with Shell's
+  `RemoveDesktop`, supplying a normal fallback so Windows relocates contained windows, then clears
+  the persisted GUID.
 
 ## Events
 

@@ -10,6 +10,7 @@ use std::ops::Deref;
 use crate::desktop::backend::{DesktopError, VirtualDesktopBackend};
 use crate::desktop::detect::OsBuild;
 use crate::error::{Error, Result};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::{
     Common::IObjectArray, IVirtualDesktopManager, VirtualDesktopManager,
@@ -54,6 +55,33 @@ pub unsafe trait ShellServiceProvider: IUnknown {
     ) -> HRESULT;
 }
 
+// IApplicationView is intentionally opaque here. WinShort only obtains a view
+// from IApplicationViewCollection and passes that same COM pointer to the
+// build-pinned IVirtualDesktopManagerInternal move methods; no view vtable slot
+// is called directly.
+#[windows_core::interface("372E1D3B-38D3-42E4-A15B-8AB2B178F513")]
+pub unsafe trait IApplicationView: IUnknown {}
+
+// This service/IID has remained stable across the Windows generations WinShort
+// targets. Only the prefix through GetViewForHwnd is declared because later
+// slots are never called. The first three declarations preserve the real vtable
+// position of GetViewForHwnd.
+#[windows_core::interface("1841C6D7-4F9D-42C0-AF41-8747538F10E5")]
+pub unsafe trait IApplicationViewCollection: IUnknown {
+    pub unsafe fn get_views(&self, views: *mut *mut c_void) -> HRESULT;
+    pub unsafe fn get_views_by_zorder(&self, views: *mut *mut c_void) -> HRESULT;
+    pub unsafe fn get_views_by_app_user_model_id(
+        &self,
+        app_user_model_id: *const u16,
+        views: *mut *mut c_void,
+    ) -> HRESULT;
+    pub unsafe fn get_view_for_hwnd(
+        &self,
+        window: HWND,
+        view: *mut Option<IApplicationView>,
+    ) -> HRESULT;
+}
+
 #[windows_core::interface("3F07F4BE-B107-441A-AF0F-39D82529072C")]
 pub unsafe trait IVirtualDesktop: IUnknown {
     pub unsafe fn is_view_visible(&self, view: *mut c_void, visible: *mut u32) -> HRESULT;
@@ -64,7 +92,9 @@ pub unsafe trait IVirtualDesktop: IUnknown {
 }
 
 /// Build 26100+ layout. Slot 10 (`switch_desktop_and_move_foreground_view`)
-/// is intentionally present; omitting it shifts every later method.
+/// is intentionally present; omitting it shifts every later method. The two
+/// declarations after `find_desktop` preserve the verified 26100+ positions of
+/// `SetDesktopName`; WinShort does not call the include/exclude slot itself.
 #[windows_core::interface("53F5CA0B-158F-4124-900C-057158060B27")]
 pub unsafe trait IVirtualDesktopManagerInternal: IUnknown {
     pub unsafe fn get_count(&self, count: *mut u32) -> HRESULT;
@@ -99,6 +129,17 @@ pub unsafe trait IVirtualDesktopManagerInternal: IUnknown {
         id: *const GUID,
         desktop: *mut Option<IVirtualDesktop>,
     ) -> HRESULT;
+    pub unsafe fn get_desktop_switch_include_exclude_views(
+        &self,
+        desktop: ComIn<IVirtualDesktop>,
+        include: *mut *mut c_void,
+        exclude: *mut *mut c_void,
+    ) -> HRESULT;
+    pub unsafe fn set_desktop_name(
+        &self,
+        desktop: ComIn<IVirtualDesktop>,
+        name: HSTRING,
+    ) -> HRESULT;
 }
 
 /// Classify a Win32/HRESULT failure into the typed desktop error (#20).
@@ -109,6 +150,33 @@ fn classify(e: &crate::error::Error) -> DesktopError {
             other => DesktopError::SwitchFailed(other as i32),
         },
         other => DesktopError::BackendUnavailable(other.to_string()),
+    }
+}
+
+/// Move failures are semantic failures, not switch failures. Preserve the RPC
+/// class so the controller can rebuild a dead Explorer proxy, but never label
+/// an ordinary move rejection (notably E_ACCESSDENIED) as SwitchDesktop.
+fn classify_move(e: &crate::error::Error) -> DesktopError {
+    match e {
+        crate::error::Error::Os { code, .. }
+            if matches!(*code, 0x8001_0108 | 0x8007_06BA | 0x8007_06BE) =>
+        {
+            DesktopError::RpcDisconnected
+        }
+        other => DesktopError::MoveUnavailable(other.to_string()),
+    }
+}
+
+/// Naming/reordering are workspace-management operations, not switches. They
+/// must never authorize keyboard fallback if Shell rejects the mutation.
+fn classify_workspace_management(e: &crate::error::Error) -> DesktopError {
+    match e {
+        crate::error::Error::Os { code, .. }
+            if matches!(*code, 0x8001_0108 | 0x8007_06BA | 0x8007_06BE) =>
+        {
+            DesktopError::RpcDisconnected
+        }
+        other => DesktopError::NavigationUnavailable(other.to_string()),
     }
 }
 
@@ -125,36 +193,7 @@ impl<T> BackendError<T> for crate::error::Result<T> {
 pub struct InternalBackend {
     manager: IVirtualDesktopManagerInternal,
     window_manager: Option<IVirtualDesktopManager>,
-}
-fn desktops_to_create(current_count: usize, target_count: usize) -> usize {
-    target_count.saturating_sub(current_count)
-}
-
-fn ensure_desktop_count_with<Create, Count>(
-    current_count: usize,
-    target_count: usize,
-    mut create: Create,
-    mut count: Count,
-) -> std::result::Result<(), DesktopError>
-where
-    Create: FnMut() -> std::result::Result<(), DesktopError>,
-    Count: FnMut() -> std::result::Result<usize, DesktopError>,
-{
-    if target_count > 256 {
-        return Err(DesktopError::CreationUnavailable(format!(
-            "requested desktop count {target_count} exceeds safety limit"
-        )));
-    }
-    for _ in 0..desktops_to_create(current_count, target_count) {
-        create()?;
-    }
-    let final_count = count()?;
-    if final_count < target_count {
-        return Err(DesktopError::CreationUnavailable(format!(
-            "CreateDesktop stopped at {final_count}; target was {target_count}"
-        )));
-    }
-    Ok(())
+    view_collection: Option<IApplicationViewCollection>,
 }
 
 impl InternalBackend {
@@ -196,9 +235,42 @@ impl InternalBackend {
                         None
                     }
                 };
+
+            // The documented MoveWindowToDesktop API rejects cross-process HWNDs
+            // with E_ACCESSDENIED. Resolve the Shell application view service so
+            // all WinShort move actions can use GetViewForHwnd + MoveViewToDesktop.
+            let view_collection = {
+                let mut view_raw = std::ptr::null_mut();
+                match provider
+                    .query_service(
+                        &IApplicationViewCollection::IID,
+                        &IApplicationViewCollection::IID,
+                        &mut view_raw,
+                    )
+                    .ok()
+                {
+                    Ok(()) if !view_raw.is_null() => {
+                        Some(IApplicationViewCollection::from_raw(view_raw))
+                    }
+                    Ok(()) => {
+                        crate::warn_!(
+                            "IServiceProvider::QueryService(IApplicationViewCollection) returned null"
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        crate::warn_!(
+                            "IServiceProvider::QueryService(IApplicationViewCollection) failed: {error}"
+                        );
+                        None
+                    }
+                }
+            };
+
             Ok(Self {
                 manager,
                 window_manager,
+                view_collection,
             })
         }
     }
@@ -235,55 +307,208 @@ impl InternalBackend {
         })();
         inner.classify()
     }
-    pub fn ensure_desktop_count(
-        &self,
-        target_count: usize,
-    ) -> std::result::Result<(), DesktopError> {
-        let count = self.desktop_count()?;
-        ensure_desktop_count_with(
-            count,
-            target_count,
-            || {
-                // This slot is safe only after `create` has pinned and
-                // validated the 26100+/262xx ABI; unknown builds never reach
-                // this closure.
-                let mut desktop = None;
-                unsafe {
-                    self.manager
-                        .create_desktop(&mut desktop)
-                        .ok()
-                        .map_err(|e| {
-                            DesktopError::CreationUnavailable(format!(
-                                "CreateDesktop failed: {}",
-                                Error::win("IVirtualDesktopManagerInternal::CreateDesktop", &e)
-                            ))
-                        })?;
+
+    fn desktop_for_id(&self, id: GUID) -> std::result::Result<IVirtualDesktop, DesktopError> {
+        let inner: crate::error::Result<Option<IVirtualDesktop>> = (|| unsafe {
+            let array = desktop_array(&self.manager)?;
+            let count = array
+                .GetCount()
+                .map_err(|e| Error::win("IObjectArray::GetCount", &e))?;
+            for index in 0..count {
+                let desktop: IVirtualDesktop = array
+                    .GetAt(index)
+                    .map_err(|e| Error::win("IObjectArray::GetAt", &e))?;
+                if desktop_id(&desktop)? == id {
+                    return Ok(Some(desktop));
                 }
-                if desktop.is_none() {
-                    return Err(DesktopError::CreationUnavailable(
-                        "CreateDesktop returned a null desktop".into(),
-                    ));
-                }
-                Ok(())
-            },
-            || self.desktop_count(),
-        )
+            }
+            Ok(None)
+        })();
+        inner.classify()?.ok_or_else(|| {
+            DesktopError::NavigationUnavailable(
+                "desktop identity was not found in Shell ordering".into(),
+            )
+        })
     }
 
-    fn desktop_id_for_index(&self, index: usize) -> std::result::Result<GUID, DesktopError> {
+    pub fn create_desktop(&self) -> std::result::Result<GUID, DesktopError> {
+        let inner: crate::error::Result<GUID> = (|| unsafe {
+            let mut desktop = None;
+            self.manager
+                .create_desktop(&mut desktop)
+                .ok()
+                .map_err(|e| Error::win("IVirtualDesktopManagerInternal::CreateDesktop", &e))?;
+            let desktop = desktop.ok_or_else(|| Error::desktop("CreateDesktop returned null"))?;
+            desktop_id(&desktop)
+        })();
+        inner.map_err(|error| {
+            DesktopError::CreationUnavailable(format!("CreateDesktop failed: {error}"))
+        })
+    }
+
+    pub fn desktop_name(&self, id: GUID) -> std::result::Result<String, DesktopError> {
+        let desktop = self.desktop_for_id(id)?;
+        let mut name = HSTRING::new();
+        unsafe {
+            desktop.get_name(&mut name).ok().map_err(|error| {
+                classify_workspace_management(&Error::win("IVirtualDesktop::GetName", &error))
+            })?;
+        }
+        Ok(name.to_string_lossy())
+    }
+
+    pub fn set_desktop_name(&self, id: GUID, name: &str) -> std::result::Result<(), DesktopError> {
+        let desktop = self.desktop_for_id(id)?;
+        let name = HSTRING::from(name);
+        unsafe {
+            self.manager
+                .set_desktop_name(ComIn::new(&desktop), name)
+                .ok()
+                .map_err(|error| {
+                    classify_workspace_management(&Error::win(
+                        "IVirtualDesktopManagerInternal::SetDesktopName",
+                        &error,
+                    ))
+                })
+        }
+    }
+
+    pub fn move_desktop_id(&self, id: GUID, index: usize) -> std::result::Result<(), DesktopError> {
         let ids = self.desktop_ids()?;
-        ids.get(index)
-            .copied()
-            .ok_or(DesktopError::TargetOutOfRange {
-                requested: index,
-                count: ids.len(),
-            })
+        if index >= ids.len() {
+            return Err(DesktopError::NavigationUnavailable(format!(
+                "desktop reorder target {} is outside Shell ordering of {} desktops",
+                index + 1,
+                ids.len()
+            )));
+        }
+        if ids.get(index).copied() == Some(id) {
+            return Ok(());
+        }
+        let index = u32::try_from(index).map_err(|_| {
+            DesktopError::NavigationUnavailable("desktop reorder index overflowed u32".into())
+        })?;
+        let desktop = self.desktop_for_id(id)?;
+        unsafe {
+            self.manager
+                .move_desktop(ComIn::new(&desktop), index)
+                .ok()
+                .map_err(|error| {
+                    classify_workspace_management(&Error::win(
+                        "IVirtualDesktopManagerInternal::MoveDesktop",
+                        &error,
+                    ))
+                })
+        }
     }
 
-    pub fn window_desktop_id(
+    pub fn switch_to_id(&self, id: GUID) -> std::result::Result<(), DesktopError> {
+        if self.current_desktop_id()? == id {
+            return Ok(());
+        }
+        let desktop = self.desktop_for_id(id)?;
+        unsafe {
+            self.manager
+                .switch_desktop(ComIn::new(&desktop))
+                .ok()
+                .map_err(|e| {
+                    classify(&Error::win(
+                        "IVirtualDesktopManagerInternal::SwitchDesktop",
+                        &e,
+                    ))
+                })
+        }
+    }
+
+    pub fn move_window_to_desktop_id(
         &self,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> std::result::Result<GUID, DesktopError> {
+        hwnd: HWND,
+        desktop_id: GUID,
+    ) -> std::result::Result<(), DesktopError> {
+        let view_collection = self.view_collection.as_ref().ok_or_else(|| {
+            DesktopError::MoveUnavailable(
+                "IApplicationViewCollection is unavailable; cross-process window moves are disabled"
+                    .into(),
+            )
+        })?;
+        let desktop = self.desktop_for_id(desktop_id)?;
+
+        let mut view = None;
+        unsafe {
+            view_collection
+                .get_view_for_hwnd(hwnd, &mut view)
+                .ok()
+                .map_err(|e| {
+                    classify_move(&Error::win(
+                        "IApplicationViewCollection::GetViewForHwnd",
+                        &e,
+                    ))
+                })?;
+        }
+        let view = view.ok_or_else(|| {
+            DesktopError::MoveUnavailable(
+                "IApplicationViewCollection::GetViewForHwnd returned no application view".into(),
+            )
+        })?;
+
+        let mut can_move = 0i32;
+        unsafe {
+            self.manager
+                .can_view_move_desktops(view.as_raw(), &mut can_move)
+                .ok()
+                .map_err(|e| {
+                    classify_move(&Error::win(
+                        "IVirtualDesktopManagerInternal::CanViewMoveDesktops",
+                        &e,
+                    ))
+                })?;
+        }
+        if can_move == 0 {
+            return Err(DesktopError::MoveUnavailable(
+                "Shell reports that this application view cannot move between virtual desktops"
+                    .into(),
+            ));
+        }
+
+        unsafe {
+            self.manager
+                .move_view_to_desktop(view.as_raw(), ComIn::new(&desktop))
+                .ok()
+                .map_err(|e| {
+                    classify_move(&Error::win(
+                        "IVirtualDesktopManagerInternal::MoveViewToDesktop",
+                        &e,
+                    ))
+                })
+        }
+    }
+
+    pub fn remove_desktop_id(
+        &self,
+        id: GUID,
+        fallback_id: GUID,
+    ) -> std::result::Result<(), DesktopError> {
+        if id == fallback_id {
+            return Err(DesktopError::NavigationUnavailable(
+                "special workspace fallback cannot be the workspace itself".into(),
+            ));
+        }
+        let desktop = self.desktop_for_id(id)?;
+        let fallback = self.desktop_for_id(fallback_id)?;
+        unsafe {
+            self.manager
+                .remove_desktop(ComIn::new(&desktop), ComIn::new(&fallback))
+                .ok()
+                .map_err(|e| {
+                    classify_workspace_management(&Error::win(
+                        "IVirtualDesktopManagerInternal::RemoveDesktop",
+                        &e,
+                    ))
+                })
+        }
+    }
+
+    pub fn window_desktop_id(&self, hwnd: HWND) -> std::result::Result<GUID, DesktopError> {
         let Some(window_manager) = &self.window_manager else {
             return Err(DesktopError::MoveUnavailable(
                 "public VirtualDesktopManager is unavailable".into(),
@@ -291,37 +516,11 @@ impl InternalBackend {
         };
         unsafe {
             window_manager.GetWindowDesktopId(hwnd).map_err(|e| {
-                classify(&Error::win(
+                classify_move(&Error::win(
                     "IVirtualDesktopManager::GetWindowDesktopId",
                     &e,
                 ))
             })
-        }
-    }
-
-    pub fn move_window_to_desktop(
-        &self,
-        hwnd: windows::Win32::Foundation::HWND,
-        index: usize,
-    ) -> std::result::Result<(), DesktopError> {
-        let Some(window_manager) = &self.window_manager else {
-            return Err(DesktopError::MoveUnavailable(
-                "public VirtualDesktopManager is unavailable".into(),
-            ));
-        };
-        // The documented manager is the supported HWND→desktop operation.
-        // The internal MoveViewToDesktop slot requires an IApplicationView
-        // that cannot be safely derived from an arbitrary foreground HWND.
-        let desktop_id = self.desktop_id_for_index(index)?;
-        unsafe {
-            window_manager
-                .MoveWindowToDesktop(hwnd, &desktop_id)
-                .map_err(|e| {
-                    classify(&Error::win(
-                        "IVirtualDesktopManager::MoveWindowToDesktop",
-                        &e,
-                    ))
-                })
         }
     }
 }
@@ -439,68 +638,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desktop_creation_is_bounded_to_missing_count() {
-        assert_eq!(desktops_to_create(3, 9), 6);
-        assert_eq!(desktops_to_create(9, 9), 0);
-        assert_eq!(desktops_to_create(0, 1), 1);
-    }
-    #[test]
-    fn ensure_existing_target_performs_no_creation() {
-        let creations = std::cell::Cell::new(0);
-        ensure_desktop_count_with(
-            9,
-            9,
-            || {
-                creations.set(creations.get() + 1);
-                Ok(())
-            },
-            || Ok(9),
-        )
-        .unwrap();
-        assert_eq!(creations.get(), 0);
-    }
-
-    #[test]
-    fn ensure_creates_exactly_the_missing_desktops() {
-        let creations = std::cell::Cell::new(0);
-        let count = std::cell::Cell::new(3);
-        ensure_desktop_count_with(
-            count.get(),
-            9,
-            || {
-                creations.set(creations.get() + 1);
-                count.set(count.get() + 1);
-                Ok(())
-            },
-            || Ok(count.get()),
-        )
-        .unwrap();
-        assert_eq!(creations.get(), 6);
-        assert_eq!(count.get(), 9);
-    }
-
-    #[test]
-    fn ensure_surfaces_native_creation_failure_without_keyboard_fallback() {
-        let result = ensure_desktop_count_with(
-            3,
-            4,
-            || Err(DesktopError::CreationUnavailable("denied".into())),
-            || Ok(3),
+    fn access_denied_move_is_not_reported_as_switch_failure() {
+        let error = Error::os(
+            "IVirtualDesktopManagerInternal::MoveViewToDesktop",
+            0x8007_0005,
         );
-        assert_eq!(
-            result,
-            Err(DesktopError::CreationUnavailable("denied".into()))
-        );
-        assert!(!result.unwrap_err().permits_fallback());
-    }
-
-    #[test]
-    fn ensure_rejects_a_native_backend_that_stops_short() {
-        let result = ensure_desktop_count_with(3, 4, || Ok(()), || Ok(3));
+        let classified = classify_move(&error);
         assert!(matches!(
-            result,
-            Err(DesktopError::CreationUnavailable(message))
-                if message.contains("stopped at 3")
+            classified,
+            DesktopError::MoveUnavailable(message)
+                if message.contains("E_ACCESSDENIED") && message.contains("MoveViewToDesktop")
+        ));
+    }
+
+    #[test]
+    fn move_rpc_disconnect_keeps_retryable_error_class() {
+        let classified = classify_move(&Error::os(
+            "IVirtualDesktopManagerInternal::MoveViewToDesktop",
+            0x8007_06BA,
+        ));
+        assert_eq!(classified, DesktopError::RpcDisconnected);
+    }
+
+    #[test]
+    fn workspace_management_failure_never_looks_like_switch_failure() {
+        let error = Error::os("IVirtualDesktopManagerInternal::MoveDesktop", 0x8007_0005);
+        assert!(matches!(
+            classify_workspace_management(&error),
+            DesktopError::NavigationUnavailable(message)
+                if message.contains("E_ACCESSDENIED") && message.contains("MoveDesktop")
         ));
     }
 }

@@ -1,9 +1,10 @@
 # Virtual Desktop Compatibility
 
 **Status: Implemented** (native backend on whitelisted builds; bounded fallback elsewhere).
-The public `IVirtualDesktopManager` cannot switch desktops (spec §19). Absolute switching uses
-undocumented Shell COM interfaces whose layout changes between builds. This file records exactly
-what WinShort supports and why.
+The public `IVirtualDesktopManager` cannot switch desktops (spec §19). Absolute switching,
+cross-process window movement, workspace ordering, and workspace naming use undocumented Shell COM
+interfaces whose layouts can change between builds. This file records exactly what WinShort
+supports and why.
 
 ## Supported layout — Windows 11 24H2 / 25H2 (builds 26100–262xx)
 
@@ -12,10 +13,14 @@ what WinShort supports and why.
 | CLSID ImmersiveShell | `C2F03A33-21F5-47FA-B4BB-156362A2F239` (`CLSCTX_LOCAL_SERVER`) |
 | QueryService service | `C5E0CDCA-7B6E-41B2-9FC4-D93975CC467B` |
 | IID IVirtualDesktopManagerInternal | `53F5CA0B-158F-4124-900C-057158060B27` |
+| IID IApplicationViewCollection | `1841C6D7-4F9D-42C0-AF41-8747538F10E5` |
+| IID IApplicationView | `372E1D3B-38D3-42E4-A15B-8AB2B178F513` |
 | IID IVirtualDesktop | `3F07F4BE-B107-441A-AF0F-39D82529072C` |
 | IID IObjectArray | `92CA9DCD-5622-4BBA-A805-5E9F541BD8C9` |
 
 `IServiceProvider` from ImmersiveShell → `QueryService(service, IID_IVirtualDesktopManagerInternal)`.
+`IApplicationViewCollection` is acquired from the same provider with
+`QueryService(IID_IApplicationViewCollection, IID_IApplicationViewCollection)`.
 
 ### IVirtualDesktopManagerInternal vtable (slots after IUnknown)
 
@@ -32,6 +37,8 @@ what WinShort supports and why.
 12 MoveDesktop(IVirtualDesktop*, UINT nIndex)
 13 RemoveDesktop(IVirtualDesktop* destroy, IVirtualDesktop* fallback)
 14 FindDesktop(GUID*, IVirtualDesktop**)
+15 GetDesktopSwitchIncludeExcludeViews(IVirtualDesktop*, ..., ...)
+16 SetDesktopName(IVirtualDesktop*, HSTRING)
    ... trailing slots unused by WinShort
 ```
 
@@ -45,10 +52,14 @@ what WinShort supports and why.
 7 IsRemote(BOOL*)
 ```
 
-WinShort calls `GetCount`, `GetDesktops`, `GetCurrentDesktop`, `GetId`, `SwitchDesktop`,
-and the build-pinned `CreateDesktop` slot. Window moves use the documented
-`IVirtualDesktopManager::{GetWindowDesktopId,MoveWindowToDesktop}` API; the internal
-`MoveViewToDesktop` slot is not guessed from an arbitrary HWND.
+WinShort calls `GetCount`, `GetDesktops`, `GetCurrentDesktop`, `GetId`, `GetName`,
+`SwitchDesktop`, `CreateDesktop`, `MoveDesktop`, `SetDesktopName`, `CanViewMoveDesktops`, and
+`MoveViewToDesktop`. The documented `IVirtualDesktopManager::GetWindowDesktopId` remains the
+cross-process reader. The documented `MoveWindowToDesktop(HWND, GUID)` is deliberately not used
+for WinShort move actions because it returns `E_ACCESSDENIED` for HWNDs owned by another process
+on the tested Windows 25H2 build. Instead, WinShort resolves the HWND to an `IApplicationView`
+with `IApplicationViewCollection::GetViewForHwnd`, checks `CanViewMoveDesktops`, and passes that
+exact view pointer to the build-pinned `MoveViewToDesktop` slot.
 
 ## Critical caveat: IID reuse across a vtable change
 
@@ -80,8 +91,15 @@ unavailable, fail closed, keyboard fallback used. No probing unknown layouts "to
    raw vtable indices; tested on build 26200.8875.
 3. **MScholtes/VirtualDesktop** v1.21 (2025-08): `VirtualDesktop11-24H2.cs` targeting 26100+.
 4. **limyiheng gist** (plain C, 2024-10): same 53F5CA0B layout.
+5. **WillyGarage/roost** engineering spike on build 26200.8875: independently observed
+   cross-process `MoveWindowToDesktop` returning `E_ACCESSDENIED`, verified
+   `GetViewForHwnd` → `CanViewMoveDesktops` → `MoveViewToDesktop`, and verified both
+   `MoveDesktop` reordering and `SetDesktopName` naming on the same layout.
+6. **LGUG2Z/komorebi** Rust COM declarations: corroborates the stable
+   `IApplicationViewCollection` IID and `GetViewForHwnd` vtable position.
 
-Sources 1–2 independently confirm the exact build this utility targets (26200).
+Sources 1–2 independently confirm the exact build family this utility targets; sources 5–6
+corroborate the application-view move path and workspace-management slots used by WinShort.
 
 ## Runtime behavior
 
@@ -90,6 +108,23 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 * Whitelisted build → native backend available; `SwitchDesktop(n)` resolves index n−1 through
   `GetDesktops` ordering and calls `SwitchDesktop`. A request equal to the current desktop is
   an early no-op.
+* Native window move → `GetViewForHwnd` resolves the foreign HWND, `CanViewMoveDesktops` rejects
+  pinned/unmovable views, then `MoveViewToDesktop` performs the move. No synthetic-input fallback
+  exists for moving a window.
+* The dedicated Special Workspace is named **`WinShort Special Workspace`** and excluded from
+  WinShort's numbered Desktop 1–9 ordinals. WinShort keeps it at the end of Shell ordering; when
+  normal desktops are created after it, `MoveDesktop` re-pins Special to the tail before a
+  numbered target is resolved. This keeps Windows' visible Desktop 1..N names aligned with
+  WinShort's logical 1..N normal-desktop numbering.
+* The Special Workspace GUID is persisted as `%LOCALAPPDATA%\WinShort\special-workspace.guid`.
+  On process startup or Shell-proxy rebuild, WinShort adopts that desktop only if the exact GUID
+  is still present in `GetDesktops`. A hard kill or Windows reboot therefore reclaims the same
+  workspace instead of creating another one. If the user deletes that desktop externally,
+  reconciliation clears both runtime and persisted identity; the next Special Workspace action
+  creates a new one. The desktop name is presentation only and is never used as identity.
+* Disabling the Special Workspace feature or an orderly WinShort shutdown still removes the
+  dedicated desktop with a normal-desktop fallback and then clears the persisted GUID. Persistence
+  is crash/reboot recovery, not a reason to leave a workspace behind after successful teardown.
 * Unknown build or native setup failure → status `UnsupportedBuild { build }`/`Failed`,
   diagnostics logged. Creation, window movement, and identity navigation refuse without
   synthetic input; switching may use the keyboard fallback only for a previously enumerated
@@ -107,9 +142,16 @@ Sources 1–2 independently confirm the exact build this utility targets (26200)
 | `RpcDisconnected` (Explorer RPC gone) | `TargetOutOfRange { requested, count }` — target doesn't exist |
 | `BackendUnavailable` (not activated / safety limit) | `UnsupportedBuild` — fail closed |
 | | `AbiMismatch` — retained for typed matching; currently surfaced via BackendUnavailable |
-| | `SwitchFailed(hr)` — Shell rejected the switch |
+| | `SwitchFailed(hr)` — Shell rejected a switch operation |
 | | `CreationUnavailable`, `MoveUnavailable`, `WindowUnavailable`, `FocusFailed` |
+| | `NavigationUnavailable` — identity, naming, ordering, or navigation refused |
 | | `Partial` — a later step failed after an earlier step completed |
+
+Move/window-identity HRESULTs use a move-specific classifier: Shell/RPC disconnects remain
+retryable, while ordinary failures retain their API context inside `MoveUnavailable` rather than
+being misreported as `SwitchDesktop failed`. Workspace naming/reordering/removal failures retain
+RPC disconnect classification but otherwise become non-fallback `NavigationUnavailable` errors;
+those failures never authorize synthetic keyboard input.
 
 The exact partition is proptested (`policy_props.rs`, #37). `index >= count` refuses **before**
 any input injection (#20): a too-large target never triggers SendInput keys.
@@ -143,11 +185,22 @@ it unchanged.
 | Check | Result |
 |---|---|
 | Build | 26200.9168 (25H2), whitelisted |
-| `GetDesktops` count | 9 desktops enumerated |
+| `GetDesktops` count | 9 desktops enumerated in the original Phase-1 smoke |
 | `GetCurrentDesktop` | index resolves via GUID match |
 | `SwitchDesktop` 1↔2 | registry `CurrentVirtualDesktop` GUID changed both ways |
-| Startup log | `virtual desktop backend: Native Shell`, `count=9, current=1` |
+| Startup log | `virtual desktop backend: Native Shell` |
 | Win+1..9 routing | binding table → `SwitchDesktop(n)` → Native Shell |
+| Cross-process Special Workspace move | PASS — send → enter → return on real Windows after application-view fix |
+| Virtual Desktop GUID reboot persistence | PASS — 10/10 GUIDs unchanged and in the same order across a Windows reboot |
+| Special Workspace naming + tail pinning | PASS — workspace named correctly; two manually-created desktops and Win+9 both caused Special to re-pin to the tail while normal ordinals stayed aligned |
+| Abrupt-exit GUID reclaim | PASS — `Stop-Process -Force` → relaunch → Toggle reused the existing workspace without increasing desktop count |
+| External workspace deletion recovery | PASS — deleting Special in Task View caused the next Toggle to discard the stale GUID, create exactly one replacement, and pin it to the tail |
+| Orderly exit / feature disable cleanup | PASS — Special was removed and contained windows survived on the selected normal fallback desktop |
+| Multiple Special Workspace windows | PASS — multiple assigned windows remained together and survived enter/leave transitions |
+| Previous Desktop isolation | PASS — `VD1 → VD3 → VDS → Toggle out → Previous Desktop` returned through `VDS → VD3 → VD1`, leaving the normal VD1↔VD3 history intact |
 | Fallback path | compiled in; active only when native setup fails (fail closed) |
 
-Tested 2026-08-24 against the layout above; re-verify after any Windows update.
+Original switching checks were tested 2026-08-24. Cross-process Special Workspace movement,
+GUID reboot persistence, naming/tail ordering, abrupt-exit reclaim, external-deletion recovery,
+cleanup, multiple-window behavior, and Previous Desktop isolation were manually verified on
+2026-08-31 on the whitelisted 26200 build family.
