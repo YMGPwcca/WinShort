@@ -21,7 +21,7 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
                     // Versionless documents deserialize as the legacy v1
-                    // baseline; newly serialized documents always include v8.
+                    // baseline; newly serialized documents always include v9.
                     let parsed_schema = toml.schema_version;
                     if parsed_schema > CURRENT_SCHEMA_VERSION {
                         let msg = format!(
@@ -58,13 +58,14 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     let mut migrations = Vec::new();
                     if parsed_schema < CURRENT_SCHEMA_VERSION {
                         let detail = match parsed_schema {
-                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
-                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
-                            3 => "v4 desktop workflow, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
-                            4 => "v5 scratchpad fields, v6 routing rules, v7 audio allowlists, and v8 display profiles defaulted",
-                            5 => "v6 executable routing rules, v7 audio allowlists, and v8 display profiles defaulted",
-                            6 => "v7 audio allowlists and v8 display profiles defaulted",
-                            7 => "v8 display profiles defaulted",
+                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            3 => "v4 desktop workflow, v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            4 => "v5 scratchpad fields, v6 routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            5 => "v6 executable routing rules, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            6 => "v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
+                            7 => "v8 display profiles and v9 profile hotkeys defaulted",
+                            8 => "v9 display profile hotkeys and confirmation state defaulted",
                             _ => "newer fields defaulted",
                         };
                         migrations.push(format!(
@@ -168,7 +169,8 @@ mod tests {
     fn newer_schema_version_refuses_overwrite() {
         let _guard = crate::config::latch_guard();
         // #15b: a future schema must mark the store read-only.
-        let raw = "schema_version = 9\n";
+        let future_schema = CURRENT_SCHEMA_VERSION.saturating_add(1);
+        let raw = format!("schema_version = {future_schema}\n");
         let dir = std::env::temp_dir().join(format!("ws_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(config_path(&dir), raw).unwrap();
@@ -184,7 +186,7 @@ mod tests {
             "warnings: {warnings:?}"
         );
         let diagnostics = crate::config::load_diagnostics();
-        assert_eq!(diagnostics.source_schema_version, Some(9));
+        assert_eq!(diagnostics.source_schema_version, Some(future_schema));
         assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
         assert!(crate::config::config_readonly());
         // Save must refuse while read-only.

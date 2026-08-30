@@ -836,6 +836,15 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                 .foreground_volume_down
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
+            display_profiles: config
+                .hotkeys
+                .display_profiles
+                .iter()
+                .map(|binding| SafeDisplayProfileHotkey {
+                    profile_id: binding.profile_id.clone(),
+                    hotkey: binding.hotkey.to_string(),
+                })
+                .collect(),
         },
         virtual_desktops: SafeVirtualDesktops {
             enabled: config.virtual_desktops.enabled,
@@ -887,6 +896,7 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                     name: profile.name.clone(),
                     topology: profile.topology.label().into(),
                     route_count: profile.routes.len(),
+                    confirmed: profile.confirmed,
                 })
                 .collect(),
         },
@@ -964,6 +974,12 @@ struct SafeHotkeys {
     cycle_output_device: String,
     foreground_volume_up: String,
     foreground_volume_down: String,
+    display_profiles: Vec<SafeDisplayProfileHotkey>,
+}
+#[derive(Debug, Serialize)]
+struct SafeDisplayProfileHotkey {
+    profile_id: String,
+    hotkey: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1005,6 +1021,7 @@ struct SafeDisplayProfile {
     name: String,
     topology: String,
     route_count: usize,
+    confirmed: bool,
 }
 
 fn collect_logs(

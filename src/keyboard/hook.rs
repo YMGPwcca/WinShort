@@ -582,6 +582,20 @@ pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
             crate::warn_!("duplicate hotkey binding ignored: {hotkey}");
         }
     }
+    if config.display_profiles.enabled {
+        for binding in &config.hotkeys.display_profiles {
+            let profile_key = crate::display::profile_id_key(&binding.profile_id);
+            if !table.insert(
+                binding.hotkey,
+                HotkeyAction::ApplyDisplayProfile(profile_key),
+            ) {
+                crate::warn_!(
+                    "duplicate display profile hotkey binding ignored: {}",
+                    binding.hotkey
+                );
+            }
+        }
+    }
     if config.virtual_desktops.enabled {
         if let Some(previous) = config.virtual_desktops.previous_desktop {
             if !table.insert(previous, HotkeyAction::SwitchPreviousDesktop) {
@@ -640,6 +654,39 @@ mod tests {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+    #[test]
+    fn profile_hotkeys_bind_stable_id_keys() {
+        let mut config = crate::config::Config::default();
+        config.hotkeys.display_profiles = vec![
+            crate::config::model::DisplayProfileHotkey {
+                profile_id: "ai-profile".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F1").unwrap(),
+            },
+            crate::config::model::DisplayProfileHotkey {
+                profile_id: "gaming-profile".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F2").unwrap(),
+            },
+        ];
+        let table = build_bindings(&config);
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x70)
+            ),
+            Some(HotkeyAction::ApplyDisplayProfile(
+                crate::display::profile_id_key("ai-profile",)
+            ))
+        );
+        assert_eq!(
+            table.lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x71)
+            ),
+            Some(HotkeyAction::ApplyDisplayProfile(
+                crate::display::profile_id_key("gaming-profile",)
+            ))
+        );
     }
     #[test]
     fn config_builds_all_default_bindings() {

@@ -268,6 +268,38 @@ mod tests {
     }
 
     #[test]
+    fn replace_publishes_stable_profile_hotkey_binding() {
+        let handle = ConfigHandle::new(Config::default());
+        let mut cfg = Config::default();
+        cfg.display_profiles.profiles = vec![crate::display::DisplayProfile {
+            id: "gaming-id".into(),
+            name: "Gaming".into(),
+            topology: crate::display::DisplayTopology::Extend,
+            confirmed: true,
+            routes: vec![crate::display::DisplayRoute {
+                target_path: "monitor-a".into(),
+                ..Default::default()
+            }],
+        }];
+        cfg.hotkeys.display_profiles = vec![crate::config::model::DisplayProfileHotkey {
+            profile_id: "gaming-id".into(),
+            hotkey: Hotkey::parse("Ctrl+Alt+F13").unwrap(),
+        }];
+        handle
+            .replace_after_save(cfg, ConfigCommitOrigin::Settings, |_| Ok(()))
+            .unwrap();
+        assert_eq!(
+            handle.bindings().lookup(
+                ModifierMask::CTRL.union(ModifierMask::ALT),
+                VirtualKey(0x7C)
+            ),
+            Some(HotkeyAction::ApplyDisplayProfile(
+                crate::display::profile_id_key("gaming-id")
+            ))
+        );
+    }
+
+    #[test]
     fn snapshot_returns_value_and_stamp_from_one_publication() {
         let mut candidate = Config::default();
         candidate.overlay.duration_ms = 42;

@@ -67,6 +67,49 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
             }
         }
     }
+    if cfg.hotkeys.display_profiles.len() > u8::MAX as usize + 1 {
+        v.push(Violation::new(
+            "hotkeys.display_profiles",
+            "display profile hotkey count must be at most 256",
+        ));
+    }
+    let mut profile_keys: HashMap<u16, usize> = HashMap::new();
+    for (index, binding) in cfg.hotkeys.display_profiles.iter().enumerate() {
+        let field = format!("hotkeys.display_profiles[{index}]");
+        let profile_id = binding.profile_id.trim();
+        if profile_id.is_empty() {
+            v.push(Violation::new(
+                &format!("{field}.profile_id"),
+                "profile ID must not be empty",
+            ));
+        } else {
+            if !cfg
+                .display_profiles
+                .profiles
+                .iter()
+                .any(|profile| profile.id.eq_ignore_ascii_case(profile_id))
+            {
+                v.push(Violation::new(
+                    &format!("{field}.profile_id"),
+                    format!("references unknown display profile `{profile_id}`"),
+                ));
+            }
+            if let Some(previous) =
+                profile_keys.insert(crate::display::profile_id_key(profile_id), index)
+            {
+                v.push(Violation::new(
+                    &format!("{field}.profile_id"),
+                    format!("collides with profile ID key at index {previous}"),
+                ));
+            }
+        }
+        if let Some(other) = seen.insert(binding.hotkey, "display_profiles") {
+            v.push(Violation::new(
+                &format!("{field}.hotkey"),
+                format!("conflicts with `{other}` ({})", binding.hotkey),
+            ));
+        }
+    }
 
     // Numbered families reserve every digit with their configured modifier.
     // Family collisions and explicit-hotkey collisions are rejected instead
@@ -172,6 +215,16 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
     }
 
     let mut profile_ids: HashMap<String, usize> = HashMap::new();
+    let mut profile_names: HashMap<String, usize> = HashMap::new();
+    if cfg.display_profiles.profiles.len() > crate::display::MAX_PROFILES {
+        v.push(Violation::new(
+            "display_profiles.profiles",
+            format!(
+                "display profile count must be at most {}",
+                crate::display::MAX_PROFILES
+            ),
+        ));
+    }
     for (index, profile) in cfg.display_profiles.profiles.iter().enumerate() {
         let field = format!("display_profiles.profiles[{index}]");
         let id = profile.id.trim();
@@ -186,10 +239,16 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
                 format!("duplicates display profile at index {previous}"),
             ));
         }
-        if profile.name.trim().is_empty() {
+        let name = profile.name.trim();
+        if name.is_empty() {
             v.push(Violation::new(
                 &format!("{field}.name"),
                 "display profile name must not be empty",
+            ));
+        } else if let Some(previous) = profile_names.insert(name.to_ascii_lowercase(), index) {
+            v.push(Violation::new(
+                &format!("{field}.name"),
+                format!("duplicates display profile name at index {previous}"),
             ));
         }
         if profile.routes.is_empty() {
@@ -211,12 +270,80 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
                     "display route target path must not be empty",
                 ));
             }
-            let route_id = route.target_path.trim().to_ascii_lowercase();
+            let route_id = format!(
+                "{}|{}|{}|{}|{}",
+                route.target_path.trim().to_ascii_lowercase(),
+                route.source_adapter,
+                route.source_id,
+                route.target_adapter,
+                route.target_id
+            );
             if let Some(previous) = route_ids.insert(route_id, route_index) {
                 v.push(Violation::new(
                     &format!("{field}.routes[{route_index}]"),
                     format!("duplicates display route at index {previous}"),
                 ));
+            }
+            if route.source_width == 0
+                || route.source_height == 0
+                || route.active_width == 0
+                || route.active_height == 0
+            {
+                v.push(Violation::new(
+                    &format!("{field}.routes[{route_index}].resolution"),
+                    "display route resolution must be positive",
+                ));
+            }
+            if route.refresh_numerator == 0 || route.refresh_denominator == 0 {
+                v.push(Violation::new(
+                    &format!("{field}.routes[{route_index}].refresh"),
+                    "display route refresh rate must be positive",
+                ));
+            }
+            if !matches!(route.rotation, 1..=4) {
+                v.push(Violation::new(
+                    &format!("{field}.routes[{route_index}].rotation"),
+                    "display route rotation must be 1..=4",
+                ));
+            }
+        }
+        if profile.routes.len() > 1 {
+            let distinct_sources = profile
+                .routes
+                .iter()
+                .map(|route| (route.source_adapter, route.source_id))
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            let distinct_source_modes = profile
+                .routes
+                .iter()
+                .map(|route| {
+                    (
+                        route.source_width,
+                        route.source_height,
+                        route.source_pixel_format,
+                        route.source_position_x,
+                        route.source_position_y,
+                    )
+                })
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            match profile.topology {
+                crate::display::DisplayTopology::Clone if distinct_source_modes != 1 => {
+                    v.push(Violation::new(
+                        &format!("{field}.topology"),
+                        "duplicate display profile routes must share one source mode",
+                    ));
+                }
+                crate::display::DisplayTopology::Extend
+                    if distinct_sources != profile.routes.len() =>
+                {
+                    v.push(Violation::new(
+                        &format!("{field}.topology"),
+                        "extend display profile routes must use distinct sources",
+                    ));
+                }
+                _ => {}
             }
         }
     }
@@ -420,8 +547,16 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
                 id: "Work".into(),
                 name: "Work".into(),
                 topology: DisplayTopology::Extend,
+                confirmed: false,
                 routes: vec![DisplayRoute {
                     target_path: "monitor-a".into(),
+                    source_width: 1920,
+                    source_height: 1080,
+                    active_width: 1920,
+                    active_height: 1080,
+                    refresh_numerator: 60,
+                    refresh_denominator: 1,
+                    rotation: 1,
                     ..Default::default()
                 }],
             },
@@ -429,8 +564,16 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
                 id: "work".into(),
                 name: "Duplicate".into(),
                 topology: DisplayTopology::Extend,
+                confirmed: false,
                 routes: vec![DisplayRoute {
                     target_path: "monitor-b".into(),
+                    source_width: 1920,
+                    source_height: 1080,
+                    active_width: 1920,
+                    active_height: 1080,
+                    refresh_numerator: 60,
+                    refresh_denominator: 1,
+                    rotation: 1,
                     ..Default::default()
                 }],
             },
@@ -510,6 +653,94 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
             Some(vec!["capture-a".into()])
         );
         assert_eq!(config.audio.cycle_output_allowlist, Some(Vec::new()));
+        assert!(validate(&config).is_empty());
+    }
+    #[test]
+    fn profile_hotkeys_require_existing_ids_and_share_conflict_validator() {
+        let mut config = Config::default();
+        config.display_profiles.profiles = vec![DisplayProfile {
+            id: "gaming-id".into(),
+            name: "Gaming".into(),
+            topology: DisplayTopology::Extend,
+            confirmed: true,
+            routes: vec![DisplayRoute {
+                target_path: "monitor-a".into(),
+                source_width: 1920,
+                source_height: 1080,
+                active_width: 1920,
+                active_height: 1080,
+                refresh_numerator: 60,
+                refresh_denominator: 1,
+                rotation: 1,
+                ..Default::default()
+            }],
+        }];
+        config.hotkeys.display_profiles = vec![
+            DisplayProfileHotkey {
+                profile_id: "gaming-id".into(),
+                hotkey: config.hotkeys.toggle_microphone.unwrap(),
+            },
+            DisplayProfileHotkey {
+                profile_id: "missing-id".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F12").unwrap(),
+            },
+        ];
+
+        let violations = validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "hotkeys.display_profiles[0].hotkey"));
+        assert!(violations.iter().any(|violation| {
+            violation
+                .message
+                .contains("references unknown display profile")
+        }));
+
+        config.repair(&violations);
+
+        assert!(config.hotkeys.display_profiles.is_empty());
+        assert!(validate(&config).is_empty());
+    }
+    #[test]
+    fn profile_hotkey_stable_id_key_collisions_are_repaired() {
+        let mut config = Config::default();
+        config.display_profiles.profiles = vec![DisplayProfile {
+            id: "gaming-id".into(),
+            name: "Gaming".into(),
+            topology: DisplayTopology::Extend,
+            confirmed: true,
+            routes: vec![DisplayRoute {
+                target_path: "monitor-a".into(),
+                source_width: 1920,
+                source_height: 1080,
+                active_width: 1920,
+                active_height: 1080,
+                refresh_numerator: 60,
+                refresh_denominator: 1,
+                rotation: 1,
+                ..Default::default()
+            }],
+        }];
+        config.hotkeys.display_profiles = vec![
+            DisplayProfileHotkey {
+                profile_id: "gaming-id".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F12").unwrap(),
+            },
+            DisplayProfileHotkey {
+                profile_id: "GAMING-ID".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F13").unwrap(),
+            },
+        ];
+
+        let violations = validate(&config);
+        assert!(violations.iter().any(|violation| {
+            violation.field == "hotkeys.display_profiles[1].profile_id"
+                && violation.message.contains("collides")
+        }));
+
+        config.repair(&violations);
+
+        assert_eq!(config.hotkeys.display_profiles.len(), 1);
         assert!(validate(&config).is_empty());
     }
 }

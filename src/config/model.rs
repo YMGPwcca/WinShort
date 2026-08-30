@@ -10,7 +10,7 @@ use crate::keyboard::binding::{Hotkey, ModifierMask};
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 8;
+pub const CURRENT_SCHEMA_VERSION: u8 = 9;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +53,12 @@ pub struct AudioCfg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayProfileHotkey {
+    pub profile_id: String,
+    pub hotkey: Hotkey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotkeysCfg {
     pub toggle_microphone: Option<Hotkey>,
     pub toggle_output: Option<Hotkey>,
@@ -61,6 +67,7 @@ pub struct HotkeysCfg {
     pub cycle_output_device: Option<Hotkey>,
     pub foreground_volume_up: Option<Hotkey>,
     pub foreground_volume_down: Option<Hotkey>,
+    pub display_profiles: Vec<DisplayProfileHotkey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,6 +307,7 @@ impl Default for Config {
                 cycle_output_device: None,
                 foreground_volume_up: None,
                 foreground_volume_down: None,
+                display_profiles: Vec::new(),
             },
             virtual_desktops: VdCfg {
                 enabled: true,
@@ -439,6 +447,12 @@ impl Default for AudioToml {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DisplayProfileHotkeyToml {
+    pub profile_id: String,
+    pub hotkey: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct HotkeysToml {
     #[serde(default = "default_mic")]
     pub toggle_microphone: String,
@@ -454,6 +468,8 @@ pub struct HotkeysToml {
     pub foreground_volume_up: String,
     #[serde(default)]
     pub foreground_volume_down: String,
+    #[serde(default)]
+    pub display_profiles: Vec<DisplayProfileHotkeyToml>,
 }
 
 impl Default for HotkeysToml {
@@ -466,6 +482,7 @@ impl Default for HotkeysToml {
             cycle_output_device: String::new(),
             foreground_volume_up: String::new(),
             foreground_volume_down: String::new(),
+            display_profiles: Vec::new(),
         }
     }
 }
@@ -651,6 +668,15 @@ impl Config {
                     .hotkeys
                     .foreground_volume_down
                     .map_or(String::new(), |h| h.to_string()),
+                display_profiles: self
+                    .hotkeys
+                    .display_profiles
+                    .iter()
+                    .map(|binding| DisplayProfileHotkeyToml {
+                        profile_id: binding.profile_id.clone(),
+                        hotkey: binding.hotkey.to_string(),
+                    })
+                    .collect(),
             },
             virtual_desktops: VdToml {
                 enabled: self.virtual_desktops.enabled,
@@ -812,6 +838,24 @@ impl Config {
                 }
             }
         }
+        for (index, binding) in t.hotkeys.display_profiles.iter().enumerate() {
+            let profile_id = binding.profile_id.trim();
+            if profile_id.is_empty() {
+                warnings.push(format!(
+                    "hotkeys.display_profiles[{index}].profile_id: must not be empty"
+                ));
+                continue;
+            }
+            match Hotkey::parse(&binding.hotkey) {
+                Ok(hotkey) => c.hotkeys.display_profiles.push(DisplayProfileHotkey {
+                    profile_id: profile_id.to_string(),
+                    hotkey,
+                }),
+                Err(error) => {
+                    warnings.push(format!("hotkeys.display_profiles[{index}].hotkey: {error}"))
+                }
+            }
+        }
 
         c.virtual_desktops.enabled = t.virtual_desktops.enabled;
         c.virtual_desktops.win_number_switching = t.virtual_desktops.win_number_switching;
@@ -903,6 +947,7 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "cycle_output_device",
             "foreground_volume_up",
             "foreground_volume_down",
+            "display_profiles",
         ]),
         "virtual_desktops" => Some(&[
             "enabled",
@@ -939,6 +984,9 @@ impl Config {
         let display_profiles_invalid = violations
             .iter()
             .any(|violation| violation.field.starts_with("display_profiles."));
+        let profile_hotkeys_invalid = violations
+            .iter()
+            .any(|violation| violation.field.starts_with("hotkeys.display_profiles"));
         for v in violations {
             match v.field.as_str() {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
@@ -1004,6 +1052,7 @@ impl Config {
         }
         if display_profiles_invalid {
             let mut seen_profiles = std::collections::HashSet::new();
+            let mut seen_names = std::collections::HashSet::new();
             self.display_profiles.profiles.retain(|profile| {
                 let id = profile.id.trim();
                 let mut seen_routes = std::collections::HashSet::new();
@@ -1013,10 +1062,29 @@ impl Config {
                     && profile.routes.len() <= 32
                     && profile.routes.iter().all(|route| {
                         !route.target_path.trim().is_empty()
-                            && seen_routes.insert(route.target_path.trim().to_ascii_lowercase())
+                            && route.source_width > 0
+                            && route.source_height > 0
+                            && route.active_width > 0
+                            && route.active_height > 0
+                            && route.refresh_numerator > 0
+                            && route.refresh_denominator > 0
+                            && matches!(route.rotation, 1..=4)
+                            && seen_routes.insert(format!(
+                                "{}|{}|{}|{}|{}",
+                                route.target_path.trim().to_ascii_lowercase(),
+                                route.source_adapter,
+                                route.source_id,
+                                route.target_adapter,
+                                route.target_id
+                            ))
                     })
+                    && crate::display::validate_profile(profile).is_ok()
                     && seen_profiles.insert(id.to_ascii_lowercase())
+                    && seen_names.insert(profile.name.trim().to_ascii_lowercase())
             });
+            self.display_profiles
+                .profiles
+                .truncate(crate::display::MAX_PROFILES);
             if self
                 .display_profiles
                 .active_profile
@@ -1031,6 +1099,59 @@ impl Config {
             {
                 self.display_profiles.active_profile = None;
             }
+        }
+        if display_profiles_invalid || profile_hotkeys_invalid {
+            let valid_profiles = self
+                .display_profiles
+                .profiles
+                .iter()
+                .map(|profile| profile.id.trim().to_ascii_lowercase())
+                .collect::<std::collections::HashSet<_>>();
+            let mut used_profile_keys = std::collections::HashSet::new();
+            let mut used = std::collections::HashSet::new();
+            for hotkey in [
+                self.hotkeys.toggle_microphone,
+                self.hotkeys.toggle_output,
+                self.hotkeys.toggle_foreground_audio,
+                self.hotkeys.cycle_input_device,
+                self.hotkeys.cycle_output_device,
+                self.hotkeys.foreground_volume_up,
+                self.hotkeys.foreground_volume_down,
+                self.virtual_desktops.previous_desktop,
+                self.virtual_desktops.scratchpad_assign,
+                self.virtual_desktops.scratchpad_toggle,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                used.insert(hotkey);
+            }
+            if self.virtual_desktops.enabled {
+                for modifier in [
+                    self.virtual_desktops
+                        .win_number_switching
+                        .then_some(self.virtual_desktops.number_modifier),
+                    self.virtual_desktops.move_follow_modifier,
+                    self.virtual_desktops.move_silent_modifier,
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|modifier| !modifier.is_empty())
+                {
+                    for number in 1u16..=9 {
+                        used.insert(Hotkey {
+                            modifiers: modifier,
+                            key: crate::keyboard::binding::VirtualKey(0x30 + number),
+                        });
+                    }
+                }
+            }
+            self.hotkeys.display_profiles.retain(|binding| {
+                valid_profiles.contains(&binding.profile_id.trim().to_ascii_lowercase())
+                    && used_profile_keys.insert(crate::display::profile_id_key(&binding.profile_id))
+                    && used.insert(binding.hotkey)
+            });
+            self.hotkeys.display_profiles.truncate(u8::MAX as usize + 1);
         }
     }
 }
@@ -1179,6 +1300,43 @@ output_device = "default"
     }
 
     #[test]
+    fn display_profile_hotkeys_round_trip_by_stable_id() {
+        let mut config = Config::default();
+        config.hotkeys.display_profiles = vec![DisplayProfileHotkey {
+            profile_id: "gaming-id".into(),
+            hotkey: Hotkey::parse("Ctrl+Alt+F11").unwrap(),
+        }];
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            round_tripped.hotkeys.display_profiles,
+            config.hotkeys.display_profiles
+        );
+    }
+
+    #[test]
+    fn schema_v8_defaults_display_profile_hotkeys_and_confirmation() {
+        let raw = r#"
+schema_version = 8
+[hotkeys]
+[display_profiles]
+[[display_profiles.profiles]]
+id = "legacy"
+name = "Legacy"
+topology = "extend"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(config.hotkeys.display_profiles.is_empty());
+        assert_eq!(config.display_profiles.profiles.len(), 1);
+        assert!(!config.display_profiles.profiles[0].confirmed);
+    }
+
+    #[test]
     fn display_profiles_round_trip_through_schema_v8() {
         let mut config = Config::default();
         config.display_profiles.active_profile = Some("work".into());
@@ -1186,6 +1344,7 @@ output_device = "default"
             id: "work".into(),
             name: "Work".into(),
             topology: DisplayTopology::Extend,
+            confirmed: false,
             routes: vec![DisplayRoute {
                 target_path: r"\\?\DISPLAY#MONITOR-A".into(),
                 source_id: 1,
