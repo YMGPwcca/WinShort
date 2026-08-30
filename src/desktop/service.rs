@@ -7,8 +7,9 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
-    IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-    SW_HIDE, SW_RESTORE, SW_SHOWNA, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, SwitchToThisWindow,
+    GWL_EXSTYLE, GWL_STYLE, SW_HIDE, SW_RESTORE, SW_SHOWNA, WS_DISABLED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW,
 };
 use windows_core::GUID;
 
@@ -676,9 +677,8 @@ impl DesktopController {
                 "toggle scratchpad",
                 DesktopError::Partial {
                     completed: "scratchpad shown on the current desktop".into(),
-                    failure:
-                        "foreground activation was rejected after direct and attached-input attempts"
-                            .into(),
+                    failure: "Windows rejected all scratchpad foreground activation attempts"
+                        .into(),
                 },
             );
             return;
@@ -918,32 +918,41 @@ fn activate_window(hwnd: HWND) -> bool {
 
 fn activate_scratchpad_window(hwnd: HWND) -> bool {
     unsafe {
-        // Keep the normal foreground path first. The attached-input fallback is
-        // only used when Windows' foreground-lock policy rejects that request.
-        if SetForegroundWindow(hwnd).as_bool() {
+        if GetForegroundWindow() == hwnd {
+            return true;
+        }
+        if SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd {
             return true;
         }
 
         let foreground = GetForegroundWindow();
-        if foreground.0.is_null() {
-            return false;
-        }
-        let foreground_thread = GetWindowThreadProcessId(foreground, None);
         let current_thread = GetCurrentThreadId();
-        if foreground_thread == 0 || foreground_thread == current_thread {
-            return false;
-        }
-        if !AttachThreadInput(current_thread, foreground_thread, true).as_bool() {
-            return false;
+        if !foreground.0.is_null() {
+            let foreground_thread = GetWindowThreadProcessId(foreground, None);
+            if foreground_thread != 0
+                && foreground_thread != current_thread
+                && AttachThreadInput(current_thread, foreground_thread, true).as_bool()
+            {
+                let _ = SetForegroundWindow(hwnd);
+                let activated = GetForegroundWindow() == hwnd;
+                if !AttachThreadInput(current_thread, foreground_thread, false).as_bool() {
+                    crate::error_!(
+                        "failed to detach scratchpad foreground input queues after activation attempt"
+                    );
+                }
+                if activated {
+                    return true;
+                }
+            }
         }
 
-        let activated = SetForegroundWindow(hwnd).as_bool();
-        if !AttachThreadInput(current_thread, foreground_thread, false).as_bool() {
-            crate::error_!(
-                "failed to detach scratchpad foreground input queues after activation attempt"
-            );
-        }
-        activated
+        // A Scratchpad toggle is an explicit user request to switch to this
+        // window. Some Windows foreground-lock states only flash the taskbar
+        // button after SetForegroundWindow, even with attached input queues.
+        // Scope the documented-but-not-general User32 switch primitive to this
+        // final fallback and verify the actual foreground HWND afterwards.
+        SwitchToThisWindow(hwnd, false);
+        GetForegroundWindow() == hwnd
     }
 }
 
