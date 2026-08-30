@@ -44,9 +44,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   rollback token.
 - Removed the unreleased executable-to-desktop routing experiment from active product scope;
   legacy routing tables are parse-compatible, ignored, and omitted on the next Save.
-- Hardened Scratchpad ownership so WinShort-hidden windows are revealed before reassignment,
-  feature disable, or shutdown; off-desktop cloaking stays valid and show/hide no longer forces
-  `SW_RESTORE` over the application's existing placement.
+- Replaced hidden-window Scratchpad ownership with a dedicated native Virtual Desktop:
+  Special Workspace actions no longer hide/show or force-focus application HWNDs, numbered 1–9
+  excludes the workspace, and graceful disable/shutdown removes it through Shell with a normal fallback.
 
 ### Added
 
@@ -56,11 +56,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   optional move/follow, silent-move, and previous-desktop actions without
   stealing existing hotkey slots. Explicit Settings endpoint selections remain
   persistently saved; desktop workflow hotkeys remain unassigned by default.
-- Schema v5 adds optional scratchpad assignment and toggle hotkeys. The assigned
-  window handle remains runtime-only and is cleared when the window closes.
-- Numbered Virtual Desktop switching now ensures missing desktops through the
+- Schema v5's optional `scratchpad_assign` / `scratchpad_toggle` wire names remain compatible;
+  their current behavior sends windows to and toggles a runtime-only dedicated Special Workspace.
+- Numbered Virtual Desktop switching now ensures missing normal desktops through the
   native Shell backend; move/follow, silent move, previous-desktop navigation,
-  per-desktop foreground restoration, and runtime scratchpad show/hide are available
+  per-desktop foreground restoration, and the dedicated Special Workspace are available
   as conservative configurable actions.
 - Schema v7 adds independent input/output endpoint allowlists for device cycling.
   Omitted means all active endpoints, while an explicit empty list disables that

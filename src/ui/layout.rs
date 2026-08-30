@@ -499,14 +499,14 @@ impl SettingsLayout {
                 row(
                     ElementId::AssignScratchpadHotkey,
                     ElementKind::Hotkey,
-                    "Assign scratchpad",
-                    "Assign the current foreground window",
+                    "Send to special workspace",
+                    "Move the current foreground window into a dedicated virtual desktop",
                 ),
                 row(
                     ElementId::ToggleScratchpadHotkey,
                     ElementKind::Hotkey,
-                    "Toggle scratchpad",
-                    "Show or hide the assigned window",
+                    "Toggle special workspace",
+                    "Switch between the dedicated workspace and your previous desktop",
                 ),
             ],
         );

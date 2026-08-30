@@ -3,7 +3,7 @@
 **Status: Implemented** (this document describes current `main`; forward-looking ideas live in the issue tracker, not here).
 
 Native Windows tray utility: audio hotkeys, status overlay, virtual desktop
-workflow, and a runtime scratchpad window.
+workflow, and a runtime dedicated Special Workspace.
 Pure Rust against Win32/COM via the Microsoft `windows` crate. No GUI framework,
 no WebView, no other-language components.
 
@@ -21,7 +21,7 @@ App Runtime (main thread, STA)
 Keyboard thread          Audio thread (MTA)         Desktop thread (STA)
 ├── WH_KEYBOARD_LL       ├── IMMDeviceEnumerator    ├── ImmersiveShell IServiceProvider
 ├── modifier tracking    ├── IAudioEndpointVolume   ├── IVirtualDesktopManagerInternal
-└── PostMessage only      └── command channel loop   └── focus history + scratchpad
+└── PostMessage only      └── command channel loop   └── focus history + special-workspace identity
 ```
 
 The DisplayConfig subsystem captures stable target paths and source/target modes, deduplicates
@@ -38,7 +38,7 @@ remain invalid when no desktop-image mode is supplied.
 | Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), DisplayConfig profile capture/apply/rollback timer, timers |
 | Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
 | Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
-| Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable desktop focus history, runtime scratchpad HWND |
+| Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable normal-desktop focus history, runtime Special Workspace GUID + return GUID |
 | Instance watcher | none | waits on named activate/shutdown events |
 
 Rules:
@@ -58,17 +58,18 @@ Rules:
   classified by `DesktopError::permits_fallback` (VIRTUAL_DESKTOP_COMPAT.md).
 * Missing numbered desktops are created only through the native backend; the keyboard fallback is
   used only when a previously known existing target can be safely walked.
-* Scratchpad assignment is runtime-only in the desktop STA worker. WinShort separately tracks
-  whether it hid the assigned HWND, treats an off-desktop DWM cloak as valid runtime state, and
-  reveals WinShort-hidden windows before reassignment, feature disable, or orderly shutdown.
-  Showing moves the window to the current desktop first; visibility restoration does not force
-  `SW_RESTORE`, so normal/maximized placement is not rewritten by Scratchpad toggling.
-
-Scratchpad identity is an HWND plus its owning PID. The PID is rechecked before
-each mutating Win32 call, so a handle recycled into a different process is
-cleared instead of being shown, hidden, or moved. Win32 provides no handle
-generation token: same-process HWND reuse and a destruction/recreation race
-after the final check remain residual limitations.
+* The Special Workspace is runtime-only in the desktop STA worker and is a real Windows
+  Virtual Desktop with its own GUID. Sending a foreground window uses the documented
+  `IVirtualDesktopManager::MoveWindowToDesktop(HWND, GUID)` path; toggling uses the build-pinned
+  native Shell backend to switch between that GUID and a remembered normal desktop. No window is
+  hidden, shown, restored, or force-focused as part of Special Workspace ownership.
+* Numbered Desktop 1–9 operations filter the Special Workspace GUID out of Shell ordering, so the
+  dedicated desktop never consumes a user-facing ordinal. Once it exists, keyboard-arrow fallback
+  is not used for numbered operations because it cannot safely skip the extra Shell desktop.
+* Disabling the feature or orderly shutdown removes the dedicated desktop with Shell's
+  `RemoveDesktop`, supplying a normal fallback so Windows relocates contained windows. If WinShort
+  crashes before cleanup, an unlabeled orphan desktop can remain; the next process deliberately
+  does not guess which pre-existing desktop was its old workspace.
 
 ## Events
 

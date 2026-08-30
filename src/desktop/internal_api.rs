@@ -126,36 +126,6 @@ pub struct InternalBackend {
     manager: IVirtualDesktopManagerInternal,
     window_manager: Option<IVirtualDesktopManager>,
 }
-fn desktops_to_create(current_count: usize, target_count: usize) -> usize {
-    target_count.saturating_sub(current_count)
-}
-
-fn ensure_desktop_count_with<Create, Count>(
-    current_count: usize,
-    target_count: usize,
-    mut create: Create,
-    mut count: Count,
-) -> std::result::Result<(), DesktopError>
-where
-    Create: FnMut() -> std::result::Result<(), DesktopError>,
-    Count: FnMut() -> std::result::Result<usize, DesktopError>,
-{
-    if target_count > 256 {
-        return Err(DesktopError::CreationUnavailable(format!(
-            "requested desktop count {target_count} exceeds safety limit"
-        )));
-    }
-    for _ in 0..desktops_to_create(current_count, target_count) {
-        create()?;
-    }
-    let final_count = count()?;
-    if final_count < target_count {
-        return Err(DesktopError::CreationUnavailable(format!(
-            "CreateDesktop stopped at {final_count}; target was {target_count}"
-        )));
-    }
-    Ok(())
-}
 
 impl InternalBackend {
     pub fn create(build: OsBuild) -> Result<Self> {
@@ -235,49 +205,107 @@ impl InternalBackend {
         })();
         inner.classify()
     }
-    pub fn ensure_desktop_count(
-        &self,
-        target_count: usize,
-    ) -> std::result::Result<(), DesktopError> {
-        let count = self.desktop_count()?;
-        ensure_desktop_count_with(
-            count,
-            target_count,
-            || {
-                // This slot is safe only after `create` has pinned and
-                // validated the 26100+/262xx ABI; unknown builds never reach
-                // this closure.
-                let mut desktop = None;
-                unsafe {
-                    self.manager
-                        .create_desktop(&mut desktop)
-                        .ok()
-                        .map_err(|e| {
-                            DesktopError::CreationUnavailable(format!(
-                                "CreateDesktop failed: {}",
-                                Error::win("IVirtualDesktopManagerInternal::CreateDesktop", &e)
-                            ))
-                        })?;
+    fn desktop_for_id(&self, id: GUID) -> std::result::Result<IVirtualDesktop, DesktopError> {
+        let inner: crate::error::Result<Option<IVirtualDesktop>> = (|| unsafe {
+            let array = desktop_array(&self.manager)?;
+            let count = array
+                .GetCount()
+                .map_err(|e| Error::win("IObjectArray::GetCount", &e))?;
+            for index in 0..count {
+                let desktop: IVirtualDesktop = array
+                    .GetAt(index)
+                    .map_err(|e| Error::win("IObjectArray::GetAt", &e))?;
+                if desktop_id(&desktop)? == id {
+                    return Ok(Some(desktop));
                 }
-                if desktop.is_none() {
-                    return Err(DesktopError::CreationUnavailable(
-                        "CreateDesktop returned a null desktop".into(),
-                    ));
-                }
-                Ok(())
-            },
-            || self.desktop_count(),
-        )
+            }
+            Ok(None)
+        })();
+        inner.classify()?.ok_or_else(|| {
+            DesktopError::NavigationUnavailable(
+                "desktop identity was not found in Shell ordering".into(),
+            )
+        })
     }
 
-    fn desktop_id_for_index(&self, index: usize) -> std::result::Result<GUID, DesktopError> {
-        let ids = self.desktop_ids()?;
-        ids.get(index)
-            .copied()
-            .ok_or(DesktopError::TargetOutOfRange {
-                requested: index,
-                count: ids.len(),
-            })
+    pub fn create_desktop(&self) -> std::result::Result<GUID, DesktopError> {
+        let inner: crate::error::Result<GUID> = (|| unsafe {
+            let mut desktop = None;
+            self.manager
+                .create_desktop(&mut desktop)
+                .ok()
+                .map_err(|e| Error::win("IVirtualDesktopManagerInternal::CreateDesktop", &e))?;
+            let desktop = desktop.ok_or_else(|| Error::desktop("CreateDesktop returned null"))?;
+            desktop_id(&desktop)
+        })();
+        inner.map_err(|error| {
+            DesktopError::CreationUnavailable(format!("CreateDesktop failed: {error}"))
+        })
+    }
+
+    pub fn switch_to_id(&self, id: GUID) -> std::result::Result<(), DesktopError> {
+        if self.current_desktop_id()? == id {
+            return Ok(());
+        }
+        let desktop = self.desktop_for_id(id)?;
+        unsafe {
+            self.manager
+                .switch_desktop(ComIn::new(&desktop))
+                .ok()
+                .map_err(|e| {
+                    classify(&Error::win(
+                        "IVirtualDesktopManagerInternal::SwitchDesktop",
+                        &e,
+                    ))
+                })
+        }
+    }
+
+    pub fn move_window_to_desktop_id(
+        &self,
+        hwnd: windows::Win32::Foundation::HWND,
+        desktop_id: GUID,
+    ) -> std::result::Result<(), DesktopError> {
+        let Some(window_manager) = &self.window_manager else {
+            return Err(DesktopError::MoveUnavailable(
+                "public VirtualDesktopManager is unavailable".into(),
+            ));
+        };
+        unsafe {
+            window_manager
+                .MoveWindowToDesktop(hwnd, &desktop_id)
+                .map_err(|e| {
+                    classify(&Error::win(
+                        "IVirtualDesktopManager::MoveWindowToDesktop",
+                        &e,
+                    ))
+                })
+        }
+    }
+
+    pub fn remove_desktop_id(
+        &self,
+        id: GUID,
+        fallback_id: GUID,
+    ) -> std::result::Result<(), DesktopError> {
+        if id == fallback_id {
+            return Err(DesktopError::NavigationUnavailable(
+                "special workspace fallback cannot be the workspace itself".into(),
+            ));
+        }
+        let desktop = self.desktop_for_id(id)?;
+        let fallback = self.desktop_for_id(fallback_id)?;
+        unsafe {
+            self.manager
+                .remove_desktop(ComIn::new(&desktop), ComIn::new(&fallback))
+                .ok()
+                .map_err(|e| {
+                    classify(&Error::win(
+                        "IVirtualDesktopManagerInternal::RemoveDesktop",
+                        &e,
+                    ))
+                })
+        }
     }
 
     pub fn window_desktop_id(
@@ -296,32 +324,6 @@ impl InternalBackend {
                     &e,
                 ))
             })
-        }
-    }
-
-    pub fn move_window_to_desktop(
-        &self,
-        hwnd: windows::Win32::Foundation::HWND,
-        index: usize,
-    ) -> std::result::Result<(), DesktopError> {
-        let Some(window_manager) = &self.window_manager else {
-            return Err(DesktopError::MoveUnavailable(
-                "public VirtualDesktopManager is unavailable".into(),
-            ));
-        };
-        // The documented manager is the supported HWND→desktop operation.
-        // The internal MoveViewToDesktop slot requires an IApplicationView
-        // that cannot be safely derived from an arbitrary foreground HWND.
-        let desktop_id = self.desktop_id_for_index(index)?;
-        unsafe {
-            window_manager
-                .MoveWindowToDesktop(hwnd, &desktop_id)
-                .map_err(|e| {
-                    classify(&Error::win(
-                        "IVirtualDesktopManager::MoveWindowToDesktop",
-                        &e,
-                    ))
-                })
         }
     }
 }
@@ -432,75 +434,4 @@ unsafe fn desktop_id(desktop: &IVirtualDesktop) -> Result<GUID> {
             .map_err(|e| Error::win("IVirtualDesktop::GetId", &e))?;
     }
     Ok(id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn desktop_creation_is_bounded_to_missing_count() {
-        assert_eq!(desktops_to_create(3, 9), 6);
-        assert_eq!(desktops_to_create(9, 9), 0);
-        assert_eq!(desktops_to_create(0, 1), 1);
-    }
-    #[test]
-    fn ensure_existing_target_performs_no_creation() {
-        let creations = std::cell::Cell::new(0);
-        ensure_desktop_count_with(
-            9,
-            9,
-            || {
-                creations.set(creations.get() + 1);
-                Ok(())
-            },
-            || Ok(9),
-        )
-        .unwrap();
-        assert_eq!(creations.get(), 0);
-    }
-
-    #[test]
-    fn ensure_creates_exactly_the_missing_desktops() {
-        let creations = std::cell::Cell::new(0);
-        let count = std::cell::Cell::new(3);
-        ensure_desktop_count_with(
-            count.get(),
-            9,
-            || {
-                creations.set(creations.get() + 1);
-                count.set(count.get() + 1);
-                Ok(())
-            },
-            || Ok(count.get()),
-        )
-        .unwrap();
-        assert_eq!(creations.get(), 6);
-        assert_eq!(count.get(), 9);
-    }
-
-    #[test]
-    fn ensure_surfaces_native_creation_failure_without_keyboard_fallback() {
-        let result = ensure_desktop_count_with(
-            3,
-            4,
-            || Err(DesktopError::CreationUnavailable("denied".into())),
-            || Ok(3),
-        );
-        assert_eq!(
-            result,
-            Err(DesktopError::CreationUnavailable("denied".into()))
-        );
-        assert!(!result.unwrap_err().permits_fallback());
-    }
-
-    #[test]
-    fn ensure_rejects_a_native_backend_that_stops_short() {
-        let result = ensure_desktop_count_with(3, 4, || Ok(()), || Ok(3));
-        assert!(matches!(
-            result,
-            Err(DesktopError::CreationUnavailable(message))
-                if message.contains("stopped at 3")
-        ));
-    }
 }
