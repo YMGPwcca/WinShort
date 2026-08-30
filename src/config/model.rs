@@ -994,12 +994,29 @@ impl Config {
 
                 "overlay.opacity" => self.overlay.opacity = 0.85,
                 "virtual_desktops.number_modifier" => {
-                    self.virtual_desktops.number_modifier = ModifierMask::WIN
+                    self.virtual_desktops.number_modifier = ModifierMask::WIN;
+                    // A repaired default family must not collide with an
+                    // optional family that was only skipped because the
+                    // invalid number modifier generated no bindings.
+                    if self.virtual_desktops.move_follow_modifier == Some(ModifierMask::WIN) {
+                        self.virtual_desktops.move_follow_modifier = None;
+                    }
+                    if self.virtual_desktops.move_silent_modifier == Some(ModifierMask::WIN) {
+                        self.virtual_desktops.move_silent_modifier = None;
+                    }
                 }
-                "virtual_desktops.move_follow_modifier" if v.message.contains("conflicts") => {
+                "virtual_desktops.move_follow_modifier"
+                    if v.message.contains("conflicts")
+                        || v.message.contains("empty")
+                        || v.message.contains("unsupported") =>
+                {
                     self.virtual_desktops.move_follow_modifier = None;
                 }
-                "virtual_desktops.move_silent_modifier" if v.message.contains("conflicts") => {
+                "virtual_desktops.move_silent_modifier"
+                    if v.message.contains("conflicts")
+                        || v.message.contains("empty")
+                        || v.message.contains("unsupported") =>
+                {
                     self.virtual_desktops.move_silent_modifier = None;
                 }
                 f if f.starts_with("hotkeys.") && v.message.contains("conflicts") => {
@@ -1481,6 +1498,20 @@ move_silent_modifier = "Ctrl+Alt"
             Some(ModifierMask::ALT)
         );
         assert!(config.virtual_desktops.move_silent_modifier.is_none());
+        assert!(crate::config::validate(&config).is_empty());
+    }
+
+    #[test]
+    fn repair_does_not_reintroduce_default_family_collision() {
+        let mut config = Config::default();
+        config.virtual_desktops.number_modifier = ModifierMask::NONE;
+        config.virtual_desktops.move_follow_modifier = Some(ModifierMask::WIN);
+
+        let violations = crate::config::validate(&config);
+        config.repair(&violations);
+
+        assert_eq!(config.virtual_desktops.number_modifier, ModifierMask::WIN);
+        assert!(config.virtual_desktops.move_follow_modifier.is_none());
         assert!(crate::config::validate(&config).is_empty());
     }
 }

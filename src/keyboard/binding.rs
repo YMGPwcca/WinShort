@@ -29,6 +29,11 @@ impl ModifierMask {
         Self(bits)
     }
 
+    /// Whether all bits belong to the four supported modifier families.
+    pub const fn is_valid(self) -> bool {
+        self.0 & !0x0F == 0
+    }
+
     /// Parse a non-empty modifier-only chord such as `Win+Alt`.
     pub fn parse(s: &str) -> Result<Self, String> {
         let mut mask = Self::NONE;
@@ -402,6 +407,12 @@ mod tests {
         assert!(ModifierMask::parse("Ctrl+Ctrl").is_err());
         assert!(ModifierMask::parse("Win+1").is_err());
         assert!(ModifierMask::parse("").is_err());
+    }
+    #[test]
+    fn modifier_mask_rejects_unknown_bits() {
+        assert_eq!(ModifierMask::from_bits(0x80).bits(), 0x80);
+        assert!(!ModifierMask::from_bits(0x80).is_valid());
+        assert!(ModifierMask::from_bits(0x0F).is_valid());
     }
 
     #[test]

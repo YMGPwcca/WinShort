@@ -114,20 +114,57 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
     // Numbered families reserve every digit with their configured modifier.
     // Family collisions and explicit-hotkey collisions are rejected instead
     // of being silently shadowed by build_bindings.
+    let number_modifier = cfg.virtual_desktops.number_modifier;
+    if !number_modifier.is_valid() {
+        v.push(Violation::new(
+            "virtual_desktops.number_modifier",
+            "contains unsupported modifier bits",
+        ));
+    }
+    for (field, modifier) in [
+        (
+            "virtual_desktops.move_follow_modifier",
+            cfg.virtual_desktops.move_follow_modifier,
+        ),
+        (
+            "virtual_desktops.move_silent_modifier",
+            cfg.virtual_desktops.move_silent_modifier,
+        ),
+    ] {
+        if let Some(modifier) = modifier {
+            if !modifier.is_valid() {
+                v.push(Violation::new(field, "contains unsupported modifier bits"));
+            } else if modifier.is_empty() {
+                v.push(Violation::new(
+                    field,
+                    "optional modifier family must not be empty",
+                ));
+            }
+        }
+    }
     if cfg.virtual_desktops.enabled {
         let mut families: Vec<(&str, crate::keyboard::binding::ModifierMask)> = Vec::new();
-        if cfg.virtual_desktops.win_number_switching {
-            families.push(("number_modifier", cfg.virtual_desktops.number_modifier));
+        if cfg.virtual_desktops.win_number_switching
+            && number_modifier.is_valid()
+            && !number_modifier.is_empty()
+        {
+            families.push(("number_modifier", number_modifier));
         }
-        if let Some(modifier) = cfg.virtual_desktops.move_follow_modifier {
+        if let Some(modifier) = cfg
+            .virtual_desktops
+            .move_follow_modifier
+            .filter(|modifier| modifier.is_valid() && !modifier.is_empty())
+        {
             families.push(("move_follow_modifier", modifier));
         }
-        if let Some(modifier) = cfg.virtual_desktops.move_silent_modifier {
+        if let Some(modifier) = cfg
+            .virtual_desktops
+            .move_silent_modifier
+            .filter(|modifier| modifier.is_valid() && !modifier.is_empty())
+        {
             families.push(("move_silent_modifier", modifier));
         }
-        if cfg.virtual_desktops.win_number_switching
-            && cfg.virtual_desktops.number_modifier.is_empty()
-        {
+        if cfg.virtual_desktops.win_number_switching && number_modifier.is_empty() {
             v.push(Violation::new(
                 "virtual_desktops.number_modifier",
                 "numbered desktop switching requires at least one modifier",
@@ -135,9 +172,6 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
         }
         let mut family_seen: HashMap<Hotkey, &str> = HashMap::new();
         for (family, modifier) in families {
-            if modifier.is_empty() {
-                continue;
-            }
             for hotkey in numbered_desktop_family(modifier) {
                 if let Some(other) = seen.get(&hotkey) {
                     let message = if family == "number_modifier" {
@@ -529,6 +563,37 @@ output_device = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
         assert!(violations
             .iter()
             .any(|violation| violation.field == "hotkeys.previous_desktop"));
+    }
+    #[test]
+    fn empty_or_unknown_optional_modifier_families_are_rejected() {
+        let mut config = Config::default();
+        config.virtual_desktops.move_follow_modifier =
+            Some(crate::keyboard::binding::ModifierMask::NONE);
+        config.virtual_desktops.move_silent_modifier =
+            Some(crate::keyboard::binding::ModifierMask::from_bits(0x80));
+
+        let violations = validate(&config);
+        assert!(violations.iter().any(|violation| {
+            violation.field == "virtual_desktops.move_follow_modifier"
+                && violation.message.contains("must not be empty")
+        }));
+        assert!(violations.iter().any(|violation| {
+            violation.field == "virtual_desktops.move_silent_modifier"
+                && violation.message.contains("unsupported modifier bits")
+        }));
+    }
+
+    #[test]
+    fn disabled_numbered_switching_does_not_reserve_custom_family() {
+        let mut config = Config::default();
+        config.virtual_desktops.win_number_switching = false;
+        config.virtual_desktops.number_modifier = crate::keyboard::binding::ModifierMask::CTRL
+            .union(crate::keyboard::binding::ModifierMask::ALT);
+        config.hotkeys.toggle_output = Some(Hotkey {
+            modifiers: config.virtual_desktops.number_modifier,
+            key: crate::keyboard::binding::VirtualKey(b'5' as u16),
+        });
+        assert!(validate(&config).is_empty());
     }
     #[test]
     fn display_profiles_validate_and_repair_unknown_selection() {
