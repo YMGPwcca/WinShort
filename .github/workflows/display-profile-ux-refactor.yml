@@ -25,6 +25,8 @@ jobs:
         run: python tools/_refactor_display_backend.py
       - name: Apply UI refactor
         run: python tools/_refactor_display_ui.py
+      - name: Remove generated dead code
+        run: python tools/_cleanup_display_ux.py
       - name: Format
         run: cargo fmt --all
       - name: Check
@@ -38,6 +40,7 @@ jobs:
         run: |
           Remove-Item tools/_refactor_display_backend.py
           Remove-Item tools/_refactor_display_ui.py
+          Remove-Item tools/_cleanup_display_ux.py
           Remove-Item .github/workflows/display-profile-ux-refactor.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
