@@ -231,6 +231,7 @@ impl DesktopController {
             Err(error) => self.publish_failure("switch desktop", error),
         }
     }
+
     fn move_foreground(&mut self, index: usize, hwnd_raw: isize, follow: bool) {
         self.clear_stale_scratchpad();
         let hwnd = raw_hwnd(hwnd_raw);
@@ -406,6 +407,7 @@ impl DesktopController {
             }
         }
     }
+
     fn foreground_changed(&mut self, hwnd_raw: isize) {
         self.remember_foreground(hwnd_raw);
         // Foreground events also let Previous Desktop observe switches made
@@ -579,18 +581,47 @@ impl DesktopController {
                 ),
             );
             return;
+        } else {
+            // Some VirtualDesktopManager builds refuse GetWindowDesktopId for
+            // a HWND hidden with SW_HIDE. Reveal first, while retaining the
+            // HWND/PID ownership checks, then resolve/move the visible window.
+            if !scratchpad_window(state.hwnd, state.owner_pid) {
+                self.scratchpad = None;
+                self.publish_failure(
+                    "toggle scratchpad",
+                    DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
+                );
+                return;
+            }
+            unsafe {
+                let _ = ShowWindow(state.hwnd, SW_SHOWNA);
+            }
+            if !scratchpad_window(state.hwnd, state.owner_pid) {
+                self.scratchpad = None;
+                self.publish_failure(
+                    "toggle scratchpad",
+                    DesktopError::WindowUnavailable(
+                        "assigned scratchpad window became stale while showing".into(),
+                    ),
+                );
+                return;
+            }
+            if !unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
+                self.scratchpad = Some(state);
+                self.publish_failure(
+                    "toggle scratchpad",
+                    DesktopError::WindowUnavailable("scratchpad could not be shown".into()),
+                );
+                return;
+            }
+            state.hidden_by_winshort = false;
         }
 
         if let Err(error) = self.ensure_window_on_current_desktop(state.hwnd, state.owner_pid) {
-            self.scratchpad = Some(state);
-            if state.hidden_by_winshort {
-                // A failed desktop query/move must not leave an application
-                // invisible under WinShort's ownership. Reveal and release
-                // even when the native backend is no longer usable.
-                if let Err(release_error) = self.release_scratchpad() {
-                    self.publish_failure("release scratchpad", release_error);
-                }
-            }
+            // At this point a WinShort-hidden window has already been revealed.
+            // Do not keep ownership after a desktop lookup/move failure and do
+            // not report a successful focus path that never ran.
+            self.scratchpad = None;
             self.publish_failure("toggle scratchpad", error);
             return;
         }
@@ -663,7 +694,7 @@ impl DesktopController {
         let native = self.native.as_ref().ok_or_else(|| {
             DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
         })?;
-        Ok(native.window_desktop_id(hwnd)? == native.current_desktop_id()?)
+        Ok(scratchpad_window_desktop_id(native, hwnd)? == native.current_desktop_id()?)
     }
 
     fn ensure_window_on_current_desktop(
@@ -691,7 +722,7 @@ impl DesktopController {
                 "assigned scratchpad window became stale".into(),
             ));
         }
-        if native.window_desktop_id(hwnd)? != current {
+        if scratchpad_window_desktop_id(native, hwnd)? != current {
             if !scratchpad_window(hwnd, owner_pid) {
                 return Err(DesktopError::WindowUnavailable(
                     "assigned scratchpad window became stale while moving".into(),
@@ -891,6 +922,7 @@ fn is_shell_surface_class(class: &str) -> bool {
             | "Windows.UI.Core.CoreWindow"
     )
 }
+
 fn eligible_window(hwnd: HWND) -> bool {
     valid_external_window(hwnd, true, true).is_some()
 }
@@ -926,6 +958,7 @@ fn window_process_id(hwnd: HWND) -> Option<u32> {
     let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     (thread_id != 0 && pid != 0).then_some(pid)
 }
+
 fn valid_external_window(hwnd: HWND, require_visible: bool, reject_cloaked: bool) -> Option<u32> {
     if hwnd.0.is_null() {
         return None;
@@ -966,6 +999,29 @@ fn valid_external_window(hwnd: HWND, require_visible: bool, reject_cloaked: bool
         }
         let class = String::from_utf16_lossy(&class[..length as usize]);
         (!is_shell_surface_class(&class)).then_some(pid)
+    }
+}
+
+fn scratchpad_window_desktop_id(
+    native: &InternalBackend,
+    hwnd: HWND,
+) -> std::result::Result<GUID, DesktopError> {
+    native
+        .window_desktop_id(hwnd)
+        .map_err(scratchpad_desktop_lookup_error)
+}
+
+fn scratchpad_desktop_lookup_error(error: DesktopError) -> DesktopError {
+    match error {
+        // The public VirtualDesktopManager query currently flows through the
+        // backend's generic HRESULT classifier, where non-RPC HRESULTs are
+        // represented as SwitchFailed. Scratchpad is not switching a desktop
+        // here, so preserve the code but report the operation truthfully.
+        DesktopError::SwitchFailed(code) => DesktopError::WindowUnavailable(format!(
+            "Scratchpad virtual desktop lookup failed: 0x{:08X}",
+            code as u32
+        )),
+        other => other,
     }
 }
 
@@ -1065,13 +1121,16 @@ mod policy_tests {
         errors: RefCell<Vec<DesktopError>>,
         fallback_used: RefCell<bool>,
     }
+
     impl VirtualDesktopBackend for ScriptedBackend {
         fn desktop_count(&self) -> std::result::Result<usize, DesktopError> {
             Err(DesktopError::BackendUnavailable("scripted".into()))
         }
+
         fn current_desktop(&self) -> std::result::Result<usize, DesktopError> {
             Ok(0)
         }
+
         fn switch_to(&self, _index: usize) -> std::result::Result<(), DesktopError> {
             match self.errors.borrow_mut().pop() {
                 Some(e) => Err(e),
@@ -1110,6 +1169,7 @@ mod policy_tests {
         }
         .permits_fallback());
     }
+
     #[test]
     fn scripted_backend_surfaces_typed_error() {
         let backend = ScriptedBackend {
@@ -1129,6 +1189,7 @@ mod policy_tests {
         );
         assert!(!*backend.fallback_used.borrow());
     }
+
     #[test]
     fn shell_surface_classes_are_never_meaningful_focus_candidates() {
         for class in [
@@ -1143,6 +1204,7 @@ mod policy_tests {
         }
         assert!(!is_shell_surface_class("Chrome_WidgetWin_1"));
     }
+
     #[test]
     fn stale_scratchpad_handle_is_cleared_without_shell_calls() {
         let mut controller = DesktopController {
@@ -1167,5 +1229,18 @@ mod policy_tests {
         controller.clear_stale_scratchpad();
 
         assert!(controller.scratchpad.is_none());
+    }
+
+    #[test]
+    fn scratchpad_desktop_lookup_failure_is_not_reported_as_switch_failure() {
+        let error = scratchpad_desktop_lookup_error(DesktopError::SwitchFailed(
+            0x8002_802Bu32 as i32,
+        ));
+        assert!(matches!(
+            error,
+            DesktopError::WindowUnavailable(message)
+                if message.contains("Scratchpad virtual desktop lookup failed")
+                    && message.contains("0x8002802B")
+        ));
     }
 }
