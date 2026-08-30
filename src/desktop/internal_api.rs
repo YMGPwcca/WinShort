@@ -10,6 +10,7 @@ use std::ops::Deref;
 use crate::desktop::backend::{DesktopError, VirtualDesktopBackend};
 use crate::desktop::detect::OsBuild;
 use crate::error::{Error, Result};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::{
     Common::IObjectArray, IVirtualDesktopManager, VirtualDesktopManager,
@@ -51,6 +52,33 @@ pub unsafe trait ShellServiceProvider: IUnknown {
         service: *const GUID,
         iid: *const GUID,
         object: *mut *mut c_void,
+    ) -> HRESULT;
+}
+
+// IApplicationView is intentionally opaque here. WinShort only obtains a view
+// from IApplicationViewCollection and passes that same COM pointer to the
+// build-pinned IVirtualDesktopManagerInternal move methods; no view vtable slot
+// is called directly.
+#[windows_core::interface("372E1D3B-38D3-42E4-A15B-8AB2B178F513")]
+pub unsafe trait IApplicationView: IUnknown {}
+
+// This service/IID has remained stable across the Windows generations WinShort
+// targets. Only the prefix through GetViewForHwnd is declared because later
+// slots are never called. The first three declarations preserve the real vtable
+// position of GetViewForHwnd.
+#[windows_core::interface("1841C6D7-4F9D-42C0-AF41-8747538F10E5")]
+pub unsafe trait IApplicationViewCollection: IUnknown {
+    pub unsafe fn get_views(&self, views: *mut *mut c_void) -> HRESULT;
+    pub unsafe fn get_views_by_zorder(&self, views: *mut *mut c_void) -> HRESULT;
+    pub unsafe fn get_views_by_app_user_model_id(
+        &self,
+        app_user_model_id: *const u16,
+        views: *mut *mut c_void,
+    ) -> HRESULT;
+    pub unsafe fn get_view_for_hwnd(
+        &self,
+        window: HWND,
+        view: *mut Option<IApplicationView>,
     ) -> HRESULT;
 }
 
@@ -112,6 +140,20 @@ fn classify(e: &crate::error::Error) -> DesktopError {
     }
 }
 
+/// Move failures are semantic failures, not switch failures. Preserve the RPC
+/// class so the controller can rebuild a dead Explorer proxy, but never label
+/// an ordinary move rejection (notably E_ACCESSDENIED) as SwitchDesktop.
+fn classify_move(e: &crate::error::Error) -> DesktopError {
+    match e {
+        crate::error::Error::Os { code, .. }
+            if matches!(*code, 0x8001_0108 | 0x8007_06BA | 0x8007_06BE) =>
+        {
+            DesktopError::RpcDisconnected
+        }
+        other => DesktopError::MoveUnavailable(other.to_string()),
+    }
+}
+
 trait BackendError<T> {
     fn classify(self) -> std::result::Result<T, DesktopError>;
 }
@@ -125,6 +167,7 @@ impl<T> BackendError<T> for crate::error::Result<T> {
 pub struct InternalBackend {
     manager: IVirtualDesktopManagerInternal,
     window_manager: Option<IVirtualDesktopManager>,
+    view_collection: Option<IApplicationViewCollection>,
 }
 
 impl InternalBackend {
@@ -166,9 +209,42 @@ impl InternalBackend {
                         None
                     }
                 };
+
+            // The documented MoveWindowToDesktop API rejects cross-process HWNDs
+            // with E_ACCESSDENIED. Resolve the Shell application view service so
+            // all WinShort move actions can use GetViewForHwnd + MoveViewToDesktop.
+            let view_collection = {
+                let mut view_raw = std::ptr::null_mut();
+                match provider
+                    .query_service(
+                        &IApplicationViewCollection::IID,
+                        &IApplicationViewCollection::IID,
+                        &mut view_raw,
+                    )
+                    .ok()
+                {
+                    Ok(()) if !view_raw.is_null() => {
+                        Some(IApplicationViewCollection::from_raw(view_raw))
+                    }
+                    Ok(()) => {
+                        crate::warn_!(
+                            "IServiceProvider::QueryService(IApplicationViewCollection) returned null"
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        crate::warn_!(
+                            "IServiceProvider::QueryService(IApplicationViewCollection) failed: {error}"
+                        );
+                        None
+                    }
+                }
+            };
+
             Ok(Self {
                 manager,
                 window_manager,
+                view_collection,
             })
         }
     }
@@ -205,6 +281,7 @@ impl InternalBackend {
         })();
         inner.classify()
     }
+
     fn desktop_for_id(&self, id: GUID) -> std::result::Result<IVirtualDesktop, DesktopError> {
         let inner: crate::error::Result<Option<IVirtualDesktop>> = (|| unsafe {
             let array = desktop_array(&self.manager)?;
@@ -263,20 +340,61 @@ impl InternalBackend {
 
     pub fn move_window_to_desktop_id(
         &self,
-        hwnd: windows::Win32::Foundation::HWND,
+        hwnd: HWND,
         desktop_id: GUID,
     ) -> std::result::Result<(), DesktopError> {
-        let Some(window_manager) = &self.window_manager else {
-            return Err(DesktopError::MoveUnavailable(
-                "public VirtualDesktopManager is unavailable".into(),
-            ));
-        };
+        let view_collection = self.view_collection.as_ref().ok_or_else(|| {
+            DesktopError::MoveUnavailable(
+                "IApplicationViewCollection is unavailable; cross-process window moves are disabled"
+                    .into(),
+            )
+        })?;
+        let desktop = self.desktop_for_id(desktop_id)?;
+
+        let mut view = None;
         unsafe {
-            window_manager
-                .MoveWindowToDesktop(hwnd, &desktop_id)
+            view_collection
+                .get_view_for_hwnd(hwnd, &mut view)
+                .ok()
                 .map_err(|e| {
-                    classify(&Error::win(
-                        "IVirtualDesktopManager::MoveWindowToDesktop",
+                    classify_move(&Error::win(
+                        "IApplicationViewCollection::GetViewForHwnd",
+                        &e,
+                    ))
+                })?;
+        }
+        let view = view.ok_or_else(|| {
+            DesktopError::MoveUnavailable(
+                "IApplicationViewCollection::GetViewForHwnd returned no application view".into(),
+            )
+        })?;
+
+        let mut can_move = 0i32;
+        unsafe {
+            self.manager
+                .can_view_move_desktops(view.as_raw(), &mut can_move)
+                .ok()
+                .map_err(|e| {
+                    classify_move(&Error::win(
+                        "IVirtualDesktopManagerInternal::CanViewMoveDesktops",
+                        &e,
+                    ))
+                })?;
+        }
+        if can_move == 0 {
+            return Err(DesktopError::MoveUnavailable(
+                "Shell reports that this application view cannot move between virtual desktops"
+                    .into(),
+            ));
+        }
+
+        unsafe {
+            self.manager
+                .move_view_to_desktop(view.as_raw(), ComIn::new(&desktop))
+                .ok()
+                .map_err(|e| {
+                    classify_move(&Error::win(
+                        "IVirtualDesktopManagerInternal::MoveViewToDesktop",
                         &e,
                     ))
                 })
@@ -308,10 +426,7 @@ impl InternalBackend {
         }
     }
 
-    pub fn window_desktop_id(
-        &self,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> std::result::Result<GUID, DesktopError> {
+    pub fn window_desktop_id(&self, hwnd: HWND) -> std::result::Result<GUID, DesktopError> {
         let Some(window_manager) = &self.window_manager else {
             return Err(DesktopError::MoveUnavailable(
                 "public VirtualDesktopManager is unavailable".into(),
@@ -434,4 +549,32 @@ unsafe fn desktop_id(desktop: &IVirtualDesktop) -> Result<GUID> {
             .map_err(|e| Error::win("IVirtualDesktop::GetId", &e))?;
     }
     Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_denied_move_is_not_reported_as_switch_failure() {
+        let error = Error::os(
+            "IVirtualDesktopManagerInternal::MoveViewToDesktop",
+            0x8007_0005,
+        );
+        let classified = classify_move(&error);
+        assert!(matches!(
+            classified,
+            DesktopError::MoveUnavailable(message)
+                if message.contains("E_ACCESSDENIED") && message.contains("MoveViewToDesktop")
+        ));
+    }
+
+    #[test]
+    fn move_rpc_disconnect_keeps_retryable_error_class() {
+        let classified = classify_move(&Error::os(
+            "IVirtualDesktopManagerInternal::MoveViewToDesktop",
+            0x8007_06BA,
+        ));
+        assert_eq!(classified, DesktopError::RpcDisconnected);
+    }
 }
