@@ -273,7 +273,7 @@ fuzz campaign is claimed or running.
 - Disable the feature or exit cleanly removes the Special Workspace and Shell relocates its windows to a normal fallback desktop
 - External deletion of the Special Workspace clears stale runtime identity and the next use creates a fresh workspace
 - Unsupported/native-failed builds report Special Workspace unavailable; keyboard fallback never simulates its create/move/toggle semantics
-- Hard process termination may leave an orphan dedicated VD; this residual limitation is documented and must not be reported as graceful-cleanup success
+- Hard process termination or Windows reboot may leave the dedicated VD alive; relaunch must reclaim the exact persisted GUID without creating a duplicate, while a missing GUID is treated as external deletion
 
 ### Display profiles
 - Capture Current on single/multi-monitor topology persists stable target paths,
