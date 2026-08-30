@@ -672,7 +672,7 @@ impl DesktopController {
                 "requested {target_count} normal desktops plus the special workspace exceeds the 256-desktop safety limit"
             )));
         }
-        let missing = target_count.saturating_sub(current.len());
+        let missing = missing_normal_desktops(current.len(), target_count);
         for _ in 0..missing {
             self.native
                 .as_ref()
@@ -801,6 +801,10 @@ fn activate_window(hwnd: HWND) -> bool {
         }
         SetForegroundWindow(hwnd).as_bool()
     }
+}
+
+fn missing_normal_desktops(current_count: usize, target_count: usize) -> usize {
+    target_count.saturating_sub(current_count)
 }
 
 fn numbered_desktop_ids(ids: &[GUID], special_workspace: Option<GUID>) -> Vec<GUID> {
@@ -1060,6 +1064,13 @@ mod policy_tests {
         }
         assert!(!is_shell_surface_class("Chrome_WidgetWin_1"));
     }
+    #[test]
+    fn normal_desktop_creation_counts_only_the_missing_target() {
+        assert_eq!(missing_normal_desktops(3, 9), 6);
+        assert_eq!(missing_normal_desktops(9, 9), 0);
+        assert_eq!(missing_normal_desktops(10, 9), 0);
+    }
+
     #[test]
     fn special_workspace_is_excluded_from_numbered_desktop_ordinals() {
         let first = GUID::from_u128(1);
