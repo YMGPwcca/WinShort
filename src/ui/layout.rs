@@ -469,26 +469,26 @@ impl SettingsLayout {
                 row(
                     ElementId::WinNumberEnabled,
                     ElementKind::Toggle,
-                    "Win + number switching",
-                    "Replace taskbar shortcuts with Desktop 1–9",
+                    "Numbered desktop switching",
+                    "Enable the configured Desktop 1–9 family",
                 ),
                 row(
                     ElementId::DesktopNumberModifier,
                     ElementKind::Value,
-                    "Desktop number chord",
+                    "Switch Desktop",
                     "Modifier family for Desktop 1–9",
                 ),
                 row(
                     ElementId::MoveDesktopModifier,
                     ElementKind::Value,
-                    "Move and follow chord",
-                    "Move the foreground window to Desktop 1–9",
+                    "Move + Follow",
+                    "Move the foreground window to Desktop 1–9 and follow it",
                 ),
                 row(
                     ElementId::SilentMoveDesktopModifier,
                     ElementKind::Value,
-                    "Silent move chord",
-                    "Move without switching away",
+                    "Move Silently",
+                    "Move the foreground window without switching desktops",
                 ),
                 row(
                     ElementId::PreviousDesktopHotkey,

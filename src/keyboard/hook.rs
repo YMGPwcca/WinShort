@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config::ConfigHandle;
 use crate::error::{Error, Result};
 use crate::event::{HotkeyAction, WM_APP_ACTION};
-use crate::keyboard::binding::{BindingTable, Hotkey, ModifierMask, VirtualKey};
+use crate::keyboard::binding::{numbered_desktop_family, BindingTable, ModifierMask, VirtualKey};
 use crate::keyboard::engine::{EngineOutcome, KeyboardEngine, RawKeyEvent};
 use crate::keyboard::keystate::{normalize_vk, KeyState};
 
@@ -534,12 +534,8 @@ where
     if modifier.is_empty() {
         return;
     }
-    for number in 1u16..=9 {
-        let hotkey = Hotkey {
-            modifiers: modifier,
-            key: VirtualKey(0x30 + number),
-        };
-        if !table.insert(hotkey, make((number - 1) as u8)) {
+    for (number, hotkey) in numbered_desktop_family(modifier).enumerate() {
+        if !table.insert(hotkey, make(number as u8)) {
             crate::warn_!("duplicate virtual-desktop family binding ignored: {hotkey}");
         }
     }
@@ -644,6 +640,7 @@ pub fn build_bindings(config: &crate::config::Config) -> BindingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keyboard::binding::Hotkey;
 
     /// All capture-state tests mutate process-global CAPTURE_* atomics and
     /// cargo runs tests in parallel threads — serialize them so interleaved

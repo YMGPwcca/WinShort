@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
 pub use crate::display::{DisplayProfile, DisplayProfilesCfg, DisplayRoute, DisplayTopology};
-use crate::keyboard::binding::{Hotkey, ModifierMask};
+use crate::keyboard::binding::{numbered_desktop_family, Hotkey, ModifierMask};
 
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
@@ -1134,12 +1134,7 @@ impl Config {
                 .flatten()
                 .filter(|modifier| !modifier.is_empty())
                 {
-                    for number in 1u16..=9 {
-                        used.insert(Hotkey {
-                            modifiers: modifier,
-                            key: crate::keyboard::binding::VirtualKey(0x30 + number),
-                        });
-                    }
+                    used.extend(numbered_desktop_family(modifier));
                 }
             }
             self.hotkeys.display_profiles.retain(|binding| {
@@ -1438,5 +1433,54 @@ win_number_switching = true
         assert!(config.virtual_desktops.move_follow_modifier.is_none());
         assert!(config.virtual_desktops.move_silent_modifier.is_none());
         assert!(config.virtual_desktops.previous_desktop.is_none());
+    }
+    #[test]
+    fn malformed_desktop_modifier_fields_warn_and_keep_safe_defaults() {
+        let raw = r#"
+schema_version = 9
+[virtual_desktops]
+number_modifier = "Win+1"
+move_follow_modifier = "Ctrl+Ctrl"
+move_silent_modifier = "Ctrl+Alt"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+
+        assert_eq!(config.virtual_desktops.number_modifier, ModifierMask::WIN);
+        assert!(config.virtual_desktops.move_follow_modifier.is_none());
+        assert_eq!(
+            config.virtual_desktops.move_silent_modifier,
+            Some(ModifierMask::CTRL.union(ModifierMask::ALT))
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings
+            .iter()
+            .all(|warning| warning.starts_with("virtual_desktops.")));
+    }
+
+    #[test]
+    fn repair_removes_conflicting_families_and_restores_empty_number_modifier() {
+        let mut config = Config::default();
+        config.virtual_desktops.number_modifier = ModifierMask::NONE;
+        config.virtual_desktops.move_follow_modifier = Some(ModifierMask::ALT);
+        config.virtual_desktops.move_silent_modifier = Some(ModifierMask::ALT);
+
+        let violations = crate::config::validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "virtual_desktops.number_modifier"));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "virtual_desktops.move_silent_modifier"));
+
+        config.repair(&violations);
+
+        assert_eq!(config.virtual_desktops.number_modifier, ModifierMask::WIN);
+        assert_eq!(
+            config.virtual_desktops.move_follow_modifier,
+            Some(ModifierMask::ALT)
+        );
+        assert!(config.virtual_desktops.move_silent_modifier.is_none());
+        assert!(crate::config::validate(&config).is_empty());
     }
 }

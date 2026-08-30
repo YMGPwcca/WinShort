@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use crate::config::model::{Config, DeviceSelection};
-use crate::keyboard::binding::Hotkey;
+use crate::keyboard::binding::{numbered_desktop_family, Hotkey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
@@ -138,11 +138,7 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
             if modifier.is_empty() {
                 continue;
             }
-            for number in 1u16..=9 {
-                let hotkey = Hotkey {
-                    modifiers: modifier,
-                    key: crate::keyboard::binding::VirtualKey(0x30 + number),
-                };
+            for hotkey in numbered_desktop_family(modifier) {
                 if let Some(other) = seen.get(&hotkey) {
                     let message = if family == "number_modifier" {
                         format!("conflicts with reserved virtual-desktop shortcut {hotkey}")

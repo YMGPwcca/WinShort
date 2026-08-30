@@ -163,8 +163,7 @@ impl KeyboardEngine {
             // passed too. Do NOT add this key to suppressed_ups.
             if KeyState::is_win_key(vk) && self.state.any_win() {
                 let mask = self.state.modifiers();
-                let held: Vec<u16> = self.state.pressed_nonmods().collect();
-                for key in held {
+                for key in self.state.pressed_nonmods() {
                     if let Some(action) = table.lookup(mask, VirtualKey(key)) {
                         self.win_ups_to_swallow |= if vk == vks::VK_LWIN { 1 } else { 2 };
                         self.passthrough_while_win = false;
