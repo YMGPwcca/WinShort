@@ -60,8 +60,11 @@ Pure Rust against Win32/COM — no Electron, WebView, .NET, C++, or GUI framewor
 | `Win+1`…`Win+9` | Switch to virtual desktop 1–9 |
 
 Optional desktop workflow and Special Workspace shortcuts are unassigned by default and can
-be configured in Settings. Sending a window moves it into one runtime-only dedicated Virtual
-Desktop; toggling switches to that workspace and back to the remembered normal desktop.
+be configured in Settings. Sending a window moves it into one dedicated Virtual Desktop;
+toggling switches to that workspace and back to the remembered normal desktop. WinShort keeps
+the workspace at the end of Shell ordering and persists its exact GUID as recovery state so a
+workspace that survives a hard kill or Windows reboot is reclaimed instead of duplicated.
+Orderly exit or feature disable removes it.
 
 `Win+E`, `Win+R`, `Win+D`, `Win+L`, `Win+Shift+S` and every other Windows shortcut pass
 through untouched.
