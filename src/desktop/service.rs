@@ -5,11 +5,12 @@ use std::sync::mpsc::{self, Sender};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
-    IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, SwitchToThisWindow,
-    GWL_EXSTYLE, GWL_STYLE, SW_HIDE, SW_RESTORE, SW_SHOWNA, WS_DISABLED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongPtrW,
+    GetWindowThreadProcessId, IsChild, IsIconic, IsWindow, IsWindowVisible, PeekMessageW,
+    SetForegroundWindow, ShowWindow, GUITHREADINFO, GWL_EXSTYLE, GWL_STYLE, MSG, PM_NOREMOVE,
+    SW_HIDE, SW_RESTORE, SW_SHOWNA, WS_DISABLED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows_core::GUID;
 
@@ -55,6 +56,8 @@ struct ScratchpadState {
     owner_pid: u32,
     /// True only when WinShort itself issued the successful hide operation.
     hidden_by_winshort: bool,
+    /// Last keyboard-focus HWND inside the Scratchpad root, captured before hide.
+    last_focus: Option<HWND>,
 }
 
 impl DesktopService {
@@ -496,6 +499,7 @@ impl DesktopController {
             hwnd,
             owner_pid,
             hidden_by_winshort: false,
+            last_focus: scratchpad_focus_window(hwnd),
         });
         crate::info!("scratchpad assigned to HWND {:?}", hwnd);
     }
@@ -535,6 +539,7 @@ impl DesktopController {
                         );
                         return;
                     }
+                    state.last_focus = scratchpad_focus_window(state.hwnd).or(state.last_focus);
                     unsafe {
                         let _ = ShowWindow(state.hwnd, SW_HIDE);
                     }
@@ -672,18 +677,33 @@ impl DesktopController {
             );
             return;
         }
-        if !activate_scratchpad_window(state.hwnd) {
-            self.publish_failure(
-                "toggle scratchpad",
-                DesktopError::Partial {
-                    completed: "scratchpad shown on the current desktop".into(),
-                    failure: "Windows rejected all scratchpad foreground activation attempts"
-                        .into(),
-                },
-            );
-            return;
+        match activate_scratchpad_window(state.hwnd, state.last_focus) {
+            ScratchpadActivation::Focused => {
+                state.last_focus = scratchpad_focus_window(state.hwnd).or(state.last_focus);
+                self.scratchpad = Some(state);
+                crate::info!("scratchpad shown and focused");
+            }
+            ScratchpadActivation::ForegroundOnly => {
+                self.publish_failure(
+                    "toggle scratchpad",
+                    DesktopError::Partial {
+                        completed: "scratchpad shown and made foreground on the current desktop"
+                            .into(),
+                        failure: "keyboard focus did not transfer into the scratchpad window"
+                            .into(),
+                    },
+                );
+            }
+            ScratchpadActivation::Rejected => {
+                self.publish_failure(
+                    "toggle scratchpad",
+                    DesktopError::Partial {
+                        completed: "scratchpad shown on the current desktop".into(),
+                        failure: "Windows rejected scratchpad foreground activation".into(),
+                    },
+                );
+            }
         }
-        crate::info!("scratchpad shown and focused");
     }
 
     fn window_on_current_desktop(
@@ -916,43 +936,112 @@ fn activate_window(hwnd: HWND) -> bool {
     }
 }
 
-fn activate_scratchpad_window(hwnd: HWND) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScratchpadActivation {
+    Focused,
+    ForegroundOnly,
+    Rejected,
+}
+
+fn focus_belongs_to_scratchpad(root: HWND, focus: HWND) -> bool {
+    if focus.0.is_null() {
+        return false;
+    }
+    unsafe { IsWindow(Some(focus)).as_bool() && (focus == root || IsChild(root, focus).as_bool()) }
+}
+
+fn scratchpad_focus_window(root: HWND) -> Option<HWND> {
+    let thread_id = unsafe { GetWindowThreadProcessId(root, None) };
+    if thread_id == 0 {
+        return None;
+    }
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err() {
+        return None;
+    }
+    focus_belongs_to_scratchpad(root, info.hwndFocus).then_some(info.hwndFocus)
+}
+
+fn scratchpad_activation_state(hwnd: HWND) -> ScratchpadActivation {
+    if unsafe { GetForegroundWindow() } != hwnd {
+        return ScratchpadActivation::Rejected;
+    }
+    if scratchpad_focus_window(hwnd).is_some() {
+        ScratchpadActivation::Focused
+    } else {
+        ScratchpadActivation::ForegroundOnly
+    }
+}
+
+fn activate_scratchpad_window(hwnd: HWND, preferred_focus: Option<HWND>) -> ScratchpadActivation {
     unsafe {
-        if GetForegroundWindow() == hwnd {
-            return true;
-        }
-        if SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd {
-            return true;
+        if scratchpad_activation_state(hwnd) == ScratchpadActivation::Focused {
+            return ScratchpadActivation::Focused;
         }
 
-        let foreground = GetForegroundWindow();
+        // Preserve the cheap path: when no other application owns foreground,
+        // Windows normally accepts this immediately.
+        let _ = SetForegroundWindow(hwnd);
+        if scratchpad_activation_state(hwnd) == ScratchpadActivation::Focused {
+            return ScratchpadActivation::Focused;
+        }
+
+        // AttachThreadInput requires the caller to own a USER message queue.
+        // The desktop worker is channel-driven, so create its queue lazily.
+        let mut message = MSG::default();
+        let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+
         let current_thread = GetCurrentThreadId();
-        if !foreground.0.is_null() {
-            let foreground_thread = GetWindowThreadProcessId(foreground, None);
-            if foreground_thread != 0
-                && foreground_thread != current_thread
-                && AttachThreadInput(current_thread, foreground_thread, true).as_bool()
-            {
-                let _ = SetForegroundWindow(hwnd);
-                let activated = GetForegroundWindow() == hwnd;
-                if !AttachThreadInput(current_thread, foreground_thread, false).as_bool() {
-                    crate::error_!(
-                        "failed to detach scratchpad foreground input queues after activation attempt"
-                    );
-                }
-                if activated {
-                    return true;
-                }
-            }
+        let target_thread = GetWindowThreadProcessId(hwnd, None);
+        if target_thread == 0 {
+            return scratchpad_activation_state(hwnd);
+        }
+        let foreground = GetForegroundWindow();
+        let foreground_thread = if foreground.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, None)
+        };
+
+        let attached_foreground = foreground_thread != 0
+            && foreground_thread != current_thread
+            && foreground_thread != target_thread
+            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+        let attached_target = target_thread == current_thread
+            || AttachThreadInput(current_thread, target_thread, true).as_bool();
+
+        if attached_target {
+            let focus = preferred_focus
+                .filter(|candidate| focus_belongs_to_scratchpad(hwnd, *candidate))
+                .unwrap_or(hwnd);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetActiveWindow(hwnd);
+            let _ = SetFocus(Some(focus));
+            // Re-assert foreground after active/focus changes while all relevant
+            // input queues are attached.
+            let _ = SetForegroundWindow(hwnd);
         }
 
-        // A Scratchpad toggle is an explicit user request to switch to this
-        // window. Some Windows foreground-lock states only flash the taskbar
-        // button after SetForegroundWindow, even with attached input queues.
-        // Scope the documented-but-not-general User32 switch primitive to this
-        // final fallback and verify the actual foreground HWND afterwards.
-        SwitchToThisWindow(hwnd, false);
-        GetForegroundWindow() == hwnd
+        if target_thread != current_thread
+            && attached_target
+            && !AttachThreadInput(current_thread, target_thread, false).as_bool()
+        {
+            crate::error_!("failed to detach scratchpad target input queue after focus transfer");
+        }
+        if attached_foreground
+            && !AttachThreadInput(current_thread, foreground_thread, false).as_bool()
+        {
+            crate::error_!(
+                "failed to detach scratchpad foreground input queue after focus transfer"
+            );
+        }
+
+        // Verify after detach. A temporary merged-queue success must not be
+        // reported if keyboard focus snaps back to the old application.
+        scratchpad_activation_state(hwnd)
     }
 }
 
@@ -1268,6 +1357,7 @@ mod policy_tests {
                 hwnd: HWND::default(),
                 owner_pid: u32::MAX,
                 hidden_by_winshort: true,
+                last_focus: None,
             }),
         };
 
