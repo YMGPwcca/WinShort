@@ -3,7 +3,7 @@
 **Status: Implemented** (this document describes current `main`; forward-looking ideas live in the issue tracker, not here).
 
 Native Windows tray utility: audio hotkeys, status overlay, virtual desktop
-workflow, and a runtime dedicated Special Workspace.
+workflow, and a dedicated Special Workspace backed by a real Windows Virtual Desktop.
 Pure Rust against Win32/COM via the Microsoft `windows` crate. No GUI framework,
 no WebView, no other-language components.
 
@@ -41,6 +41,10 @@ remain invalid when no desktop-image mode is supplied.
 | Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable normal-desktop focus history, runtime Special Workspace GUID + return GUID |
 | Instance watcher | none | waits on named activate/shutdown events |
 
+The Special Workspace GUID also has a durable identity copy in
+`%LOCALAPPDATA%\WinShort\special-workspace.guid`; the return GUID remains process-only.
+The state file is not user configuration and contains no HWND or COM object.
+
 Rules:
 
 * The keyboard hook callback does O(1) table lookups against a lock-free `ArcSwap<BindingTable>`
@@ -58,18 +62,23 @@ Rules:
   classified by `DesktopError::permits_fallback` (VIRTUAL_DESKTOP_COMPAT.md).
 * Missing numbered desktops are created only through the native backend; the keyboard fallback is
   used only when a previously known existing target can be safely walked.
-* The Special Workspace is runtime-only in the desktop STA worker and is a real Windows
-  Virtual Desktop with its own GUID. Sending a foreground window uses the documented
-  `IVirtualDesktopManager::MoveWindowToDesktop(HWND, GUID)` path; toggling uses the build-pinned
-  native Shell backend to switch between that GUID and a remembered normal desktop. No window is
-  hidden, shown, restored, or force-focused as part of Special Workspace ownership.
+* The Special Workspace is a real Windows Virtual Desktop with its own GUID. Sending a foreground
+  window resolves the captured HWND through `IApplicationViewCollection::GetViewForHwnd`, checks
+  `CanViewMoveDesktops`, then uses the build-pinned Shell `MoveViewToDesktop` path. Toggling uses
+  the same native backend to switch between the workspace GUID and a remembered normal desktop.
+  No window is hidden, shown, restored, or force-focused as part of Special Workspace ownership.
 * Numbered Desktop 1–9 operations filter the Special Workspace GUID out of Shell ordering, so the
-  dedicated desktop never consumes a user-facing ordinal. Once it exists, keyboard-arrow fallback
-  is not used for numbered operations because it cannot safely skip the extra Shell desktop.
+  dedicated desktop never consumes a user-facing ordinal. WinShort names it
+  `WinShort Special Workspace` and re-pins it to the end of Shell ordering when necessary. Once it
+  exists, keyboard-arrow fallback is not used for numbered operations because it cannot safely
+  skip the extra Shell desktop.
+* The exact Special Workspace GUID is persisted outside `config.toml`. After a hard process kill or
+  Windows reboot, a later WinShort process reclaims that GUID only if Shell still enumerates it;
+  the workspace name is presentation only and is never used as identity. External deletion clears
+  stale runtime/persisted identity, and the next workspace action creates one replacement.
 * Disabling the feature or orderly shutdown removes the dedicated desktop with Shell's
-  `RemoveDesktop`, supplying a normal fallback so Windows relocates contained windows. If WinShort
-  crashes before cleanup, an unlabeled orphan desktop can remain; the next process deliberately
-  does not guess which pre-existing desktop was its old workspace.
+  `RemoveDesktop`, supplying a normal fallback so Windows relocates contained windows, then clears
+  the persisted GUID.
 
 ## Events
 
