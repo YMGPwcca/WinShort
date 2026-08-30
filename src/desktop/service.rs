@@ -583,6 +583,14 @@ impl DesktopController {
 
         if let Err(error) = self.ensure_window_on_current_desktop(state.hwnd, state.owner_pid) {
             self.scratchpad = Some(state);
+            if state.hidden_by_winshort {
+                // A failed desktop query/move must not leave an application
+                // invisible under WinShort's ownership. Reveal and release
+                // even when the native backend is no longer usable.
+                if let Err(release_error) = self.release_scratchpad() {
+                    self.publish_failure("release scratchpad", release_error);
+                }
+            }
             self.publish_failure("toggle scratchpad", error);
             return;
         }
