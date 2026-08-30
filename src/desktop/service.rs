@@ -457,7 +457,9 @@ impl DesktopController {
         let Some(owner_pid) = window_process_id(hwnd) else {
             self.publish_failure(
                 "assign scratchpad",
-                DesktopError::WindowUnavailable("foreground HWND has no stable process identity".into()),
+                DesktopError::WindowUnavailable(
+                    "foreground HWND has no stable process identity".into(),
+                ),
             );
             return;
         };
@@ -582,10 +584,7 @@ impl DesktopController {
         crate::info!("scratchpad shown and focused");
     }
 
-    fn window_on_current_desktop(
-        &self,
-        hwnd: HWND,
-    ) -> std::result::Result<bool, DesktopError> {
+    fn window_on_current_desktop(&self, hwnd: HWND) -> std::result::Result<bool, DesktopError> {
         let native = self.native.as_ref().ok_or_else(|| {
             DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
         })?;
