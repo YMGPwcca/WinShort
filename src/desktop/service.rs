@@ -431,8 +431,19 @@ impl DesktopController {
             return Ok(());
         }
         if state.hidden_by_winshort {
+            // Recheck the process identity immediately before mutating the
+            // HWND. PID tracking blocks cross-process recycling; a same-process
+            // HWND reuse remains an unavoidable Win32 handle-generation limit.
+            if !scratchpad_window(state.hwnd, state.owner_pid) {
+                self.scratchpad = None;
+                return Ok(());
+            }
             unsafe {
                 let _ = ShowWindow(state.hwnd, SW_SHOWNA);
+            }
+            if !scratchpad_window(state.hwnd, state.owner_pid) {
+                self.scratchpad = None;
+                return Ok(());
             }
             let visible = unsafe { IsWindowVisible(state.hwnd) }.as_bool();
             if !visible {
@@ -447,21 +458,14 @@ impl DesktopController {
 
     fn assign_scratchpad(&mut self, hwnd_raw: isize) {
         let hwnd = raw_hwnd(hwnd_raw);
-        if !eligible_window(hwnd) {
+        let Some(owner_pid) = valid_external_window(hwnd, true, true) else {
             self.publish_failure(
                 "assign scratchpad",
                 DesktopError::WindowUnavailable("foreground HWND is not eligible".into()),
             );
             return;
-        }
-        let Some(owner_pid) = window_process_id(hwnd) else {
-            self.publish_failure(
-                "assign scratchpad",
-                DesktopError::WindowUnavailable("foreground HWND has no stable process identity".into()),
-            );
-            return;
         };
-        if self.scratchpad.is_some_and(|state| state.hwnd != hwnd) {
+        if self.scratchpad.is_some() {
             // Release the old assignment before moving the new window so a
             // failed reveal cannot leave both a moved new window and a hidden old one.
             if let Err(error) = self.release_scratchpad() {
@@ -469,7 +473,18 @@ impl DesktopController {
                 return;
             }
         }
-        if let Err(error) = self.ensure_window_on_current_desktop(hwnd) {
+        // The old reveal can yield to HWND destruction/recycling. Do not
+        // capture a replacement process as the new assignment.
+        if valid_external_window(hwnd, true, true) != Some(owner_pid) {
+            self.publish_failure(
+                "assign scratchpad",
+                DesktopError::WindowUnavailable(
+                    "foreground HWND changed while assigning scratchpad".into(),
+                ),
+            );
+            return;
+        }
+        if let Err(error) = self.ensure_window_on_current_desktop(hwnd, owner_pid) {
             self.publish_failure("assign scratchpad", error);
             return;
         }
@@ -480,6 +495,7 @@ impl DesktopController {
         });
         crate::info!("scratchpad assigned to HWND {:?}", hwnd);
     }
+
     fn toggle_scratchpad(&mut self) {
         let Some(mut state) = self.scratchpad else {
             self.publish_failure(
@@ -503,10 +519,30 @@ impl DesktopController {
             // owns a hidden state. A visible Scratchpad on another VD should be
             // brought here, not hidden on the remote desktop.
             state.hidden_by_winshort = false;
-            match self.window_on_current_desktop(state.hwnd) {
+            match self.window_on_current_desktop(state.hwnd, state.owner_pid) {
                 Ok(true) => {
+                    if !scratchpad_window(state.hwnd, state.owner_pid) {
+                        self.scratchpad = None;
+                        self.publish_failure(
+                            "toggle scratchpad",
+                            DesktopError::WindowUnavailable(
+                                "assigned scratchpad window became stale".into(),
+                            ),
+                        );
+                        return;
+                    }
                     unsafe {
                         let _ = ShowWindow(state.hwnd, SW_HIDE);
+                    }
+                    if !scratchpad_window(state.hwnd, state.owner_pid) {
+                        self.scratchpad = None;
+                        self.publish_failure(
+                            "toggle scratchpad",
+                            DesktopError::WindowUnavailable(
+                                "assigned scratchpad window became stale while hiding".into(),
+                            ),
+                        );
+                        return;
                     }
                     if unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
                         self.scratchpad = Some(state);
@@ -545,9 +581,25 @@ impl DesktopController {
             return;
         }
 
-        if let Err(error) = self.ensure_window_on_current_desktop(state.hwnd) {
+        if let Err(error) = self.ensure_window_on_current_desktop(state.hwnd, state.owner_pid) {
             self.scratchpad = Some(state);
+            if state.hidden_by_winshort {
+                // A failed desktop query/move must not leave an application
+                // invisible under WinShort's ownership. Reveal and release
+                // even when the native backend is no longer usable.
+                if let Err(release_error) = self.release_scratchpad() {
+                    self.publish_failure("release scratchpad", release_error);
+                }
+            }
             self.publish_failure("toggle scratchpad", error);
+            return;
+        }
+        if !scratchpad_window(state.hwnd, state.owner_pid) {
+            self.scratchpad = None;
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
+            );
             return;
         }
         if !unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
@@ -557,6 +609,14 @@ impl DesktopController {
                 // to its normal placement as SW_RESTORE would.
                 let _ = ShowWindow(state.hwnd, SW_SHOWNA);
             }
+        }
+        if !scratchpad_window(state.hwnd, state.owner_pid) {
+            self.scratchpad = None;
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
+            );
+            return;
         }
         if !unsafe { IsWindowVisible(state.hwnd) }.as_bool() {
             self.scratchpad = Some(state);
@@ -569,6 +629,14 @@ impl DesktopController {
 
         state.hidden_by_winshort = false;
         self.scratchpad = Some(state);
+        if !scratchpad_window(state.hwnd, state.owner_pid) {
+            self.scratchpad = None;
+            self.publish_failure(
+                "toggle scratchpad",
+                DesktopError::WindowUnavailable("assigned scratchpad window became stale".into()),
+            );
+            return;
+        }
         if !unsafe { SetForegroundWindow(state.hwnd) }.as_bool() {
             self.publish_failure(
                 "toggle scratchpad",
@@ -585,7 +653,13 @@ impl DesktopController {
     fn window_on_current_desktop(
         &self,
         hwnd: HWND,
+        owner_pid: u32,
     ) -> std::result::Result<bool, DesktopError> {
+        if !scratchpad_window(hwnd, owner_pid) {
+            return Err(DesktopError::WindowUnavailable(
+                "assigned scratchpad window became stale".into(),
+            ));
+        }
         let native = self.native.as_ref().ok_or_else(|| {
             DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
         })?;
@@ -595,7 +669,13 @@ impl DesktopController {
     fn ensure_window_on_current_desktop(
         &self,
         hwnd: HWND,
+        owner_pid: u32,
     ) -> std::result::Result<(), DesktopError> {
+        if !scratchpad_window(hwnd, owner_pid) {
+            return Err(DesktopError::WindowUnavailable(
+                "assigned scratchpad window became stale".into(),
+            ));
+        }
         let native = self.native.as_ref().ok_or_else(|| {
             DesktopError::MoveUnavailable("native desktop window manager is unavailable".into())
         })?;
@@ -606,7 +686,17 @@ impl DesktopController {
                 "current desktop was not found in Shell ordering".into(),
             )
         })?;
+        if !scratchpad_window(hwnd, owner_pid) {
+            return Err(DesktopError::WindowUnavailable(
+                "assigned scratchpad window became stale".into(),
+            ));
+        }
         if native.window_desktop_id(hwnd)? != current {
+            if !scratchpad_window(hwnd, owner_pid) {
+                return Err(DesktopError::WindowUnavailable(
+                    "assigned scratchpad window became stale while moving".into(),
+                ));
+            }
             native.move_window_to_desktop(hwnd, current_index)?;
         }
         Ok(())
@@ -802,7 +892,7 @@ fn is_shell_surface_class(class: &str) -> bool {
     )
 }
 fn eligible_window(hwnd: HWND) -> bool {
-    valid_external_window(hwnd, true, true)
+    valid_external_window(hwnd, true, true).is_some()
 }
 
 fn scratchpad_window(hwnd: HWND, owner_pid: u32) -> bool {
@@ -836,13 +926,13 @@ fn window_process_id(hwnd: HWND) -> Option<u32> {
     let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     (thread_id != 0 && pid != 0).then_some(pid)
 }
-fn valid_external_window(hwnd: HWND, require_visible: bool, reject_cloaked: bool) -> bool {
+fn valid_external_window(hwnd: HWND, require_visible: bool, reject_cloaked: bool) -> Option<u32> {
     if hwnd.0.is_null() {
-        return false;
+        return None;
     }
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {
-            return false;
+            return None;
         }
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
@@ -850,34 +940,32 @@ fn valid_external_window(hwnd: HWND, require_visible: bool, reject_cloaked: bool
             || style & WS_DISABLED.0 != 0
             || ex_style & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0
         {
-            return false;
+            return None;
         }
-        let mut pid = 0u32;
-        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 || pid == std::process::id() {
-            return false;
+        let pid = window_process_id(hwnd)?;
+        if pid == std::process::id() {
+            return None;
         }
         if reject_cloaked {
             let mut cloaked = 0u32;
-            if DwmGetWindowAttribute(
+            DwmGetWindowAttribute(
                 hwnd,
                 DWMWA_CLOAKED,
                 (&mut cloaked as *mut u32).cast(),
                 std::mem::size_of::<u32>() as u32,
             )
-            .is_ok()
-                && cloaked != 0
-            {
-                return false;
+            .ok()?;
+            if cloaked != 0 {
+                return None;
             }
         }
         let mut class = [0u16; 128];
         let length = GetClassNameW(hwnd, &mut class);
         if length <= 0 {
-            return false;
+            return None;
         }
         let class = String::from_utf16_lossy(&class[..length as usize]);
-        !is_shell_surface_class(&class)
+        (!is_shell_surface_class(&class)).then_some(pid)
     }
 }
 

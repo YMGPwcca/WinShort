@@ -64,6 +64,12 @@ Rules:
   Showing moves the window to the current desktop first; visibility restoration does not force
   `SW_RESTORE`, so normal/maximized placement is not rewritten by Scratchpad toggling.
 
+Scratchpad identity is an HWND plus its owning PID. The PID is rechecked before
+each mutating Win32 call, so a handle recycled into a different process is
+cleared instead of being shown, hidden, or moved. Win32 provides no handle
+generation token: same-process HWND reuse and a destruction/recreation race
+after the final check remain residual limitations.
+
 ## Events
 
 Strongly typed (`src/event.rs`). Two transports:
