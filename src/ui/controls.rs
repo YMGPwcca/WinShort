@@ -26,6 +26,14 @@ pub enum ControlValue<'a> {
     Action(Cow<'a, str>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyle {
+    Primary,
+    Secondary,
+    Subtle,
+    Danger,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Interaction {
     pub hovered: bool,
@@ -67,8 +75,50 @@ pub fn draw_row(
     value: ControlValue<'_>,
     interaction: Interaction,
 ) {
+    if element.kind == ElementKind::Hotkey {
+        if let ControlValue::Text(text) = value {
+            draw_shortcut_card(r, element, &text, interaction);
+        }
+        return;
+    }
+    if element.kind == ElementKind::Choice {
+        let selected = matches!(value, ControlValue::Toggle(true));
+        draw_choice(r, element, selected, interaction, true);
+        return;
+    }
+    if element.kind == ElementKind::Checkbox {
+        let selected = matches!(value, ControlValue::Toggle(true));
+        draw_choice(r, element, selected, interaction, false);
+        return;
+    }
+    if element.kind == ElementKind::Slider {
+        if let ControlValue::Slider { ratio, label } = value {
+            draw_slider_cluster(r, element, ratio.clamp(0.0, 1.0), &label, interaction);
+        }
+        return;
+    }
+    if matches!(
+        element.kind,
+        ElementKind::ButtonPrimary | ElementKind::ButtonSecondary | ElementKind::ButtonDanger
+    ) && element.rect.h <= 40.0
+    {
+        if let ControlValue::Action(label) = value {
+            draw_button_style(
+                r,
+                element.rect.inset(1.0),
+                &label,
+                button_style(element.kind),
+                interaction,
+            );
+        }
+        return;
+    }
+
     let rect = element.rect.inset(1.0);
-    let state = interaction_state(interaction);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
     let surface = match state {
         InteractionState::Disabled => BrushRole::CardPressed,
         InteractionState::Pressed => BrushRole::CardPressed,
@@ -105,47 +155,116 @@ pub fn draw_row(
         ControlValue::Toggle(value) => draw_toggle(r, rect, value, interaction),
         ControlValue::Text(text) => draw_value_box(r, rect, &text, element.kind, interaction),
         ControlValue::Slider { ratio, label } => {
-            draw_slider(r, rect, ratio.clamp(0.0, 1.0), &label, interaction)
+            draw_slider_cluster(r, element, ratio.clamp(0.0, 1.0), &label, interaction)
         }
-        ControlValue::Action(label) => draw_action(r, rect, &label, interaction),
+        ControlValue::Action(label) => draw_button_style(
+            r,
+            control_rect(rect, 136.0),
+            &label,
+            button_style(element.kind),
+            interaction,
+        ),
+    }
+}
+
+fn button_style(kind: ElementKind) -> ButtonStyle {
+    match kind {
+        ElementKind::ButtonPrimary => ButtonStyle::Primary,
+        ElementKind::ButtonDanger => ButtonStyle::Danger,
+        ElementKind::ButtonSecondary => ButtonStyle::Secondary,
+        _ => ButtonStyle::Subtle,
     }
 }
 
 pub fn draw_button(r: &Renderer, rect: Rect, label: &str, primary: bool, interaction: Interaction) {
+    draw_button_style(
+        r,
+        rect,
+        label,
+        if primary {
+            ButtonStyle::Primary
+        } else {
+            ButtonStyle::Secondary
+        },
+        interaction,
+    );
+}
+
+pub fn draw_button_style(
+    r: &Renderer,
+    rect: Rect,
+    label: &str,
+    style: ButtonStyle,
+    interaction: Interaction,
+) {
     let state = interaction_state(interaction);
-    let bg = match (primary, state) {
-        (_, InteractionState::Disabled) => BrushRole::CardPressed,
-        (true, InteractionState::Pressed) => BrushRole::AccentPressed,
-        (true, InteractionState::Hovered) => BrushRole::AccentHover,
-        (true, _) => BrushRole::Accent,
-        (false, InteractionState::Pressed) => BrushRole::CardPressed,
-        (false, InteractionState::Hovered) => BrushRole::ControlHover,
-        (false, _) => BrushRole::Card,
-    };
-    let text = if interaction.disabled {
-        BrushRole::TextDisabled
-    } else if primary {
-        BrushRole::AccentText
-    } else {
-        BrushRole::Text
-    };
-    r.fill_rounded(rect.d2d(), CONTROL_RADIUS, bg);
-    if !interaction.disabled {
-        let border = if primary {
+    let (bg, border, text) = match style {
+        ButtonStyle::Primary => (
             match state {
+                InteractionState::Disabled => BrushRole::CardPressed,
                 InteractionState::Pressed => BrushRole::AccentPressed,
                 InteractionState::Hovered => BrushRole::AccentHover,
                 _ => BrushRole::Accent,
-            }
-        } else {
+            },
+            BrushRole::Accent,
+            if interaction.disabled {
+                BrushRole::TextDisabled
+            } else {
+                BrushRole::AccentText
+            },
+        ),
+        ButtonStyle::Danger => (
             match state {
-                InteractionState::Pressed => BrushRole::AccentPressed,
-                InteractionState::Hovered => BrushRole::BorderStrong,
-                _ => BrushRole::Border,
-            }
-        };
-        r.stroke_rounded(rect.d2d(), CONTROL_RADIUS, border, 1.0);
-    }
+                InteractionState::Disabled => BrushRole::CardPressed,
+                InteractionState::Hovered => BrushRole::CardHover,
+                _ => BrushRole::Card,
+            },
+            if interaction.disabled {
+                BrushRole::Border
+            } else {
+                BrushRole::Danger
+            },
+            if interaction.disabled {
+                BrushRole::TextDisabled
+            } else {
+                BrushRole::Danger
+            },
+        ),
+        ButtonStyle::Secondary => (
+            match state {
+                InteractionState::Disabled => BrushRole::CardPressed,
+                InteractionState::Pressed => BrushRole::CardPressed,
+                InteractionState::Hovered => BrushRole::ControlHover,
+                _ => BrushRole::Card,
+            },
+            if interaction.disabled {
+                BrushRole::Border
+            } else {
+                BrushRole::BorderStrong
+            },
+            if interaction.disabled {
+                BrushRole::TextDisabled
+            } else {
+                BrushRole::Text
+            },
+        ),
+        ButtonStyle::Subtle => (
+            match state {
+                InteractionState::Disabled => BrushRole::CardPressed,
+                InteractionState::Pressed => BrushRole::CardPressed,
+                InteractionState::Hovered => BrushRole::ControlHover,
+                _ => BrushRole::BackgroundSubtle,
+            },
+            BrushRole::Border,
+            if interaction.disabled {
+                BrushRole::TextDisabled
+            } else {
+                BrushRole::TextSecondary
+            },
+        ),
+    };
+    r.fill_rounded(rect.d2d(), CONTROL_RADIUS, bg);
+    r.stroke_rounded(rect.d2d(), CONTROL_RADIUS, border, 1.0);
     if interaction.focused {
         r.stroke_rounded(
             rect.inset(-3.0).d2d(),
@@ -154,7 +273,7 @@ pub fn draw_button(r: &Renderer, rect: Rect, label: &str, primary: bool, interac
             1.5,
         );
     }
-    r.text(label, rect.d2d(), TextStyle::Button, text);
+    r.text_clipped(label, rect.d2d(), TextStyle::Button, text);
 }
 
 pub fn draw_nav_item(
@@ -176,7 +295,20 @@ pub fn draw_nav_item(
         state_t: if selected { 1.0 } else { 0.0 },
     });
     if selected {
-        r.fill_rounded(element.rect.d2d(), NAV_RADIUS, BrushRole::Accent);
+        // Selection is persistent context, not keyboard focus. Keep the rail
+        // quiet and add one accent indicator instead of a saturated block.
+        r.fill_rounded(element.rect.d2d(), NAV_RADIUS, BrushRole::BackgroundSubtle);
+        r.fill_rounded(
+            Rect::new(
+                element.rect.x,
+                element.rect.y + 8.0,
+                3.0,
+                element.rect.h - 16.0,
+            )
+            .d2d(),
+            1.5,
+            BrushRole::Accent,
+        );
     } else if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
         r.fill_rounded(element.rect.d2d(), NAV_RADIUS, BrushRole::CardHover);
     }
@@ -193,12 +325,12 @@ pub fn draw_nav_item(
         Rect::new(element.rect.x + 12.0, element.rect.y + 10.0, 20.0, 20.0),
         page_for_nav(element.id),
         if selected {
-            BrushRole::AccentText
+            BrushRole::Accent
         } else {
             BrushRole::TextSecondary
         },
     );
-    r.text(
+    r.text_clipped(
         &element.label,
         Rect::new(
             element.rect.x + 44.0,
@@ -208,11 +340,7 @@ pub fn draw_nav_item(
         )
         .d2d(),
         TextStyle::BodyStrong,
-        if selected {
-            BrushRole::AccentText
-        } else {
-            BrushRole::Text
-        },
+        BrushRole::Text,
     );
 }
 
@@ -281,22 +409,51 @@ pub fn draw_search_box(r: &Renderer, rect: Rect, text: &str, focused: bool, hove
 }
 
 pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &str) {
-    r.text(title, rect.d2d(), TextStyle::Section, BrushRole::Text);
+    // Title and description have independent line boxes. The description uses
+    // DirectWrite wrapping, so localized copy grows inside the reserved block
+    // instead of colliding with the next group.
+    r.text_clipped(
+        title,
+        Rect::new(rect.x, rect.y, rect.w, 28.0).d2d(),
+        TextStyle::Section,
+        BrushRole::Text,
+    );
     if !description.is_empty() {
+        let description_height = r
+            .text_height(
+                description,
+                TextStyle::SectionDescription,
+                rect.w,
+                (rect.h - 34.0).max(24.0),
+            )
+            .clamp(20.0, (rect.h - 34.0).max(24.0));
         r.text_clipped(
             description,
-            Rect::new(rect.x, rect.y + 24.0, rect.w, 20.0).d2d(),
-            TextStyle::Caption,
+            Rect::new(rect.x, rect.y + 34.0, rect.w, description_height).d2d(),
+            TextStyle::SectionDescription,
             BrushRole::TextSecondary,
         );
     }
 }
 pub fn draw_page_header(r: &Renderer, rect: Rect, title: &str, description: &str) {
-    r.text(title, rect.d2d(), TextStyle::Title, BrushRole::Text);
+    r.text_clipped(
+        title,
+        Rect::new(rect.x, rect.y, rect.w, 36.0).d2d(),
+        TextStyle::Title,
+        BrushRole::Text,
+    );
     if !description.is_empty() {
+        let description_height = r
+            .text_height(
+                description,
+                TextStyle::Subtitle,
+                rect.w,
+                (rect.h - 46.0).max(30.0),
+            )
+            .clamp(22.0, (rect.h - 46.0).max(30.0));
         r.text_clipped(
             description,
-            Rect::new(rect.x, rect.y + 36.0, rect.w, 22.0).d2d(),
+            Rect::new(rect.x, rect.y + 46.0, rect.w, description_height).d2d(),
             TextStyle::Subtitle,
             BrushRole::TextSecondary,
         );
@@ -334,7 +491,7 @@ pub fn draw_home_card(
     );
     r.text_clipped(
         title,
-        Rect::new(rect.x + 60.0, rect.y + 13.0, rect.w - 190.0, 22.0).d2d(),
+        Rect::new(rect.x + 60.0, rect.y + 13.0, rect.w - 78.0, 22.0).d2d(),
         TextStyle::BodyStrong,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -344,7 +501,7 @@ pub fn draw_home_card(
     );
     r.text_clipped(
         value,
-        Rect::new(rect.x + 60.0, rect.y + 37.0, rect.w - 190.0, 25.0).d2d(),
+        Rect::new(rect.x + 60.0, rect.y + 37.0, rect.w - 78.0, 25.0).d2d(),
         TextStyle::Section,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -364,7 +521,7 @@ pub fn draw_home_card(
     );
     r.text(
         action,
-        Rect::new(rect.right() - 116.0, rect.y + 38.0, 92.0, 28.0).d2d(),
+        Rect::new(rect.right() - 116.0, rect.y + 66.0, 92.0, 28.0).d2d(),
         TextStyle::ButtonSmall,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -385,6 +542,7 @@ pub fn draw_profile_card(
     display_summary: &str,
     shortcut: &str,
     confirmed: bool,
+    needs_attention: bool,
     selected: bool,
     interaction: Interaction,
 ) {
@@ -423,7 +581,9 @@ pub fn draw_profile_card(
         TextStyle::Body,
         BrushRole::TextSecondary,
     );
-    let status = if confirmed {
+    let status = if needs_attention {
+        "Needs attention"
+    } else if confirmed {
         "Ready to activate"
     } else {
         "Test before activating"
@@ -432,7 +592,9 @@ pub fn draw_profile_card(
         status,
         Rect::new(rect.x + 18.0, rect.y + 74.0, rect.w - 160.0, 18.0).d2d(),
         TextStyle::Caption,
-        if confirmed {
+        if needs_attention {
+            BrushRole::Warning
+        } else if confirmed {
             BrushRole::Success
         } else {
             BrushRole::Warning
@@ -444,14 +606,24 @@ pub fn draw_profile_card(
         TextStyle::CaptionRight,
         BrushRole::TextSecondary,
     );
-    r.text(
-        if confirmed { "Activate" } else { "Edit" },
-        Rect::new(rect.right() - 136.0, rect.y + 66.0, 116.0, 26.0).d2d(),
-        TextStyle::ButtonSmall,
-        if interaction.disabled {
-            BrushRole::TextDisabled
+    draw_button_style(
+        r,
+        Rect::new(rect.right() - 136.0, rect.y + 64.0, 116.0, 30.0),
+        if selected && confirmed {
+            "Activate"
+        } else if selected {
+            "Review"
         } else {
-            BrushRole::Accent
+            "Select"
+        },
+        if selected && confirmed {
+            ButtonStyle::Primary
+        } else {
+            ButtonStyle::Secondary
+        },
+        Interaction {
+            focused: false,
+            ..interaction
         },
     );
     if selected {
@@ -466,6 +638,466 @@ pub fn draw_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
     draw_page_icon(r, rect, page, role);
 }
 
+pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interaction: Interaction) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    let surface = match state {
+        InteractionState::Disabled => BrushRole::CardPressed,
+        InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
+    };
+    draw_surface(r, rect, surface, state, 10.0);
+    let keycap = Rect::new(rect.right() - 174.0, rect.y + 12.0, 156.0, 32.0);
+    let keycap_role = if interaction.disabled {
+        BrushRole::CardPressed
+    } else {
+        BrushRole::BackgroundSubtle
+    };
+    r.fill_rounded(keycap.d2d(), CONTROL_RADIUS, keycap_role);
+    r.stroke_rounded(
+        keycap.d2d(),
+        CONTROL_RADIUS,
+        if interaction.focused {
+            BrushRole::Focus
+        } else {
+            BrushRole::BorderStrong
+        },
+        if interaction.focused { 1.5 } else { 1.0 },
+    );
+    r.text_clipped(
+        &element.label,
+        Rect::new(rect.x + BODY_LEFT, rect.y + 12.0, rect.w - 204.0, 20.0).d2d(),
+        TextStyle::BodyStrong,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Text
+        },
+    );
+    r.text_clipped(
+        &element.description,
+        Rect::new(rect.x + BODY_LEFT, rect.y + 36.0, rect.w - 204.0, 18.0).d2d(),
+        TextStyle::Caption,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::TextSecondary
+        },
+    );
+    r.text_clipped(
+        value,
+        keycap.d2d(),
+        TextStyle::Value,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else if value.starts_with("Press") {
+            BrushRole::Accent
+        } else {
+            BrushRole::Text
+        },
+    );
+    r.text(
+        "Change",
+        Rect::new(rect.right() - 174.0, rect.y + 48.0, 156.0, 16.0).d2d(),
+        TextStyle::CaptionRight,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Accent
+        },
+    );
+    if interaction.focused {
+        r.stroke_rounded(
+            keycap.inset(-3.0).d2d(),
+            CONTROL_RADIUS + 2.0,
+            BrushRole::Focus,
+            1.5,
+        );
+    }
+}
+
+pub fn draw_choice(
+    r: &Renderer,
+    element: &Element,
+    selected: bool,
+    interaction: Interaction,
+    radio: bool,
+) {
+    draw_labeled_choice(r, element, &element.label, selected, interaction, radio);
+}
+
+pub fn draw_labeled_choice(
+    r: &Renderer,
+    element: &Element,
+    label: &str,
+    selected: bool,
+    interaction: Interaction,
+    radio: bool,
+) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    let surface = match state {
+        InteractionState::Disabled => BrushRole::CardPressed,
+        InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::BackgroundSubtle,
+    };
+    r.fill_rounded(rect.d2d(), CONTROL_RADIUS, surface);
+    r.stroke_rounded(rect.d2d(), CONTROL_RADIUS, BrushRole::Border, 1.0);
+    let center_x = rect.x + 20.0;
+    let center_y = rect.y + rect.h * 0.5;
+    let stroke = if interaction.disabled {
+        BrushRole::TextDisabled
+    } else if selected {
+        BrushRole::Accent
+    } else {
+        BrushRole::BorderStrong
+    };
+    if radio {
+        r.ellipse(center_x, center_y, 8.0, 8.0, stroke, false, 1.5);
+        if selected {
+            r.ellipse(center_x, center_y, 4.0, 4.0, stroke, true, 0.0);
+        }
+    } else {
+        let box_rect = Rect::new(center_x - 8.0, center_y - 8.0, 16.0, 16.0);
+        r.stroke_rounded(box_rect.d2d(), 3.0, stroke, 1.5);
+        if selected {
+            r.line(
+                center_x - 4.0,
+                center_y,
+                center_x - 1.0,
+                center_y + 4.0,
+                stroke,
+                1.8,
+            );
+            r.line(
+                center_x - 1.0,
+                center_y + 4.0,
+                center_x + 5.0,
+                center_y - 4.0,
+                stroke,
+                1.8,
+            );
+        }
+    }
+    r.text_clipped(
+        label,
+        Rect::new(rect.x + 40.0, rect.y + 5.0, rect.w - 54.0, rect.h - 10.0).d2d(),
+        TextStyle::BodyStrong,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Text
+        },
+    );
+    if interaction.focused {
+        r.stroke_rounded(
+            rect.inset(-3.0).d2d(),
+            CONTROL_RADIUS + 2.0,
+            BrushRole::Focus,
+            1.5,
+        );
+    }
+}
+
+pub fn draw_desktop_item(
+    r: &Renderer,
+    element: &Element,
+    index: usize,
+    current: bool,
+    interaction: Interaction,
+) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    let fill = if current {
+        BrushRole::Accent
+    } else {
+        match state {
+            InteractionState::Hovered => BrushRole::CardHover,
+            InteractionState::Pressed => BrushRole::CardPressed,
+            _ => BrushRole::Card,
+        }
+    };
+    r.fill_rounded(rect.d2d(), 7.0, fill);
+    r.stroke_rounded(
+        rect.d2d(),
+        7.0,
+        if current {
+            BrushRole::Accent
+        } else {
+            BrushRole::Border
+        },
+        1.0,
+    );
+    r.text(
+        &(index + 1).to_string(),
+        rect.d2d(),
+        TextStyle::BodyStrong,
+        if current {
+            BrushRole::AccentText
+        } else if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Text
+        },
+    );
+    if interaction.focused {
+        r.stroke_rounded(rect.inset(-3.0).d2d(), 9.0, BrushRole::Focus, 1.5);
+    }
+}
+
+pub fn draw_display_route_card(
+    r: &Renderer,
+    element: &Element,
+    primary: &str,
+    detail: &str,
+    selected: bool,
+    available: bool,
+    interaction: Interaction,
+) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    let fill = if selected {
+        BrushRole::BackgroundSubtle
+    } else if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
+        BrushRole::CardHover
+    } else {
+        BrushRole::Card
+    };
+    r.fill_rounded(rect.d2d(), 10.0, fill);
+    r.stroke_rounded(
+        rect.d2d(),
+        10.0,
+        if !available {
+            BrushRole::Warning
+        } else if selected {
+            BrushRole::Accent
+        } else {
+            BrushRole::Border
+        },
+        if selected { 1.5 } else { 1.0 },
+    );
+    let box_rect = Rect::new(rect.x + 16.0, rect.y + 22.0, 18.0, 18.0);
+    r.stroke_rounded(
+        box_rect.d2d(),
+        4.0,
+        if available {
+            BrushRole::Accent
+        } else {
+            BrushRole::Warning
+        },
+        1.5,
+    );
+    if selected {
+        r.line(
+            rect.x + 20.0,
+            rect.y + 31.0,
+            rect.x + 24.0,
+            rect.y + 35.0,
+            BrushRole::Accent,
+            1.8,
+        );
+        r.line(
+            rect.x + 24.0,
+            rect.y + 35.0,
+            rect.x + 31.0,
+            rect.y + 26.0,
+            BrushRole::Accent,
+            1.8,
+        );
+    }
+    r.text_clipped(
+        primary,
+        Rect::new(rect.x + 48.0, rect.y + 10.0, rect.w - 64.0, 22.0).d2d(),
+        TextStyle::BodyStrong,
+        BrushRole::Text,
+    );
+    r.text_clipped(
+        detail,
+        Rect::new(rect.x + 48.0, rect.y + 35.0, rect.w - 64.0, 20.0).d2d(),
+        TextStyle::Caption,
+        if available {
+            BrushRole::TextSecondary
+        } else {
+            BrushRole::Warning
+        },
+    );
+    if interaction.focused {
+        r.stroke_rounded(rect.inset(-3.0).d2d(), 13.0, BrushRole::Focus, 1.5);
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Diagram content mirrors the topology choice view model.
+pub fn draw_topology_choice(
+    r: &Renderer,
+    element: &Element,
+    label: &str,
+    description: &str,
+    outputs: &[String],
+    selected: bool,
+    duplicate: bool,
+    interaction: Interaction,
+) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    r.fill_rounded(
+        rect.d2d(),
+        10.0,
+        if selected {
+            BrushRole::BackgroundSubtle
+        } else if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
+            BrushRole::CardHover
+        } else {
+            BrushRole::Card
+        },
+    );
+    r.stroke_rounded(
+        rect.d2d(),
+        10.0,
+        if selected {
+            BrushRole::Accent
+        } else {
+            BrushRole::Border
+        },
+        if selected { 1.5 } else { 1.0 },
+    );
+    let center_x = rect.x + 20.0;
+    let center_y = rect.y + 23.0;
+    r.ellipse(center_x, center_y, 8.0, 8.0, BrushRole::Accent, false, 1.5);
+    if selected {
+        r.ellipse(center_x, center_y, 4.0, 4.0, BrushRole::Accent, true, 0.0);
+    }
+    r.text(
+        label,
+        Rect::new(rect.x + 40.0, rect.y + 10.0, 160.0, 22.0).d2d(),
+        TextStyle::BodyStrong,
+        BrushRole::Text,
+    );
+    r.text_clipped(
+        description,
+        Rect::new(rect.x + 40.0, rect.y + 38.0, 240.0, 20.0).d2d(),
+        TextStyle::Caption,
+        BrushRole::TextSecondary,
+    );
+    let diagram = Rect::new(rect.right() - 190.0, rect.y + 19.0, 160.0, 64.0);
+    if duplicate {
+        r.stroke_rounded(diagram.d2d(), 6.0, BrushRole::BorderStrong, 1.0);
+        let names = outputs
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" + ");
+        r.text_clipped(
+            if names.is_empty() {
+                "Selected displays"
+            } else {
+                &names
+            },
+            Rect::new(diagram.x + 8.0, diagram.y + 8.0, diagram.w - 16.0, 28.0).d2d(),
+            TextStyle::Caption,
+            BrushRole::Text,
+        );
+        r.text(
+            "Same picture",
+            Rect::new(diagram.x, diagram.y + 42.0, diagram.w, 16.0).d2d(),
+            TextStyle::Caption,
+            BrushRole::TextSecondary,
+        );
+    } else {
+        let monitor_w = 66.0;
+        for index in 0..2 {
+            let monitor = Rect::new(
+                diagram.x + index as f32 * (monitor_w + 8.0),
+                diagram.y,
+                monitor_w,
+                46.0,
+            );
+            r.stroke_rounded(monitor.d2d(), 5.0, BrushRole::BorderStrong, 1.0);
+            r.text_clipped(
+                outputs.get(index).map_or("Display", String::as_str),
+                Rect::new(monitor.x + 4.0, monitor.y + 8.0, monitor.w - 8.0, 24.0).d2d(),
+                TextStyle::Caption,
+                BrushRole::TextSecondary,
+            );
+            r.line(
+                monitor.x + 8.0,
+                monitor.y + 38.0,
+                monitor.right() - 8.0,
+                monitor.y + 38.0,
+                BrushRole::Border,
+                1.0,
+            );
+        }
+        r.text(
+            "Separate",
+            Rect::new(diagram.x, diagram.y + 48.0, diagram.w, 16.0).d2d(),
+            TextStyle::Caption,
+            BrushRole::TextSecondary,
+        );
+    }
+    if interaction.focused {
+        r.stroke_rounded(rect.inset(-3.0).d2d(), 13.0, BrushRole::Focus, 1.5);
+    }
+}
+
+pub fn draw_position_cell(
+    r: &Renderer,
+    element: &Element,
+    label: &str,
+    selected: bool,
+    interaction: Interaction,
+) {
+    let rect = element.rect.inset(1.0);
+    let fill = if selected {
+        BrushRole::Accent
+    } else if interaction.hovered || interaction.pressed {
+        BrushRole::CardHover
+    } else {
+        BrushRole::BackgroundSubtle
+    };
+    r.fill_rounded(rect.d2d(), 7.0, fill);
+    r.stroke_rounded(
+        rect.d2d(),
+        7.0,
+        if selected {
+            BrushRole::Accent
+        } else {
+            BrushRole::Border
+        },
+        1.0,
+    );
+    r.text(
+        label,
+        rect.d2d(),
+        TextStyle::Caption,
+        if selected {
+            BrushRole::AccentText
+        } else {
+            BrushRole::TextSecondary
+        },
+    );
+    if interaction.focused {
+        r.stroke_rounded(rect.inset(-3.0).d2d(), 10.0, BrushRole::Focus, 1.5);
+    }
+}
+
 fn draw_surface(
     r: &Renderer,
     rect: Rect,
@@ -476,9 +1108,9 @@ fn draw_surface(
     r.fill_rounded(rect.translated_y(2.0).d2d(), radius, BrushRole::Shadow);
     r.fill_rounded(rect.d2d(), radius, surface);
     match state {
-        InteractionState::Focused => {
-            r.stroke_rounded(rect.inset(2.0).d2d(), radius - 2.0, BrushRole::Focus, 1.5)
-        }
+        // Focus belongs to the actionable child (switch, picker, or button),
+        // not to the full setting surface. This prevents nested cyan outlines.
+        InteractionState::Focused => {}
         InteractionState::Hovered | InteractionState::Pressed => {
             r.stroke_rounded(rect.d2d(), radius, BrushRole::BorderStrong, 1.0)
         }
@@ -681,11 +1313,63 @@ fn draw_value_box(
     }
 }
 
-fn draw_slider(r: &Renderer, row: Rect, ratio: f32, label: &str, interaction: Interaction) {
-    let rect = control_rect(row, VALUE_WIDTH);
-    let state = interaction_state(interaction);
-    let label_w = 52.0;
-    let track = Rect::new(rect.x, rect.y + 15.0, rect.w - label_w - 12.0, 4.0);
+pub(crate) fn slider_track_rect(row: Rect) -> Rect {
+    let rect = row.inset(1.0);
+    let label_end = (rect.x + rect.w * 0.36).clamp(rect.x + 120.0, rect.x + 220.0);
+    let value_width = 88.0;
+    let right = rect.right() - 16.0 - value_width;
+    Rect::new(
+        label_end,
+        rect.y + rect.h * 0.5 - 2.0,
+        (right - label_end).max(80.0),
+        4.0,
+    )
+}
+
+fn draw_slider_cluster(
+    r: &Renderer,
+    element: &Element,
+    ratio: f32,
+    label: &str,
+    interaction: Interaction,
+) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    draw_surface(
+        r,
+        rect,
+        if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
+            BrushRole::CardHover
+        } else {
+            BrushRole::Card
+        },
+        state,
+        ROW_RADIUS,
+    );
+    r.text_clipped(
+        &element.label,
+        Rect::new(rect.x + BODY_LEFT, rect.y + 7.0, 132.0, 20.0).d2d(),
+        TextStyle::BodyStrong,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Text
+        },
+    );
+    r.text_clipped(
+        &element.description,
+        Rect::new(rect.x + BODY_LEFT, rect.y + 29.0, 132.0, 18.0).d2d(),
+        TextStyle::Caption,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::TextSecondary
+        },
+    );
+    let track = slider_track_rect(element.rect);
     r.fill_rounded(
         track.d2d(),
         2.0,
@@ -731,20 +1415,36 @@ fn draw_slider(r: &Renderer, row: Rect, ratio: f32, label: &str, interaction: In
         true,
         0.0,
     );
-    r.text(
+    let value = Rect::new(rect.right() - 104.0, rect.y + 12.0, 88.0, 32.0);
+    r.fill_rounded(value.d2d(), CONTROL_RADIUS, BrushRole::BackgroundSubtle);
+    r.stroke_rounded(
+        value.d2d(),
+        CONTROL_RADIUS,
+        if interaction.focused {
+            BrushRole::Focus
+        } else {
+            BrushRole::Border
+        },
+        if interaction.focused { 1.5 } else { 1.0 },
+    );
+    r.text_clipped(
         label,
-        Rect::new(rect.right() - label_w, rect.y, label_w, rect.h).d2d(),
-        TextStyle::CaptionRight,
+        value.d2d(),
+        TextStyle::Value,
         if interaction.disabled {
             BrushRole::TextDisabled
         } else {
-            BrushRole::TextSecondary
+            BrushRole::Text
         },
     );
-}
-
-fn draw_action(r: &Renderer, row: Rect, label: &str, interaction: Interaction) {
-    draw_button(r, control_rect(row, 136.0), label, false, interaction);
+    if interaction.focused {
+        r.stroke_rounded(
+            value.inset(-3.0).d2d(),
+            CONTROL_RADIUS + 2.0,
+            BrushRole::Focus,
+            1.5,
+        );
+    }
 }
 
 fn page_for_nav(id: crate::ui::layout::ElementId) -> Page {

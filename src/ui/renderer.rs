@@ -24,8 +24,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
 };
 
 use crate::error::{Error, Result};
@@ -61,6 +61,7 @@ pub enum TextStyle {
     Title,
     Subtitle,
     Section,
+    SectionDescription,
     Body,
     BodyStrong,
     Caption,
@@ -73,9 +74,7 @@ pub enum TextStyle {
 fn trimming_for(style: TextStyle) -> Option<DWRITE_TRIMMING> {
     matches!(
         style,
-        TextStyle::Title
-            | TextStyle::Subtitle
-            | TextStyle::Section
+        TextStyle::Section
             | TextStyle::Body
             | TextStyle::BodyStrong
             | TextStyle::Caption
@@ -284,6 +283,29 @@ impl Renderer {
         self.draw_text(text, rect, style, role, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    /// Measure wrapped text using the same DirectWrite format used for
+    /// painting. Layout callers reserve a safe block; this keeps the actual
+    /// line geometry driven by the installed font rather than character counts.
+    pub fn text_height(&self, text: &str, style: TextStyle, width: f32, max_height: f32) -> f32 {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let Ok(layout) = (unsafe {
+            self.dwrite.CreateTextLayout(
+                &wide,
+                self.format(style),
+                width.max(1.0),
+                max_height.max(1.0),
+            )
+        }) else {
+            return 0.0;
+        };
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        if unsafe { layout.GetMetrics(&mut metrics) }.is_ok() {
+            metrics.height
+        } else {
+            0.0
+        }
+    }
+
     fn draw_text(
         &self,
         text: &str,
@@ -349,6 +371,12 @@ impl Renderer {
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
+                TextStyle::SectionDescription,
+                13.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
                 TextStyle::Body,
                 14.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
@@ -393,6 +421,16 @@ impl Renderer {
         ];
         for (style, size, weight, alignment) in entries {
             let format = self.create_format(size, weight, alignment)?;
+            if matches!(
+                style,
+                TextStyle::Title | TextStyle::Subtitle | TextStyle::SectionDescription
+            ) {
+                unsafe {
+                    format
+                        .SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)
+                        .map_err(|e| Error::win("IDWriteTextFormat::SetWordWrapping", &e))?;
+                }
+            }
             if let Some(trimming) = trimming_for(style) {
                 let sign = unsafe { self.dwrite.CreateEllipsisTrimmingSign(&format) }
                     .map_err(|e| Error::win("CreateEllipsisTrimmingSign", &e))?;

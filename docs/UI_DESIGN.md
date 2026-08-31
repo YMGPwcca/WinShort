@@ -36,9 +36,9 @@ Control Center
 
 Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-The shell is designed around a 960 × 660 DIP starting frame with a 760 × 540 DIP minimum. A fixed navigation rail and top search bar remain visible while the selected page scrolls independently. Navigation labels remain text-first; vector line icons are secondary scanning aids.
+The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed navigation rail and top search bar remain visible while the selected page scrolls independently. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; vector line icons are secondary scanning aids.
 
-`src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model used for painting, hit testing, focus traversal, and UI Automation bounds. `src/ui/controls.rs` contains the shared surface, row, button, navigation, search, home-card, profile-card, slider, and icon drawing vocabulary.
+`src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, desktop-strip, slider-cluster, and icon vocabulary.
 
 ## Design tokens
 
@@ -48,9 +48,11 @@ The shell is designed around a 960 × 660 DIP starting frame with a 760 × 540 D
 - 80 DIP top bar;
 - 34 DIP status footer;
 - 32 DIP page margins;
+- 92 DIP page headers and 72 DIP section headers with independent line boxes;
 - 58 DIP setting rows with an 8 DIP rhythm;
 - 7–12 DIP control/card radii;
-- 184 DIP shortcut value boxes and 206 DIP picker/slider boxes.
+- 184 DIP shortcut keycaps and 206 DIP picker controls;
+- compact slider tracks sized from the content column rather than the window edge.
 
 All coordinates are 96-DPI logical units. The renderer retargets Direct2D/DirectWrite to the window's current PMv2 DPI. The visual system uses the existing light/dark semantic theme pairs and high-contrast system pairs.
 
@@ -85,58 +87,44 @@ Selecting a shortcut enters the existing global capture mode. Captured chords ar
 
 ### Audio
 
-Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. Device changes use human labels and a `Follow Windows default` mode; opaque endpoint strings stay internal.
+Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. Device choices use a presentation-layer label: `Follow Windows default` is distinct from an explicit endpoint that happens to be the current default; opaque endpoint strings stay internal.
 
-The Next speaker and Next microphone pickers retain the real active-device allowlist semantics:
+Next speaker and Next microphone use three mutually exclusive modes: all available devices, selected devices, or don't cycle. Selecting the middle mode progressively reveals a real device checkbox list. The native LISTBOX fallback uses the same mode model and preserves `None`, explicit endpoint sets, and `Some(empty)` semantics.
 
-- Use all available devices;
-- Disable cycling;
-- explicit device selections;
-- unavailable saved devices remain visible as reconnectable choices without leaking their IDs.
-
-Current app audio explains the mute and ±5% volume actions without exposing session GUIDs, process resolution stages, or endpoint scans. Windows default roles remain available in Advanced.
+Current app audio explains that WinShort itself is excluded: users switch to another app before controlling its sessions. Windows default roles remain available in Advanced and are enabled only while the corresponding direction follows the Windows default.
 
 ### Workspaces
 
-The page uses normal workspace language. It shows the cached normal desktop/count when available, the Special Workspace readiness state, and the existing controls for:
-
-- workspace shortcuts;
-- configurable Desktop 1–9 family;
-- move-and-follow and silent move modifiers;
-- Previous desktop;
-- Move window to Special;
-- Open / close Special.
-
-Numbered desktop and Special behavior remains owned by the pinned desktop backend. The Special Workspace is never included in normal ordinals. The UI does not expose Shell ABI details, GUIDs, or persistence files.
+The page starts with a compact visual strip of the runtime normal desktops when the backend provides a count. Each item is an ordinal status/switch target; Special Workspace is never included. One master Workspace shortcuts switch owns the dependent desktop and Special actions. When it is off, the page explains the dependency and exposes the master switch rather than dimming a wall of dead rows. Special Workspace has its own readiness surface and keeps its configured action keycaps nearby.
 
 ### Displays
 
-Displays presents saved profiles as a responsive two-column card grid when space permits. Cards show the real profile name, a human display-route summary, its profile shortcut, and whether it is ready to activate or needs a test. Selecting a card updates the stable active profile reference; activating an already selected confirmed card sends the existing validated apply request.
+Displays is an overview first: saved profiles appear as cards with profile name, friendly screen summary, topology, shortcut, readiness, and a contextual Activate or Review action. Management actions sit in a selected-profile toolbar; Create from current and Replace from current are named separately, Delete is destructive and confirmed twice, and the overview does not duplicate the selected profile in a second generic picker.
 
-The page includes a visible three-step guide:
+Editing enters a real four-step workflow:
 
-1. Which displays — select active/inactive connected routes while preserving same-panel/different-GPU distinction internally;
-2. How they work — choose Extend or Duplicate through the existing picker;
-3. Name and shortcut — use Rename and the stable profile shortcut recorder.
+1. Which screens — visual screen cards show monitor, adapter, and connector metadata while preserving stable route identity internally;
+2. Arrangement — visual Extend and Duplicate choices show the selected screen names, while a one-screen profile is explicitly shown as Single display;
+3. Name & shortcut — a focused profile-name prompt and the safe shortcut recorder;
+4. Review — Test profile is the primary action and Discard changes appears only for a dirty draft.
 
-New/Capture Current, Update, Rename, Duplicate, Delete, profile selection, profile shortcut binding, advanced route selection, and route editing remain reachable. Output/topology edits are local until Test profile; Discard display edits restores the last saved profile. Profile IDs are never replaced by names. Duplicate creates a new ID and does not steal the original binding.
-
-When a display test is pending, the guide becomes a recovery banner explaining Keep/Revert and the automatic timeout. A failed recovery keeps Revert available. Normal overlay messages are human-readable; technical causes remain in logs and Diagnostics.
+Output/topology edits remain local until Test and Keep. Moving between steps never applies DisplayConfig. A pending test replaces the editor with a high-priority Keep/Revert surface; failed recovery keeps Revert available. Advanced route editing remains under Advanced, not in the ordinary overview.
 
 ### Overlay
 
-Overlay has a visual preview panel and concise controls:
+Overlay has a visual schematic preview and concise controls:
 
 - enabled;
 - System, Light, or Dark appearance;
-- position and monitor;
-- show changes made outside WinShort;
+- a 3×3 position grid with accessible Top left through Bottom right cells;
+- monitor;
+- Show Windows audio changes;
 - Small/Normal/Large size;
 - Low/Normal/High opacity;
 - Short/Normal/Long duration;
-- Preview.
+- Show on screen.
 
-Preview sends the edited `OverlayCfg` directly to the existing layered overlay and never persists or replaces the live `ConfigHandle`. Exact slider ranges remain available through truthful UI Automation RangeValue semantics and the technical backend, not as required normal-user vocabulary.
+The schematic preview moves and scales the draft card with position, size, appearance, and opacity. `Show on screen` sends the edited `OverlayCfg` to the existing layered overlay without persisting or replacing the live `ConfigHandle`; exact slider ranges remain available through truthful UI Automation RangeValue semantics.
 
 ### System
 
@@ -203,8 +191,10 @@ The Control Center preserves the established custom provider rules:
 - navigation nodes are Buttons with truthful Invoke semantics;
 - the root name includes the current page and selected navigation is announced in its accessible name;
 - search is an editable Edit with mutable ValuePattern;
-- toggles expose TogglePattern;
+- toggles and device checkbox options expose TogglePattern;
+- mutually exclusive audio modes, topology choices, and overlay positions expose RadioButton/SelectionItem semantics;
 - sliders expose RangeValuePattern;
+- desktop-strip items expose named Button/Invoke targets;
 - picker triggers remain Button/Invoke with read-only displayed values;
 - unsupported patterns return successful null/empty results rather than fabricated interfaces;
 - stale providers return `UIA_E_ELEMENTNOTAVAILABLE`;

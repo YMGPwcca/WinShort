@@ -10,11 +10,11 @@ use std::sync::{
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    FrameRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, BACKGROUND_MODE,
+    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, FrameRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, BACKGROUND_MODE,
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_END_ELLIPSIS,
     DT_LEFT, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_NORMAL, HDC, HFONT, HGDIOBJ,
-    OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+    OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
 };
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
@@ -38,6 +38,7 @@ use crate::config::model::{
 use crate::error::{Error, Result};
 use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
+use crate::ui::presentation::AllowlistMode;
 use crate::ui::theme::{Color, Theme};
 
 const CLASS_NAME: &str = "WinShort.ControlCenterPicker";
@@ -84,7 +85,6 @@ pub enum PickerKind {
     OverlayAppearance,
     OverlayMonitor,
 }
-
 impl PickerKind {
     pub const fn is_multi_select(self) -> bool {
         matches!(
@@ -92,11 +92,19 @@ impl PickerKind {
             Self::InputAllowlist | Self::OutputAllowlist | Self::DisplayOutputs
         )
     }
+
+    pub const fn is_allowlist(self) -> bool {
+        matches!(self, Self::InputAllowlist | Self::OutputAllowlist)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickerValue {
     /// `None` means all active endpoints; `Some(empty)` means none.
     Allowlist(Option<Vec<String>>),
+    /// A visual mode row in an allowlist popup. Device rows remain regular
+    /// `Allowlist(Some([endpoint]))` values so the persisted representation is
+    /// unchanged when the selection is committed.
+    AllowlistMode(AllowlistMode),
     Device(DeviceSelection),
     Role(EndpointRole),
     DisplayProfile(Option<String>),
@@ -338,9 +346,9 @@ fn picker_colors_for_state(
             border: theme.border_strong,
         },
         PickerItemState::Selected => PickerColors {
-            background: theme.accent,
-            foreground: theme.accent_text,
-            border: theme.accent_hover,
+            background: theme.bg_subtle,
+            foreground: theme.text,
+            border: theme.accent,
         },
         PickerItemState::Disabled => PickerColors {
             background: theme.card_pressed,
@@ -374,6 +382,7 @@ unsafe fn draw_picker_item(
     hovered: bool,
     font: HFONT,
     multi_select: bool,
+    allowlist_mode: bool,
 ) -> LRESULT {
     let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
     let focus = item.itemState.0 & ODS_FOCUS.0 != 0;
@@ -386,19 +395,61 @@ unsafe fn draw_picker_item(
     text_rect.left += if multi_select { 34 } else { 12 };
     text_rect.right -= 12;
     if multi_select {
-        let mut box_rect = item.rcItem;
-        box_rect.left += 10;
-        box_rect.right = box_rect.left + 14;
-        box_rect.top += (box_rect.bottom - box_rect.top - 14) / 2;
-        box_rect.bottom = box_rect.top + 14;
-        let _ = unsafe { FrameRect(item.hDC, &box_rect, border) };
-        if selected {
-            let mut mark = box_rect;
-            mark.left += 3;
-            mark.top += 3;
-            mark.right -= 3;
-            mark.bottom -= 3;
-            let _ = unsafe { FillRect(item.hDC, &mark, border) };
+        let is_mode = allowlist_mode && item.itemID < 3;
+        let mut mark = item.rcItem;
+        mark.left += 10;
+        mark.right = mark.left + 14;
+        mark.top += (mark.bottom - mark.top - 14) / 2;
+        mark.bottom = mark.top + 14;
+        if is_mode {
+            let center_x = (mark.left + mark.right) / 2;
+            let center_y = (mark.top + mark.bottom) / 2;
+            let marker_pen = unsafe { CreatePen(PS_SOLID, 1, to_colorref(colors.border)) };
+            let marker_brush = unsafe { CreateSolidBrush(to_colorref(colors.background)) };
+            let old_pen = unsafe { SelectObject(item.hDC, marker_pen.into()) };
+            let old_brush = unsafe { SelectObject(item.hDC, marker_brush.into()) };
+            let _ = unsafe {
+                windows::Win32::Graphics::Gdi::Ellipse(
+                    item.hDC,
+                    mark.left,
+                    mark.top,
+                    mark.right,
+                    mark.bottom,
+                )
+            };
+            if selected {
+                let selected_brush = unsafe { CreateSolidBrush(to_colorref(colors.border)) };
+                let previous_brush = unsafe { SelectObject(item.hDC, selected_brush.into()) };
+                let _ = unsafe {
+                    windows::Win32::Graphics::Gdi::Ellipse(
+                        item.hDC,
+                        center_x - 4,
+                        center_y - 4,
+                        center_x + 4,
+                        center_y + 4,
+                    )
+                };
+                unsafe {
+                    let _ = SelectObject(item.hDC, previous_brush);
+                    let _ = DeleteObject(HGDIOBJ(selected_brush.0));
+                }
+            }
+            unsafe {
+                let _ = SelectObject(item.hDC, old_brush);
+                let _ = SelectObject(item.hDC, old_pen);
+                let _ = DeleteObject(HGDIOBJ(marker_brush.0));
+                let _ = DeleteObject(HGDIOBJ(marker_pen.0));
+            }
+        } else {
+            let _ = unsafe { FrameRect(item.hDC, &mark, border) };
+            if selected {
+                let mut check = mark;
+                check.left += 3;
+                check.top += 3;
+                check.right -= 3;
+                check.bottom -= 3;
+                let _ = unsafe { FillRect(item.hDC, &check, border) };
+            }
         }
     }
     let mut text = label.encode_utf16().collect::<Vec<_>>();
@@ -639,10 +690,7 @@ fn set_picker_hover(parent: HWND, list: HWND, hovered: Option<usize>) {
     }
 }
 fn normalize_multi_selection(kind: PickerKind, list: HWND) {
-    if !matches!(
-        kind,
-        PickerKind::InputAllowlist | PickerKind::OutputAllowlist
-    ) {
+    if !kind.is_allowlist() {
         return;
     }
     let focused = unsafe {
@@ -658,19 +706,6 @@ fn normalize_multi_selection(kind: PickerKind, list: HWND) {
         return;
     }
     let focused = focused as usize;
-    let is_selected = unsafe {
-        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-            list,
-            LB_GETSEL,
-            Some(WPARAM(focused)),
-            Some(LPARAM(0)),
-        )
-    }
-    .0 != 0;
-    if !is_selected {
-        return;
-    }
-
     let count = unsafe {
         windows::Win32::UI::WindowsAndMessaging::SendMessageW(
             list,
@@ -681,7 +716,19 @@ fn normalize_multi_selection(kind: PickerKind, list: HWND) {
     }
     .0
     .max(0) as usize;
-    if focused < 2 {
+    let selected_at = |index: usize| unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_GETSEL,
+            Some(WPARAM(index)),
+            Some(LPARAM(0)),
+        )
+    }
+    .0
+        != 0;
+
+    if focused < 3 {
+        let had_device_selection = (3..count).any(selected_at);
         for index in 0..count {
             unsafe {
                 let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
@@ -700,8 +747,22 @@ fn normalize_multi_selection(kind: PickerKind, list: HWND) {
                 Some(LPARAM(focused as isize)),
             );
         }
-    } else {
-        for index in 0..2.min(count) {
+        if focused == 1 && !had_device_selection {
+            for index in 3..count {
+                unsafe {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                        list,
+                        LB_SETSEL,
+                        Some(WPARAM(1)),
+                        Some(LPARAM(index as isize)),
+                    );
+                }
+            }
+        }
+    } else if selected_at(focused) {
+        // Device clicks select the explicit mode but retain the other device
+        // checks, allowing a real multi-device allowlist.
+        for index in 0..3.min(count) {
             unsafe {
                 let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
                     list,
@@ -710,6 +771,14 @@ fn normalize_multi_selection(kind: PickerKind, list: HWND) {
                     Some(LPARAM(index as isize)),
                 );
             }
+        }
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                list,
+                LB_SETSEL,
+                Some(WPARAM(1)),
+                Some(LPARAM(1)),
+            );
         }
     }
 }
@@ -857,7 +926,7 @@ unsafe extern "system" fn picker_wndproc(
                 if item.CtlType != ODT_LISTBOX {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
-                let (list, hovered, label, font, multi_select) = {
+                let (list, hovered, label, font, multi_select, allowlist_mode) = {
                     let ui = cell.borrow();
                     (
                         ui.list,
@@ -867,13 +936,14 @@ unsafe extern "system" fn picker_wndproc(
                             .map(|choice| choice.label.clone()),
                         ui.font,
                         ui.kind.is_multi_select(),
+                        ui.kind.is_allowlist(),
                     )
                 };
                 if item.hwndItem != list {
                     return win::def_proc(hwnd, msg, wparam, lparam);
                 }
                 label.map_or(LRESULT(1), |value| {
-                    draw_picker_item(item, &value, hovered, font, multi_select)
+                    draw_picker_item(item, &value, hovered, font, multi_select, allowlist_mode)
                 })
             }
             WM_COMMAND => {
@@ -965,24 +1035,22 @@ fn selected_value(parent: HWND, list: HWND) -> Option<(PickerKind, PickerValue)>
                 .collect::<Vec<_>>();
             return Some((kind, PickerValue::DisplayOutputs(outputs)));
         }
-        let mut use_all = false;
+        let mut mode = None;
         let mut endpoints = Vec::new();
         for index in indices {
             let Some(choice) = ui.choices.get(index as usize) else {
                 continue;
             };
             match &choice.value {
-                PickerValue::Allowlist(None) => use_all = true,
+                PickerValue::AllowlistMode(value) => mode = Some(*value),
                 PickerValue::Allowlist(Some(values)) => endpoints.extend(values.iter().cloned()),
                 _ => {}
             }
         }
-        let allowlist = if !endpoints.is_empty() {
-            Some(endpoints)
-        } else if use_all {
-            None
-        } else {
-            Some(Vec::new())
+        let allowlist = match mode.unwrap_or(AllowlistMode::Disabled) {
+            AllowlistMode::All => None,
+            AllowlistMode::Selected => Some(endpoints),
+            AllowlistMode::Disabled => Some(Vec::new()),
         };
         return Some((kind, PickerValue::Allowlist(allowlist)));
     }
@@ -1077,8 +1145,8 @@ mod tests {
             let selected = picker_colors_for(true, visual, theme);
             assert_eq!(normal.background, theme.card);
             assert_eq!(normal.foreground, theme.text);
-            assert_eq!(selected.background, theme.accent);
-            assert_eq!(selected.foreground, theme.accent_text);
+            assert_eq!(selected.background, theme.bg_subtle);
+            assert_eq!(selected.foreground, theme.text);
         }
     }
 
@@ -1149,8 +1217,8 @@ mod tests {
             visual,
             Theme::light(),
         );
-        assert_eq!(colors.background, Theme::light().accent);
-        assert_eq!(colors.foreground, Theme::light().accent_text);
+        assert_eq!(colors.background, Theme::light().bg_subtle);
+        assert_eq!(colors.foreground, Theme::light().text);
     }
 
     #[test]

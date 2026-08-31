@@ -122,7 +122,9 @@ pub enum OverlayPosition {
     TopLeft,
     TopCenter,
     TopRight,
+    CenterLeft,
     Center,
+    CenterRight,
     BottomLeft,
     BottomCenter,
     BottomRight,
@@ -131,13 +133,15 @@ pub enum OverlayPosition {
 impl OverlayPosition {
     pub fn label(self) -> &'static str {
         match self {
-            OverlayPosition::TopLeft => "Top Left",
-            OverlayPosition::TopCenter => "Top Center",
-            OverlayPosition::TopRight => "Top Right",
+            OverlayPosition::TopLeft => "Top left",
+            OverlayPosition::TopCenter => "Top center",
+            OverlayPosition::TopRight => "Top right",
+            OverlayPosition::CenterLeft => "Center left",
             OverlayPosition::Center => "Center",
-            OverlayPosition::BottomLeft => "Bottom Left",
-            OverlayPosition::BottomCenter => "Bottom Center",
-            OverlayPosition::BottomRight => "Bottom Right",
+            OverlayPosition::CenterRight => "Center right",
+            OverlayPosition::BottomLeft => "Bottom left",
+            OverlayPosition::BottomCenter => "Bottom center",
+            OverlayPosition::BottomRight => "Bottom right",
         }
     }
 
@@ -146,7 +150,9 @@ impl OverlayPosition {
             "top-left" => OverlayPosition::TopLeft,
             "top-center" => OverlayPosition::TopCenter,
             "top-right" => OverlayPosition::TopRight,
+            "center-left" => OverlayPosition::CenterLeft,
             "center" => OverlayPosition::Center,
+            "center-right" => OverlayPosition::CenterRight,
             "bottom-left" => OverlayPosition::BottomLeft,
             "bottom-center" => OverlayPosition::BottomCenter,
             "bottom-right" => OverlayPosition::BottomRight,
@@ -159,18 +165,22 @@ impl OverlayPosition {
             OverlayPosition::TopLeft => "top-left",
             OverlayPosition::TopCenter => "top-center",
             OverlayPosition::TopRight => "top-right",
+            OverlayPosition::CenterLeft => "center-left",
             OverlayPosition::Center => "center",
+            OverlayPosition::CenterRight => "center-right",
             OverlayPosition::BottomLeft => "bottom-left",
             OverlayPosition::BottomCenter => "bottom-center",
             OverlayPosition::BottomRight => "bottom-right",
         }
     }
 
-    pub const ALL: [OverlayPosition; 7] = [
+    pub const ALL: [OverlayPosition; 9] = [
         OverlayPosition::TopLeft,
         OverlayPosition::TopCenter,
         OverlayPosition::TopRight,
+        OverlayPosition::CenterLeft,
         OverlayPosition::Center,
+        OverlayPosition::CenterRight,
         OverlayPosition::BottomLeft,
         OverlayPosition::BottomCenter,
         OverlayPosition::BottomRight,

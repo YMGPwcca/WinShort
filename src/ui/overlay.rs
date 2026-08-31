@@ -1527,7 +1527,9 @@ fn position_for(
         OverlayPosition::TopLeft => (left, top),
         OverlayPosition::TopCenter => (center_x, top),
         OverlayPosition::TopRight => (right, top),
+        OverlayPosition::CenterLeft => (left, center_y),
         OverlayPosition::Center => (center_x, center_y),
+        OverlayPosition::CenterRight => (right, center_y),
         OverlayPosition::BottomLeft => (left, bottom),
         OverlayPosition::BottomCenter => (center_x, bottom),
         OverlayPosition::BottomRight => (right, bottom),
@@ -1587,6 +1589,7 @@ unsafe extern "system" fn overlay_wndproc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::RECT;
 
     fn row(icon: OverlayIcon, title: &str) -> OverlayRow {
         OverlayRow {
@@ -1786,5 +1789,24 @@ mod tests {
         assert_eq!(empty.detail, "Player · No active audio session");
         let no_external = application_volume_row(&crate::audio::AppVolumeState::no_external());
         assert_eq!(no_external.detail, "No current app with audio");
+    }
+
+    #[test]
+    fn center_edge_positions_use_the_work_area_axes() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 800,
+        };
+        let size = SIZE { cx: 100, cy: 80 };
+        assert_eq!(
+            position_for(work, size, OverlayPosition::CenterLeft, 96),
+            POINT { x: 22, y: 360 }
+        );
+        assert_eq!(
+            position_for(work, size, OverlayPosition::CenterRight, 96),
+            POINT { x: 878, y: 360 }
+        );
     }
 }

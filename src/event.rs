@@ -143,6 +143,9 @@ pub enum AppEvent {
     // Commands executed on the main thread.
     ShowSettings,
     SwitchPreviousDesktopFromUi,
+    SwitchDesktopFromUi {
+        index: usize,
+    },
     ToggleSpecialWorkspaceFromUi,
     ShowDiagnostics,
     OpenSettingsPicker(crate::ui::picker::PickerKind),

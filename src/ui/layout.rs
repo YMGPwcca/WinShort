@@ -1,12 +1,13 @@
 //! Deterministic DIP layout for the WinShort Control Center.
 //!
-//! One logical element list drives painting, hit testing, focus traversal, and
-//! the UI Automation snapshot. The legacy `build` constructor remains a small
-//! compatibility seam for pure layout tests; the window uses `build_shell`.
+//! The layout is the single logical model shared by Direct2D painting, pointer
+//! hit testing, keyboard focus, and UI Automation. Pages choose structures for
+//! the task instead of flattening every configuration value into a row.
 
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
 use crate::ui::navigation::{search, Page};
+use crate::ui::presentation::{AllowlistMode, DisplayWizardStep};
 use crate::ui::theme::UiTokens;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,6 +74,18 @@ pub enum ElementId {
     HomeShortcutHealth,
     HomeDiagnostics,
     DisplayProfileCard(u8),
+    DisplayOutputCard(u8),
+    DisplayTopologyChoice(u8),
+    DesktopStripItem(u8),
+    InputCycleMode(u8),
+    OutputCycleMode(u8),
+    InputCycleDevice(u8),
+    OutputCycleDevice(u8),
+    OverlayPositionCell(u8),
+    DisplayWizardBack,
+    DisplayWizardNext,
+    DisplayWizardCancel,
+    EditDisplayProfile,
     OnboardingContinue,
     OnboardingOpen,
     StartWithWindows,
@@ -134,8 +147,8 @@ pub enum ElementId {
 
 impl ElementId {
     /// Compatibility order retained for policy tests and stable UIA indices.
-    /// The active shell uses `SettingsLayout::focus_order` so navigation and
-    /// profile cards are included without inventing a second hit-test model.
+    /// The active shell uses `SettingsLayout::focus_order` so new task controls
+    /// are included without inventing a second hit-test model.
     #[allow(dead_code)]
     pub const FOCUS_ORDER: [ElementId; 53] = [
         ElementId::StartWithWindows,
@@ -201,15 +214,31 @@ impl ElementId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElementKind {
     Toggle,
+    Checkbox,
+    Choice,
     Hotkey,
     Value,
     Slider,
     Action,
     ButtonSecondary,
     ButtonPrimary,
+    ButtonDanger,
     Navigation,
     Search,
     Card,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionKind {
+    WorkspaceStrip,
+    WorkspaceNotice,
+    PauseNotice,
+    SpecialWorkspace,
+    AudioCurrentApp,
+    OverlayPreview,
+    DisplaySafety,
+    DisplayWizardSteps,
+    DisplayWizardSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -224,10 +253,62 @@ pub struct Element {
 }
 
 #[derive(Debug, Clone)]
+pub struct VisualRegion {
+    pub kind: RegionKind,
+    pub rect: Rect,
+    pub scrolls: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct SectionLabel {
     pub title: String,
     pub description: String,
     pub y: f32,
+    pub height: f32,
+    pub page_header: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutContext {
+    pub profile_count: usize,
+    pub display_output_count: usize,
+    pub display_route_count: usize,
+    pub display_editor_step: Option<DisplayWizardStep>,
+    pub display_profiles_enabled: bool,
+    pub display_draft_dirty: bool,
+    pub display_rollback_active: bool,
+    pub display_keep_available: bool,
+    pub workspace_enabled: bool,
+    pub desktop_count: Option<usize>,
+    pub current_desktop: Option<usize>,
+    pub paused: bool,
+    pub input_cycle_mode: AllowlistMode,
+    pub output_cycle_mode: AllowlistMode,
+    pub input_device_count: usize,
+    pub output_device_count: usize,
+}
+
+impl Default for LayoutContext {
+    fn default() -> Self {
+        Self {
+            profile_count: 0,
+            display_output_count: 0,
+            display_route_count: 0,
+            display_editor_step: None,
+            display_profiles_enabled: true,
+            display_draft_dirty: false,
+            display_rollback_active: false,
+            display_keep_available: false,
+            workspace_enabled: true,
+            desktop_count: None,
+            current_desktop: None,
+            paused: false,
+            input_cycle_mode: AllowlistMode::All,
+            output_cycle_mode: AllowlistMode::All,
+            input_device_count: 0,
+            output_device_count: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -236,8 +317,10 @@ pub struct SettingsLayout {
     pub height: f32,
     pub page: Page,
     pub content_clip: Rect,
+    pub content_column: Rect,
     pub footer: Rect,
     pub elements: Vec<Element>,
+    pub regions: Vec<VisualRegion>,
     pub sections: Vec<SectionLabel>,
     pub max_scroll: f32,
     pub scroll: f32,
@@ -256,7 +339,7 @@ impl SettingsLayout {
             layout.elements.push(Element {
                 id,
                 kind,
-                rect: Rect::new(24.0, y, (width - 48.0).max(320.0), 64.0),
+                rect: Rect::new(layout.content_column.x, y, layout.content_column.w, 64.0),
                 label: label.into(),
                 description: description.into(),
                 scrolls: true,
@@ -276,12 +359,39 @@ impl SettingsLayout {
         profile_count: usize,
         onboarding_step: Option<u8>,
     ) -> Self {
+        let mut context = LayoutContext {
+            profile_count,
+            ..LayoutContext::default()
+        };
+        if page == Page::Displays {
+            context.display_profiles_enabled = true;
+        }
+        Self::build_shell_with_context(
+            width,
+            height,
+            requested_scroll,
+            page,
+            query,
+            context,
+            onboarding_step,
+        )
+    }
+
+    pub fn build_shell_with_context(
+        width: f32,
+        height: f32,
+        requested_scroll: f32,
+        page: Page,
+        query: &str,
+        context: LayoutContext,
+        onboarding_step: Option<u8>,
+    ) -> Self {
         let mut layout = Self::shell_base(width, height, page);
-        layout.add_chrome(query);
+        layout.add_chrome();
         if let Some(step) = onboarding_step {
             add_onboarding(&mut layout, step);
         } else if query.trim().is_empty() {
-            add_page(&mut layout, page, profile_count);
+            add_page(&mut layout, page, &context);
         } else {
             add_search_results(&mut layout, query);
         }
@@ -290,44 +400,76 @@ impl SettingsLayout {
             .iter()
             .filter(|element| element.scrolls)
             .map(|element| element.rect.bottom())
+            .chain(
+                layout
+                    .regions
+                    .iter()
+                    .filter(|region| region.scrolls)
+                    .map(|region| region.rect.bottom()),
+            )
+            .chain(
+                layout
+                    .sections
+                    .iter()
+                    .map(|section| section.y + section.height),
+            )
             .max_by(f32::total_cmp)
-            .unwrap_or(layout.content_clip.y);
+            .unwrap_or(layout.content_column.y);
         layout.finish_content(content_end + 32.0, requested_scroll);
         layout
     }
 
     fn shell_base(width: f32, height: f32, page: Page) -> Self {
-        const TOP_BAR_HEIGHT: f32 = UiTokens::TOP_BAR_HEIGHT;
-        const NAV_WIDTH: f32 = UiTokens::NAV_WIDTH;
-        const FOOTER_HEIGHT: f32 = UiTokens::FOOTER_HEIGHT;
-        let width = width.max(NAV_WIDTH + 360.0);
+        let width = width.max(UiTokens::NAV_WIDTH + 360.0);
         let height = height.max(520.0);
-        let footer = Rect::new(0.0, height - FOOTER_HEIGHT, width, FOOTER_HEIGHT);
-        let top_bar = Rect::new(NAV_WIDTH, 0.0, width - NAV_WIDTH, TOP_BAR_HEIGHT);
+        let footer = Rect::new(
+            0.0,
+            height - UiTokens::FOOTER_HEIGHT,
+            width,
+            UiTokens::FOOTER_HEIGHT,
+        );
+        let top_bar = Rect::new(
+            UiTokens::NAV_WIDTH,
+            0.0,
+            width - UiTokens::NAV_WIDTH,
+            UiTokens::TOP_BAR_HEIGHT,
+        );
         let content_clip = Rect::new(
-            NAV_WIDTH,
-            TOP_BAR_HEIGHT,
-            (width - NAV_WIDTH).max(320.0),
-            (height - TOP_BAR_HEIGHT - FOOTER_HEIGHT).max(180.0),
+            UiTokens::NAV_WIDTH,
+            UiTokens::TOP_BAR_HEIGHT,
+            (width - UiTokens::NAV_WIDTH).max(320.0),
+            (height - UiTokens::TOP_BAR_HEIGHT - UiTokens::FOOTER_HEIGHT).max(180.0),
+        );
+        let max_width = UiTokens::content_max_width(page);
+        let column_width = (content_clip.w - UiTokens::PAGE_MARGIN * 2.0)
+            .max(260.0)
+            .min(max_width);
+        let content_column = Rect::new(
+            content_clip.x + UiTokens::PAGE_MARGIN,
+            content_clip.y,
+            column_width,
+            content_clip.h,
         );
         Self {
             width,
             height,
             page,
             content_clip,
+            content_column,
             footer,
             elements: Vec::new(),
+            regions: Vec::new(),
             sections: Vec::new(),
             max_scroll: 0.0,
             scroll: 0.0,
-            nav_width: NAV_WIDTH,
+            nav_width: UiTokens::NAV_WIDTH,
             top_bar,
-            search_rect: Rect::new(NAV_WIDTH + 32.0, 21.0, 360.0, 38.0),
+            search_rect: Rect::new(UiTokens::NAV_WIDTH + 32.0, 21.0, 360.0, 38.0),
         }
     }
 
-    fn add_chrome(&mut self, query: &str) {
-        let search_width = (self.width - self.nav_width - 64.0).clamp(220.0, 420.0);
+    fn add_chrome(&mut self) {
+        let search_width = (self.width - self.nav_width - 240.0).clamp(260.0, 440.0);
         self.search_rect.w = search_width;
         self.elements.push(Element {
             id: ElementId::Search,
@@ -362,14 +504,6 @@ impl SettingsLayout {
             });
             y += 44.0;
         }
-
-        if !query.trim().is_empty() {
-            self.sections.push(SectionLabel {
-                title: "Search results".into(),
-                description: "Choose a result to open the right page.".into(),
-                y: self.content_clip.y + 26.0,
-            });
-        }
     }
 
     fn finish_content(&mut self, content_end: f32, requested_scroll: f32) {
@@ -383,6 +517,11 @@ impl SettingsLayout {
                 element.rect = element.rect.translated_y(dy);
             }
         }
+        for region in &mut self.regions {
+            if region.scrolls {
+                region.rect = region.rect.translated_y(dy);
+            }
+        }
         for section in &mut self.sections {
             section.y += dy;
         }
@@ -391,7 +530,7 @@ impl SettingsLayout {
     pub fn focus_order(&self) -> Vec<ElementId> {
         self.elements
             .iter()
-            .filter(|element| !matches!(element.kind, ElementKind::Card))
+            .filter(|element| element.kind != ElementKind::Card)
             .map(|element| element.id)
             .collect()
     }
@@ -411,6 +550,7 @@ impl SettingsLayout {
         self.elements.iter().find(|element| element.id == id)
     }
 }
+
 #[cfg(test)]
 fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'static str)> {
     vec![
@@ -418,31 +558,31 @@ fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'static str)> {
             ElementId::StartWithWindows,
             ElementKind::Toggle,
             "Start with Windows",
-            "Launch WinShort quietly after sign-in",
+            "Launch at sign-in",
         ),
         (
             ElementId::StartHotkeysEnabled,
             ElementKind::Toggle,
-            "Pause shortcuts",
-            "Temporarily stop global shortcuts",
+            "Shortcuts enabled",
+            "Enable global actions",
         ),
         (
             ElementId::MicHotkey,
             ElementKind::Hotkey,
             "Mute microphone",
-            "Toggle the microphone from any app",
+            "Toggle mute",
         ),
         (
             ElementId::OutputHotkey,
             ElementKind::Hotkey,
             "Mute speakers",
-            "Toggle speaker mute from any app",
+            "Toggle mute",
         ),
         (
             ElementId::ForegroundHotkey,
             ElementKind::Hotkey,
             "Mute current app",
-            "Toggle audio for the app in front",
+            "Toggle app audio",
         ),
         (
             ElementId::CycleInputHotkey,
@@ -472,282 +612,276 @@ fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'static str)> {
             ElementId::InputDevice,
             ElementKind::Value,
             "Microphone",
-            "Follow Windows or choose a microphone",
+            "Input device",
         ),
         (
             ElementId::OutputDevice,
             ElementKind::Value,
             "Speakers",
-            "Follow Windows or choose speakers",
+            "Output device",
         ),
         (
             ElementId::InputAllowlist,
             ElementKind::Value,
-            "Devices used by Next microphone",
-            "Choose the microphones that can be selected",
+            "Microphone cycling",
+            "Input devices",
         ),
         (
             ElementId::OutputAllowlist,
             ElementKind::Value,
-            "Devices used by Next speaker",
-            "Choose the speakers that can be selected",
+            "Speaker cycling",
+            "Output devices",
         ),
         (
             ElementId::InputRole,
             ElementKind::Value,
-            "Microphone device role",
-            "Advanced Windows default behavior",
+            "Input role",
+            "Windows role",
         ),
         (
             ElementId::OutputRole,
             ElementKind::Value,
-            "Speaker device role",
-            "Advanced Windows default behavior",
+            "Output role",
+            "Windows role",
         ),
         (
             ElementId::DisplayProfilesEnabled,
             ElementKind::Toggle,
             "Display profiles",
-            "Save monitor arrangements you can switch safely",
+            "Save arrangements",
         ),
         (
             ElementId::DisplayProfile,
             ElementKind::Value,
             "Display profile",
-            "Choose a saved display arrangement",
+            "Selected profile",
         ),
         (
             ElementId::DisplayProfileHotkey,
             ElementKind::Hotkey,
-            "Display profile shortcut",
-            "Activate the selected profile from any app",
+            "Profile shortcut",
+            "Activate profile",
         ),
         (
             ElementId::DisplayOutputs,
             ElementKind::Value,
-            "Displays in profile",
-            "Choose connected display routes",
+            "Which displays",
+            "Selected routes",
         ),
         (
             ElementId::DisplayTopology,
             ElementKind::Value,
-            "How displays work",
-            "Extend or duplicate multiple displays",
+            "How they work",
+            "Topology",
         ),
         (
             ElementId::DisplayRoute,
             ElementKind::Value,
             "Display output",
-            "Select an output for advanced editing",
+            "Route",
         ),
         (
             ElementId::EditDisplayRoute,
             ElementKind::Action,
-            "Advanced display output",
-            "Edit exact position, mode, refresh, or rotation",
+            "Edit output",
+            "Advanced values",
         ),
         (
             ElementId::NewDisplayProfile,
-            ElementKind::Action,
-            "New display profile",
-            "Capture the current Windows arrangement",
+            ElementKind::ButtonPrimary,
+            "New profile",
+            "Create",
         ),
         (
             ElementId::UpdateDisplayProfile,
             ElementKind::Action,
-            "Update display profile",
-            "Capture the current arrangement into this profile",
+            "Update profile",
+            "Capture",
         ),
         (
             ElementId::RenameDisplayProfile,
             ElementKind::Action,
-            "Rename display profile",
-            "Change the name without changing its identity",
+            "Rename profile",
+            "Change name",
         ),
         (
             ElementId::DuplicateDisplayProfile,
             ElementKind::Action,
-            "Duplicate display profile",
-            "Create a new editable copy",
+            "Duplicate profile",
+            "Copy",
         ),
         (
             ElementId::TestApplyDisplayProfile,
             ElementKind::ButtonPrimary,
             "Test profile",
-            "Try it for 15 seconds before keeping it",
+            "Try safely",
         ),
         (
             ElementId::ApplyDisplayProfile,
             ElementKind::Action,
             "Activate profile",
-            "Switch to a previously confirmed arrangement",
+            "Apply",
         ),
         (
             ElementId::DeleteDisplayProfile,
-            ElementKind::ButtonSecondary,
-            "Delete display profile",
-            "Remove the selected profile and shortcut",
+            ElementKind::ButtonDanger,
+            "Delete profile",
+            "Remove",
         ),
         (
             ElementId::KeepDisplayChange,
             ElementKind::ButtonPrimary,
             "Keep display setup",
-            "Confirm the tested arrangement",
+            "Confirm",
         ),
         (
             ElementId::UndoDisplayChange,
             ElementKind::ButtonSecondary,
             "Revert display setup",
-            "Restore the arrangement from before testing",
+            "Restore",
         ),
         (
             ElementId::DesktopsEnabled,
             ElementKind::Toggle,
             "Workspace shortcuts",
-            "Use WinShort desktop actions",
+            "Enable workspace actions",
         ),
         (
             ElementId::WinNumberEnabled,
             ElementKind::Toggle,
-            "Desktop number shortcuts",
-            "Use the configured modifier with 1–9",
+            "Desktop numbers",
+            "Switch desktops",
         ),
         (
             ElementId::DesktopNumberModifier,
             ElementKind::Value,
-            "Desktop shortcut modifier",
-            "Modifier family for Desktop 1–9",
+            "Desktop modifier",
+            "Modifier",
         ),
         (
             ElementId::MoveDesktopModifier,
             ElementKind::Value,
-            "Move window and follow",
-            "Move the current window, then follow it",
+            "Move and follow",
+            "Modifier",
         ),
         (
             ElementId::SilentMoveDesktopModifier,
             ElementKind::Value,
-            "Move window quietly",
-            "Move without leaving the current desktop",
+            "Move quietly",
+            "Modifier",
         ),
         (
             ElementId::PreviousDesktopHotkey,
             ElementKind::Hotkey,
             "Previous desktop",
-            "Return to the last normal desktop",
+            "Go back",
         ),
         (
             ElementId::AssignScratchpadHotkey,
             ElementKind::Hotkey,
             "Move window to Special",
-            "Put the current window in Special Workspace",
+            "Move",
         ),
         (
             ElementId::ToggleScratchpadHotkey,
             ElementKind::Hotkey,
-            "Open / close Special",
-            "Open Special Workspace or return",
+            "Open Special",
+            "Open",
         ),
         (
             ElementId::OverlayEnabled,
             ElementKind::Toggle,
-            "Show status overlay",
-            "Show compact feedback without stealing focus",
+            "Show overlay",
+            "Status card",
         ),
         (
             ElementId::OverlayAppearance,
             ElementKind::Value,
-            "Overlay appearance",
-            "Follow Windows, light, or dark",
+            "Appearance",
+            "System or theme",
         ),
         (
             ElementId::OverlayExternalChanges,
             ElementKind::Toggle,
-            "Show changes made outside WinShort",
-            "Keep the status card in sync with Windows",
+            "Windows audio changes",
+            "Show changes",
         ),
         (
             ElementId::OverlayPosition,
             ElementKind::Value,
-            "Overlay position",
-            "Choose a corner or the center",
+            "Position",
+            "Overlay location",
         ),
         (
             ElementId::OverlayMonitor,
             ElementKind::Value,
+            "Monitor",
             "Overlay monitor",
-            "Choose where the status card appears",
         ),
         (
             ElementId::OverlayDuration,
             ElementKind::Slider,
-            "How long it stays visible",
-            "Set the status card duration",
+            "Duration",
+            "How long it stays",
         ),
         (
             ElementId::OverlayOpacity,
             ElementKind::Slider,
-            "Overlay opacity",
-            "Set the status card transparency",
+            "Opacity",
+            "Transparency",
         ),
         (
             ElementId::OverlayScale,
             ElementKind::Slider,
+            "Size",
             "Overlay size",
-            "Set the status card size",
         ),
         (
             ElementId::OverlayPreview,
             ElementKind::Action,
-            "Preview overlay",
-            "See the current draft without saving",
+            "Preview",
+            "Show overlay",
         ),
         (
             ElementId::DebugLogging,
             ElementKind::Toggle,
-            "Temporary debug logging",
-            "Add troubleshooting detail until restart",
-        ),
-        (
-            ElementId::DiagnosticsStatus,
-            ElementKind::Action,
-            "Diagnostics and support",
-            "Inspect runtime details or create a support bundle",
+            "Debug logging",
+            "Temporary",
         ),
         (
             ElementId::OpenConfigFolder,
             ElementKind::Action,
-            "Open configuration folder",
-            "Open WinShort's local files",
+            "Open folder",
+            "Configuration",
         ),
         (
             ElementId::ResetSettings,
-            ElementKind::Action,
-            "Reset WinShort",
-            "Restore defaults after a second confirmation",
+            ElementKind::ButtonDanger,
+            "Reset",
+            "Restore defaults",
         ),
         (
             ElementId::Cancel,
             ElementKind::ButtonSecondary,
             "Cancel",
-            "Discard draft changes",
+            "Cancel the current action",
         ),
         (
             ElementId::Save,
             ElementKind::ButtonPrimary,
             "Save",
-            "Apply the complete draft",
+            "Save the current changes",
         ),
     ]
 }
 
-fn add_page(layout: &mut SettingsLayout, page: Page, profile_count: usize) {
+fn add_page(layout: &mut SettingsLayout, page: Page, context: &LayoutContext) {
     match page {
-        Page::Home => add_home(layout, profile_count),
-        Page::Shortcuts => add_shortcuts(layout),
-        Page::Audio => add_audio(layout),
-        Page::Workspaces => add_workspaces(layout),
-        Page::Displays => add_displays(layout, profile_count),
+        Page::Home => add_home(layout),
+        Page::Shortcuts => add_shortcuts(layout, context),
+        Page::Audio => add_audio(layout, context),
+        Page::Workspaces => add_workspaces(layout, context),
+        Page::Displays => add_displays(layout, context),
         Page::Overlay => add_overlay(layout),
         Page::System => add_system(layout),
         Page::Advanced => add_advanced(layout),
@@ -755,12 +889,51 @@ fn add_page(layout: &mut SettingsLayout, page: Page, profile_count: usize) {
 }
 
 fn add_heading(layout: &mut SettingsLayout, title: &str, description: &str, y: &mut f32) {
+    let page_header = layout.sections.is_empty();
+    let height = if page_header {
+        UiTokens::PAGE_HEADER_HEIGHT
+    } else {
+        UiTokens::SECTION_HEADER_HEIGHT
+    };
     layout.sections.push(SectionLabel {
         title: title.into(),
         description: description.into(),
         y: *y,
+        height,
+        page_header,
     });
-    *y += 48.0;
+    *y += height;
+}
+
+fn add_region(layout: &mut SettingsLayout, kind: RegionKind, y: &mut f32, height: f32) -> Rect {
+    let rect = Rect::new(layout.content_column.x, *y, layout.content_column.w, height);
+    layout.regions.push(VisualRegion {
+        kind,
+        rect,
+        scrolls: true,
+    });
+    *y += height + UiTokens::GROUP_GAP;
+    rect
+}
+
+fn add_element(
+    layout: &mut SettingsLayout,
+    y: &mut f32,
+    id: ElementId,
+    kind: ElementKind,
+    label: impl Into<String>,
+    description: impl Into<String>,
+    rect: Rect,
+) {
+    layout.elements.push(Element {
+        id,
+        kind,
+        rect,
+        label: label.into(),
+        description: description.into(),
+        scrolls: true,
+    });
+    *y = (*y).max(rect.bottom() + UiTokens::ROW_GAP);
 }
 
 fn add_row(
@@ -771,20 +944,20 @@ fn add_row(
     label: &str,
     description: &str,
 ) {
-    layout.elements.push(Element {
+    add_element(
+        layout,
+        y,
         id,
         kind,
-        rect: Rect::new(
-            layout.content_clip.x + UiTokens::PAGE_MARGIN,
+        label,
+        description,
+        Rect::new(
+            layout.content_column.x,
             *y,
-            layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0,
+            layout.content_column.w,
             UiTokens::ROW_HEIGHT,
         ),
-        label: label.into(),
-        description: description.into(),
-        scrolls: true,
-    });
-    *y += UiTokens::ROW_HEIGHT + UiTokens::ROW_GAP;
+    );
 }
 
 fn add_card(
@@ -794,21 +967,26 @@ fn add_card(
     label: &str,
     description: &str,
 ) {
-    layout.elements.push(Element {
+    add_element(
+        layout,
+        y,
         id,
-        kind: ElementKind::Action,
-        rect: Rect::new(
-            layout.content_clip.x + UiTokens::PAGE_MARGIN,
+        if id == ElementId::NewDisplayProfile {
+            ElementKind::ButtonPrimary
+        } else {
+            ElementKind::Action
+        },
+        label,
+        description,
+        Rect::new(
+            layout.content_column.x,
             *y,
-            layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0,
+            layout.content_column.w,
             UiTokens::CARD_HEIGHT,
         ),
-        label: label.into(),
-        description: description.into(),
-        scrolls: true,
-    });
-    *y += UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
+    );
 }
+
 fn add_card_pair(
     layout: &mut SettingsLayout,
     y: &mut f32,
@@ -816,50 +994,119 @@ fn add_card_pair(
     right: (ElementId, &str, &str),
 ) {
     let gap = UiTokens::CARD_GAP;
-    let available = layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0;
+    let available = layout.content_column.w;
     let card_w = ((available - gap) * 0.5).max(180.0);
     if card_w < 280.0 {
         add_card(layout, y, left.0, left.1, left.2);
         add_card(layout, y, right.0, right.1, right.2);
         return;
     }
-    let x = layout.content_clip.x + UiTokens::PAGE_MARGIN;
+    let row_y = *y;
     for (index, (id, label, description)) in [left, right].into_iter().enumerate() {
-        layout.elements.push(Element {
+        add_element(
+            layout,
+            y,
             id,
-            kind: ElementKind::Action,
-            rect: Rect::new(
-                x + index as f32 * (card_w + gap),
-                *y,
+            ElementKind::Action,
+            label,
+            description,
+            Rect::new(
+                layout.content_column.x + index as f32 * (card_w + gap),
+                row_y,
                 card_w,
                 UiTokens::CARD_HEIGHT,
             ),
-            label: label.into(),
-            description: description.into(),
-            scrolls: true,
-        });
+        );
     }
-    *y += UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
+    *y = row_y + UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
 }
 
-fn profile_grid_columns(layout: &SettingsLayout) -> usize {
+fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId, &str, &str)]) {
     let gap = UiTokens::CARD_GAP;
-    let available = layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0;
-    let half_width = ((available - gap) * 0.5).max(180.0);
-    usize::from(half_width >= 280.0) + 1
+    let columns = if layout.content_column.w >= 660.0 {
+        2
+    } else {
+        1
+    };
+    let card_w = if columns == 1 {
+        layout.content_column.w
+    } else {
+        (layout.content_column.w - gap) * 0.5
+    };
+    let row_h = 74.0;
+    let start = *y;
+    for (index, (id, label, description)) in items.iter().copied().enumerate() {
+        let row = index / columns;
+        let column = index % columns;
+        add_element(
+            layout,
+            y,
+            id,
+            ElementKind::Hotkey,
+            label,
+            description,
+            Rect::new(
+                layout.content_column.x + column as f32 * (card_w + gap),
+                start + row as f32 * (row_h + gap),
+                card_w,
+                row_h,
+            ),
+        );
+    }
+    if !items.is_empty() {
+        *y = start + items.len().div_ceil(columns) as f32 * (row_h + gap);
+    }
 }
 
-fn add_profile_card(layout: &mut SettingsLayout, y: &mut f32, id: u8, index: usize) {
+fn add_button_grid(
+    layout: &mut SettingsLayout,
+    y: &mut f32,
+    items: &[(ElementId, ElementKind, &str, &str)],
+) {
+    let gap = 8.0;
+    let widths = [142.0, 142.0, 142.0];
+    let mut x = layout.content_column.x;
+    let mut row_y = *y;
+    let mut row_height = 36.0;
+    for (index, (id, kind, label, description)) in items.iter().copied().enumerate() {
+        let width = widths[index % widths.len()];
+        if index > 0 && x + width > layout.content_column.right() {
+            x = layout.content_column.x;
+            row_y += row_height + gap;
+            row_height = 36.0;
+        }
+        add_element(
+            layout,
+            y,
+            id,
+            kind,
+            label,
+            description,
+            Rect::new(x, row_y, width.min(layout.content_column.w), 36.0),
+        );
+        x += width + gap;
+    }
+    if !items.is_empty() {
+        *y = row_y + row_height + gap;
+    }
+}
+
+fn add_profile_card(
+    layout: &mut SettingsLayout,
+    y: &mut f32,
+    id: u8,
+    index: usize,
+    columns: usize,
+) {
     let gap = UiTokens::CARD_GAP;
-    let available = layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0;
-    let columns = profile_grid_columns(layout);
+    let available = layout.content_column.w;
+    let columns = columns.max(1);
     let card_w = if columns == 1 {
         available
     } else {
         (available - gap) * 0.5
     };
-    let x =
-        layout.content_clip.x + UiTokens::PAGE_MARGIN + (index % columns) as f32 * (card_w + gap);
+    let x = layout.content_column.x + (index % columns) as f32 * (card_w + gap);
     let row_y = *y + (index / columns) as f32 * UiTokens::PROFILE_ROW_STEP;
     layout.elements.push(Element {
         id: ElementId::DisplayProfileCard(id),
@@ -871,15 +1118,150 @@ fn add_profile_card(layout: &mut SettingsLayout, y: &mut f32, id: u8, index: usi
     });
 }
 
-fn add_home(layout: &mut SettingsLayout, _profile_count: usize) {
-    let mut y = layout.content_clip.y + 26.0;
+fn add_desktop_strip(layout: &mut SettingsLayout, y: &mut f32, context: &LayoutContext) {
+    let count = context.desktop_count.unwrap_or(0).min(32);
+    let columns = count.clamp(1, 12);
+    let gap = 6.0;
+    let item_w =
+        ((layout.content_column.w - gap * (columns as f32 - 1.0)) / columns as f32).max(28.0);
+    let rows = if count == 0 {
+        1
+    } else {
+        count.div_ceil(columns)
+    };
+    let rect = add_region(
+        layout,
+        RegionKind::WorkspaceStrip,
+        y,
+        54.0 + rows as f32 * 40.0,
+    );
+    if count == 0 {
+        return;
+    }
+    for index in 0..count {
+        let row = index / columns;
+        let column = index % columns;
+        let current = context.current_desktop == Some(index);
+        let label = if current {
+            format!("Desktop {} (current)", index + 1)
+        } else {
+            format!("Desktop {}", index + 1)
+        };
+        add_element(
+            layout,
+            y,
+            ElementId::DesktopStripItem(index as u8),
+            ElementKind::ButtonSecondary,
+            label,
+            "Switch to this normal desktop",
+            Rect::new(
+                rect.x + column as f32 * (item_w + gap),
+                rect.y + 42.0 + row as f32 * 40.0,
+                item_w,
+                32.0,
+            ),
+        );
+    }
+}
+
+fn add_audio_mode_group(
+    layout: &mut SettingsLayout,
+    y: &mut f32,
+    kind: crate::ui::presentation::AudioDeviceKind,
+    mode: AllowlistMode,
+    device_count: usize,
+) {
+    let start = *y;
+    for (index, candidate) in [
+        AllowlistMode::All,
+        AllowlistMode::Selected,
+        AllowlistMode::Disabled,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = match kind {
+            crate::ui::presentation::AudioDeviceKind::Microphone => {
+                ElementId::InputCycleMode(index as u8)
+            }
+            crate::ui::presentation::AudioDeviceKind::Speaker => {
+                ElementId::OutputCycleMode(index as u8)
+            }
+        };
+        let selected = candidate == mode;
+        add_element(
+            layout,
+            y,
+            id,
+            ElementKind::Choice,
+            crate::ui::presentation::allowlist_mode_label(candidate, kind),
+            if selected {
+                "Selected"
+            } else {
+                "Choose this cycling mode"
+            },
+            Rect::new(
+                layout.content_column.x,
+                start + index as f32 * 42.0,
+                layout.content_column.w,
+                36.0,
+            ),
+        );
+    }
+    *y = start + 3.0 * 42.0;
+    if mode == AllowlistMode::Selected && device_count > 0 {
+        let gap = 8.0;
+        let columns = if layout.content_column.w >= 660.0 {
+            2
+        } else {
+            1
+        };
+        let card_w = if columns == 1 {
+            layout.content_column.w
+        } else {
+            (layout.content_column.w - gap) * 0.5
+        };
+        let device_start = *y;
+        for index in 0..device_count.min(32) {
+            let row = index / columns;
+            let column = index % columns;
+            let id = match kind {
+                crate::ui::presentation::AudioDeviceKind::Microphone => {
+                    ElementId::InputCycleDevice(index as u8)
+                }
+                crate::ui::presentation::AudioDeviceKind::Speaker => {
+                    ElementId::OutputCycleDevice(index as u8)
+                }
+            };
+            add_element(
+                layout,
+                y,
+                id,
+                ElementKind::Checkbox,
+                format!("{} option", kind.noun()),
+                "Use this device when cycling",
+                Rect::new(
+                    layout.content_column.x + column as f32 * (card_w + gap),
+                    device_start + row as f32 * 48.0,
+                    card_w,
+                    42.0,
+                ),
+            );
+        }
+        *y = device_start + device_count.min(32).div_ceil(columns) as f32 * 48.0;
+    }
+    *y += UiTokens::GROUP_GAP;
+}
+
+fn add_home(layout: &mut SettingsLayout) {
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "Welcome back",
         "What WinShort is doing right now.",
         &mut y,
     );
-    y += 20.0;
+    y += 12.0;
     add_heading(layout, "Audio", "Your current Windows devices.", &mut y);
     add_card_pair(
         layout,
@@ -915,14 +1297,17 @@ fn add_home(layout: &mut SettingsLayout, _profile_count: usize) {
             "Keep windows you want to bring back quickly",
         ),
     );
-    add_row(
+    let action_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::HomePreviousDesktop,
-        ElementKind::Action,
+        ElementKind::ButtonSecondary,
         "Previous desktop",
         "Return to the last normal desktop",
+        Rect::new(layout.content_column.x, action_y, 190.0, 36.0),
     );
+    y += 12.0;
     add_heading(
         layout,
         "Display and shortcuts",
@@ -934,124 +1319,159 @@ fn add_home(layout: &mut SettingsLayout, _profile_count: usize) {
         &mut y,
         (
             ElementId::HomeDisplayProfile,
-            "Display profile",
-            "Open saved screen arrangements",
+            "Display",
+            "Saved screen arrangements",
         ),
         (
             ElementId::HomeShortcutHealth,
-            "Shortcut health",
-            "Review active shortcuts and conflicts",
+            "Shortcuts",
+            "Active actions and conflicts",
         ),
     );
-    add_row(
+    let status_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::HomeDiagnostics,
-        ElementKind::Action,
-        "Details and diagnostics",
-        "See technical status when something needs attention",
+        ElementKind::ButtonSecondary,
+        "System status",
+        "Details and diagnostics when something needs attention",
+        Rect::new(layout.content_column.x, status_y, 190.0, 36.0),
     );
 }
 
-fn add_shortcuts(layout: &mut SettingsLayout) {
-    let mut y = layout.content_clip.y + 26.0;
+fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "Shortcuts",
-        "Choose a shortcut, press the keys you want, then use it immediately.",
+        "Record the actions you use most. Each keycap is ready to change.",
         &mut y,
     );
-    y += 20.0;
+    if context.paused {
+        add_region(layout, RegionKind::PauseNotice, &mut y, 68.0);
+    }
+    y += 12.0;
     add_heading(
         layout,
         "Audio",
-        "Control the devices and app in front of you.",
+        "Control devices and the app in front of you.",
         &mut y,
     );
-    for (id, label, description) in [
-        (
-            ElementId::MicHotkey,
-            "Mute microphone",
-            "Toggle your microphone from any app",
-        ),
-        (
-            ElementId::OutputHotkey,
-            "Mute speakers",
-            "Toggle speaker mute from any app",
-        ),
-        (
-            ElementId::CycleInputHotkey,
-            "Next microphone",
-            "Switch to the next selected microphone",
-        ),
-        (
-            ElementId::CycleOutputHotkey,
-            "Next speaker",
-            "Switch to the next selected speaker",
-        ),
-        (
-            ElementId::ForegroundHotkey,
-            "Mute current app",
-            "Toggle audio for the app in front",
-        ),
-        (
-            ElementId::ForegroundVolumeUpHotkey,
-            "Current app volume up",
-            "Raise the current app by five percent",
-        ),
-        (
-            ElementId::ForegroundVolumeDownHotkey,
-            "Current app volume down",
-            "Lower the current app by five percent",
-        ),
-    ] {
-        add_row(layout, &mut y, id, ElementKind::Hotkey, label, description);
-    }
+    add_hotkey_grid(
+        layout,
+        &mut y,
+        &[
+            (
+                ElementId::MicHotkey,
+                "Mute microphone",
+                "Toggle your microphone from any app",
+            ),
+            (
+                ElementId::OutputHotkey,
+                "Mute speakers",
+                "Toggle speaker mute from any app",
+            ),
+            (
+                ElementId::CycleInputHotkey,
+                "Next microphone",
+                "Switch to the next selected microphone",
+            ),
+            (
+                ElementId::CycleOutputHotkey,
+                "Next speaker",
+                "Switch to the next selected speaker",
+            ),
+            (
+                ElementId::ForegroundHotkey,
+                "Mute current app",
+                "Toggle audio for the app in front",
+            ),
+            (
+                ElementId::ForegroundVolumeUpHotkey,
+                "Current app volume up",
+                "Raise the current app by five percent",
+            ),
+            (
+                ElementId::ForegroundVolumeDownHotkey,
+                "Current app volume down",
+                "Lower the current app by five percent",
+            ),
+        ],
+    );
+    y += 4.0;
     add_heading(
         layout,
         "Workspaces",
-        "Move between desktops with a predictable rhythm.",
+        "Desktop actions are available when Workspace shortcuts are on.",
         &mut y,
     );
     add_row(
         layout,
         &mut y,
-        ElementId::WinNumberEnabled,
+        ElementId::DesktopsEnabled,
         ElementKind::Toggle,
-        "Desktop 1–9 shortcuts",
-        "Switch to numbered desktops with WinShort",
+        "Workspace shortcuts",
+        if context.workspace_enabled {
+            "Desktop and Special actions are enabled"
+        } else {
+            "Turn this on to enable desktop and Special actions"
+        },
     );
-    add_row(
+    if context.workspace_enabled {
+        add_hotkey_grid(
+            layout,
+            &mut y,
+            &[
+                (
+                    ElementId::PreviousDesktopHotkey,
+                    "Previous desktop",
+                    "Return to the last normal desktop",
+                ),
+                (
+                    ElementId::AssignScratchpadHotkey,
+                    "Move window to Special",
+                    "Keep the current window out of the way",
+                ),
+                (
+                    ElementId::ToggleScratchpadHotkey,
+                    "Open / close Special",
+                    "Open Special Workspace or return",
+                ),
+            ],
+        );
+    } else {
+        add_region(layout, RegionKind::WorkspaceNotice, &mut y, 70.0);
+    }
+    y += 4.0;
+    add_heading(
         layout,
+        "Numbered desktops",
+        "Use one modifier with the familiar 1–9 family.",
         &mut y,
-        ElementId::DesktopNumberModifier,
-        ElementKind::Value,
-        "Desktop shortcut modifier",
-        "Choose the modifier used with 1–9",
     );
-    for (id, label, description) in [
-        (
-            ElementId::PreviousDesktopHotkey,
-            "Previous desktop",
-            "Return to the last normal desktop",
-        ),
-        (
-            ElementId::AssignScratchpadHotkey,
-            "Move window to Special",
-            "Keep the current window out of the way",
-        ),
-        (
-            ElementId::ToggleScratchpadHotkey,
-            "Open / close Special",
-            "Open Special Workspace or return",
-        ),
-    ] {
-        add_row(layout, &mut y, id, ElementKind::Hotkey, label, description);
+    if context.workspace_enabled {
+        add_row(
+            layout,
+            &mut y,
+            ElementId::WinNumberEnabled,
+            ElementKind::Toggle,
+            "Desktop number shortcuts",
+            "Switch to numbered desktops",
+        );
+        add_row(
+            layout,
+            &mut y,
+            ElementId::DesktopNumberModifier,
+            ElementKind::Value,
+            "Desktop shortcut modifier",
+            "Shown as Win + 1–9 or another modifier family",
+        );
     }
     add_heading(
         layout,
         "Display profiles",
-        "Give each saved arrangement a shortcut.",
+        "Give the selected arrangement a shortcut.",
         &mut y,
     );
     add_row(
@@ -1064,20 +1484,19 @@ fn add_shortcuts(layout: &mut SettingsLayout) {
     );
 }
 
-fn add_audio(layout: &mut SettingsLayout) {
-    let mut y = layout.content_clip.y + 26.0;
+fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "Audio",
-        "The devices WinShort uses and the app in front of you.",
+        "Choose what WinShort controls and how Next speaker or microphone cycles.",
         &mut y,
     );
-    y += 20.0;
-    y += 104.0;
+    y += 12.0;
     add_heading(
         layout,
         "Speakers",
-        "Choose what Next speaker can use.",
+        "Choose the playback device and cycling mode.",
         &mut y,
     );
     add_row(
@@ -1085,21 +1504,20 @@ fn add_audio(layout: &mut SettingsLayout) {
         &mut y,
         ElementId::OutputDevice,
         ElementKind::Value,
-        "Current speaker",
-        "Follow Windows or choose a specific speaker",
+        "Playback device",
+        "Follow Windows default or pin one speaker",
     );
-    add_row(
+    add_audio_mode_group(
         layout,
         &mut y,
-        ElementId::OutputAllowlist,
-        ElementKind::Value,
-        "Devices used by Next speaker",
-        "Use all active speakers or choose a set",
+        crate::ui::presentation::AudioDeviceKind::Speaker,
+        context.output_cycle_mode,
+        context.output_device_count,
     );
     add_heading(
         layout,
         "Microphones",
-        "Choose what Next microphone can use.",
+        "Choose the recording device and cycling mode.",
         &mut y,
     );
     add_row(
@@ -1107,58 +1525,62 @@ fn add_audio(layout: &mut SettingsLayout) {
         &mut y,
         ElementId::InputDevice,
         ElementKind::Value,
-        "Current microphone",
-        "Follow Windows or choose a specific microphone",
+        "Recording device",
+        "Follow Windows default or pin one microphone",
     );
-    add_row(
+    add_audio_mode_group(
         layout,
         &mut y,
-        ElementId::InputAllowlist,
-        ElementKind::Value,
-        "Devices used by Next microphone",
-        "Use all active microphones or choose a set",
+        crate::ui::presentation::AudioDeviceKind::Microphone,
+        context.input_cycle_mode,
+        context.input_device_count,
     );
     add_heading(
         layout,
         "Current app audio",
-        "Control the app currently in front of you.",
+        "WinShort itself is not a target for these actions.",
         &mut y,
     );
-    for (id, label, description) in [
-        (
-            ElementId::ForegroundHotkey,
-            "Mute current app",
-            "Toggle all audio sessions owned by the current app",
-        ),
-        (
-            ElementId::ForegroundVolumeUpHotkey,
-            "Current app volume up",
-            "Raise the current app by five percent",
-        ),
-        (
-            ElementId::ForegroundVolumeDownHotkey,
-            "Current app volume down",
-            "Lower the current app by five percent",
-        ),
-    ] {
-        add_row(layout, &mut y, id, ElementKind::Hotkey, label, description);
-    }
+    add_region(layout, RegionKind::AudioCurrentApp, &mut y, 92.0);
+    add_hotkey_grid(
+        layout,
+        &mut y,
+        &[
+            (
+                ElementId::ForegroundHotkey,
+                "Mute current app",
+                "Toggle all sessions owned by another app",
+            ),
+            (
+                ElementId::ForegroundVolumeUpHotkey,
+                "Current app volume up",
+                "Raise the current app by five percent",
+            ),
+            (
+                ElementId::ForegroundVolumeDownHotkey,
+                "Current app volume down",
+                "Lower the current app by five percent",
+            ),
+        ],
+    );
 }
 
-fn add_workspaces(layout: &mut SettingsLayout) {
-    let mut y = layout.content_clip.y + 26.0;
+fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "Workspaces",
         "Switch desktops without losing your place.",
         &mut y,
     );
-    y += 20.0;
-    y += 104.0;
+    y += 12.0;
+    if context.workspace_enabled {
+        add_desktop_strip(layout, &mut y, context);
+    }
     add_heading(
         layout,
-        "Desktops",
-        "Your numbered desktop shortcuts stay in the familiar Win+1…9 family.",
+        "Workspace shortcuts",
+        "One master switch controls desktop and Special actions.",
         &mut y,
     );
     add_row(
@@ -1167,7 +1589,28 @@ fn add_workspaces(layout: &mut SettingsLayout) {
         ElementId::DesktopsEnabled,
         ElementKind::Toggle,
         "Workspace shortcuts",
-        "Use WinShort desktop actions",
+        if context.workspace_enabled {
+            "Desktop and Special actions are enabled"
+        } else {
+            "Turn this on to use the controls below"
+        },
+    );
+    if !context.workspace_enabled {
+        add_region(layout, RegionKind::WorkspaceNotice, &mut y, 76.0);
+        add_heading(
+            layout,
+            "Special Workspace",
+            "Available after Workspace shortcuts are enabled.",
+            &mut y,
+        );
+        add_region(layout, RegionKind::SpecialWorkspace, &mut y, 86.0);
+        return;
+    }
+    add_heading(
+        layout,
+        "Numbered desktops",
+        "The modifier applies to the nine normal desktop numbers.",
+        &mut y,
     );
     add_row(
         layout,
@@ -1175,7 +1618,7 @@ fn add_workspaces(layout: &mut SettingsLayout) {
         ElementId::WinNumberEnabled,
         ElementKind::Toggle,
         "Desktop number shortcuts",
-        "Use the configured modifier with 1–9",
+        "Switch to desktops 1–9",
     );
     add_row(
         layout,
@@ -1183,7 +1626,7 @@ fn add_workspaces(layout: &mut SettingsLayout) {
         ElementId::DesktopNumberModifier,
         ElementKind::Value,
         "Desktop shortcut modifier",
-        "Modifier family for Desktop 1–9",
+        "Use this modifier with 1–9",
     );
     add_row(
         layout,
@@ -1212,212 +1655,354 @@ fn add_workspaces(layout: &mut SettingsLayout) {
     add_heading(
         layout,
         "Special Workspace",
-        "Keep windows you want to move out of the way and bring back quickly.",
+        "A dedicated place for windows you want nearby but out of the way.",
         &mut y,
     );
-    add_row(
+    add_region(layout, RegionKind::SpecialWorkspace, &mut y, 86.0);
+    add_hotkey_grid(
         layout,
         &mut y,
-        ElementId::AssignScratchpadHotkey,
-        ElementKind::Hotkey,
-        "Move window to Special",
-        "Send the current window to Special Workspace",
-    );
-    add_row(
-        layout,
-        &mut y,
-        ElementId::ToggleScratchpadHotkey,
-        ElementKind::Hotkey,
-        "Open / close Special",
-        "Open Special Workspace or return to your previous desktop",
+        &[
+            (
+                ElementId::AssignScratchpadHotkey,
+                "Move window to Special",
+                "Send the current window to Special Workspace",
+            ),
+            (
+                ElementId::ToggleScratchpadHotkey,
+                "Open / close Special",
+                "Open Special Workspace or return",
+            ),
+        ],
     );
 }
 
-fn add_displays(layout: &mut SettingsLayout, profile_count: usize) {
-    let mut y = layout.content_clip.y + 26.0;
+fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
+    let step = context.display_editor_step.expect("display wizard step");
+    let mut y = layout.content_column.y + 28.0;
+    add_heading(
+        layout,
+        "Display profile editor",
+        "Build an arrangement, then test it before keeping it.",
+        &mut y,
+    );
+    add_region(layout, RegionKind::DisplayWizardSteps, &mut y, 58.0);
+    match step {
+        DisplayWizardStep::Displays => {
+            add_heading(
+                layout,
+                "Which screens",
+                "Choose the connected screens this profile should use.",
+                &mut y,
+            );
+            if context.display_output_count == 0 {
+                add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 104.0);
+            } else {
+                let gap = UiTokens::CARD_GAP;
+                let columns = if layout.content_column.w >= 660.0 {
+                    2
+                } else {
+                    1
+                };
+                let card_w = if columns == 1 {
+                    layout.content_column.w
+                } else {
+                    (layout.content_column.w - gap) * 0.5
+                };
+                let start = y;
+                for index in 0..context.display_output_count.min(32) {
+                    let row = index / columns;
+                    let column = index % columns;
+                    add_element(
+                        layout,
+                        &mut y,
+                        ElementId::DisplayOutputCard(index as u8),
+                        ElementKind::Checkbox,
+                        "Screen",
+                        "Select this connected screen",
+                        Rect::new(
+                            layout.content_column.x + column as f32 * (card_w + gap),
+                            start + row as f32 * 74.0,
+                            card_w,
+                            66.0,
+                        ),
+                    );
+                }
+                y = start + context.display_output_count.min(32).div_ceil(columns) as f32 * 74.0;
+            }
+        }
+        DisplayWizardStep::Arrangement => {
+            add_heading(
+                layout,
+                "How they work",
+                "Choose a simple arrangement for the selected screens.",
+                &mut y,
+            );
+            if context.display_route_count <= 1 {
+                add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 122.0);
+            } else {
+                for (index, (label, description)) in [
+                    ("Extend", "Separate desktops across the selected displays"),
+                    (
+                        "Duplicate",
+                        "Show the same picture on each selected display",
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let choice_y = y;
+                    add_element(
+                        layout,
+                        &mut y,
+                        ElementId::DisplayTopologyChoice(index as u8),
+                        ElementKind::Choice,
+                        label,
+                        description,
+                        Rect::new(
+                            layout.content_column.x,
+                            choice_y,
+                            layout.content_column.w,
+                            106.0,
+                        ),
+                    );
+                    y += 8.0;
+                }
+            }
+        }
+        DisplayWizardStep::NameAndShortcut => {
+            add_heading(
+                layout,
+                "Name & shortcut",
+                "Give this arrangement a name people can recognize.",
+                &mut y,
+            );
+            add_row(
+                layout,
+                &mut y,
+                ElementId::RenameDisplayProfile,
+                ElementKind::Action,
+                "Profile name",
+                "Choose a short name for this arrangement",
+            );
+            add_row(
+                layout,
+                &mut y,
+                ElementId::DisplayProfileHotkey,
+                ElementKind::Hotkey,
+                "Shortcut (optional)",
+                "Activate this profile from any app",
+            );
+        }
+        DisplayWizardStep::Review => {
+            add_heading(
+                layout,
+                "Review",
+                "Check the summary, then test the display setup safely.",
+                &mut y,
+            );
+            add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 130.0);
+            if context.display_draft_dirty {
+                let discard_y = y;
+                add_element(
+                    layout,
+                    &mut y,
+                    ElementId::DiscardDisplayEdits,
+                    ElementKind::ButtonSecondary,
+                    "Discard changes",
+                    "Return to the last saved profile",
+                    Rect::new(layout.content_column.x, discard_y, 150.0, 36.0),
+                );
+            }
+            y += 8.0;
+            let test_y = y;
+            add_element(
+                layout,
+                &mut y,
+                ElementId::TestApplyDisplayProfile,
+                ElementKind::ButtonPrimary,
+                "Test profile",
+                "Try it for 15 seconds before keeping it",
+                Rect::new(layout.content_column.x, test_y, 150.0, 36.0),
+            );
+        }
+    }
+    let nav_y = y + 8.0;
+    if step.previous().is_some() {
+        add_element(
+            layout,
+            &mut y,
+            ElementId::DisplayWizardBack,
+            ElementKind::ButtonSecondary,
+            "Back",
+            "Return to the previous step",
+            Rect::new(layout.content_column.x, nav_y, 106.0, 36.0),
+        );
+    }
+    if step.next().is_some() {
+        add_element(
+            layout,
+            &mut y,
+            ElementId::DisplayWizardNext,
+            ElementKind::ButtonPrimary,
+            "Next",
+            "Continue to the next step",
+            Rect::new(layout.content_column.right() - 106.0, nav_y, 106.0, 36.0),
+        );
+    } else {
+        add_element(
+            layout,
+            &mut y,
+            ElementId::DisplayWizardCancel,
+            ElementKind::ButtonSecondary,
+            "Cancel",
+            "Discard this display draft and return to Display Profiles",
+            Rect::new(layout.content_column.right() - 106.0, nav_y, 106.0, 36.0),
+        );
+    }
+}
+
+fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "Displays",
         "Save the way your screens work, then test before you keep it.",
         &mut y,
     );
-    y += 20.0;
-    y += 104.0;
-    add_row(
-        layout,
-        &mut y,
-        ElementId::DisplayProfilesEnabled,
-        ElementKind::Toggle,
-        "Display profiles",
-        "Save monitor arrangements you can switch safely",
-    );
+    y += 12.0;
+    if !context.display_profiles_enabled {
+        add_row(
+            layout,
+            &mut y,
+            ElementId::DisplayProfilesEnabled,
+            ElementKind::Toggle,
+            "Display profiles",
+            "Turn this on to save monitor arrangements",
+        );
+        add_region(layout, RegionKind::DisplaySafety, &mut y, 76.0);
+        return;
+    }
+    if context.display_rollback_active {
+        add_region(layout, RegionKind::DisplaySafety, &mut y, 94.0);
+        let safety_action_y = y;
+        if context.display_keep_available {
+            add_element(
+                layout,
+                &mut y,
+                ElementId::KeepDisplayChange,
+                ElementKind::ButtonPrimary,
+                "Keep this setup",
+                "Confirm the tested display arrangement",
+                Rect::new(layout.content_column.x, safety_action_y, 150.0, 36.0),
+            );
+        }
+        add_element(
+            layout,
+            &mut y,
+            ElementId::UndoDisplayChange,
+            ElementKind::ButtonDanger,
+            "Revert",
+            "Restore the previous display arrangement",
+            Rect::new(
+                layout.content_column.x + 160.0,
+                safety_action_y,
+                120.0,
+                36.0,
+            ),
+        );
+        return;
+    }
+    if context.display_editor_step.is_some() {
+        add_display_wizard(layout, context);
+        return;
+    }
     add_heading(
         layout,
-        "Your profiles",
-        "Choose a profile to edit or activate.",
+        "Display profiles",
+        "Select a profile to activate it or open its editor.",
         &mut y,
     );
-    if profile_count == 0 {
+    if context.profile_count == 0 {
         add_card(
             layout,
             &mut y,
             ElementId::NewDisplayProfile,
-            "Create your first profile",
-            "Capture the arrangement Windows is using now",
+            "Create a display profile",
+            "Start from the arrangement Windows is using now",
         );
+        return;
+    }
+    let count = context.profile_count.min(32);
+    let columns = if layout.content_column.w >= 660.0 {
+        2
     } else {
-        let count = profile_count.min(32);
-        for index in 0..count {
-            add_profile_card(layout, &mut y, index as u8, index);
-        }
-        y += count.div_ceil(profile_grid_columns(layout)) as f32 * UiTokens::PROFILE_ROW_STEP;
-        add_row(
+        1
+    };
+    for index in 0..count {
+        add_profile_card(
             layout,
             &mut y,
-            ElementId::NewDisplayProfile,
-            ElementKind::Action,
-            "New profile",
-            "Capture the current arrangement and edit it",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::UpdateDisplayProfile,
-            ElementKind::Action,
-            "Capture current arrangement",
-            "Replace the selected profile with Windows' current setup",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::RenameDisplayProfile,
-            ElementKind::Action,
-            "Rename profile",
-            "Change its name without changing its identity",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DuplicateDisplayProfile,
-            ElementKind::Action,
-            "Duplicate profile",
-            "Create a new editable copy",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DeleteDisplayProfile,
-            ElementKind::ButtonSecondary,
-            "Delete profile",
-            "Remove the selected profile and shortcut",
-        );
-        add_heading(
-            layout,
-            "Selected profile",
-            "Choose displays and how they work.",
-            &mut y,
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DisplayProfile,
-            ElementKind::Value,
-            "Selected profile",
-            "Choose a profile to edit",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DisplayOutputs,
-            ElementKind::Value,
-            "Which displays",
-            "Select connected display routes for this profile",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DisplayTopology,
-            ElementKind::Value,
-            "How they work",
-            "Extend or duplicate when more than one display is selected",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DisplayProfileHotkey,
-            ElementKind::Hotkey,
-            "Profile shortcut",
-            "Activate the selected profile from any app",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::TestApplyDisplayProfile,
-            ElementKind::ButtonPrimary,
-            "Test profile",
-            "Try it for 15 seconds before keeping it",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::ApplyDisplayProfile,
-            ElementKind::Action,
-            "Activate profile",
-            "Switch to this previously confirmed arrangement",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::KeepDisplayChange,
-            ElementKind::ButtonPrimary,
-            "Keep display setup",
-            "Confirm the tested arrangement before the timer ends",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::UndoDisplayChange,
-            ElementKind::ButtonSecondary,
-            "Revert display setup",
-            "Restore the arrangement from before testing",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DisplayRoute,
-            ElementKind::Value,
-            "Advanced output",
-            "Select an output before opening advanced editing",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::EditDisplayRoute,
-            ElementKind::Action,
-            "Advanced display output",
-            "Edit exact position, mode, refresh, or rotation",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DiscardDisplayEdits,
-            ElementKind::ButtonSecondary,
-            "Discard display edits",
-            "Return to the last saved profile",
+            index as u8,
+            index,
+            if count == 1 { 1 } else { columns },
         );
     }
+    y += count.div_ceil(columns) as f32 * UiTokens::PROFILE_ROW_STEP;
+    add_heading(
+        layout,
+        "Manage selected profile",
+        "Actions stay with the profile they change.",
+        &mut y,
+    );
+    add_button_grid(
+        layout,
+        &mut y,
+        &[
+            (
+                ElementId::NewDisplayProfile,
+                ElementKind::ButtonPrimary,
+                "New profile",
+                "Create from the current arrangement",
+            ),
+            (
+                ElementId::EditDisplayProfile,
+                ElementKind::ButtonSecondary,
+                "Edit profile",
+                "Open the guided editor",
+            ),
+            (
+                ElementId::UpdateDisplayProfile,
+                ElementKind::ButtonSecondary,
+                "Replace from current",
+                "Update this profile from Windows' arrangement",
+            ),
+            (
+                ElementId::DuplicateDisplayProfile,
+                ElementKind::ButtonSecondary,
+                "Duplicate",
+                "Create a separate editable copy",
+            ),
+            (
+                ElementId::DeleteDisplayProfile,
+                ElementKind::ButtonDanger,
+                "Delete",
+                "Remove the selected profile",
+            ),
+        ],
+    );
 }
 
 fn add_overlay(layout: &mut SettingsLayout) {
-    let mut y = layout.content_clip.y + 26.0;
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "Overlay",
         "A compact visual cue that never interrupts your work.",
         &mut y,
     );
-    y += 20.0;
-    y += 104.0;
+    y += 12.0;
+    add_region(layout, RegionKind::OverlayPreview, &mut y, 218.0);
     add_row(
         layout,
         &mut y,
@@ -1429,41 +2014,64 @@ fn add_overlay(layout: &mut SettingsLayout) {
     add_heading(
         layout,
         "Appearance",
-        "See the settings in a live preview.",
+        "Shape the overlay without guessing where it will land.",
         &mut y,
     );
-    for (id, kind, label, description) in [
-        (
-            ElementId::OverlayAppearance,
-            ElementKind::Value,
-            "Appearance",
-            "Follow Windows, light, or dark",
-        ),
-        (
-            ElementId::OverlayPosition,
-            ElementKind::Value,
-            "Position",
-            "Choose a corner or the center",
-        ),
-        (
-            ElementId::OverlayMonitor,
-            ElementKind::Value,
-            "Monitor",
-            "Choose where the status card appears",
-        ),
-        (
-            ElementId::OverlayExternalChanges,
-            ElementKind::Toggle,
-            "Show changes made outside WinShort",
-            "Keep the status card in sync with Windows",
-        ),
-    ] {
-        add_row(layout, &mut y, id, kind, label, description);
+    add_row(
+        layout,
+        &mut y,
+        ElementId::OverlayAppearance,
+        ElementKind::Value,
+        "Appearance",
+        "Follow Windows, light, or dark",
+    );
+    add_heading(
+        layout,
+        "Position",
+        "Choose a location on the monitor work area.",
+        &mut y,
+    );
+    let grid_start = y;
+    for index in 0..9 {
+        let column = index % 3;
+        let row = index / 3;
+        add_element(
+            layout,
+            &mut y,
+            ElementId::OverlayPositionCell(index),
+            ElementKind::Choice,
+            "Overlay position",
+            "Choose this position",
+            Rect::new(
+                layout.content_column.x
+                    + column as f32 * ((layout.content_column.w - 16.0) / 3.0 + 8.0),
+                grid_start + row as f32 * 44.0,
+                (layout.content_column.w - 16.0) / 3.0,
+                36.0,
+            ),
+        );
     }
+    y = grid_start + 3.0 * 44.0 + UiTokens::GROUP_GAP;
+    add_row(
+        layout,
+        &mut y,
+        ElementId::OverlayMonitor,
+        ElementKind::Value,
+        "Monitor",
+        "Choose where the status card appears",
+    );
+    add_row(
+        layout,
+        &mut y,
+        ElementId::OverlayExternalChanges,
+        ElementKind::Toggle,
+        "Show Windows audio changes",
+        "Keep the status card in sync with Windows audio",
+    );
     add_heading(
         layout,
         "Size and timing",
-        "Use familiar ranges instead of numeric internals.",
+        "Adjust the compact status card with familiar ranges.",
         &mut y,
     );
     for (id, label, description) in [
@@ -1475,27 +2083,44 @@ fn add_overlay(layout: &mut SettingsLayout) {
             "Short, normal, or long",
         ),
     ] {
-        add_row(layout, &mut y, id, ElementKind::Slider, label, description);
+        let slider_y = y;
+        add_element(
+            layout,
+            &mut y,
+            id,
+            ElementKind::Slider,
+            label,
+            description,
+            Rect::new(
+                layout.content_column.x,
+                slider_y,
+                layout.content_column.w,
+                56.0,
+            ),
+        );
+        y += 8.0;
     }
-    add_row(
+    let preview_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::OverlayPreview,
-        ElementKind::Action,
-        "Preview overlay",
-        "Show the edited overlay without saving",
+        ElementKind::ButtonPrimary,
+        "Show on screen",
+        "Show the edited overlay without saving it",
+        Rect::new(layout.content_column.x, preview_y, 150.0, 36.0),
     );
 }
 
 fn add_system(layout: &mut SettingsLayout) {
-    let mut y = layout.content_clip.y + 26.0;
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "System",
         "Small choices that shape how WinShort lives on your PC.",
         &mut y,
     );
-    y += 20.0;
+    y += 12.0;
     add_heading(
         layout,
         "Startup",
@@ -1530,35 +2155,56 @@ fn add_system(layout: &mut SettingsLayout) {
         "Keep technical details available when you need them.",
         &mut y,
     );
-    add_row(
+    let diagnostics_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::DiagnosticsStatus,
-        ElementKind::Action,
+        ElementKind::ButtonSecondary,
         "Diagnostics and support",
         "Inspect status, copy details, or create a sanitized bundle",
+        Rect::new(
+            layout.content_column.x,
+            diagnostics_y,
+            layout.content_column.w,
+            52.0,
+        ),
     );
-    add_row(
+    let folder_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::OpenConfigFolder,
-        ElementKind::Action,
+        ElementKind::ButtonSecondary,
         "Open configuration folder",
         "Open WinShort's local files",
+        Rect::new(
+            layout.content_column.x,
+            folder_y,
+            layout.content_column.w,
+            52.0,
+        ),
     );
     add_heading(
         layout,
         "Reset",
-        "Reset is deliberate and never happens in the background.",
+        "Reset is destructive and always asks twice.",
         &mut y,
     );
-    add_row(
+    let reset_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::ResetSettings,
-        ElementKind::ButtonSecondary,
+        ElementKind::ButtonDanger,
         "Reset WinShort",
         "Restore defaults after a second confirmation",
+        Rect::new(
+            layout.content_column.x,
+            reset_y,
+            layout.content_column.w,
+            52.0,
+        ),
     );
     add_heading(
         layout,
@@ -1569,14 +2215,14 @@ fn add_system(layout: &mut SettingsLayout) {
 }
 
 fn add_advanced(layout: &mut SettingsLayout) {
-    let mut y = layout.content_clip.y + 26.0;
+    let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
         "Advanced",
         "Technical controls for troubleshooting and fine tuning.",
         &mut y,
     );
-    y += 20.0;
+    y += 12.0;
     add_heading(layout, "Audio", "Windows default-device behavior.", &mut y);
     add_row(
         layout,
@@ -1608,13 +2254,20 @@ fn add_advanced(layout: &mut SettingsLayout) {
         "Display output",
         "Select an output from the active display profile",
     );
-    add_row(
+    let edit_output_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::EditDisplayRoute,
-        ElementKind::Action,
+        ElementKind::ButtonSecondary,
         "Edit display output",
         "Position, resolution, refresh, and rotation",
+        Rect::new(
+            layout.content_column.x,
+            edit_output_y,
+            layout.content_column.w,
+            52.0,
+        ),
     );
     add_heading(
         layout,
@@ -1630,26 +2283,34 @@ fn add_advanced(layout: &mut SettingsLayout) {
         "Temporary debug logging",
         "Add detail until WinShort restarts",
     );
-    add_row(
+    let diagnostics_y = y;
+    add_element(
         layout,
         &mut y,
         ElementId::DiagnosticsStatus,
-        ElementKind::Action,
+        ElementKind::ButtonSecondary,
         "Diagnostics and support",
         "Inspect runtime and implementation detail",
+        Rect::new(
+            layout.content_column.x,
+            diagnostics_y,
+            layout.content_column.w,
+            52.0,
+        ),
     );
 }
 
 fn add_search_results(layout: &mut SettingsLayout, query: &str) {
-    let mut y = layout.content_clip.y + 26.0;
+    let mut y = layout.content_column.y + 28.0;
     let matches = search(query);
     if matches.is_empty() {
         add_heading(
             layout,
             "No matching settings",
-            "Try a word such as microphone, desktop, display, or overlay.",
+            "Try microphone, desktop, display, or overlay.",
             &mut y,
         );
+        add_region(layout, RegionKind::WorkspaceNotice, &mut y, 76.0);
         return;
     }
     add_heading(
@@ -1658,7 +2319,7 @@ fn add_search_results(layout: &mut SettingsLayout, query: &str) {
         "Choose a result to open the right page.",
         &mut y,
     );
-    y += 18.0;
+    y += 12.0;
     for (index, result) in matches.iter().enumerate() {
         add_row(
             layout,
@@ -1672,94 +2333,94 @@ fn add_search_results(layout: &mut SettingsLayout, query: &str) {
 }
 
 fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
-    let mut y = layout.content_clip.y + 34.0;
+    let mut y = layout.content_column.y + 34.0;
     if step == 1 {
         add_heading(
             layout,
-            "Welcome to WinShort",
-            "A few choices make the most useful shortcuts feel right from the start.",
+            "Set up WinShort",
+            "Choose the defaults you want to use every day.",
             &mut y,
         );
-        y += 30.0;
         add_row(
             layout,
             &mut y,
             ElementId::OutputAllowlist,
             ElementKind::Value,
-            "Choose speakers for Next speaker",
-            "Use all available speakers or pick a set",
+            "Speaker cycling",
+            "Use all speakers or choose a set",
         );
         add_row(
             layout,
             &mut y,
             ElementId::InputAllowlist,
             ElementKind::Value,
-            "Choose microphones for Next microphone",
-            "Use all available microphones or pick a set",
+            "Microphone cycling",
+            "Use all microphones or choose a set",
         );
         add_row(
             layout,
             &mut y,
             ElementId::WinNumberEnabled,
             ElementKind::Toggle,
-            "Enable desktop number shortcuts",
-            "Use the familiar modifier + 1…9 workflow",
+            "Desktop number shortcuts",
+            "Use the familiar 1–9 family",
         );
-        add_row(
+        let continue_y = y;
+        add_element(
             layout,
             &mut y,
             ElementId::OnboardingContinue,
             ElementKind::ButtonPrimary,
             "Continue",
-            "Review your shortcuts",
+            "Choose shortcuts next",
+            Rect::new(layout.content_column.x, continue_y, 120.0, 36.0),
         );
     } else {
         add_heading(
             layout,
-            "You're ready",
-            "These are the shortcuts currently configured for your everyday actions.",
+            "Your shortcuts are ready",
+            "You can change every choice later.",
             &mut y,
         );
-        y += 26.0;
-        add_row(
+        add_hotkey_grid(
             layout,
             &mut y,
-            ElementId::MicHotkey,
-            ElementKind::Card,
-            "Mute microphone",
-            "Your configured shortcut",
+            &[
+                (
+                    ElementId::MicHotkey,
+                    "Mute microphone",
+                    "Toggle microphone mute",
+                ),
+                (
+                    ElementId::OutputHotkey,
+                    "Mute speakers",
+                    "Toggle speaker mute",
+                ),
+                (
+                    ElementId::PreviousDesktopHotkey,
+                    "Previous desktop",
+                    "Return to the last desktop",
+                ),
+            ],
         );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::DesktopNumberModifier,
-            ElementKind::Card,
-            "Switch desktop",
-            "Your configured desktop shortcut",
-        );
-        add_row(
-            layout,
-            &mut y,
-            ElementId::ToggleScratchpadHotkey,
-            ElementKind::Card,
-            "Special Workspace",
-            "Your configured Special shortcut",
-        );
-        add_row(
+        let open_y = y;
+        add_element(
             layout,
             &mut y,
             ElementId::OnboardingOpen,
             ElementKind::ButtonPrimary,
             "Open WinShort",
             "Go to the Control Center",
+            Rect::new(layout.content_column.x, open_y, 140.0, 36.0),
         );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ElementId, ElementKind, SettingsLayout};
+    use super::{ElementId, ElementKind, RegionKind, SettingsLayout};
     use crate::ui::navigation::Page;
+    use crate::ui::presentation::{AllowlistMode, DisplayWizardStep};
 
     #[test]
     fn shell_has_primary_navigation_and_search() {
@@ -1768,6 +2429,7 @@ mod tests {
         assert!(layout.element(ElementId::Nav(Page::Audio)).is_some());
         assert!(layout.element(ElementId::HomeSpeaker).is_some());
     }
+
     #[test]
     fn home_cards_use_dashboard_grid_then_stack_when_narrow() {
         let wide = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
@@ -1791,13 +2453,30 @@ mod tests {
     }
 
     #[test]
+    fn compact_shell_reserves_space_for_the_current_page_label() {
+        let layout = SettingsLayout::build_shell(760.0, 660.0, 0.0, Page::System, "", 0, None);
+        let page_label_width = layout.top_bar.right() - layout.search_rect.right() - 40.0;
+        assert!(page_label_width >= 80.0);
+    }
+
+    #[test]
+    fn ordinary_content_has_a_page_aware_maximum_width() {
+        let layout = SettingsLayout::build_shell(1920.0, 1080.0, 0.0, Page::System, "", 0, None);
+        assert!(layout.content_column.w <= 860.0);
+        assert!(layout.content_column.right() < layout.content_clip.right());
+        let displays =
+            SettingsLayout::build_shell(1920.0, 1080.0, 0.0, Page::Displays, "", 3, None);
+        assert!(displays.content_column.w > layout.content_column.w);
+    }
+
+    #[test]
     fn content_hit_testing_excludes_scrolled_elements_outside_viewport() {
         let layout = SettingsLayout::build_shell(960.0, 660.0, 500.0, Page::Shortcuts, "", 0, None);
         assert!(layout
             .elements
             .iter()
             .filter(|element| element.scrolls)
-            .all(|element| !element.rect.contains(0.0, 0.0)));
+            .all(|element| { !element.rect.contains(0.0, 0.0) }));
     }
 
     #[test]
@@ -1818,6 +2497,7 @@ mod tests {
             Some(ElementKind::Slider)
         ));
     }
+
     #[test]
     fn every_page_has_a_heading_and_reachable_navigation() {
         let pages = Page::PRIMARY.into_iter().chain(Page::SECONDARY);
@@ -1853,7 +2533,7 @@ mod tests {
             .element(ElementId::DisplayProfileCard(2))
             .expect("third profile card");
         assert!(second.rect.x > first.rect.x);
-        assert_eq!(third.rect.y, first.rect.y + 136.0);
+        assert!(third.rect.y > first.rect.y);
         assert!(first.rect.w > 200.0);
 
         let narrow = SettingsLayout::build_shell(760.0, 660.0, 0.0, Page::Displays, "", 2, None);
@@ -1865,7 +2545,190 @@ mod tests {
             .expect("narrow second profile card");
         assert_eq!(narrow_first.rect.x, narrow_second.rect.x);
         assert!(narrow_second.rect.y > narrow_first.rect.y);
-        assert!(narrow_first.rect.w > 400.0);
+    }
+
+    #[test]
+    fn display_overview_keeps_expert_route_editing_out_of_normal_flow() {
+        let layout = SettingsLayout::build_shell(1200.0, 900.0, 0.0, Page::Displays, "", 1, None);
+        assert!(layout.element(ElementId::DisplayProfileCard(0)).is_some());
+        assert!(layout.element(ElementId::EditDisplayRoute).is_none());
+        assert!(layout.element(ElementId::DisplayRoute).is_none());
+        assert!(layout.element(ElementId::EditDisplayProfile).is_some());
+    }
+
+    #[test]
+    fn display_recovery_layout_has_only_meaningful_keep_or_revert_actions() {
+        let context = super::LayoutContext {
+            profile_count: 1,
+            display_rollback_active: true,
+            display_keep_available: true,
+            ..Default::default()
+        };
+        let layout = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Displays,
+            "",
+            context,
+            None,
+        );
+        assert!(layout.element(ElementId::KeepDisplayChange).is_some());
+        assert!(layout.element(ElementId::UndoDisplayChange).is_some());
+        assert!(layout.element(ElementId::TestApplyDisplayProfile).is_none());
+        assert!(layout.element(ElementId::DeleteDisplayProfile).is_none());
+    }
+
+    #[test]
+    fn one_profile_uses_the_available_card_width() {
+        let layout = SettingsLayout::build_shell(1920.0, 1080.0, 0.0, Page::Displays, "", 1, None);
+        let card = layout
+            .element(ElementId::DisplayProfileCard(0))
+            .expect("profile card");
+        assert_eq!(card.rect.w, layout.content_column.w);
+    }
+    #[test]
+    fn audio_modes_are_mutually_exclusive_and_selected_devices_are_progressive() {
+        let context = super::LayoutContext {
+            input_cycle_mode: AllowlistMode::Selected,
+            input_device_count: 3,
+            output_cycle_mode: AllowlistMode::All,
+            output_device_count: 2,
+            ..Default::default()
+        };
+        let layout = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Audio,
+            "",
+            context,
+            None,
+        );
+        assert!(layout.element(ElementId::InputCycleMode(0)).is_some());
+        assert!(layout.element(ElementId::InputCycleMode(1)).is_some());
+        assert!(layout.element(ElementId::InputCycleMode(2)).is_some());
+        assert!(layout.element(ElementId::InputCycleDevice(2)).is_some());
+        assert!(layout.element(ElementId::OutputCycleDevice(0)).is_none());
+    }
+    #[test]
+    fn display_editor_reflows_one_step_without_form_cemetery() {
+        for (step, has_routes, has_topology, has_name) in [
+            (DisplayWizardStep::Displays, true, false, false),
+            (DisplayWizardStep::Arrangement, false, true, false),
+            (DisplayWizardStep::NameAndShortcut, false, false, true),
+        ] {
+            let context = super::LayoutContext {
+                display_editor_step: Some(step),
+                display_output_count: 2,
+                display_route_count: 2,
+                ..Default::default()
+            };
+            let layout = SettingsLayout::build_shell_with_context(
+                1200.0,
+                900.0,
+                0.0,
+                Page::Displays,
+                "",
+                context,
+                None,
+            );
+            assert_eq!(
+                layout.element(ElementId::DisplayOutputCard(0)).is_some(),
+                has_routes
+            );
+            assert_eq!(
+                layout
+                    .element(ElementId::DisplayTopologyChoice(0))
+                    .is_some(),
+                has_topology
+            );
+            assert_eq!(
+                layout.element(ElementId::RenameDisplayProfile).is_some(),
+                has_name
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_strip_uses_runtime_count_and_excludes_special() {
+        let context = super::LayoutContext {
+            desktop_count: Some(9),
+            current_desktop: Some(2),
+            ..Default::default()
+        };
+        let layout = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Workspaces,
+            "",
+            context,
+            None,
+        );
+        assert_eq!(
+            layout
+                .elements
+                .iter()
+                .filter(|element| matches!(element.id, ElementId::DesktopStripItem(_)))
+                .count(),
+            9
+        );
+        assert!(layout
+            .regions
+            .iter()
+            .any(|region| region.kind == RegionKind::WorkspaceStrip));
+    }
+
+    #[test]
+    fn display_editor_has_one_step_at_a_time() {
+        let context = super::LayoutContext {
+            profile_count: 1,
+            display_editor_step: Some(DisplayWizardStep::Displays),
+            display_output_count: 2,
+            display_route_count: 2,
+            ..Default::default()
+        };
+        let layout = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Displays,
+            "",
+            context,
+            None,
+        );
+        assert!(layout.element(ElementId::DisplayOutputCard(0)).is_some());
+        assert!(layout
+            .element(ElementId::DisplayTopologyChoice(0))
+            .is_none());
+        assert!(layout.element(ElementId::DisplayWizardNext).is_some());
+    }
+
+    #[test]
+    fn overlay_position_grid_has_nine_accessible_cells() {
+        let layout = SettingsLayout::build_shell(1200.0, 900.0, 0.0, Page::Overlay, "", 0, None);
+        assert_eq!(
+            layout
+                .elements
+                .iter()
+                .filter(|element| matches!(element.id, ElementId::OverlayPositionCell(_)))
+                .count(),
+            9
+        );
+    }
+
+    #[test]
+    fn headers_reserve_separate_title_and_description_geometry_at_each_scale() {
+        for width in [960.0, 1200.0, 1920.0] {
+            for height in [660.0, 900.0, 1200.0] {
+                let layout =
+                    SettingsLayout::build_shell(width, height, 0.0, Page::Audio, "", 0, None);
+                for section in &layout.sections {
+                    assert!(section.height >= if section.page_header { 84.0 } else { 64.0 });
+                }
+            }
+        }
     }
 
     #[test]

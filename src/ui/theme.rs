@@ -46,6 +46,9 @@ impl UiTokens {
     pub const PAGE_MARGIN: f32 = 32.0;
     pub const ROW_HEIGHT: f32 = 58.0;
     pub const ROW_GAP: f32 = 8.0;
+    pub const GROUP_GAP: f32 = 18.0;
+    pub const PAGE_HEADER_HEIGHT: f32 = 92.0;
+    pub const SECTION_HEADER_HEIGHT: f32 = 72.0;
     pub const CARD_RADIUS: f32 = 12.0;
     pub const CONTROL_RADIUS: f32 = 7.0;
     pub const NAV_RADIUS: f32 = 8.0;
@@ -55,6 +58,18 @@ impl UiTokens {
     pub const CARD_GAP: f32 = 16.0;
     pub const PROFILE_CARD_HEIGHT: f32 = 120.0;
     pub const PROFILE_ROW_STEP: f32 = 136.0;
+
+    pub const fn content_max_width(page: crate::ui::navigation::Page) -> f32 {
+        match page {
+            crate::ui::navigation::Page::Home => 1_260.0,
+            crate::ui::navigation::Page::Displays => 1_220.0,
+            crate::ui::navigation::Page::Shortcuts => 1_080.0,
+            crate::ui::navigation::Page::Audio => 1_000.0,
+            crate::ui::navigation::Page::Workspaces => 1_000.0,
+            crate::ui::navigation::Page::Overlay => 980.0,
+            crate::ui::navigation::Page::System | crate::ui::navigation::Page::Advanced => 860.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -105,7 +120,7 @@ impl Theme {
             border_strong: Color::rgb(72, 72, 72),
             text: Color::rgb(255, 255, 255),
             text_secondary: Color::rgb(191, 191, 191),
-            text_disabled: Color::rgb(121, 121, 121),
+            text_disabled: Color::rgb(166, 166, 166),
             accent: Color::rgb(96, 205, 255),
             accent_hover: Color::rgb(153, 224, 255),
             accent_pressed: Color::rgb(0, 120, 212),
@@ -132,7 +147,7 @@ impl Theme {
             border_strong: Color::rgb(204, 204, 204),
             text: Color::rgb(27, 27, 27),
             text_secondary: Color::rgb(92, 92, 92),
-            text_disabled: Color::rgb(151, 151, 151),
+            text_disabled: Color::rgb(108, 108, 108),
             accent: Color::rgb(0, 103, 192),
             accent_hover: Color::rgb(0, 87, 163),
             accent_pressed: Color::rgb(0, 75, 141),

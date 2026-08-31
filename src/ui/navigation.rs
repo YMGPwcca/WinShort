@@ -111,17 +111,17 @@ static SEARCH_ITEMS: &[SearchItem] = &[
     },
     SearchItem {
         title: "Devices used by Next microphone",
-        keywords: "microphone mic input devices allowlist available",
+        keywords: "microphone mic input devices allowlist available selected cycle",
         page: Page::Audio,
         section: "Microphones",
-        target: ElementId::InputAllowlist,
+        target: ElementId::InputCycleMode(0),
     },
     SearchItem {
         title: "Devices used by Next speaker",
-        keywords: "speaker speakers output devices allowlist available",
+        keywords: "speaker speakers output devices allowlist available selected cycle",
         page: Page::Audio,
         section: "Speakers",
-        target: ElementId::OutputAllowlist,
+        target: ElementId::OutputCycleMode(0),
     },
     SearchItem {
         title: "Microphone device",
@@ -167,10 +167,10 @@ static SEARCH_ITEMS: &[SearchItem] = &[
     },
     SearchItem {
         title: "Display profile",
-        keywords: "display monitor screen profile layout setup",
+        keywords: "display monitor screen profile layout setup arrange",
         page: Page::Displays,
         section: "Display profiles",
-        target: ElementId::DisplayProfile,
+        target: ElementId::NewDisplayProfile,
     },
     SearchItem {
         title: "Overlay appearance",
@@ -181,10 +181,10 @@ static SEARCH_ITEMS: &[SearchItem] = &[
     },
     SearchItem {
         title: "Overlay position",
-        keywords: "status card toast hud corner monitor",
+        keywords: "status card toast hud corner monitor grid top bottom center",
         page: Page::Overlay,
         section: "Position",
-        target: ElementId::OverlayPosition,
+        target: ElementId::OverlayPositionCell(0),
     },
     SearchItem {
         title: "Start WinShort with Windows",

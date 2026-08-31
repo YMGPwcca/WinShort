@@ -22,25 +22,28 @@ use windows::Win32::UI::Accessibility::{
     IRawElementProviderFragment, IRawElementProviderFragmentRoot,
     IRawElementProviderFragmentRoot_Impl, IRawElementProviderFragmentRoot_Vtbl,
     IRawElementProviderFragment_Impl, IRawElementProviderFragment_Vtbl, IRawElementProviderSimple,
-    IRawElementProviderSimple_Impl, IRawElementProviderSimple_Vtbl, IToggleProvider,
-    IToggleProvider_Impl, IValueProvider, IValueProvider_Impl, NavigateDirection,
-    NavigateDirection_FirstChild, NavigateDirection_LastChild, NavigateDirection_NextSibling,
-    NavigateDirection_Parent, NavigateDirection_PreviousSibling, ProviderOptions,
-    ProviderOptions_ProviderOwnsSetFocus, ProviderOptions_ServerSideProvider, ToggleState,
-    ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId, UIA_AutomationIdPropertyId,
-    UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
-    UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_EditControlTypeId,
-    UIA_HasKeyboardFocusPropertyId, UIA_HelpTextPropertyId, UIA_InvokePatternId,
-    UIA_Invoke_InvokedEventId, UIA_IsContentElementPropertyId, UIA_IsControlElementPropertyId,
-    UIA_IsEnabledPropertyId, UIA_IsExpandCollapsePatternAvailablePropertyId,
-    UIA_IsInvokePatternAvailablePropertyId, UIA_IsKeyboardFocusablePropertyId,
-    UIA_IsOffscreenPropertyId, UIA_IsRangeValuePatternAvailablePropertyId,
+    IRawElementProviderSimple_Impl, IRawElementProviderSimple_Vtbl, ISelectionItemProvider,
+    ISelectionItemProvider_Impl, IToggleProvider, IToggleProvider_Impl, IValueProvider,
+    IValueProvider_Impl, NavigateDirection, NavigateDirection_FirstChild,
+    NavigateDirection_LastChild, NavigateDirection_NextSibling, NavigateDirection_Parent,
+    NavigateDirection_PreviousSibling, ProviderOptions, ProviderOptions_ProviderOwnsSetFocus,
+    ProviderOptions_ServerSideProvider, ToggleState, ToggleState_Off, ToggleState_On,
+    UIA_AutomationFocusChangedEventId, UIA_AutomationIdPropertyId, UIA_BoundingRectanglePropertyId,
+    UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId, UIA_ClassNamePropertyId,
+    UIA_ControlTypePropertyId, UIA_EditControlTypeId, UIA_HasKeyboardFocusPropertyId,
+    UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_Invoke_InvokedEventId,
+    UIA_IsContentElementPropertyId, UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId,
+    UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_IsInvokePatternAvailablePropertyId,
+    UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
+    UIA_IsRangeValuePatternAvailablePropertyId, UIA_IsSelectionItemPatternAvailablePropertyId,
     UIA_IsTogglePatternAvailablePropertyId, UIA_IsValuePatternAvailablePropertyId,
-    UIA_NamePropertyId, UIA_ProviderDescriptionPropertyId, UIA_RangeValueLargeChangePropertyId,
-    UIA_RangeValueMaximumPropertyId, UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId,
-    UIA_RangeValueSmallChangePropertyId, UIA_RangeValueValuePropertyId, UIA_SliderControlTypeId,
-    UIA_TogglePatternId, UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId,
-    UIA_ValuePatternId, UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
+    UIA_NamePropertyId, UIA_ProviderDescriptionPropertyId, UIA_RadioButtonControlTypeId,
+    UIA_RangeValueLargeChangePropertyId, UIA_RangeValueMaximumPropertyId,
+    UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId, UIA_RangeValueSmallChangePropertyId,
+    UIA_RangeValueValuePropertyId, UIA_SelectionItemIsSelectedPropertyId,
+    UIA_SelectionItemPatternId, UIA_SliderControlTypeId, UIA_TogglePatternId,
+    UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
+    UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaRect, UiaReturnRawElementProvider, UiaRootObjectId,
     UIA_E_ELEMENTNOTAVAILABLE, UIA_E_ELEMENTNOTENABLED, UIA_E_INVALIDOPERATION, UIA_E_NOTSUPPORTED,
     UIA_PATTERN_ID, UIA_PROPERTY_ID,
@@ -534,7 +537,11 @@ pub(crate) fn snapshot_from_settings(
             let clipped = clip_rect(element.rect, layout.content_clip, element.scrolls);
             let offscreen = clipped.is_none();
             let bounds = AutomationRect::from_ui(clipped.unwrap_or(element.rect), scale, origin);
-            let toggle = (element.kind == ElementKind::Toggle).then(|| value == "On");
+            let toggle = matches!(
+                element.kind,
+                ElementKind::Toggle | ElementKind::Checkbox | ElementKind::Choice
+            )
+            .then(|| value == "On" || value == "Selected");
             let range = slider_range(element.id, element.kind, *ratio);
             Some(SettingsAutomationNode {
                 id: element.id,
@@ -711,7 +718,11 @@ pub(crate) fn changed_property_ids(
         changed.push(UIA_BoundingRectanglePropertyId);
     }
     if previous.toggle != current.toggle {
-        changed.push(UIA_ToggleToggleStatePropertyId);
+        if previous.kind == ElementKind::Choice || current.kind == ElementKind::Choice {
+            changed.push(UIA_SelectionItemIsSelectedPropertyId);
+        } else {
+            changed.push(UIA_ToggleToggleStatePropertyId);
+        }
     }
     if previous.range.map(|range| range.value) != current.range.map(|range| range.value) {
         changed.push(UIA_RangeValueValuePropertyId);
@@ -746,25 +757,35 @@ fn typed_property_values(
             AutomationValue::Bool(previous.offscreen),
             AutomationValue::Bool(current.offscreen),
         )),
-        UIA_BoundingRectanglePropertyId => Some((
-            AutomationValue::Rect(previous.bounds),
-            AutomationValue::Rect(current.bounds),
+        UIA_SelectionItemIsSelectedPropertyId => Some((
+            AutomationValue::Bool(previous.toggle.unwrap_or(false)),
+            AutomationValue::Bool(current.toggle.unwrap_or(false)),
         )),
         UIA_ToggleToggleStatePropertyId => Some((
-            optional_i32_value(previous.toggle.map(|value| {
-                if value {
-                    ToggleState_On.0
-                } else {
-                    ToggleState_Off.0
-                }
-            })),
-            optional_i32_value(current.toggle.map(|value| {
-                if value {
-                    ToggleState_On.0
-                } else {
-                    ToggleState_Off.0
-                }
-            })),
+            optional_i32_value(
+                (previous.kind != ElementKind::Choice)
+                    .then_some(previous.toggle)
+                    .flatten()
+                    .map(|value| {
+                        if value {
+                            ToggleState_On.0
+                        } else {
+                            ToggleState_Off.0
+                        }
+                    }),
+            ),
+            optional_i32_value(
+                (current.kind != ElementKind::Choice)
+                    .then_some(current.toggle)
+                    .flatten()
+                    .map(|value| {
+                        if value {
+                            ToggleState_On.0
+                        } else {
+                            ToggleState_Off.0
+                        }
+                    }),
+            ),
         )),
         UIA_RangeValueValuePropertyId => Some((
             previous.range.map_or(AutomationValue::Empty, |range| {
@@ -870,6 +891,7 @@ pub(crate) fn node_has_invoke(kind: ElementKind) -> bool {
             | ElementKind::Action
             | ElementKind::ButtonSecondary
             | ElementKind::ButtonPrimary
+            | ElementKind::ButtonDanger
             | ElementKind::Navigation
     )
 }
@@ -884,7 +906,8 @@ fn node_has_value(kind: ElementKind) -> bool {
 
 fn control_type(kind: ElementKind) -> i32 {
     match kind {
-        ElementKind::Toggle => UIA_CheckBoxControlTypeId.0,
+        ElementKind::Toggle | ElementKind::Checkbox => UIA_CheckBoxControlTypeId.0,
+        ElementKind::Choice => UIA_RadioButtonControlTypeId.0,
         ElementKind::Slider => UIA_SliderControlTypeId.0,
         ElementKind::Search => UIA_EditControlTypeId.0,
         ElementKind::Value
@@ -892,6 +915,7 @@ fn control_type(kind: ElementKind) -> i32 {
         | ElementKind::Action
         | ElementKind::ButtonSecondary
         | ElementKind::ButtonPrimary
+        | ElementKind::ButtonDanger
         | ElementKind::Navigation
         | ElementKind::Card => UIA_ButtonControlTypeId.0,
     }
@@ -924,7 +948,8 @@ fn root_property_value(
         | UIA_IsTogglePatternAvailablePropertyId
         | UIA_IsRangeValuePatternAvailablePropertyId
         | UIA_IsValuePatternAvailablePropertyId
-        | UIA_IsExpandCollapsePatternAvailablePropertyId => Ok(bool_variant(false)),
+        | UIA_IsExpandCollapsePatternAvailablePropertyId
+        | UIA_IsSelectionItemPatternAvailablePropertyId => Ok(bool_variant(false)),
         UIA_NamePropertyId => Ok(string_variant(&format!(
             "WinShort Control Center — {}",
             snapshot.page.label()
@@ -971,17 +996,31 @@ fn node_property_value(
             "WinShort Control Center UI Automation provider",
         )),
         UIA_IsInvokePatternAvailablePropertyId => Ok(bool_variant(node_has_invoke(node.kind))),
-        UIA_IsTogglePatternAvailablePropertyId => Ok(bool_variant(node.toggle.is_some())),
+        UIA_IsTogglePatternAvailablePropertyId => Ok(bool_variant(
+            node.kind != ElementKind::Choice && node.toggle.is_some(),
+        )),
+        UIA_IsSelectionItemPatternAvailablePropertyId => Ok(bool_variant(
+            node.kind == ElementKind::Choice && node.toggle.is_some(),
+        )),
         UIA_IsRangeValuePatternAvailablePropertyId => Ok(bool_variant(node.range.is_some())),
         UIA_IsValuePatternAvailablePropertyId => Ok(bool_variant(node_has_value(node.kind))),
         UIA_IsExpandCollapsePatternAvailablePropertyId => Ok(bool_variant(false)),
-        UIA_ToggleToggleStatePropertyId => Ok(node.toggle.map_or_else(VARIANT::default, |value| {
-            i32_variant(if value {
-                ToggleState_On.0
-            } else {
-                ToggleState_Off.0
+        UIA_SelectionItemIsSelectedPropertyId => Ok(if node.kind == ElementKind::Choice {
+            node.toggle.map_or_else(VARIANT::default, bool_variant)
+        } else {
+            VARIANT::default()
+        }),
+        UIA_ToggleToggleStatePropertyId => Ok(if node.kind == ElementKind::Choice {
+            VARIANT::default()
+        } else {
+            node.toggle.map_or_else(VARIANT::default, |value| {
+                i32_variant(if value {
+                    ToggleState_On.0
+                } else {
+                    ToggleState_Off.0
+                })
             })
-        })),
+        }),
         UIA_RangeValueValuePropertyId
         | UIA_RangeValueMinimumPropertyId
         | UIA_RangeValueMaximumPropertyId
@@ -1034,6 +1073,7 @@ struct SettingsAutomationRootProvider {
     IRawElementProviderFragment,
     IInvokeProvider,
     IToggleProvider,
+    ISelectionItemProvider,
     IRangeValueProvider,
     IValueProvider
 )]
@@ -1363,7 +1403,8 @@ impl SettingsAutomationNodeProvider_Impl {
         let node = self.node()?;
         let available = match patternid {
             UIA_InvokePatternId => node_has_invoke(node.kind),
-            UIA_TogglePatternId => node.toggle.is_some(),
+            UIA_TogglePatternId => node.kind != ElementKind::Choice && node.toggle.is_some(),
+            UIA_SelectionItemPatternId => node.kind == ElementKind::Choice && node.toggle.is_some(),
             UIA_RangeValuePatternId => node.range.is_some(),
             UIA_ValuePatternId => node_has_value(node.kind),
             _ => false,
@@ -1575,6 +1616,48 @@ impl IToggleProvider_Impl for SettingsAutomationNodeProvider_Impl {
                 ToggleState_Off
             }
         })
+    }
+}
+
+impl ISelectionItemProvider_Impl for SettingsAutomationNodeProvider_Impl {
+    fn Select(&self) -> windows::core::Result<()> {
+        let node = self.node()?;
+        if node.kind != ElementKind::Choice {
+            return unsupported();
+        }
+        if !node.enabled {
+            return element_not_enabled();
+        }
+        self.automation()?
+            .enqueue(SettingsAutomationAction::Toggle(node.id))
+    }
+
+    fn AddToSelection(&self) -> windows::core::Result<()> {
+        self.Select()
+    }
+
+    fn RemoveFromSelection(&self) -> windows::core::Result<()> {
+        let node = self.node()?;
+        if node.kind != ElementKind::Choice {
+            return unsupported();
+        }
+        unsupported()
+    }
+
+    fn IsSelected(&self) -> windows::core::Result<windows::core::BOOL> {
+        let node = self.node()?;
+        if node.kind != ElementKind::Choice {
+            return unsupported();
+        }
+        node.toggle.ok_or_else(unsupported_error).map(Into::into)
+    }
+
+    fn SelectionContainer(&self) -> windows::core::Result<IRawElementProviderSimple> {
+        let node = self.node()?;
+        if node.kind != ElementKind::Choice {
+            return unsupported();
+        }
+        Ok(self.automation()?.root_provider())
     }
 }
 
@@ -1996,6 +2079,68 @@ mod tests {
             unsafe { toggle.ToggleState().expect("toggle state") },
             ToggleState_Off
         );
+    }
+
+    #[test]
+    fn published_provider_exposes_selection_item_for_choice() {
+        let context = crate::ui::layout::LayoutContext {
+            input_device_count: 1,
+            output_device_count: 1,
+            ..Default::default()
+        };
+        let layout = SettingsLayout::build_shell_with_context(
+            1000.0,
+            800.0,
+            0.0,
+            crate::ui::navigation::Page::Audio,
+            "",
+            context,
+            None,
+        );
+        let values = layout
+            .focus_order()
+            .into_iter()
+            .map(|id| {
+                let value = if id == ElementId::OutputCycleMode(0) {
+                    "On"
+                } else {
+                    "Off"
+                }
+                .into();
+                (id, value, true, 0.0)
+            })
+            .collect::<Vec<_>>();
+        let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
+        automation.publish(snapshot_from_settings(
+            HWND(std::ptr::null_mut()),
+            &layout,
+            &values,
+            None,
+            96,
+        ));
+        let provider = automation.provider_for(ElementId::OutputCycleMode(0));
+        let control_type = unsafe {
+            provider
+                .GetPropertyValue(UIA_ControlTypePropertyId)
+                .expect("control type")
+        };
+        assert_eq!(
+            i32::try_from(&control_type).expect("I4"),
+            UIA_RadioButtonControlTypeId.0
+        );
+        assert_raw_empty_property(&provider, UIA_ToggleToggleStatePropertyId);
+        let selection_unknown = unsafe {
+            provider
+                .GetPatternProvider(UIA_SelectionItemPatternId)
+                .expect("selection item pattern")
+        };
+        let selection: ISelectionItemProvider =
+            selection_unknown.cast().expect("selection item interface");
+        assert!(unsafe { selection.IsSelected().expect("selection state") }.as_bool());
+        let (hr, toggle_available) =
+            raw_property(&provider, UIA_IsTogglePatternAvailablePropertyId);
+        assert_eq!(hr, windows::core::HRESULT(0));
+        assert!(!bool::try_from(&toggle_available).expect("toggle availability"));
     }
 
     #[test]
