@@ -1150,7 +1150,7 @@ fn add_workspaces(layout: &mut SettingsLayout) {
     add_heading(
         layout,
         "Workspaces",
-        "Switch desktops without learning the Shell.",
+        "Switch desktops without losing your place.",
         &mut y,
     );
     y += 20.0;

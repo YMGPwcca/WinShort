@@ -610,7 +610,9 @@ fn draw_toggle(r: &Renderer, row: Rect, value: bool, interaction: Interaction) {
         rect.y + rect.h * 0.5,
         7.0,
         7.0,
-        if value {
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else if value {
             BrushRole::AccentText
         } else {
             BrushRole::TextSecondary

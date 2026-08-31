@@ -71,7 +71,20 @@ pub enum TextStyle {
 }
 
 fn trimming_for(style: TextStyle) -> Option<DWRITE_TRIMMING> {
-    matches!(style, TextStyle::Value).then_some(DWRITE_TRIMMING {
+    matches!(
+        style,
+        TextStyle::Title
+            | TextStyle::Subtitle
+            | TextStyle::Section
+            | TextStyle::Body
+            | TextStyle::BodyStrong
+            | TextStyle::Caption
+            | TextStyle::CaptionRight
+            | TextStyle::Button
+            | TextStyle::ButtonSmall
+            | TextStyle::Value
+    )
+    .then_some(DWRITE_TRIMMING {
         granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
         delimiter: 0,
         delimiterCount: 0,
@@ -498,6 +511,6 @@ mod tests {
         assert_eq!(trimming.granularity, DWRITE_TRIMMING_GRANULARITY_CHARACTER);
         assert_eq!(trimming.delimiter, 0);
         assert_eq!(trimming.delimiterCount, 0);
-        assert!(trimming_for(TextStyle::Body).is_none());
+        assert!(trimming_for(TextStyle::Body).is_some());
     }
 }

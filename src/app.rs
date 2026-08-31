@@ -294,6 +294,7 @@ impl App {
             );
             return;
         }
+        self.display_rollback_error = None;
         match crate::display::apply_profile(&mut profile, !test) {
             Ok(rollback) if test => {
                 self.display_rollback = Some(PendingDisplayRollback {
@@ -302,7 +303,6 @@ impl App {
                     state: crate::display::ConfirmationState::Pending,
                 });
                 self.sync_display_settings_state();
-                self.display_rollback_error = None;
                 let timer_started = unsafe {
                     SetTimer(
                         Some(self.hwnd),
@@ -327,6 +327,7 @@ impl App {
             }
             Ok(_rollback) => {
                 self.display_rollback_error = None;
+                self.refresh_settings_runtime();
                 self.show_display_feedback(
                     crate::ui::overlay::OverlayTone::Changed,
                     format!("Display profile: {}", profile.name),

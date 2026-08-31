@@ -974,6 +974,14 @@ impl SettingsUi {
             (self.layout.content_clip.w - 64.0).min(560.0),
             82.0,
         );
+        let sample_width = (rect.w * 0.32).clamp(142.0, 184.0);
+        let sample = UiRect::new(
+            rect.right() - sample_width - 16.0,
+            rect.y + 12.0,
+            sample_width,
+            58.0,
+        );
+        let copy_width = (sample.x - rect.x - 76.0).max(120.0);
         renderer.fill_rounded(rect.d2d(), 12.0, BrushRole::BackgroundSubtle);
         renderer.stroke_rounded(rect.d2d(), 12.0, BrushRole::BorderStrong, 1.0);
         controls::draw_icon(
@@ -984,20 +992,34 @@ impl SettingsUi {
         );
         renderer.text(
             "Live preview",
-            UiRect::new(rect.x + 62.0, rect.y + 13.0, rect.w - 84.0, 22.0).d2d(),
+            UiRect::new(rect.x + 62.0, rect.y + 13.0, copy_width, 22.0).d2d(),
             TextStyle::BodyStrong,
             BrushRole::Text,
         );
-        renderer.text(
+        renderer.text_clipped(
             "Preview uses the edited draft and never saves it.",
-            UiRect::new(rect.x + 62.0, rect.y + 39.0, rect.w - 84.0, 20.0).d2d(),
+            UiRect::new(rect.x + 62.0, rect.y + 39.0, copy_width, 20.0).d2d(),
             TextStyle::Caption,
             BrushRole::TextSecondary,
         );
-        renderer.text(
-            "Draft only",
-            UiRect::new(rect.right() - 112.0, rect.y + 25.0, 88.0, 32.0).d2d(),
-            TextStyle::ButtonSmall,
+        renderer.fill_rounded(sample.d2d(), 8.0, BrushRole::Card);
+        renderer.stroke_rounded(sample.d2d(), 8.0, BrushRole::Accent, 1.0);
+        controls::draw_icon(
+            renderer,
+            UiRect::new(sample.x + 10.0, sample.y + 19.0, 20.0, 20.0),
+            Page::Audio,
+            BrushRole::Accent,
+        );
+        renderer.text_clipped(
+            "Microphone muted",
+            UiRect::new(sample.x + 36.0, sample.y + 10.0, sample.w - 44.0, 20.0).d2d(),
+            TextStyle::BodyStrong,
+            BrushRole::Text,
+        );
+        renderer.text_clipped(
+            "Sample overlay",
+            UiRect::new(sample.x + 36.0, sample.y + 33.0, sample.w - 44.0, 16.0).d2d(),
+            TextStyle::Caption,
             BrushRole::TextSecondary,
         );
     }
@@ -1009,8 +1031,9 @@ impl SettingsUi {
             (self.layout.content_clip.w - 64.0).max(240.0),
             82.0,
         );
-        let pending = self.display_rollback_active || self.runtime.display_rollback_error.is_some();
-        let role = if self.runtime.display_rollback_error.is_some() {
+        let recovery = self.runtime.display_rollback_error.is_some();
+        let pending = self.display_rollback_active || recovery;
+        let role = if recovery {
             BrushRole::Danger
         } else if pending {
             BrushRole::Warning
@@ -1020,9 +1043,11 @@ impl SettingsUi {
         renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::BackgroundSubtle);
         renderer.stroke_rounded(rect.d2d(), 10.0, role, 1.0);
         if pending {
-            renderer.text(
-                if self.runtime.display_rollback_error.is_some() {
+            renderer.text_clipped(
+                if recovery && self.display_rollback_active {
                     "Display recovery needs attention"
+                } else if recovery {
+                    "Display setup was restored"
                 } else {
                     "Keep this display setup?"
                 },
@@ -1030,9 +1055,11 @@ impl SettingsUi {
                 TextStyle::BodyStrong,
                 role,
             );
-            renderer.text(
-                if self.runtime.display_rollback_error.is_some() {
+            renderer.text_clipped(
+                if recovery && self.display_rollback_active {
                     "Use Revert to retry restoring the previous setup."
+                } else if recovery {
+                    "The setting was not saved. Try again after checking storage."
                 } else {
                     "Reverting automatically when the 15-second timer ends."
                 },
@@ -4008,18 +4035,23 @@ unsafe extern "system" fn settings_wndproc(
             }
             WM_SETTINGCHANGE => {
                 let theme = settings_theme();
-                let mut ui = cell.borrow_mut();
-                if let Some(renderer) = ui.renderer.as_mut() {
-                    let _ = renderer.set_theme(theme);
+                {
+                    let mut ui = cell.borrow_mut();
+                    if let Some(renderer) = ui.renderer.as_mut() {
+                        let _ = renderer.set_theme(theme);
+                    }
                 }
                 apply_chrome(hwnd, theme);
                 invalidate(hwnd);
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
-                let mut ui = cell.borrow_mut();
-                let (x, y) = mouse_point(lparam, ui.dpi);
-                if !ui.mouse_tracking {
+                let (x, y, needs_track) = {
+                    let ui = cell.borrow();
+                    let (x, y) = mouse_point(lparam, ui.dpi);
+                    (x, y, !ui.mouse_tracking)
+                };
+                if needs_track {
                     let mut track = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -4027,8 +4059,9 @@ unsafe extern "system" fn settings_wndproc(
                         dwHoverTime: 0,
                     };
                     let _ = TrackMouseEvent(&mut track);
-                    ui.mouse_tracking = true;
+                    cell.borrow_mut().mouse_tracking = true;
                 }
+                let mut ui = cell.borrow_mut();
                 ui.update_hover(hwnd, x, y);
                 if let Some(
                     id @ (ElementId::OverlayDuration
@@ -4049,17 +4082,18 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
-                let focus_requested = {
+                let (focus_requested, capture_requested) = {
                     let mut ui = cell.borrow_mut();
                     let (x, y) = mouse_point(lparam, ui.dpi);
                     ui.rebuild_layout(hwnd);
                     let mut focus_requested = false;
+                    let mut capture_requested = false;
                     if let Some(id) = ui.layout.hit_test(x, y) {
                         if !ui.is_disabled(id) {
                             focus_requested = true;
+                            capture_requested = true;
                             ui.pressed = Some(id);
                             ui.focused = Some(id);
-                            let _ = SetCapture(hwnd);
                             if matches!(
                                 id,
                                 ElementId::OverlayDuration
@@ -4072,8 +4106,11 @@ unsafe extern "system" fn settings_wndproc(
                         }
                     }
                     ui.publish_automation_snapshot(hwnd);
-                    focus_requested
+                    (focus_requested, capture_requested)
                 };
+                if capture_requested {
+                    let _ = SetCapture(hwnd);
+                }
                 if focus_requested {
                     let _ = SetFocus(Some(hwnd));
                     let actual = GetFocus();
@@ -4082,26 +4119,34 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
-                let mut ui = cell.borrow_mut();
-                let (x, y) = mouse_point(lparam, ui.dpi);
-                let pressed = ui.pressed.take();
+                let (slider, activate_id) = {
+                    let mut ui = cell.borrow_mut();
+                    let (x, y) = mouse_point(lparam, ui.dpi);
+                    let pressed = ui.pressed.take();
+                    let slider = pressed.is_some_and(|id| {
+                        matches!(
+                            id,
+                            ElementId::OverlayDuration
+                                | ElementId::OverlayOpacity
+                                | ElementId::OverlayScale
+                        )
+                    });
+                    let activate_id =
+                        pressed.filter(|id| !slider && ui.layout.hit_test(x, y) == Some(*id));
+                    (slider, activate_id)
+                };
                 let _ = ReleaseCapture();
-                if let Some(id) = pressed {
-                    let slider = matches!(
-                        id,
-                        ElementId::OverlayDuration
-                            | ElementId::OverlayOpacity
-                            | ElementId::OverlayScale
-                    );
-                    if slider {
+                if slider {
+                    if let Some(cell) = win::state_cell::<SettingsUi>(hwnd) {
+                        let mut ui = cell.borrow_mut();
                         let before = (*crate::app::config()).clone();
                         ui.commit_local_change(hwnd, before);
-                    } else if ui.layout.hit_test(x, y) == Some(id) {
-                        ui.activate(hwnd, id);
+                        ui.publish_automation_snapshot(hwnd);
                     }
+                } else if let Some(id) = activate_id {
+                    cell.borrow_mut().activate(hwnd, id);
                 }
                 invalidate(hwnd);
-                ui.publish_automation_snapshot(hwnd);
                 LRESULT(0)
             }
             WM_MOUSEWHEEL => {
@@ -4189,8 +4234,11 @@ unsafe extern "system" fn settings_wndproc(
                 }
             }
             WM_KEYUP | WM_SYSKEYUP => {
-                let mut ui = cell.borrow_mut();
-                if ui.record_key(hwnd, wparam.0 as u16, false) {
+                let consumed = {
+                    let mut ui = cell.borrow_mut();
+                    ui.record_key(hwnd, wparam.0 as u16, false)
+                };
+                if consumed {
                     return LRESULT(0);
                 }
                 win::def_proc(hwnd, msg, wparam, lparam)
