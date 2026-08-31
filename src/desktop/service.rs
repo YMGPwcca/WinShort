@@ -647,6 +647,7 @@ impl DesktopController {
         })();
         match result {
             Ok(()) => {
+                self.last_served = Some(BackendKind::NativeShell);
                 self.publish_completed(DesktopActionKind::SentToSpecial);
                 self.publish_status();
                 crate::info!("moved foreground window into the special workspace");
@@ -696,6 +697,7 @@ impl DesktopController {
         })();
         match result {
             Ok(entering) => {
+                self.last_served = Some(BackendKind::NativeShell);
                 // This is a real Virtual Desktop transition. Deliberately let
                 // Shell own foreground/focus selection instead of replaying
                 // Phase-1 SetForegroundWindow restoration here.

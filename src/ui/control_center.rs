@@ -599,7 +599,7 @@ impl SettingsUi {
                     self.layout.content_clip.x + 32.0,
                     section.y,
                     self.layout.content_clip.w - 64.0,
-                    section.y + 46.0,
+                    46.0,
                 );
                 if index == 0 {
                     controls::draw_page_header(
