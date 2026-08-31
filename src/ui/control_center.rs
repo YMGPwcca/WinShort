@@ -1273,9 +1273,8 @@ impl SettingsUi {
                 ),
             )),
             ElementId::HomeMicrophone => ControlValue::Text(Cow::Owned(self.current_input_name())),
-            ElementId::HomePreviousDesktop | ElementId::HomeSpecial => {
-                ControlValue::Action(Cow::Borrowed("Open"))
-            }
+            ElementId::HomePreviousDesktop => ControlValue::Action(Cow::Borrowed("Go")),
+            ElementId::HomeSpecial => ControlValue::Action(Cow::Borrowed("Open")),
             ElementId::HomeDisplayProfile => {
                 ControlValue::Text(Cow::Owned(self.display_summary().0))
             }
@@ -2064,6 +2063,7 @@ impl SettingsUi {
                 let enabled = !crate::diagnostics::logging::debug_logging_enabled();
                 crate::diagnostics::logging::set_debug_logging(enabled);
                 self.applied_until = Some(Instant::now() + Duration::from_secs(2));
+                start_timer(hwnd);
                 self.animate_toggle(hwnd, id, enabled);
             }
             ElementId::OverlayPreview => post_main(crate::event::AppEvent::PreviewOverlay {
@@ -4045,11 +4045,7 @@ unsafe extern "system" fn settings_wndproc(
             WM_MOUSELEAVE => {
                 let mut ui = cell.borrow_mut();
                 ui.mouse_tracking = false;
-                if let Some(old) = ui.hovered.take() {
-                    ui.motion.animate_to(old, MotionChannel::Hover, 0.0, 140);
-                    start_timer(hwnd);
-                    invalidate(hwnd);
-                }
+                ui.set_hover(hwnd, None);
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {

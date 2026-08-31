@@ -88,7 +88,7 @@ pub fn draw_row(
         BrushRole::TextSecondary
     };
     let text_width = (rect.w - 260.0).max(110.0);
-    r.text(
+    r.text_clipped(
         &element.label,
         Rect::new(rect.x + BODY_LEFT, rect.y + 8.0, text_width, 22.0).d2d(),
         TextStyle::BodyStrong,

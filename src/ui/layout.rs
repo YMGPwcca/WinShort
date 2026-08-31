@@ -842,12 +842,25 @@ fn add_card_pair(
     *y += UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
 }
 
+fn profile_grid_columns(layout: &SettingsLayout) -> usize {
+    let gap = UiTokens::CARD_GAP;
+    let available = layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0;
+    let half_width = ((available - gap) * 0.5).max(180.0);
+    usize::from(half_width >= 280.0) + 1
+}
+
 fn add_profile_card(layout: &mut SettingsLayout, y: &mut f32, id: u8, index: usize) {
     let gap = UiTokens::CARD_GAP;
     let available = layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0;
-    let card_w = ((available - gap) * 0.5).max(180.0);
-    let x = layout.content_clip.x + UiTokens::PAGE_MARGIN + (index % 2) as f32 * (card_w + gap);
-    let row_y = *y + (index / 2) as f32 * UiTokens::PROFILE_ROW_STEP;
+    let columns = profile_grid_columns(layout);
+    let card_w = if columns == 1 {
+        available
+    } else {
+        (available - gap) * 0.5
+    };
+    let x =
+        layout.content_clip.x + UiTokens::PAGE_MARGIN + (index % columns) as f32 * (card_w + gap);
+    let row_y = *y + (index / columns) as f32 * UiTokens::PROFILE_ROW_STEP;
     layout.elements.push(Element {
         id: ElementId::DisplayProfileCard(id),
         kind: ElementKind::Action,
@@ -1257,7 +1270,7 @@ fn add_displays(layout: &mut SettingsLayout, profile_count: usize) {
         for index in 0..count {
             add_profile_card(layout, &mut y, index as u8, index);
         }
-        y += count.div_ceil(2) as f32 * UiTokens::PROFILE_ROW_STEP;
+        y += count.div_ceil(profile_grid_columns(layout)) as f32 * UiTokens::PROFILE_ROW_STEP;
         add_row(
             layout,
             &mut y,
@@ -1828,7 +1841,7 @@ mod tests {
     }
 
     #[test]
-    fn display_profiles_use_a_responsive_two_column_grid() {
+    fn display_profiles_use_a_responsive_grid() {
         let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Displays, "", 3, None);
         let first = layout
             .element(ElementId::DisplayProfileCard(0))
@@ -1842,6 +1855,17 @@ mod tests {
         assert!(second.rect.x > first.rect.x);
         assert_eq!(third.rect.y, first.rect.y + 136.0);
         assert!(first.rect.w > 200.0);
+
+        let narrow = SettingsLayout::build_shell(760.0, 660.0, 0.0, Page::Displays, "", 2, None);
+        let narrow_first = narrow
+            .element(ElementId::DisplayProfileCard(0))
+            .expect("narrow first profile card");
+        let narrow_second = narrow
+            .element(ElementId::DisplayProfileCard(1))
+            .expect("narrow second profile card");
+        assert_eq!(narrow_first.rect.x, narrow_second.rect.x);
+        assert!(narrow_second.rect.y > narrow_first.rect.y);
+        assert!(narrow_first.rect.w > 400.0);
     }
 
     #[test]
