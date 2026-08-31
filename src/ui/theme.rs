@@ -35,6 +35,27 @@ pub enum ThemeMode {
     Dark,
     Light,
 }
+/// Shared logical design tokens. All values are DIPs at the 96-DPI design
+/// scale; Win32 rendering scales them through the current target DPI.
+pub struct UiTokens;
+
+impl UiTokens {
+    pub const NAV_WIDTH: f32 = 216.0;
+    pub const TOP_BAR_HEIGHT: f32 = 80.0;
+    pub const FOOTER_HEIGHT: f32 = 34.0;
+    pub const PAGE_MARGIN: f32 = 32.0;
+    pub const ROW_HEIGHT: f32 = 58.0;
+    pub const ROW_GAP: f32 = 8.0;
+    pub const CARD_RADIUS: f32 = 12.0;
+    pub const CONTROL_RADIUS: f32 = 7.0;
+    pub const NAV_RADIUS: f32 = 8.0;
+    pub const VALUE_WIDTH: f32 = 206.0;
+    pub const HOTKEY_WIDTH: f32 = 184.0;
+    pub const CARD_HEIGHT: f32 = 104.0;
+    pub const CARD_GAP: f32 = 16.0;
+    pub const PROFILE_CARD_HEIGHT: f32 = 120.0;
+    pub const PROFILE_ROW_STEP: f32 = 136.0;
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {

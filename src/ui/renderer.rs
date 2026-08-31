@@ -99,7 +99,7 @@ impl Renderer {
                 D2D1_FACTORY_TYPE_SINGLE_THREADED,
                 Some(&D2D1_FACTORY_OPTIONS::default()),
             )
-            .map_err(|e| Error::win("D2D1CreateFactory(settings)", &e))?;
+            .map_err(|e| Error::win("D2D1CreateFactory(control center)", &e))?;
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
                 .map_err(|e| Error::win("DWriteCreateFactory", &e))?;
@@ -319,43 +319,43 @@ impl Renderer {
         let entries = [
             (
                 TextStyle::Title,
-                24.0,
+                28.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::Subtitle,
-                13.0,
+                14.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::Section,
-                14.0,
+                17.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::Body,
-                13.0,
+                14.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::BodyStrong,
-                13.0,
+                14.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::Caption,
-                11.0,
+                12.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::CaptionRight,
-                11.0,
+                12.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
             ),
@@ -367,13 +367,13 @@ impl Renderer {
             ),
             (
                 TextStyle::ButtonSmall,
-                11.5,
+                12.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             ),
             (
                 TextStyle::Value,
-                12.0,
+                13.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
