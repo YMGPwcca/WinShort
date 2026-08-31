@@ -9,6 +9,7 @@ use std::borrow::Cow;
 
 use crate::ui::layout::{Element, ElementKind, Rect};
 use crate::ui::navigation::Page;
+use crate::ui::presentation::DeviceSelectionPresentation;
 use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
 use crate::ui::theme::UiTokens;
 
@@ -637,6 +638,177 @@ pub fn draw_profile_card(
 pub fn draw_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
     draw_page_icon(r, rect, page, role);
 }
+pub fn draw_profile_name_row(
+    r: &Renderer,
+    element: &Element,
+    name: &str,
+    interaction: Interaction,
+) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    let surface = match state {
+        InteractionState::Disabled => BrushRole::CardPressed,
+        InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
+    };
+    draw_surface(r, rect, surface, state, ROW_RADIUS);
+    r.text_clipped(
+        "Profile name",
+        Rect::new(rect.x + BODY_LEFT, rect.y + 7.0, rect.w - 190.0, 20.0).d2d(),
+        TextStyle::BodyStrong,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::Text
+        },
+    );
+    r.text_clipped(
+        name,
+        Rect::new(rect.x + BODY_LEFT, rect.y + 29.0, rect.w - 190.0, 20.0).d2d(),
+        TextStyle::Value,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::TextSecondary
+        },
+    );
+    draw_button_style(
+        r,
+        Rect::new(rect.right() - 136.0, rect.y + 12.0, 116.0, 34.0),
+        "Change",
+        ButtonStyle::Secondary,
+        Interaction {
+            focused: interaction.focused,
+            ..interaction
+        },
+    );
+}
+
+pub(crate) fn device_value_rect(row: Rect) -> Rect {
+    let width = if row.w >= 560.0 {
+        250.0
+    } else if row.w >= 420.0 {
+        VALUE_WIDTH
+    } else {
+        180.0
+    };
+    Rect::new(
+        row.right() - 18.0 - width,
+        row.y + 4.0,
+        width,
+        (row.h - 8.0).max(42.0),
+    )
+}
+
+pub fn draw_device_row(
+    r: &Renderer,
+    element: &Element,
+    presentation: &DeviceSelectionPresentation,
+    interaction: Interaction,
+) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(Interaction {
+        focused: false,
+        ..interaction
+    });
+    let surface = match state {
+        InteractionState::Disabled => BrushRole::CardPressed,
+        InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::CardHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
+    };
+    draw_surface(r, rect, surface, state, ROW_RADIUS);
+    let value_rect = device_value_rect(rect);
+    let text_width = (value_rect.x - rect.x - BODY_LEFT - 14.0).max(110.0);
+    let text_role = if interaction.disabled {
+        BrushRole::TextDisabled
+    } else {
+        BrushRole::Text
+    };
+    let secondary_role = if interaction.disabled {
+        BrushRole::TextDisabled
+    } else {
+        BrushRole::TextSecondary
+    };
+    r.text_clipped(
+        &element.label,
+        Rect::new(rect.x + BODY_LEFT, rect.y + 8.0, text_width, 20.0).d2d(),
+        TextStyle::BodyStrong,
+        text_role,
+    );
+    r.text_clipped(
+        &element.description,
+        Rect::new(rect.x + BODY_LEFT, rect.y + 31.0, text_width, 18.0).d2d(),
+        TextStyle::Caption,
+        secondary_role,
+    );
+    let value_state = interaction_state(interaction);
+    let value_background = match value_state {
+        InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
+        InteractionState::Hovered => BrushRole::ControlHover,
+        InteractionState::Focused | InteractionState::Idle => BrushRole::BackgroundSubtle,
+    };
+    r.fill_rounded(value_rect.d2d(), CONTROL_RADIUS, value_background);
+    r.stroke_rounded(
+        value_rect.d2d(),
+        CONTROL_RADIUS,
+        if interaction.focused {
+            BrushRole::Focus
+        } else {
+            BrushRole::Border
+        },
+        if interaction.focused { 1.5 } else { 1.0 },
+    );
+    let inner = Rect::new(
+        value_rect.x + 10.0,
+        value_rect.y + 5.0,
+        (value_rect.w - 32.0).max(1.0),
+        (value_rect.h - 10.0).max(1.0),
+    );
+    r.text_clipped(
+        &presentation.primary,
+        Rect::new(inner.x, inner.y, inner.w, 18.0).d2d(),
+        TextStyle::Value,
+        text_role,
+    );
+    let mut line_y = inner.y + 17.0;
+    if let Some(secondary) = presentation.secondary.as_deref() {
+        r.text_clipped(
+            secondary,
+            Rect::new(inner.x, line_y, inner.w, 13.0).d2d(),
+            TextStyle::Caption,
+            secondary_role,
+        );
+        line_y += 13.0;
+    }
+    if let Some(status) = presentation.status.as_deref() {
+        r.text_clipped(
+            status,
+            Rect::new(inner.x, line_y, inner.w, 13.0).d2d(),
+            TextStyle::Caption,
+            if interaction.disabled {
+                BrushRole::TextDisabled
+            } else {
+                BrushRole::Accent
+            },
+        );
+    }
+    let x = value_rect.right() - 14.0;
+    let y = value_rect.y + value_rect.h * 0.5;
+    let chevron = if interaction.disabled {
+        BrushRole::TextDisabled
+    } else if interaction.focused {
+        BrushRole::Focus
+    } else {
+        BrushRole::TextSecondary
+    };
+    r.line(x - 3.0, y - 2.0, x, y + 1.0, chevron, 1.25);
+    r.line(x, y + 1.0, x + 3.0, y - 2.0, chevron, 1.25);
+}
 
 pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interaction: Interaction) {
     let rect = element.rect.inset(1.0);
@@ -819,8 +991,11 @@ pub fn draw_desktop_item(
         focused: false,
         ..interaction
     });
-    let fill = if current {
+    let active_current = current && !interaction.disabled;
+    let fill = if active_current {
         BrushRole::Accent
+    } else if current {
+        BrushRole::BackgroundSubtle
     } else {
         match state {
             InteractionState::Hovered => BrushRole::CardHover,
@@ -832,8 +1007,10 @@ pub fn draw_desktop_item(
     r.stroke_rounded(
         rect.d2d(),
         7.0,
-        if current {
+        if active_current {
             BrushRole::Accent
+        } else if current {
+            BrushRole::BorderStrong
         } else {
             BrushRole::Border
         },
@@ -843,8 +1020,10 @@ pub fn draw_desktop_item(
         &(index + 1).to_string(),
         rect.d2d(),
         TextStyle::BodyStrong,
-        if current {
+        if active_current {
             BrushRole::AccentText
+        } else if current {
+            BrushRole::TextSecondary
         } else if interaction.disabled {
             BrushRole::TextDisabled
         } else {
@@ -978,76 +1157,134 @@ pub fn draw_topology_choice(
         if selected { 1.5 } else { 1.0 },
     );
     let center_x = rect.x + 20.0;
-    let center_y = rect.y + 23.0;
+    let center_y = rect.y + 25.0;
     r.ellipse(center_x, center_y, 8.0, 8.0, BrushRole::Accent, false, 1.5);
     if selected {
         r.ellipse(center_x, center_y, 4.0, 4.0, BrushRole::Accent, true, 0.0);
     }
-    r.text(
+    let diagram_x = rect.x + (rect.w * 0.36).max(190.0);
+    let left_width = (diagram_x - rect.x - 56.0).max(120.0);
+    r.text_clipped(
         label,
-        Rect::new(rect.x + 40.0, rect.y + 10.0, 160.0, 22.0).d2d(),
+        Rect::new(rect.x + 40.0, rect.y + 10.0, left_width, 22.0).d2d(),
         TextStyle::BodyStrong,
         BrushRole::Text,
     );
+    let description_height = r
+        .text_height(description, TextStyle::SectionDescription, left_width, 36.0)
+        .clamp(16.0, 36.0);
     r.text_clipped(
         description,
-        Rect::new(rect.x + 40.0, rect.y + 38.0, 240.0, 20.0).d2d(),
-        TextStyle::Caption,
+        Rect::new(rect.x + 40.0, rect.y + 39.0, left_width, description_height).d2d(),
+        TextStyle::SectionDescription,
         BrushRole::TextSecondary,
     );
-    let diagram = Rect::new(rect.right() - 190.0, rect.y + 19.0, 160.0, 64.0);
+    let diagram = Rect::new(
+        diagram_x,
+        rect.y + 14.0,
+        (rect.right() - diagram_x - 18.0).max(160.0),
+        (rect.h - 28.0).max(100.0),
+    );
+    r.fill_rounded(diagram.d2d(), 8.0, BrushRole::BackgroundSubtle);
+    r.stroke_rounded(diagram.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
+    let tile_area = Rect::new(
+        diagram.x + 10.0,
+        diagram.y + 10.0,
+        diagram.w - 20.0,
+        diagram.h - 38.0,
+    );
     if duplicate {
-        r.stroke_rounded(diagram.d2d(), 6.0, BrushRole::BorderStrong, 1.0);
-        let names = outputs
-            .iter()
-            .take(2)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" + ");
+        r.fill_rounded(tile_area.d2d(), 7.0, BrushRole::Card);
+        r.stroke_rounded(tile_area.d2d(), 7.0, BrushRole::BorderStrong, 1.0);
+        let names = if outputs.is_empty() {
+            "Selected screens".to_string()
+        } else {
+            outputs
+                .iter()
+                .take(2)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
         r.text_clipped(
-            if names.is_empty() {
-                "Selected displays"
-            } else {
-                &names
-            },
-            Rect::new(diagram.x + 8.0, diagram.y + 8.0, diagram.w - 16.0, 28.0).d2d(),
-            TextStyle::Caption,
+            &names,
+            Rect::new(
+                tile_area.x + 12.0,
+                tile_area.y + 13.0,
+                tile_area.w - 24.0,
+                tile_area.h - 34.0,
+            )
+            .d2d(),
+            TextStyle::BodyStrong,
             BrushRole::Text,
         );
-        r.text(
+        r.line(
+            tile_area.x + 12.0,
+            tile_area.bottom() - 22.0,
+            tile_area.right() - 12.0,
+            tile_area.bottom() - 22.0,
+            BrushRole::Border,
+            1.0,
+        );
+        r.text_clipped(
             "Same picture",
-            Rect::new(diagram.x, diagram.y + 42.0, diagram.w, 16.0).d2d(),
+            Rect::new(
+                diagram.x + 10.0,
+                diagram.bottom() - 24.0,
+                diagram.w - 20.0,
+                16.0,
+            )
+            .d2d(),
             TextStyle::Caption,
             BrushRole::TextSecondary,
         );
     } else {
-        let monitor_w = 66.0;
+        let gap = 10.0;
+        let tile_w = ((tile_area.w - gap) * 0.5).max(64.0);
+        let tile_h = tile_area.h;
         for index in 0..2 {
-            let monitor = Rect::new(
-                diagram.x + index as f32 * (monitor_w + 8.0),
-                diagram.y,
-                monitor_w,
-                46.0,
+            let tile = Rect::new(
+                tile_area.x + index as f32 * (tile_w + gap),
+                tile_area.y,
+                tile_w,
+                tile_h,
             );
-            r.stroke_rounded(monitor.d2d(), 5.0, BrushRole::BorderStrong, 1.0);
+            r.fill_rounded(tile.d2d(), 7.0, BrushRole::Card);
+            r.stroke_rounded(tile.d2d(), 7.0, BrushRole::BorderStrong, 1.0);
+            let name = outputs
+                .get(index)
+                .map(String::as_str)
+                .unwrap_or("Saved screen");
             r.text_clipped(
-                outputs.get(index).map_or("Display", String::as_str),
-                Rect::new(monitor.x + 4.0, monitor.y + 8.0, monitor.w - 8.0, 24.0).d2d(),
-                TextStyle::Caption,
-                BrushRole::TextSecondary,
+                name,
+                Rect::new(tile.x + 8.0, tile.y + 12.0, tile.w - 16.0, 28.0).d2d(),
+                TextStyle::BodyStrong,
+                BrushRole::Text,
             );
             r.line(
-                monitor.x + 8.0,
-                monitor.y + 38.0,
-                monitor.right() - 8.0,
-                monitor.y + 38.0,
+                tile.x + 8.0,
+                tile.bottom() - 28.0,
+                tile.right() - 8.0,
+                tile.bottom() - 28.0,
                 BrushRole::Border,
                 1.0,
             );
+            r.text(
+                &format!("Screen {}", index + 1),
+                Rect::new(tile.x + 8.0, tile.bottom() - 23.0, tile.w - 16.0, 16.0).d2d(),
+                TextStyle::Caption,
+                BrushRole::TextSecondary,
+            );
         }
-        r.text(
-            "Separate",
-            Rect::new(diagram.x, diagram.y + 48.0, diagram.w, 16.0).d2d(),
+        r.text_clipped(
+            "Separate desktops",
+            Rect::new(
+                diagram.x + 10.0,
+                diagram.bottom() - 24.0,
+                diagram.w - 20.0,
+                16.0,
+            )
+            .d2d(),
             TextStyle::Caption,
             BrushRole::TextSecondary,
         );
@@ -1573,8 +1810,8 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
 #[cfg(test)]
 mod tests {
     use super::{
-        interaction_state, value_control_rect, value_text_rect, Interaction, InteractionState,
-        VALUE_TEXT_PADDING,
+        device_value_rect, interaction_state, value_control_rect, value_text_rect, Interaction,
+        InteractionState, VALUE_TEXT_PADDING,
     };
     use crate::ui::layout::{ElementKind, Rect};
 
@@ -1612,6 +1849,16 @@ mod tests {
         assert_eq!(hotkey.w, 184.0);
         assert!(value.x > row.x);
         assert_eq!(value.right(), row.right() - 18.0);
+    }
+
+    #[test]
+    fn device_value_geometry_preserves_a_text_column_at_narrow_widths() {
+        let wide = Rect::new(24.0, 100.0, 800.0, 58.0);
+        let narrow = Rect::new(24.0, 100.0, 330.0, 58.0);
+        assert_eq!(device_value_rect(wide).w, 250.0);
+        assert_eq!(device_value_rect(narrow).w, 180.0);
+        assert!(device_value_rect(narrow).x > narrow.x + 80.0);
+        assert_eq!(device_value_rect(narrow).right(), narrow.right() - 18.0);
     }
 
     #[test]

@@ -47,9 +47,10 @@ use crate::ui::layout::{
 use crate::ui::navigation::{search, Page};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
 use crate::ui::presentation::{
-    allowlist_mode, display_output_label, format_desktop_modifier, format_hotkey,
-    format_modifier as format_modifier_display, format_optional_hotkey, friendly_device,
-    friendly_device_name, AllowlistMode, AudioDeviceKind, DisplayWizardStep,
+    allowlist_mode, device_selection_presentation, display_output_label, format_desktop_modifier,
+    format_hotkey, format_modifier as format_modifier_display, format_optional_hotkey,
+    friendly_device, friendly_device_name, AllowlistMode, AudioDeviceKind,
+    DeviceSelectionPresentation, DisplayWizardStep,
 };
 use crate::ui::prompt::{PromptAction, TextPrompt};
 use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
@@ -277,6 +278,8 @@ impl SettingsUi {
             display_draft_dirty: self.display_draft_dirty,
             display_rollback_active: self.display_rollback_active,
             display_keep_available: self.display_keep_available,
+            display_inventory_unknown: self.display_inventory_error.is_some()
+                || !self.display_inventory_loaded,
             workspace_enabled: self.draft.virtual_desktops.enabled,
             desktop_count: self.runtime.desktop.desktop_count,
             current_desktop: self.runtime.desktop.current_desktop,
@@ -547,7 +550,7 @@ impl SettingsUi {
                     candidates.push((
                         format!("Saved screen {}", index + 1),
                         if self.display_inventory_error.is_some() {
-                            "Windows display list unavailable — status is unknown".into()
+                            "Status unknown".into()
                         } else {
                             "Unavailable — reconnect this screen".into()
                         },
@@ -658,20 +661,11 @@ impl SettingsUi {
             UiRect::new(0.0, 0.0, self.layout.nav_width, self.layout.height).d2d(),
             BrushRole::BackgroundSubtle,
         );
-        renderer.fill_rect(self.layout.top_bar.d2d(), BrushRole::Background);
         renderer.line(
             self.layout.nav_width,
             0.0,
             self.layout.nav_width,
             self.layout.height,
-            BrushRole::Border,
-            1.0,
-        );
-        renderer.line(
-            self.layout.nav_width,
-            self.layout.top_bar.bottom(),
-            self.layout.width,
-            self.layout.top_bar.bottom(),
             BrushRole::Border,
             1.0,
         );
@@ -686,29 +680,6 @@ impl SettingsUi {
             "Control Center",
             rect(70.0, 41.0, self.layout.nav_width - 18.0, 64.0),
             TextStyle::Caption,
-            BrushRole::TextSecondary,
-        );
-        controls::draw_search_box(
-            &renderer,
-            self.layout.search_rect,
-            &self.search_query,
-            self.focused == Some(ElementId::Search),
-            self.hovered == Some(ElementId::Search),
-        );
-        renderer.text_clipped(
-            if self.search_query.trim().is_empty() {
-                self.page.label()
-            } else {
-                "Search"
-            },
-            UiRect::new(
-                self.layout.search_rect.right() + 24.0,
-                25.0,
-                (self.layout.top_bar.right() - self.layout.search_rect.right() - 40.0).max(0.0),
-                28.0,
-            )
-            .d2d(),
-            TextStyle::BodyStrong,
             BrushRole::TextSecondary,
         );
         for element in &self.layout.elements {
@@ -742,7 +713,7 @@ impl SettingsUi {
                 self.layout.content_column.w,
                 section.height,
             );
-            if section_rect.intersects(self.layout.content_clip) {
+            if self.layout.content_clip.contains_rect(section_rect) {
                 if section.page_header {
                     controls::draw_page_header(
                         &renderer,
@@ -774,6 +745,10 @@ impl SettingsUi {
             self.layout.max_scroll,
         );
         renderer.pop_clip();
+        // Paint the persistent top bar after the scrollable viewport. The
+        // viewport clip is still authoritative; this final layer also makes
+        // the shell visually non-scrollable if a backend render call overdraws.
+        self.draw_top_bar(&renderer);
 
         renderer.fill_rect(self.layout.footer.d2d(), BrushRole::BackgroundSubtle);
         renderer.line(
@@ -793,10 +768,45 @@ impl SettingsUi {
         }
         result
     }
+    fn draw_top_bar(&self, renderer: &Renderer) {
+        renderer.fill_rect(self.layout.top_bar.d2d(), BrushRole::Background);
+        renderer.line(
+            self.layout.nav_width,
+            self.layout.top_bar.bottom(),
+            self.layout.width,
+            self.layout.top_bar.bottom(),
+            BrushRole::Border,
+            1.0,
+        );
+        controls::draw_search_box(
+            renderer,
+            self.layout.search_rect,
+            &self.search_query,
+            self.focused == Some(ElementId::Search),
+            self.hovered == Some(ElementId::Search),
+        );
+        renderer.text_clipped(
+            if self.search_query.trim().is_empty() {
+                self.page.label()
+            } else {
+                "Search"
+            },
+            UiRect::new(
+                self.layout.search_rect.right() + 24.0,
+                25.0,
+                (self.layout.top_bar.right() - self.layout.search_rect.right() - 40.0).max(0.0),
+                28.0,
+            )
+            .d2d(),
+            TextStyle::BodyStrong,
+            BrushRole::TextSecondary,
+        );
+    }
+
     fn draw_page(&self, renderer: &Renderer) {
         self.draw_visual_regions(renderer);
         for element in &self.layout.elements {
-            if !element.scrolls || !element.rect.intersects(self.layout.content_clip) {
+            if !element.scrolls || !self.layout.content_clip.contains_rect(element.rect) {
                 continue;
             }
             let interaction = self.interaction(element.id, self.is_disabled(element.id));
@@ -876,12 +886,15 @@ impl SettingsUi {
                 }
                 ElementId::HomeDisplayProfile => {
                     let (name, detail) = self.display_summary();
+                    let compact_detail = detail
+                        .split_once(" · ")
+                        .map_or(detail.as_str(), |(summary, _)| summary);
                     controls::draw_home_card(
                         renderer,
                         element.rect,
                         "Display",
                         &name,
-                        &detail,
+                        compact_detail,
                         if self.draft.display_profiles.profiles.is_empty() {
                             "Set up"
                         } else {
@@ -905,23 +918,13 @@ impl SettingsUi {
                     );
                 }
                 ElementId::HomeDiagnostics => {
-                    let profile_attention = self.display_profile_needs_attention();
+                    let (title, value, detail) = self.home_diagnostics_copy();
                     controls::draw_home_card(
                         renderer,
                         element.rect,
-                        "System status",
-                        if profile_attention {
-                            "Profile needs attention"
-                        } else if self.runtime.degraded.is_empty() {
-                            "WinShort services ready"
-                        } else {
-                            "Some services need attention"
-                        },
-                        if profile_attention {
-                            "Review display profile readiness"
-                        } else {
-                            "Technical details stay in Diagnostics"
-                        },
+                        &title,
+                        &value,
+                        &detail,
                         "View details",
                         Page::System,
                         interaction,
@@ -991,6 +994,10 @@ impl SettingsUi {
                         interaction,
                     );
                 }
+                ElementId::InputDevice | ElementId::OutputDevice => {
+                    let presentation = self.device_selection_view(element.id);
+                    controls::draw_device_row(renderer, element, &presentation, interaction);
+                }
                 ElementId::InputCycleMode(_) | ElementId::OutputCycleMode(_) => {
                     controls::draw_choice(
                         renderer,
@@ -1021,14 +1028,24 @@ impl SettingsUi {
                         interaction,
                     );
                 }
-                ElementId::HomePreviousDesktop
-                | ElementId::DisplayWizardBack
+                ElementId::HomePreviousDesktop => {
+                    controls::draw_row(renderer, element, self.value_for(element.id), interaction);
+                }
+                ElementId::RenameDisplayProfile => {
+                    let name = self
+                        .draft
+                        .display_profiles
+                        .active()
+                        .map(|profile| profile.name.as_str())
+                        .unwrap_or("No profile selected");
+                    controls::draw_profile_name_row(renderer, element, name, interaction);
+                }
+                ElementId::DisplayWizardBack
                 | ElementId::DisplayWizardNext
                 | ElementId::DisplayWizardCancel
                 | ElementId::EditDisplayProfile
                 | ElementId::NewDisplayProfile
                 | ElementId::UpdateDisplayProfile
-                | ElementId::RenameDisplayProfile
                 | ElementId::DuplicateDisplayProfile
                 | ElementId::DeleteDisplayProfile
                 | ElementId::TestApplyDisplayProfile
@@ -1037,7 +1054,10 @@ impl SettingsUi {
                 | ElementId::UndoDisplayChange
                 | ElementId::DiscardDisplayEdits
                 | ElementId::OverlayPreview => {
-                    if element.id == ElementId::NewDisplayProfile && element.rect.h > 40.0 {
+                    if (element.id == ElementId::NewDisplayProfile
+                        || element.id == ElementId::TestApplyDisplayProfile)
+                        && element.rect.h > 40.0
+                    {
                         controls::draw_row(
                             renderer,
                             element,
@@ -1045,12 +1065,9 @@ impl SettingsUi {
                             interaction,
                         );
                     } else {
-                        let label = match element.id {
-                            ElementId::HomePreviousDesktop => "Switch".to_string(),
-                            _ => match self.value_for(element.id) {
-                                ControlValue::Action(value) => value.into_owned(),
-                                _ => element.label.clone(),
-                            },
+                        let label = match self.value_for(element.id) {
+                            ControlValue::Action(value) => value.into_owned(),
+                            _ => element.label.clone(),
                         };
                         controls::draw_button_style(
                             renderer,
@@ -1076,7 +1093,7 @@ impl SettingsUi {
                         );
                     }
                 }
-                _ if element.kind == ElementKind::Card => {}
+                _ if matches!(element.kind, ElementKind::Card | ElementKind::Info) => {}
                 _ if element.id.is_shell_chrome() => {}
                 _ => controls::draw_row(renderer, element, self.value_for(element.id), interaction),
             }
@@ -1089,7 +1106,7 @@ impl SettingsUi {
     fn draw_search_results(&self, renderer: &Renderer) {
         for element in &self.layout.elements {
             if !element.scrolls
-                || !element.rect.intersects(self.layout.content_clip)
+                || !self.layout.content_clip.contains_rect(element.rect)
                 || element.kind == ElementKind::Card
             {
                 continue;
@@ -1105,7 +1122,7 @@ impl SettingsUi {
 
     fn draw_onboarding(&self, renderer: &Renderer) {
         for element in &self.layout.elements {
-            if !element.scrolls || !element.rect.intersects(self.layout.content_clip) {
+            if !element.scrolls || !self.layout.content_clip.contains_rect(element.rect) {
                 continue;
             }
             controls::draw_row(
@@ -1119,7 +1136,7 @@ impl SettingsUi {
 
     fn draw_visual_regions(&self, renderer: &Renderer) {
         for region in &self.layout.regions {
-            if !region.rect.intersects(self.layout.content_clip) {
+            if !self.layout.content_clip.contains_rect(region.rect) {
                 continue;
             }
             match region.kind {
@@ -1161,8 +1178,12 @@ impl SettingsUi {
             TextStyle::Caption,
             BrushRole::TextSecondary,
         );
-        renderer.text(
-            "Select a normal desktop",
+        renderer.text_clipped(
+            if self.draft.virtual_desktops.enabled {
+                "Select a normal desktop"
+            } else {
+                "WinShort switching is off"
+            },
             UiRect::new(rect.right() - 190.0, rect.y + 16.0, 174.0, 18.0).d2d(),
             TextStyle::CaptionRight,
             BrushRole::TextSecondary,
@@ -1206,9 +1227,9 @@ impl SettingsUi {
     fn draw_special_workspace(&self, renderer: &Renderer, rect: UiRect) {
         let (status, detail, role) = if !self.draft.virtual_desktops.enabled {
             (
-                "Unavailable",
-                "Enable Workspace shortcuts to use Special Workspace.",
-                BrushRole::Warning,
+                "Off",
+                "Turn on Workspace shortcuts to use Special Workspace.",
+                BrushRole::TextSecondary,
             )
         } else if matches!(
             &self.runtime.desktop.native,
@@ -1311,33 +1332,11 @@ impl SettingsUi {
         let canvas = UiRect::new(rect.x + 18.0, rect.y + 68.0, rect.w - 36.0, rect.h - 84.0);
         renderer.fill_rounded(canvas.d2d(), 8.0, BrushRole::Card);
         renderer.stroke_rounded(canvas.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
-        let scale = self.draft.overlay.scale.clamp(0.7, 1.6);
-        let card_w = (canvas.w * 0.27 * scale).clamp(110.0, canvas.w - 28.0);
-        let card_h = (canvas.h * 0.24 * scale).clamp(34.0, canvas.h - 20.0);
-        let margin = 12.0;
-        let x = match self.draft.overlay.position {
-            OverlayPosition::TopLeft
-            | OverlayPosition::CenterLeft
-            | OverlayPosition::BottomLeft => canvas.x + margin,
-            OverlayPosition::TopCenter
-            | OverlayPosition::Center
-            | OverlayPosition::BottomCenter => canvas.x + (canvas.w - card_w) * 0.5,
-            OverlayPosition::TopRight
-            | OverlayPosition::CenterRight
-            | OverlayPosition::BottomRight => canvas.right() - margin - card_w,
-        };
-        let y = match self.draft.overlay.position {
-            OverlayPosition::TopLeft | OverlayPosition::TopCenter | OverlayPosition::TopRight => {
-                canvas.y + margin
-            }
-            OverlayPosition::CenterLeft
-            | OverlayPosition::Center
-            | OverlayPosition::CenterRight => canvas.y + (canvas.h - card_h) * 0.5,
-            OverlayPosition::BottomLeft
-            | OverlayPosition::BottomCenter
-            | OverlayPosition::BottomRight => canvas.bottom() - margin - card_h,
-        };
-        let sample = UiRect::new(x, y, card_w, card_h);
+        let sample = overlay_preview_card_rect(
+            canvas,
+            self.draft.overlay.position,
+            self.draft.overlay.scale,
+        );
         let sample_surface = match self.draft.overlay.appearance {
             OverlayAppearance::Dark => BrushRole::CardPressed,
             OverlayAppearance::Light => BrushRole::BackgroundSubtle,
@@ -1345,23 +1344,38 @@ impl SettingsUi {
         };
         renderer.fill_rounded(sample.d2d(), 8.0, sample_surface);
         renderer.stroke_rounded(sample.d2d(), 8.0, BrushRole::Accent, 1.0);
+        let title = "Microphone muted";
+        let title_height = renderer
+            .text_height(title, TextStyle::BodyStrong, sample.w - 24.0, 24.0)
+            .clamp(16.0, 22.0);
+        let metadata = format!(
+            "{} · {}%",
+            self.draft.overlay.position.label(),
+            (self.draft.overlay.opacity * 100.0).round() as u32
+        );
+        let metadata_height = renderer
+            .text_height(&metadata, TextStyle::Caption, sample.w - 24.0, 20.0)
+            .clamp(12.0, 16.0);
+        let title_rect = UiRect::new(
+            sample.x + 12.0,
+            sample.y + 8.0,
+            sample.w - 24.0,
+            title_height,
+        );
         renderer.text_clipped(
-            "Microphone muted",
-            UiRect::new(sample.x + 12.0, sample.y + 8.0, sample.w - 24.0, 20.0).d2d(),
+            title,
+            title_rect.d2d(),
             TextStyle::BodyStrong,
             BrushRole::Text,
         );
-        renderer.text(
-            &format!(
-                "{} · {}%",
-                self.draft.overlay.position.label(),
-                (self.draft.overlay.opacity * 100.0).round() as u32
-            ),
+        let metadata_y = (sample.bottom() - metadata_height - 8.0).max(title_rect.bottom() + 4.0);
+        renderer.text_clipped(
+            &metadata,
             UiRect::new(
                 sample.x + 12.0,
-                sample.bottom() - 24.0,
+                metadata_y,
                 sample.w - 24.0,
-                16.0,
+                metadata_height,
             )
             .d2d(),
             TextStyle::Caption,
@@ -1440,15 +1454,26 @@ impl SettingsUi {
     }
 
     fn draw_display_wizard_summary(&self, renderer: &Renderer, rect: UiRect) {
-        let profile = self.draft.display_profiles.active();
         renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::BackgroundSubtle);
         renderer.stroke_rounded(rect.d2d(), 10.0, BrushRole::Border, 1.0);
+        if self
+            .display_editor
+            .is_some_and(|editor| editor.step == DisplayWizardStep::Review)
+        {
+            self.draw_display_review_summary(renderer, rect);
+            return;
+        }
+        let profile = self.draft.display_profiles.active();
         let (name, summary, detail) = if let Some(profile) = profile {
-            if self.display_inventory_error.is_some() {
+            if self.display_inventory_error.is_some() || !self.display_inventory_loaded {
                 (
                     profile.name.as_str(),
                     "Readiness unknown".to_string(),
-                    "Windows display list is unavailable".to_string(),
+                    if self.display_inventory_error.is_some() {
+                        "Windows display information is unavailable".to_string()
+                    } else {
+                        "Windows display information has not been checked".to_string()
+                    },
                 )
             } else {
                 let unavailable = profile
@@ -1511,6 +1536,89 @@ impl SettingsUi {
         );
     }
 
+    fn draw_display_review_summary(&self, renderer: &Renderer, rect: UiRect) {
+        let Some(profile) = self.draft.display_profiles.active().cloned() else {
+            return;
+        };
+        let lines = [
+            ("Profile", profile.name.clone()),
+            ("Screens", self.display_review_screen_names(&profile)),
+            (
+                "Arrangement",
+                if profile.routes.len() <= 1 {
+                    "Single display".into()
+                } else {
+                    profile.topology.label().into()
+                },
+            ),
+            (
+                "Shortcut",
+                format_optional_hotkey(self.active_profile_hotkey()),
+            ),
+            ("Readiness", self.display_review_readiness(&profile)),
+        ];
+        for (index, (label, value)) in lines.into_iter().enumerate() {
+            let y = rect.y + 10.0 + index as f32 * 31.0;
+            renderer.text_clipped(
+                label,
+                UiRect::new(rect.x + 16.0, y, 92.0, 20.0).d2d(),
+                TextStyle::Caption,
+                BrushRole::TextSecondary,
+            );
+            renderer.text_clipped(
+                &value,
+                UiRect::new(rect.x + 116.0, y, rect.w - 132.0, 22.0).d2d(),
+                TextStyle::Body,
+                if label == "Readiness" && value.starts_with("Ready") {
+                    BrushRole::Success
+                } else if label == "Readiness" {
+                    BrushRole::Warning
+                } else {
+                    BrushRole::Text
+                },
+            );
+        }
+    }
+
+    fn display_review_screen_names(&self, profile: &crate::display::DisplayProfile) -> String {
+        if profile.routes.is_empty() {
+            return "No screens selected".into();
+        }
+        profile
+            .routes
+            .iter()
+            .enumerate()
+            .map(|(index, route)| self.display_review_screen_name(index, route))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    fn display_review_readiness(&self, profile: &crate::display::DisplayProfile) -> String {
+        if self.display_inventory_error.is_some() {
+            return "Unknown · Windows display information unavailable".into();
+        }
+        if !self.display_inventory_loaded {
+            return "Unknown · Windows display information not checked".into();
+        }
+        let missing = profile
+            .routes
+            .iter()
+            .filter(|route| {
+                !self
+                    .display_outputs
+                    .iter()
+                    .any(|output| crate::display::same_output(&output.route, route))
+            })
+            .count();
+        if missing > 0 {
+            format!("Needs attention · {missing} screen(s) unavailable")
+        } else if profile.routes.is_empty() || !profile.confirmed {
+            "Needs test before activation".into()
+        } else {
+            "Ready to activate".into()
+        }
+    }
+
     fn draw_degraded_summary(&self, renderer: &Renderer) {
         let Some((name, _)) = self.runtime.degraded.first() else {
             return;
@@ -1539,9 +1647,9 @@ impl SettingsUi {
 
     fn profile_route_label(&self, index: usize, route: &crate::display::DisplayRoute) -> String {
         if self.display_inventory_error.is_some() {
-            format!("Configured screen {} · status unknown", index + 1)
+            format!("Saved screen {} · Status unknown", index + 1)
         } else if !self.display_inventory_loaded {
-            format!("Configured screen {} · status not checked", index + 1)
+            format!("Saved screen {} · Status not checked", index + 1)
         } else if self
             .display_outputs
             .iter()
@@ -1549,9 +1657,46 @@ impl SettingsUi {
         {
             self.output_label(route)
         } else {
-            format!("Configured screen {} unavailable", index + 1)
+            format!("Saved screen {} · Unavailable", index + 1)
         }
     }
+    fn display_screen_name(&self, index: usize, route: &crate::display::DisplayRoute) -> String {
+        if self.display_inventory_error.is_some() || !self.display_inventory_loaded {
+            return format!("Saved screen {}", index + 1);
+        }
+        self.display_outputs
+            .iter()
+            .find(|output| crate::display::same_output(&output.route, route))
+            .map(|output| {
+                display_output_label(
+                    &output.monitor_name,
+                    &output.adapter_name,
+                    &output.connector_name,
+                    output.active,
+                )
+                .primary
+            })
+            .unwrap_or_else(|| format!("Saved screen {}", index + 1))
+    }
+    fn display_review_screen_name(
+        &self,
+        index: usize,
+        route: &crate::display::DisplayRoute,
+    ) -> String {
+        let name = self.display_screen_name(index, route);
+        if self.display_inventory_error.is_none()
+            && self.display_inventory_loaded
+            && !self
+                .display_outputs
+                .iter()
+                .any(|output| crate::display::same_output(&output.route, route))
+        {
+            format!("{name} · Unavailable")
+        } else {
+            name
+        }
+    }
+
     fn selected_display_names(&self) -> Vec<String> {
         self.draft
             .display_profiles
@@ -1562,7 +1707,7 @@ impl SettingsUi {
                     .iter()
                     .enumerate()
                     .take(2)
-                    .map(|(index, route)| self.profile_route_label(index, route))
+                    .map(|(index, route)| self.display_screen_name(index, route))
                     .collect()
             })
             .unwrap_or_default()
@@ -1670,14 +1815,31 @@ impl SettingsUi {
             crate::audio::OutputState::Unavailable { .. } => "Speakers unavailable".into(),
         }
     }
+    fn device_selection_view(&self, id: ElementId) -> DeviceSelectionPresentation {
+        match id {
+            ElementId::InputDevice => device_selection_presentation(
+                &self.draft.audio.input_device,
+                &self.devices.inputs,
+                self.devices
+                    .input_defaults
+                    .for_role(self.draft.audio.input_role),
+                AudioDeviceKind::Microphone,
+            ),
+            ElementId::OutputDevice => device_selection_presentation(
+                &self.draft.audio.output_device,
+                &self.devices.outputs,
+                self.devices
+                    .output_defaults
+                    .for_role(self.draft.audio.output_role),
+                AudioDeviceKind::Speaker,
+            ),
+            _ => unreachable!("device selection view requested for another element"),
+        }
+    }
 
     fn special_workspace_summary(&self) -> (String, String, String) {
         if !self.draft.virtual_desktops.enabled {
-            return (
-                "Off".into(),
-                "Enable Workspace shortcuts to use Special Workspace".into(),
-                "Enable".into(),
-            );
+            return ("Off".into(), "Workspaces are off".into(), "Enable".into());
         }
         if matches!(
             &self.runtime.desktop.native,
@@ -1747,7 +1909,7 @@ impl SettingsUi {
             )
         };
         let detail = if self.display_inventory_error.is_some() {
-            "Readiness unknown · Windows display inventory unavailable".into()
+            "Readiness unknown · Windows display information unavailable".into()
         } else if !self.display_inventory_loaded {
             "Readiness pending · Open Displays to check connected screens".into()
         } else if missing == Some(0) && !profile.confirmed {
@@ -1763,6 +1925,39 @@ impl SettingsUi {
             format!("Ready · {}", self.output_label(&profile.routes[0]))
         };
         (profile.name.clone(), detail)
+    }
+    fn home_diagnostics_copy(&self) -> (String, String, String) {
+        if !self.draft.display_profiles.enabled {
+            return (
+                "Display profiles are off".into(),
+                "Turn on Display profiles".into(),
+                "Open Displays to save and switch screen arrangements.".into(),
+            );
+        }
+        if self.display_profile_needs_attention() {
+            let (_, readiness) = self.display_summary();
+            let detail = if self.display_inventory_error.is_some() {
+                "Windows display information is currently unavailable.".into()
+            } else if !self.display_inventory_loaded {
+                "Open Displays to check connected screens.".into()
+            } else {
+                "Open Displays to test or repair this profile.".into()
+            };
+            return ("Display profile needs attention".into(), readiness, detail);
+        }
+        if self.runtime.degraded.is_empty() {
+            (
+                "System status".into(),
+                "WinShort services ready".into(),
+                "Technical details stay in Diagnostics.".into(),
+            )
+        } else {
+            (
+                "System status".into(),
+                "Some services need attention".into(),
+                "Open Diagnostics for details and recovery.".into(),
+            )
+        }
     }
 
     fn shortcut_health_copy(&self) -> (String, String, String) {
@@ -1939,6 +2134,7 @@ impl SettingsUi {
             ElementId::DisplayWizardNext => ControlValue::Action(Cow::Borrowed("Next")),
             ElementId::DisplayWizardCancel => ControlValue::Action(Cow::Borrowed("Cancel")),
             ElementId::EditDisplayProfile => ControlValue::Action(Cow::Borrowed("Edit")),
+            ElementId::DisplayWizardSummary => ControlValue::Text(Cow::Borrowed("")),
             ElementId::OnboardingContinue => ControlValue::Action(Cow::Borrowed("Continue")),
             ElementId::OnboardingOpen => ControlValue::Action(Cow::Borrowed("Open WinShort")),
             ElementId::StartWithWindows => ControlValue::Toggle(self.startup_enabled),
@@ -1971,25 +2167,8 @@ impl SettingsUi {
             ElementId::ToggleScratchpadHotkey => {
                 self.hotkey_value(id, self.draft.virtual_desktops.scratchpad_toggle)
             }
-            ElementId::InputDevice => {
-                ControlValue::Text(Cow::Owned(crate::ui::presentation::selection_label(
-                    &self.draft.audio.input_device,
-                    &self.devices.inputs,
-                    self.devices
-                        .input_defaults
-                        .for_role(self.draft.audio.input_role),
-                    AudioDeviceKind::Microphone,
-                )))
-            }
-            ElementId::OutputDevice => {
-                ControlValue::Text(Cow::Owned(crate::ui::presentation::selection_label(
-                    &self.draft.audio.output_device,
-                    &self.devices.outputs,
-                    self.devices
-                        .output_defaults
-                        .for_role(self.draft.audio.output_role),
-                    AudioDeviceKind::Speaker,
-                )))
+            ElementId::InputDevice | ElementId::OutputDevice => {
+                ControlValue::Text(Cow::Owned(self.device_selection_view(id).primary))
             }
             ElementId::InputAllowlist => ControlValue::Text(Cow::Owned(allowlist_label(
                 self.draft.audio.cycle_input_allowlist.as_deref(),
@@ -2034,8 +2213,10 @@ impl SettingsUi {
                 ControlValue::Text(Cow::Owned(self.selected_display_route_label()))
             }
             ElementId::EditDisplayRoute => ControlValue::Action(Cow::Borrowed("Edit")),
-            ElementId::NewDisplayProfile => ControlValue::Action(Cow::Borrowed("Create")),
-            ElementId::UpdateDisplayProfile => ControlValue::Action(Cow::Borrowed("Replace")),
+            ElementId::NewDisplayProfile => ControlValue::Action(Cow::Borrowed("New from current")),
+            ElementId::UpdateDisplayProfile => {
+                ControlValue::Action(Cow::Borrowed("Replace from current"))
+            }
             ElementId::RenameDisplayProfile => ControlValue::Action(Cow::Borrowed("Edit name")),
             ElementId::DuplicateDisplayProfile => ControlValue::Action(Cow::Borrowed("Duplicate")),
             ElementId::TestApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Test")),
@@ -2368,7 +2549,7 @@ impl SettingsUi {
             | ElementId::HomeDiagnostics
             | ElementId::OnboardingContinue
             | ElementId::OnboardingOpen
-            | ElementId::Cancel
+            | ElementId::DisplayWizardSummary
             | ElementId::InputAllowlist
             | ElementId::OutputAllowlist
             | ElementId::InputCycleMode(_)
@@ -2654,6 +2835,7 @@ impl SettingsUi {
             ElementId::OverlayPositionCell(index) => {
                 self.set_overlay_position(hwnd, index as usize);
             }
+            ElementId::DisplayWizardSummary => {}
             ElementId::DisplayWizardBack => self.move_display_editor(hwnd, false),
             ElementId::DisplayWizardNext => self.move_display_editor(hwnd, true),
             ElementId::DisplayWizardCancel => self.cancel_display_editor(),
@@ -3693,9 +3875,11 @@ impl SettingsUi {
         self.repair_focus();
         let values: Vec<(ElementId, String, bool, f32)> = self
             .layout
-            .focus_order()
-            .into_iter()
-            .map(|id| {
+            .elements
+            .iter()
+            .filter(|element| element.kind != ElementKind::Card)
+            .map(|element| {
+                let id = element.id;
                 let control = self.value_for(id);
                 let (value, ratio) = match control {
                     ControlValue::Toggle(value) => {
@@ -3722,7 +3906,8 @@ impl SettingsUi {
                         node.help_text = if ready {
                             "Select this ready display profile to activate it".into()
                         } else if self.display_inventory_error.is_some() {
-                            "Display inventory is unavailable; readiness is unknown".into()
+                            "Windows display information is unavailable; readiness is unknown"
+                                .into()
                         } else if profile.confirmed {
                             "Review this profile; a saved screen needs attention".into()
                         } else {
@@ -3731,6 +3916,18 @@ impl SettingsUi {
                     }
                 }
                 match node.id {
+                    ElementId::HomeSpecial => {
+                        let (status, detail, action) = self.special_workspace_summary();
+                        node.name = format!("Special Workspace: {status}");
+                        node.value = action;
+                        node.help_text = detail;
+                    }
+                    ElementId::HomeDiagnostics => {
+                        let (title, value, detail) = self.home_diagnostics_copy();
+                        node.name = title;
+                        node.value = value;
+                        node.help_text = detail;
+                    }
                     ElementId::InputCycleMode(index) => {
                         let mode =
                             allowlist_mode(self.draft.audio.cycle_input_allowlist.as_deref());
@@ -3759,6 +3956,12 @@ impl SettingsUi {
                             "Choose this cycling mode".into()
                         };
                     }
+                    ElementId::InputDevice | ElementId::OutputDevice => {
+                        let presentation = self.device_selection_view(node.id);
+                        node.name = format!("{}: {}", node.name, presentation.primary);
+                        node.value = presentation.accessible_value();
+                        node.help_text = node.value.clone();
+                    }
                     ElementId::InputCycleDevice(index) => {
                         if let Some(device) = self.devices.inputs.get(index as usize) {
                             let label = friendly_device(device, AudioDeviceKind::Microphone);
@@ -3775,6 +3978,29 @@ impl SettingsUi {
                             node.help_text = label
                                 .detail
                                 .unwrap_or_else(|| "Use this speaker when cycling".into());
+                        }
+                    }
+                    ElementId::DisplayWizardSummary => {
+                        if let Some(profile) = self.draft.display_profiles.active().cloned() {
+                            let arrangement = if profile.routes.len() <= 1 {
+                                "Single display".into()
+                            } else {
+                                profile.topology.label().to_string()
+                            };
+                            let screens = self.display_review_screen_names(&profile);
+                            let shortcut = format_optional_hotkey(self.active_profile_hotkey());
+                            let readiness = self.display_review_readiness(&profile);
+                            node.name = format!("Display profile review: {}", profile.name);
+                            node.help_text = format!(
+                                "Profile: {}. Screens: {screens}. Arrangement: {arrangement}. Shortcut: {shortcut}. Readiness: {readiness}.",
+                                profile.name
+                            );
+                        }
+                    }
+                    ElementId::RenameDisplayProfile => {
+                        if let Some(profile) = self.draft.display_profiles.active() {
+                            node.name = format!("Profile name: {}", profile.name);
+                            node.help_text = "Change the current profile name".into();
                         }
                     }
                     ElementId::DisplayOutputCard(index) => {
@@ -4561,11 +4787,16 @@ fn screen_rect(hwnd: HWND, rect: UiRect, dpi: u32) -> Result<RECT> {
         bottom: bottom_right.y,
     })
 }
-fn picker_width_dip(control_width: f32, _choices: &[PickerChoice]) -> f32 {
-    // The list uses DirectWrite-like native font metrics and ellipsis for
-    // pathological labels. Keep a generous, stable popup width rather than
-    // estimating text from character counts.
-    control_width.clamp(340.0, 520.0)
+fn picker_width_dip(control_width: f32, choices: &[PickerChoice]) -> f32 {
+    // The native list uses a single-line GDI item renderer. Reserve a
+    // conservative text envelope for the longest concise label, then clamp
+    // it to a stable range that can still be placed beside the anchor.
+    let longest = choices
+        .iter()
+        .map(|choice| choice.label.encode_utf16().count() as f32)
+        .fold(0.0, f32::max);
+    let content_width = 64.0 + longest * 7.2;
+    control_width.max(400.0).max(content_width).min(520.0)
 }
 
 fn picker_choices(
@@ -5628,6 +5859,36 @@ fn overlay_position(index: usize) -> OverlayPosition {
     OverlayPosition::ALL[index.min(OverlayPosition::ALL.len() - 1)]
 }
 
+fn overlay_preview_card_rect(canvas: UiRect, position: OverlayPosition, scale: f32) -> UiRect {
+    let scale = scale.clamp(0.7, 1.6);
+    let width = (canvas.w * 0.36 * scale).clamp(150.0, canvas.w - 28.0);
+    let height = (canvas.h * 0.34 * scale).clamp(54.0, canvas.h - 20.0);
+    let margin = 12.0;
+    let x = match position {
+        OverlayPosition::TopLeft | OverlayPosition::CenterLeft | OverlayPosition::BottomLeft => {
+            canvas.x + margin
+        }
+        OverlayPosition::TopCenter | OverlayPosition::Center | OverlayPosition::BottomCenter => {
+            canvas.x + (canvas.w - width) * 0.5
+        }
+        OverlayPosition::TopRight | OverlayPosition::CenterRight | OverlayPosition::BottomRight => {
+            canvas.right() - margin - width
+        }
+    };
+    let y = match position {
+        OverlayPosition::TopLeft | OverlayPosition::TopCenter | OverlayPosition::TopRight => {
+            canvas.y + margin
+        }
+        OverlayPosition::CenterLeft | OverlayPosition::Center | OverlayPosition::CenterRight => {
+            canvas.y + (canvas.h - height) * 0.5
+        }
+        OverlayPosition::BottomLeft
+        | OverlayPosition::BottomCenter
+        | OverlayPosition::BottomRight => canvas.bottom() - margin - height,
+    };
+    UiRect::new(x, y, width, height)
+}
+
 fn overlay_position_label(index: usize) -> &'static str {
     overlay_position(index).label()
 }
@@ -5874,9 +6135,7 @@ mod interaction_tests {
         );
         let ui = SettingsUi::new(96, devices);
         match ui.value_for(ElementId::InputDevice) {
-            ControlValue::Text(value) => {
-                assert_eq!(value, "Follow Windows default")
-            }
+            ControlValue::Text(value) => assert_eq!(value, "Current microphone"),
             _ => panic!("unexpected control value variant"),
         }
     }
@@ -6137,7 +6396,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn picker_width_uses_a_stable_readable_surface_without_char_count_estimates() {
+    fn picker_width_reserves_reasonable_label_content() {
         let short = vec![PickerChoice {
             label: "Top Left".into(),
             value: PickerValue::Position(OverlayPosition::TopLeft),
@@ -6146,8 +6405,8 @@ mod interaction_tests {
             label: "A deliberately long endpoint name for the default device".into(),
             value: PickerValue::Position(OverlayPosition::TopLeft),
         }];
-        assert_eq!(picker_width_dip(190.0, &short), 340.0);
-        assert_eq!(picker_width_dip(190.0, &long), 340.0);
+        assert_eq!(picker_width_dip(190.0, &short), 400.0);
+        assert!(picker_width_dip(190.0, &long) > 400.0);
         assert_eq!(picker_width_dip(900.0, &long), 520.0);
     }
     fn empty_settings_ui() -> SettingsUi {
@@ -6654,10 +6913,66 @@ mod interaction_tests {
             ui.special_workspace_summary(),
             (
                 "Off".to_string(),
-                "Enable Workspace shortcuts to use Special Workspace".to_string(),
+                "Workspaces are off".to_string(),
                 "Enable".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn special_workspace_distinguishes_disabled_from_backend_unavailable() {
+        let mut ui = empty_settings_ui();
+        ui.draft.virtual_desktops.enabled = true;
+        let (status, detail, action) = ui.special_workspace_summary();
+        assert_eq!(status, "Unavailable");
+        assert!(detail.contains("service"));
+        assert_eq!(action, "View");
+        ui.draft.virtual_desktops.enabled = false;
+        assert_eq!(ui.special_workspace_summary().0, "Off");
+    }
+
+    #[test]
+    fn home_status_names_display_profile_warning_truthfully() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![sample_profile("status", "Baseline", true)];
+        ui.draft.display_profiles.active_profile = Some("status".into());
+        ui.display_inventory_error = Some("display query failed".into());
+        ui.display_inventory_loaded = true;
+        let (title, value, detail) = ui.home_diagnostics_copy();
+        assert_eq!(title, "Display profile needs attention");
+        assert!(value.contains("Readiness unknown"));
+        assert!(detail.contains("display information"));
+    }
+
+    #[test]
+    fn display_test_remains_enabled_when_backend_revalidates_inventory() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![sample_profile("test", "Baseline", true)];
+        ui.draft.display_profiles.active_profile = Some("test".into());
+        ui.display_editor = Some(DisplayEditorState {
+            step: DisplayWizardStep::Review,
+        });
+        ui.display_inventory_error = Some("display query failed".into());
+        ui.display_inventory_loaded = true;
+        assert!(!ui.is_disabled(ElementId::TestApplyDisplayProfile));
+        assert!(ui.layout_context().display_inventory_unknown);
+        assert!(ui
+            .display_review_readiness(ui.draft.display_profiles.active().unwrap())
+            .starts_with("Unknown"));
+    }
+
+    #[test]
+    fn display_review_summary_contains_draft_identity_and_readiness() {
+        let mut ui = empty_settings_ui();
+        ui.draft.display_profiles.profiles = vec![sample_profile("review", "Baseline", true)];
+        ui.draft.display_profiles.active_profile = Some("review".into());
+        ui.display_inventory_error = Some("display query failed".into());
+        ui.display_inventory_loaded = true;
+        let profile = ui.draft.display_profiles.active().unwrap().clone();
+        assert_eq!(ui.display_review_screen_names(&profile), "Saved screen 1");
+        assert!(ui
+            .display_review_readiness(&profile)
+            .contains("Windows display information unavailable"));
     }
 
     #[test]

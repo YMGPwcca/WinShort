@@ -44,6 +44,7 @@ impl UiTokens {
     pub const TOP_BAR_HEIGHT: f32 = 80.0;
     pub const FOOTER_HEIGHT: f32 = 34.0;
     pub const PAGE_MARGIN: f32 = 32.0;
+    pub const VIEWPORT_TOP_INSET: f32 = 8.0;
     pub const ROW_HEIGHT: f32 = 58.0;
     pub const ROW_GAP: f32 = 8.0;
     pub const GROUP_GAP: f32 = 18.0;

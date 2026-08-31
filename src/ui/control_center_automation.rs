@@ -41,9 +41,9 @@ use windows::Win32::UI::Accessibility::{
     UIA_RangeValueLargeChangePropertyId, UIA_RangeValueMaximumPropertyId,
     UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId, UIA_RangeValueSmallChangePropertyId,
     UIA_RangeValueValuePropertyId, UIA_SelectionItemIsSelectedPropertyId,
-    UIA_SelectionItemPatternId, UIA_SliderControlTypeId, UIA_TogglePatternId,
-    UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
-    UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
+    UIA_SelectionItemPatternId, UIA_SliderControlTypeId, UIA_TextControlTypeId,
+    UIA_TogglePatternId, UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId,
+    UIA_ValuePatternId, UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaRect, UiaReturnRawElementProvider, UiaRootObjectId,
     UIA_E_ELEMENTNOTAVAILABLE, UIA_E_ELEMENTNOTENABLED, UIA_E_INVALIDOPERATION, UIA_E_NOTSUPPORTED,
     UIA_PATTERN_ID, UIA_PROPERTY_ID,
@@ -545,10 +545,12 @@ pub(crate) fn snapshot_from_settings(
             let range = slider_range(element.id, element.kind, *ratio);
             Some(SettingsAutomationNode {
                 id: element.id,
+                enabled: *enabled,
                 name: element.label.to_string(),
                 help_text: element.description.to_string(),
-                enabled: *enabled,
-                focused: focused == Some(element.id) && *enabled,
+                focused: focused == Some(element.id)
+                    && *enabled
+                    && is_keyboard_focusable_kind(element.kind),
                 offscreen,
                 bounds,
                 kind: element.kind,
@@ -883,6 +885,10 @@ fn snapshot_notifications(
     }
     notifications
 }
+fn is_keyboard_focusable_kind(kind: ElementKind) -> bool {
+    !matches!(kind, ElementKind::Card | ElementKind::Info)
+}
+
 pub(crate) fn node_has_invoke(kind: ElementKind) -> bool {
     matches!(
         kind,
@@ -910,6 +916,7 @@ fn control_type(kind: ElementKind) -> i32 {
         ElementKind::Choice => UIA_RadioButtonControlTypeId.0,
         ElementKind::Slider => UIA_SliderControlTypeId.0,
         ElementKind::Search => UIA_EditControlTypeId.0,
+        ElementKind::Info => UIA_TextControlTypeId.0,
         ElementKind::Value
         | ElementKind::Hotkey
         | ElementKind::Action
@@ -985,7 +992,9 @@ fn node_property_value(
         UIA_HelpTextPropertyId => Ok(string_variant(&node.help_text)),
         UIA_ControlTypePropertyId => Ok(i32_variant(control_type(node.kind))),
         UIA_IsEnabledPropertyId => Ok(bool_variant(node.enabled)),
-        UIA_IsKeyboardFocusablePropertyId => Ok(bool_variant(node.enabled)),
+        UIA_IsKeyboardFocusablePropertyId => Ok(bool_variant(
+            node.enabled && is_keyboard_focusable_kind(node.kind),
+        )),
         UIA_HasKeyboardFocusPropertyId => Ok(bool_variant(node.focused)),
         UIA_IsOffscreenPropertyId => Ok(bool_variant(node.offscreen)),
         UIA_IsContentElementPropertyId | UIA_IsControlElementPropertyId => Ok(bool_variant(true)),
@@ -1571,6 +1580,9 @@ impl IRawElementProviderFragment_Impl for SettingsAutomationNodeProvider_Impl {
         if !node.enabled {
             return element_not_enabled();
         }
+        if !is_keyboard_focusable_kind(node.kind) {
+            return unsupported();
+        }
         self.automation()?
             .enqueue(SettingsAutomationAction::SetFocus(self.node))
     }
@@ -2141,6 +2153,60 @@ mod tests {
             raw_property(&provider, UIA_IsTogglePatternAvailablePropertyId);
         assert_eq!(hr, windows::core::HRESULT(0));
         assert!(!bool::try_from(&toggle_available).expect("toggle availability"));
+    }
+
+    #[test]
+    fn review_summary_is_exposed_as_non_focusable_text() {
+        let layout = SettingsLayout::build_shell_with_context(
+            1000.0,
+            800.0,
+            0.0,
+            crate::ui::navigation::Page::Displays,
+            "",
+            crate::ui::layout::LayoutContext {
+                display_editor_step: Some(crate::ui::presentation::DisplayWizardStep::Review),
+                display_route_count: 2,
+                ..Default::default()
+            },
+            None,
+        );
+        let values = layout
+            .elements
+            .iter()
+            .filter(|element| element.kind != ElementKind::Card)
+            .map(|element| (element.id, "Off".into(), true, 0.0))
+            .collect::<Vec<_>>();
+        let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
+        automation.publish(snapshot_from_settings(
+            HWND(std::ptr::null_mut()),
+            &layout,
+            &values,
+            None,
+            96,
+        ));
+        let node = automation
+            .snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.id == ElementId::DisplayWizardSummary)
+            .expect("review summary node");
+        assert_eq!(node.kind, ElementKind::Info);
+        let provider = automation.provider_for(ElementId::DisplayWizardSummary);
+        let control_type = unsafe {
+            provider
+                .GetPropertyValue(UIA_ControlTypePropertyId)
+                .expect("control type")
+        };
+        assert_eq!(
+            i32::try_from(&control_type).expect("I4"),
+            UIA_TextControlTypeId.0
+        );
+        let keyboard_focusable = unsafe {
+            provider
+                .GetPropertyValue(UIA_IsKeyboardFocusablePropertyId)
+                .expect("focusability")
+        };
+        assert!(!bool::try_from(&keyboard_focusable).expect("BOOL variant"));
     }
 
     #[test]

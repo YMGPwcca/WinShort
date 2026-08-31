@@ -37,6 +37,27 @@ impl FriendlyLabel {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceSelectionPresentation {
+    pub primary: String,
+    pub secondary: Option<String>,
+    pub status: Option<String>,
+}
+
+impl DeviceSelectionPresentation {
+    pub fn accessible_value(&self) -> String {
+        [
+            Some(self.primary.as_str()),
+            self.secondary.as_deref(),
+            self.status.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
+    }
+}
+
 /// The three meanings represented by the persisted `Option<Vec<String>>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllowlistMode {
@@ -106,23 +127,49 @@ pub fn friendly_device(device: &DeviceId, kind: AudioDeviceKind) -> FriendlyLabe
     friendly_device_name(&device.name, kind)
 }
 
-pub fn selection_label(
+pub fn device_selection_presentation(
     selection: &DeviceSelection,
     devices: &[DeviceId],
     default: Option<&DeviceId>,
     kind: AudioDeviceKind,
-) -> String {
+) -> DeviceSelectionPresentation {
     match selection {
-        DeviceSelection::Default => "Follow Windows default".into(),
+        DeviceSelection::Default => {
+            if let Some(device) = default {
+                let label = friendly_device(device, kind);
+                DeviceSelectionPresentation {
+                    primary: label.primary,
+                    secondary: label.detail,
+                    status: Some("Following Windows default".into()),
+                }
+            } else {
+                DeviceSelectionPresentation {
+                    primary: "Follow Windows default".into(),
+                    secondary: Some("Current device unavailable".into()),
+                    status: None,
+                }
+            }
+        }
         DeviceSelection::Endpoint(endpoint) => {
             let Some(device) = devices.iter().find(|device| device.endpoint == *endpoint) else {
-                return "Saved device unavailable".into();
+                return DeviceSelectionPresentation {
+                    primary: "Saved device unavailable".into(),
+                    secondary: Some("Reconnect it to use this setting".into()),
+                    status: Some("Explicit device".into()),
+                };
             };
-            let label = friendly_device(device, kind).primary;
-            if default.is_some_and(|current| current.endpoint == device.endpoint) {
-                format!("{label} · Currently Windows default")
-            } else {
-                label
+            let label = friendly_device(device, kind);
+            DeviceSelectionPresentation {
+                primary: label.primary,
+                secondary: label.detail,
+                status: Some(
+                    if default.is_some_and(|current| current.endpoint == device.endpoint) {
+                        "Currently Windows default"
+                    } else {
+                        "Explicit device"
+                    }
+                    .into(),
+                ),
             }
         }
     }
@@ -133,7 +180,7 @@ pub fn device_choice_label(
     default: Option<&DeviceId>,
     kind: AudioDeviceKind,
 ) -> String {
-    let label = friendly_device(device, kind).compact();
+    let label = friendly_device(device, kind).primary;
     if default.is_some_and(|current| current.endpoint == device.endpoint) {
         format!("{label} · Currently Windows default")
     } else {
@@ -148,15 +195,15 @@ pub fn device_choice_label_at(
 ) -> Option<String> {
     let device = devices.get(index)?;
     let base = device_choice_label(device, default, kind);
-    let primary = friendly_device(device, kind).compact();
+    let primary = friendly_device(device, kind).primary;
     let duplicate_index = devices
         .iter()
         .take(index)
-        .filter(|candidate| friendly_device(candidate, kind).compact() == primary)
+        .filter(|candidate| friendly_device(candidate, kind).primary == primary)
         .count();
     let duplicate_count = devices
         .iter()
-        .filter(|candidate| friendly_device(candidate, kind).compact() == primary)
+        .filter(|candidate| friendly_device(candidate, kind).primary == primary)
         .count();
     if duplicate_count > 1 {
         Some(format!("{base} · Option {}", duplicate_index + 1))
@@ -405,23 +452,76 @@ mod tests {
     #[test]
     fn explicit_selection_badge_is_distinct_from_following_default() {
         let current = device("current");
+        let following = device_selection_presentation(
+            &DeviceSelection::Default,
+            std::slice::from_ref(&current),
+            Some(&current),
+            AudioDeviceKind::Speaker,
+        );
+        assert_eq!(following.primary, "current");
+        assert_eq!(following.secondary, None);
         assert_eq!(
-            selection_label(
-                &DeviceSelection::Default,
-                std::slice::from_ref(&current),
-                Some(&current),
-                AudioDeviceKind::Speaker,
-            ),
-            "Follow Windows default"
+            following.status.as_deref(),
+            Some("Following Windows default")
+        );
+
+        let explicit = device_selection_presentation(
+            &DeviceSelection::Endpoint("current".into()),
+            std::slice::from_ref(&current),
+            Some(&current),
+            AudioDeviceKind::Speaker,
+        );
+        assert_eq!(explicit.primary, "current");
+        assert_eq!(explicit.secondary, None);
+        assert_eq!(
+            explicit.status.as_deref(),
+            Some("Currently Windows default")
+        );
+    }
+
+    #[test]
+    fn audio_selection_keeps_metadata_and_status_as_separate_fields() {
+        let current = device("speaker");
+        let mut named = current.clone();
+        named.name = "3 - SAMSUNG (2- AMD High Definition Audio Device)".into();
+        let devices = [named.clone()];
+        let following = device_selection_presentation(
+            &DeviceSelection::Default,
+            &devices,
+            Some(&named),
+            AudioDeviceKind::Speaker,
+        );
+        assert_eq!(following.primary, "SAMSUNG");
+        assert_eq!(
+            following.secondary.as_deref(),
+            Some("AMD High Definition Audio Device")
         );
         assert_eq!(
-            selection_label(
-                &DeviceSelection::Endpoint("current".into()),
-                std::slice::from_ref(&current),
-                Some(&current),
-                AudioDeviceKind::Speaker,
-            ),
-            "current · Currently Windows default"
+            following.status.as_deref(),
+            Some("Following Windows default")
+        );
+
+        let explicit = device_selection_presentation(
+            &DeviceSelection::Endpoint(named.endpoint.clone()),
+            &devices,
+            Some(&named),
+            AudioDeviceKind::Speaker,
+        );
+        assert_eq!(explicit.primary, "SAMSUNG");
+        assert_eq!(
+            explicit.secondary.as_deref(),
+            Some("AMD High Definition Audio Device")
+        );
+        assert_eq!(
+            explicit.status.as_deref(),
+            Some("Currently Windows default")
+        );
+        assert!(explicit
+            .accessible_value()
+            .contains("Currently Windows default"));
+        assert_eq!(
+            device_choice_label(&named, Some(&named), AudioDeviceKind::Speaker),
+            "SAMSUNG · Currently Windows default"
         );
     }
 

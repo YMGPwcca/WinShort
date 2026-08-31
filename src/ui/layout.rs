@@ -52,11 +52,11 @@ impl Rect {
         Self::new(self.x, self.y + dy, self.w, self.h)
     }
 
-    pub fn intersects(self, other: Rect) -> bool {
-        self.x < other.right()
-            && self.right() > other.x
-            && self.y < other.bottom()
-            && self.bottom() > other.y
+    pub fn contains_rect(self, other: Rect) -> bool {
+        other.x >= self.x
+            && other.right() <= self.right()
+            && other.y >= self.y
+            && other.bottom() <= self.bottom()
     }
 }
 
@@ -85,6 +85,7 @@ pub enum ElementId {
     DisplayWizardBack,
     DisplayWizardNext,
     DisplayWizardCancel,
+    DisplayWizardSummary,
     EditDisplayProfile,
     OnboardingContinue,
     OnboardingOpen,
@@ -226,6 +227,7 @@ pub enum ElementKind {
     Navigation,
     Search,
     Card,
+    Info,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +280,7 @@ pub struct LayoutContext {
     pub display_draft_dirty: bool,
     pub display_rollback_active: bool,
     pub display_keep_available: bool,
+    pub display_inventory_unknown: bool,
     pub workspace_enabled: bool,
     pub desktop_count: Option<usize>,
     pub current_desktop: Option<usize>,
@@ -299,6 +302,7 @@ impl Default for LayoutContext {
             display_draft_dirty: false,
             display_rollback_active: false,
             display_keep_available: false,
+            display_inventory_unknown: false,
             workspace_enabled: true,
             desktop_count: None,
             current_desktop: None,
@@ -434,11 +438,12 @@ impl SettingsLayout {
             width - UiTokens::NAV_WIDTH,
             UiTokens::TOP_BAR_HEIGHT,
         );
+        let viewport_top = UiTokens::TOP_BAR_HEIGHT + UiTokens::VIEWPORT_TOP_INSET;
         let content_clip = Rect::new(
             UiTokens::NAV_WIDTH,
-            UiTokens::TOP_BAR_HEIGHT,
+            viewport_top,
             (width - UiTokens::NAV_WIDTH).max(320.0),
-            (height - UiTokens::TOP_BAR_HEIGHT - UiTokens::FOOTER_HEIGHT).max(180.0),
+            (height - viewport_top - UiTokens::FOOTER_HEIGHT).max(180.0),
         );
         let max_width = UiTokens::content_max_width(page);
         let column_width = (content_clip.w - UiTokens::PAGE_MARGIN * 2.0)
@@ -526,11 +531,10 @@ impl SettingsLayout {
             section.y += dy;
         }
     }
-
     pub fn focus_order(&self) -> Vec<ElementId> {
         self.elements
             .iter()
-            .filter(|element| element.kind != ElementKind::Card)
+            .filter(|element| !matches!(element.kind, ElementKind::Card | ElementKind::Info))
             .map(|element| element.id)
             .collect()
     }
@@ -541,7 +545,7 @@ impl SettingsLayout {
             .rev()
             .find(|element| {
                 element.rect.contains(x, y)
-                    && (!element.scrolls || self.content_clip.contains(x, y))
+                    && (!element.scrolls || self.content_clip.contains_rect(element.rect))
             })
             .map(|element| element.id)
     }
@@ -1305,7 +1309,12 @@ fn add_home(layout: &mut SettingsLayout) {
         ElementKind::ButtonSecondary,
         "Previous desktop",
         "Return to the last normal desktop",
-        Rect::new(layout.content_column.x, action_y, 190.0, 36.0),
+        Rect::new(
+            layout.content_column.x,
+            action_y,
+            layout.content_column.w,
+            UiTokens::ROW_HEIGHT,
+        ),
     );
     y += 12.0;
     add_heading(
@@ -1336,7 +1345,12 @@ fn add_home(layout: &mut SettingsLayout) {
         ElementKind::ButtonSecondary,
         "System status",
         "Details and diagnostics when something needs attention",
-        Rect::new(layout.content_column.x, status_y, 190.0, 36.0),
+        Rect::new(
+            layout.content_column.x,
+            status_y,
+            layout.content_column.w,
+            UiTokens::CARD_HEIGHT,
+        ),
     );
 }
 
@@ -1564,7 +1578,6 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         ],
     );
 }
-
 fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
     let mut y = layout.content_column.y + 28.0;
     add_heading(
@@ -1574,7 +1587,7 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         &mut y,
     );
     y += 12.0;
-    if context.workspace_enabled {
+    if context.desktop_count.is_some() || context.current_desktop.is_some() {
         add_desktop_strip(layout, &mut y, context);
     }
     add_heading(
@@ -1692,7 +1705,11 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
             add_heading(
                 layout,
                 "Which screens",
-                "Choose the connected screens this profile should use.",
+                if context.display_inventory_unknown {
+                    "Windows display information is unavailable. These are saved screens; connection status is unknown."
+                } else {
+                    "Choose which screens this profile should use."
+                },
                 &mut y,
             );
             if context.display_output_count == 0 {
@@ -1719,7 +1736,7 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                         ElementId::DisplayOutputCard(index as u8),
                         ElementKind::Checkbox,
                         "Screen",
-                        "Select this connected screen",
+                        "Select this screen",
                         Rect::new(
                             layout.content_column.x + column as f32 * (card_w + gap),
                             start + row as f32 * 74.0,
@@ -1742,11 +1759,8 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 122.0);
             } else {
                 for (index, (label, description)) in [
-                    ("Extend", "Separate desktops across the selected displays"),
-                    (
-                        "Duplicate",
-                        "Show the same picture on each selected display",
-                    ),
+                    ("Extend", "Show selected screens as separate desktops"),
+                    ("Duplicate", "Show the same picture on each selected screen"),
                 ]
                 .into_iter()
                 .enumerate()
@@ -1763,10 +1777,10 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                             layout.content_column.x,
                             choice_y,
                             layout.content_column.w,
-                            106.0,
+                            170.0,
                         ),
                     );
-                    y += 8.0;
+                    y += 10.0;
                 }
             }
         }
@@ -1801,7 +1815,16 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 "Check the summary, then test the display setup safely.",
                 &mut y,
             );
-            add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 130.0);
+            let summary_rect = add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 178.0);
+            add_element(
+                layout,
+                &mut y,
+                ElementId::DisplayWizardSummary,
+                ElementKind::Info,
+                "Display profile review",
+                "Profile, screens, arrangement, shortcut, and readiness",
+                summary_rect,
+            );
             if context.display_draft_dirty {
                 let discard_y = y;
                 add_element(
@@ -1822,8 +1845,17 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 ElementId::TestApplyDisplayProfile,
                 ElementKind::ButtonPrimary,
                 "Test profile",
-                "Try it for 15 seconds before keeping it",
-                Rect::new(layout.content_column.x, test_y, 150.0, 36.0),
+                if context.display_inventory_unknown {
+                    "Status not previewed here; Test revalidates before applying"
+                } else {
+                    "Try it for 15 seconds before keeping it"
+                },
+                Rect::new(
+                    layout.content_column.x,
+                    test_y,
+                    layout.content_column.w,
+                    UiTokens::ROW_HEIGHT,
+                ),
             );
         }
     }
@@ -1864,6 +1896,13 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
 
 fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
     let mut y = layout.content_column.y + 28.0;
+    if context.display_profiles_enabled
+        && !context.display_rollback_active
+        && context.display_editor_step.is_some()
+    {
+        add_display_wizard(layout, context);
+        return;
+    }
     add_heading(
         layout,
         "Displays",
@@ -1913,10 +1952,6 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
         );
         return;
     }
-    if context.display_editor_step.is_some() {
-        add_display_wizard(layout, context);
-        return;
-    }
     add_heading(
         layout,
         "Display profiles",
@@ -1928,8 +1963,8 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
             layout,
             &mut y,
             ElementId::NewDisplayProfile,
-            "Create a display profile",
-            "Start from the arrangement Windows is using now",
+            "New from current",
+            "Create a profile from the current Windows arrangement",
         );
         return;
     }
@@ -1962,8 +1997,8 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
             (
                 ElementId::NewDisplayProfile,
                 ElementKind::ButtonPrimary,
-                "New profile",
-                "Create from the current arrangement",
+                "New from current",
+                "Create a profile from the current arrangement",
             ),
             (
                 ElementId::EditDisplayProfile,
@@ -2450,6 +2485,17 @@ mod tests {
             .element(ElementId::HomeMicrophone)
             .expect("narrow microphone card");
         assert!(narrow_microphone.rect.y > narrow_speaker.rect.y);
+
+        let previous = wide
+            .element(ElementId::HomePreviousDesktop)
+            .expect("previous desktop action");
+        assert_eq!(previous.rect.w, wide.content_column.w);
+        assert_eq!(previous.rect.h, super::UiTokens::ROW_HEIGHT);
+        let status = wide
+            .element(ElementId::HomeDiagnostics)
+            .expect("home status surface");
+        assert_eq!(status.rect.w, wide.content_column.w);
+        assert_eq!(status.rect.h, super::UiTokens::CARD_HEIGHT);
     }
 
     #[test]
@@ -2703,6 +2749,113 @@ mod tests {
             .element(ElementId::DisplayTopologyChoice(0))
             .is_none());
         assert!(layout.element(ElementId::DisplayWizardNext).is_some());
+        assert_eq!(
+            layout
+                .sections
+                .first()
+                .map(|section| section.title.as_str()),
+            Some("Display profile editor")
+        );
+        assert_eq!(
+            layout
+                .sections
+                .iter()
+                .filter(|section| section.title == "Displays")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn editor_header_is_the_only_page_header() {
+        for step in DisplayWizardStep::ALL {
+            let layout = SettingsLayout::build_shell_with_context(
+                1200.0,
+                900.0,
+                0.0,
+                Page::Displays,
+                "",
+                super::LayoutContext {
+                    display_editor_step: Some(step),
+                    display_output_count: 2,
+                    display_route_count: 2,
+                    ..Default::default()
+                },
+                None,
+            );
+            assert_eq!(
+                layout
+                    .sections
+                    .first()
+                    .map(|section| section.title.as_str()),
+                Some("Display profile editor")
+            );
+            assert!(layout
+                .sections
+                .iter()
+                .skip(1)
+                .all(|section| !section.page_header));
+        }
+    }
+
+    #[test]
+    fn scrolled_content_hit_testing_stops_at_top_bar_boundary() {
+        let layout = SettingsLayout::build_shell(960.0, 660.0, 500.0, Page::Audio, "", 0, None);
+        assert_eq!(
+            layout.content_clip.y,
+            layout.top_bar.bottom() + super::UiTokens::VIEWPORT_TOP_INSET
+        );
+        assert_eq!(
+            layout.hit_test(layout.content_column.x + 8.0, layout.content_clip.y - 1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn desktop_information_strip_remains_when_workspace_actions_are_off() {
+        let layout = SettingsLayout::build_shell_with_context(
+            960.0,
+            660.0,
+            0.0,
+            Page::Workspaces,
+            "",
+            super::LayoutContext {
+                workspace_enabled: false,
+                desktop_count: Some(4),
+                current_desktop: Some(1),
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(layout.element(ElementId::DesktopStripItem(0)).is_some());
+        assert!(layout.element(ElementId::DesktopStripItem(3)).is_some());
+    }
+
+    #[test]
+    fn review_summary_is_accessible_without_joining_keyboard_order() {
+        let layout = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Displays,
+            "",
+            super::LayoutContext {
+                display_editor_step: Some(DisplayWizardStep::Review),
+                display_route_count: 2,
+                display_draft_dirty: true,
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(
+            layout
+                .element(ElementId::DisplayWizardSummary)
+                .map(|element| element.kind),
+            Some(ElementKind::Info)
+        );
+        assert!(!layout
+            .focus_order()
+            .contains(&ElementId::DisplayWizardSummary));
     }
 
     #[test]
