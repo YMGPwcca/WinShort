@@ -193,7 +193,7 @@ Endpoint IDs are **opaque strings**, never GUID-validated (#7): `"default"` sele
 default device; any other non-empty string is passed through to Core Audio unchanged. Typical
 Windows form is `{0.0.0.00000000}.{guid}`, but nothing may assume it.
 
-The Settings device picker lists only real active endpoints. The `"default"`
+The Control Center device picker lists only real active endpoints. The `"default"`
 selection remains a configuration binding mode and is displayed using
 current-system-default metadata; it is never emitted as a fake picker endpoint.
 
@@ -201,8 +201,8 @@ current-system-default metadata; it is never emitted as a fake picker endpoint.
 
 The registry is the single source of truth: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
 value `WinShort` = quoted current exe path. `platform/startup.rs` compares registered vs running
-command case-insensitively (`StartupState::{Enabled, Stale, Disabled}`). Toggling in Settings or
-the tray writes/deletes immediately — it does **not** wait for Save. The legacy
+command case-insensitively (`StartupState::{Enabled, Stale, Disabled}`). Toggling in the Control
+Center or the tray writes/deletes immediately — it does **not** wait for a global Save. The legacy
 `general.start_with_windows` config key is warned about, ignored, and always written back as
 `false`.
 
@@ -223,7 +223,7 @@ Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 ## Logging policy
 
 Runtime logging level is operational state, not configuration. Release builds
-start at Info; debug builds start at Debug. Advanced Settings can enable
+start at Info; debug builds start at Debug. The Advanced page can enable
 temporary Debug logging until restart, but no logging level field is persisted
 in `config.toml` and #32 does not require a schema bump.
 

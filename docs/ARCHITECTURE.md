@@ -13,7 +13,7 @@ no WebView, no other-language components.
 App Runtime (main thread, STA)
 ├── message loop + hidden main window (event pump)
 ├── Tray (Shell_NotifyIconW, NOTIFYICON_VERSION_4)
-├── Settings window (Direct2D HwndRenderTarget + DirectWrite + DWM chrome)
+├── Control Center window (Direct2D HwndRenderTarget + DirectWrite + DWM chrome)
 ├── Overlay window (WS_EX_NOACTIVATE/TRANSPARENT/LAYERED, WIC→DIB→UpdateLayeredWindow)
 ├── DisplayConfig profile capture/apply + bounded rollback
 └── Action router: AppEvent -> worker threads
@@ -35,7 +35,7 @@ remain invalid when no desktop-image mode is supplied.
 ## Threading model
 
 | Thread | COM apartment | Owns |
-| Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, settings renderer objects, tray, WinEvent hook (foreground tracking), DisplayConfig profile capture/apply/rollback timer, timers |
+| Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, Control Center renderer objects, tray, WinEvent hook (foreground tracking), DisplayConfig profile capture/apply/rollback timer, timers |
 | Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
 | Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
 | Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable normal-desktop focus history, runtime Special Workspace GUID + return GUID |
@@ -96,7 +96,7 @@ enum AppEvent {
   DeviceCycleResolved(DeviceCycleResult), ForegroundVolumeChanged(AppVolumeState),
   MicrophoneStateChanged(AudioState), OutputStateChanged(OutputState),
   ForegroundAudioChanged(AppAudioState), ForegroundWindowChanged { hwnd_raw: isize },
-  DesktopBackendChanged(BackendStatus), DesktopActionFailed { action, reason },
+  DesktopBackendChanged(BackendStatus), DesktopActionCompleted { kind }, DesktopActionFailed { action, reason },
   ConfigApplied { seq: u64, stamp: ConfigRevisionStamp }, ShowSettings, ...
 }
 
@@ -105,7 +105,7 @@ enum AppEvent {
 `HotkeyAction::ApplyDisplayProfile` carries a nonzero 16-bit case-insensitive key derived from
 the stable profile ID. The main thread resolves that key against the current persisted binding
 list, rejects ambiguity/stale or unconfirmed profiles, and only then invokes normal validated
-activation. Rename therefore leaves hotkeys intact; delete removes the binding before Save.
+activation. Rename therefore leaves hotkeys intact; delete removes the binding in the same local transaction.
 
 ## State separation
 
@@ -114,7 +114,7 @@ activation. Rename therefore leaves hotkeys intact; delete removes the binding b
 | Desired config | `ConfigHandle`: locked `Config` + `ConfigRevisionStamp` metadata, plus lock-free `ArcSwap<BindingTable>` | replaced atomically after every successful main-thread commit |
 | Runtime state | suspended flag, overlay model, foreground pid slot, desktop status | event-driven updates |
 | Observed Windows state | audio endpoint states, desktop backend status | owned by worker threads, published as events |
-| UI draft | `Config` clone inside settings window | user edits only |
+| UI state | `ControlCenterWindow` state plus a UI-owned onboarding marker | localized simple commits; risky display edits use a draft |
 
 After persistence succeeds, `ConfigHandle` takes one live write lock to replace the `Config`, update
 the lock-free `ArcSwap<BindingTable>`, and record the matching `ConfigRevisionStamp` before
@@ -140,7 +140,7 @@ HWND/App references and performs no network operation.
 
 Logging is native and process-local: an atomic runtime threshold protects a
 mutex-owned `BufWriter<File>` for the current local civil date. Release builds
-start at Info; debug builds start at Debug. Advanced Settings can enable or
+start at Info; debug builds start at Debug. The Advanced page can enable or
 disable temporary Debug logging without changing the config draft or schema.
 Normal records flush on a five-second dirty timer, Warn/Error, Open Logs,
 support-bundle creation, and orderly shutdown. Daily rollover flushes the old
@@ -152,31 +152,37 @@ timestamp, so timezone/DST changes apply to the next record without restart.
 The panic hook writes a synchronous `[PANIC]` record through an independent
 append handle because the release profile uses `panic = "abort"`.
 
-## Settings interaction
+## Control Center interaction
 
-**Status: Implemented.** Settings remains a single D2D/DirectWrite owner-drawn HWND. A
-main-thread-owned native picker popup hosts a real LISTBOX for enumerated choices; its state is
-copied from the current draft and commits back only on click/Enter. Escape/focus loss destroys
-the popup without changing the draft. Picker geometry is computed in screen pixels, prefers
-below-then-above placement, and clamps to the nearest monitor work area.
+**Status: Implemented.** The Control Center is a single D2D/DirectWrite owner-drawn HWND with a
+fixed navigation rail, Home/Shortcuts/Audio/Workspaces/Displays/Overlay/System pages, local
+search, and separate Advanced access. A main-thread-owned native picker popup hosts a real
+LISTBOX for enumerated choices; its state is copied from the current draft and commits back only
+on click/Enter. Escape/focus loss destroys the popup without changing the draft. Picker geometry
+is computed in screen pixels, prefers below-then-above placement, and clamps to the nearest
+monitor work area.
 
-Display profile CRUD stays in the same draft: New/Update capture active DisplayConfig state,
-Duplicate allocates a new ID, Rename edits only the name, Delete removes the profile hotkey,
-and route editing changes only supported mode/position fields. Rename and route editing use a
-native text prompt so keyboard and UI Automation focus do not depend on owner-drawn text input.
+Simple toggles, pickers, sliders, profile CRUD, and accepted hotkeys run canonical validation,
+atomic persistence, coherent publication, and localized success/error feedback. Display profile
+topology editing remains an explicit draft/risky workflow; New/Update capture active
+DisplayConfig state, Duplicate allocates a new stable ID, Rename edits only the name, Delete
+removes the profile hotkey, and route editing changes only supported mode/position fields.
+Rename and route editing use a native text prompt so keyboard and UI Automation focus do not
+depend on owner-drawn text input.
 
-The Settings surface exposes logical controls through a custom Windows UI Automation provider
-(`ui/settings_automation.rs`) rather than semantic child HWNDs. The provider publishes an
-`Arc<RwLock<SettingsAutomationSnapshot>>`; COM reads consume only that immutable snapshot.
-Invoke, Toggle, Slider, and logical-focus operations post actions to the Settings HWND, where the
-main-thread `SettingsUi` applies them. The Direct2D/DirectWrite Settings HWND therefore remains
-the only visual and pointer-interaction surface, including wheel scrolling across every row.
+The Control Center surface exposes logical controls through a custom Windows UI Automation
+provider (`ui/control_center_automation.rs`) rather than semantic child HWNDs. The provider
+publishes an `Arc<RwLock<SettingsAutomationSnapshot>>`; COM reads consume only that immutable
+snapshot. Navigation, Invoke, Toggle, Slider, editable Search, and logical-focus operations
+post actions to the Control Center HWND, where the main-thread UI applies them. The
+Direct2D/DirectWrite Control Center HWND remains the only visual and pointer-interaction
+surface, including wheel scrolling across every page.
 
-Snapshot publication is deliberately two-phase. `SettingsUi` commits the immutable snapshot and
-queues typed notifications, then posts `WM_APP_SETTINGS_AUTOMATION_EVENTS`; it never calls
-`UiaRaise*` while its `RefCell` guard is alive. The Settings WndProc clones the automation handle
-in a short borrow, drops that borrow, and only then flushes notifications. Property notifications
-coalesce by target and property, preserving the first old value and latest new value. Runtime
+Snapshot publication is deliberately two-phase. The Control Center UI commits the immutable
+snapshot and queues typed notifications, then posts `WM_APP_SETTINGS_AUTOMATION_EVENTS`; it
+never calls `UiaRaise*` while its `RefCell` guard is alive. The Control Center WndProc clones the
+automation handle in a short borrow, drops that borrow, and only then flushes notifications.
+Property notifications coalesce by target and property, preserving the first old value and latest new value. Runtime
 `VARIANT`s are created and cleared only during the borrow-free flush.
 
 The COM surface is split between `SettingsAutomationRootProvider` and
@@ -206,7 +212,7 @@ return `E_INVALIDARG`, and stale providers return `UIA_E_ELEMENTNOTAVAILABLE`.
 The provider follows the Win32 fragment contracts: unsupported patterns and navigation
 boundaries return `S_OK` with a null interface, the fragment root returns a null RuntimeId while
 children use `UiaAppendRuntimeId` plus a stable focus-order value, and only the fragment root
-returns the Settings HWND host provider. Point queries return the logical child, root, or null
+returns the Control Center HWND host provider. Point queries return the logical child, root, or
 according to screen-space hit testing.
 
 The windows-rs 0.62 implementation traits cannot represent a successful nullable interface:
@@ -219,24 +225,23 @@ initializes the native output pointer to NULL, writes a valid transferred COM po
 
 
 Picker construction is staged: popup and LISTBOX HWNDs are configured hidden, registered in the
-Settings snapshot, and only then shown/foregrounded/focused. This makes the internal
-Settings-to-picker focus transition resolve directly to `Picker`, never through a false
-`Outside` state. External focus loss still closes without forcing Settings focus.
-Focus state distinguishes the Settings HWND, the native picker LISTBOX, and outside ownership.
-Logical children report keyboard focus only while the Settings HWND owns focus; UIA `SetFocus`
-is queued to the Settings window and published after the Win32 focus result is observed. Snapshot
-publication compares old/new nodes and raises only changed focus, toggle, slider value, enabled,
-offscreen, bounds, name, and displayed-value properties.
-External focus loss closes the picker without forcing focus back to Settings; Escape, commit,
-and picker Tab navigation explicitly return focus to the Settings HWND.
+Control Center snapshot, and only then shown/foregrounded/focused. This makes the internal
+Control-Center-to-picker focus transition resolve directly to `Picker`, never through a false
+`Outside` state. External focus loss still closes without forcing Control Center focus.
+Focus state distinguishes the Control Center HWND, the native picker LISTBOX, and outside
+ownership. Logical children report keyboard focus only while the Control Center HWND owns focus;
+UIA `SetFocus` is queued to the Control Center window and published after the Win32 focus result
+is observed. Snapshot publication compares old/new nodes and raises only changed focus, toggle,
+slider value, enabled, offscreen, bounds, name, and displayed-value properties.
+External focus loss closes the picker without forcing focus back to Control Center; Escape, commit,
+and picker Tab navigation explicitly return focus to the Control Center HWND.
 
-Parent Settings scrolling dismisses an open picker before applying the scroll
-offset, so a screen-space popup cannot drift away from its owner. Settings close
-requests are idempotent: they block new picker activation, route cancellation
-through the main event loop, and hide the picker before hiding the Settings HWND.
-The focus repair pass runs before every published snapshot and moves focus to
-the next enabled focus-order element when a mutation disables the current one.
-Value controls reserve their chevron area and use DirectWrite character
+Parent Control Center scrolling dismisses an open picker before applying the scroll offset, so
+a screen-space popup cannot drift away from its owner. Control Center close requests are
+idempotent: they block new picker activation, route cancellation through the main event loop,
+and hide the picker before hiding the Control Center HWND. The focus repair pass runs before
+every published snapshot and moves focus to the next enabled focus-order element when a mutation
+disables the current one. Value controls reserve their chevron area and use DirectWrite character
 trimming with clipping for long displayed values.
 
 Contract audit references: [GetPatternProvider](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementprovidersimple-getpatternprovider),
@@ -264,7 +269,7 @@ single-instance check (named mutex) -> DPI awareness (PerMonitorV2) -> logging i
 load/validate config -> COM init (STA on UI thread) -> hidden main window -> tray icon ->
 overlay surface -> foreground tracker -> audio subsystem -> keyboard hook thread -> desktop
 backend detection -> second-instance watcher -> message loop. Each subsystem install degrades
-independently on failure (logged, surfaced in Settings → Advanced).
+independently on failure (logged, surfaced in the Control Center → Advanced page).
 
 ## Shutdown sequence
 
@@ -278,7 +283,7 @@ independently on failure (logged, surfaced in Settings → Advanced).
 6. foreground tracker dropped
 7. overlay: hide + `DestroyWindow`
 8. tray: `Shell_NotifyIconW(NIM_DELETE)`
-9. settings window destroyed
+9. Control Center window destroyed
 10. flush the buffered logger
 11. `PostMessageW(main_hwnd, WM_CLOSE)` — main window destruction happens outside any `App`
     borrow (reentrancy-safe; see WIN32_LIFETIME.md)

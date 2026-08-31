@@ -1,186 +1,231 @@
-# UI Design
+# WinShort Control Center UI
 
-**Status: Implemented** sections describe current `main`; **Planned** sections are design
-intent only (tracked in #29 and the remaining manual #30 acceptance) and must not be read as existing behavior.
+**Status: Implemented** — this document describes the native Control Center in the final redesign branch.
 
-## Stack — current
+WinShort remains a resident native Windows utility. The primary user-facing surface is a single owner-drawn Control Center window, not a configuration editor or a browser surface.
 
-| Layer | Technology | Status |
-|---|---|---|
-| Window chrome | User32; DWM: dark titlebar, corner preference ROUND, caption color | **Implemented** |
-| Settings rendering | Direct2D `ID2D1HwndRenderTarget` + DirectWrite (`ui/renderer.rs`); BGRA8, per-target `SetDpi` | **Implemented** |
-| Overlay compositing | WIC software render target → `CopyPixels` → `CreateDIBSection` → `UpdateLayeredWindow` | **Implemented** |
-| Text | DirectWrite, "Segoe UI Variable Text" with "Segoe UI" fallback | **Implemented** |
+## Native stack
 
-There is no DXGI swapchain, no `ID2D1DeviceContext`, no DirectComposition anywhere in the
-codebase. The two windows do not share a renderer object: `renderer.rs` serves settings only;
-the overlay owns an independent WIC/DIB stack.
+| Layer | Implementation |
+|---|---|
+| Window | User32 overlapped window, DWM rounded chrome, `WinShort.ControlCenter` class |
+| Rendering | Direct2D `ID2D1HwndRenderTarget` with DirectWrite text |
+| Typography | Segoe UI Variable Text with Segoe UI fallback |
+| Overlay | Existing WIC/DIB layered window; no activation, taskbar, or Alt-Tab entry |
+| Pickers | Existing native LISTBOX popup with keyboard selection and generation-safe teardown |
+| Accessibility | Custom UI Automation fragment provider with a snapshot/action boundary |
+| State | Cached event-driven runtime snapshot plus typed configuration draft for risky display work |
 
-Device-loss recovery is implicit: any `EndDraw` failure drops the whole settings Renderer and
-the next paint rebuilds factory/target/brushes from scratch. The overlay re-creates its surface
-per `show()`.
+No Electron, WebView, React, Vue, Svelte, Qt, GTK, WPF, WinUI, or other UI framework is used.
 
-## Design tokens — current (`ui/theme.rs`)
+## Shell architecture
 
-Logical px at 96 DPI; all layout math happens in 96-DIP space and scales by target DPI.
-Dark theme: bg `#1f1f1f`, card `#2b2b2b`, card-hover `#313131`, border `#393939`,
-text `#ffffff`, text-dim `rgb(191,191,191)`, accent `#60cdff`, hover `#99e0ff`,
-pressed `#0078d4`, danger `#e5795e`, ok `#6cccb5`. Light theme mirrors (`bg #f3f3f3`,
-card `#ffffff`, …). Spacing/radius values are inline literals in `controls.rs`/`layout.rs`
-(8 px grid), not named constants.
+The shell uses an explicit `Page` model:
 
-Theme follows `AppsUseLightTheme` (`HKCU\…\Themes\Personalize`) via `RegGetValueW`,
-re-read on `WM_SETTINGCHANGE` by both Settings and the overlay. Settings keeps its
-existing owner-drawn theme; the overlay resolves its System/Dark/Light appearance separately.
+```text
+Control Center
+├── Home
+├── Shortcuts
+├── Audio
+├── Workspaces
+├── Displays
+├── Overlay
+├── System
+└── Advanced
+```
 
-## Widget set — current (`ui/layout.rs`, `ui/controls.rs`)
+Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-Retained-lite: a deterministic layout pass produces `Element { id, rect, kind }`; paint walks
-it, input hit-tests it. Animation tweens (cubic ease-out) tick on a 16 ms WM_TIMER that runs
-only while motion or recording is active; idle UI has no render loop.
+The shell is designed around a 960 × 660 DIP starting frame with a 760 × 540 DIP minimum. A fixed navigation rail and top search bar remain visible while the selected page scrolls independently. Navigation labels remain text-first; vector line icons are secondary scanning aids.
 
-* Toggle row — animated knob
-* Hotkey recorder row — capture-mode box with inline conflict/validation error; Esc cancels;
-  modifier-only rejected (#35)
-* Picker rows — explicit native LISTBOX popup for input/output device, endpoint role, overlay
-  appearance, position, and monitor; current selection is visible, keyboard navigable, Escape
-  cancels, Enter/click commits, focus loss closes
-* Display profile rows — New/Update from Current, Select, stable-ID hotkey recorder,
-  route/topology selection, Rename, Duplicate, Delete, Test Apply, Keep, and Revert;
-  route editing uses a native text prompt with rational refresh input
-* Slider rows — duration / opacity / scale, mouse drag plus logical UI Automation RangeValue semantics
-* Buttons — footer Cancel / Save (Save disabled until draft differs from live)
-* Scrollable content column — wheel scrolling with slim custom scrollbar
-* Status row (Advanced) — composed virtual-desktop backend text
+`src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model used for painting, hit testing, focus traversal, and UI Automation bounds. `src/ui/controls.rs` contains the shared surface, row, button, navigation, search, home-card, profile-card, slider, and icon drawing vocabulary.
 
-Keyboard accessibility is implemented by a custom UI Automation provider in `ui/settings_automation.rs`.
-The Settings HWND owns the only visual and pointer surface; `WM_GETOBJECT` returns a fragment root
-whose logical children are derived from the same layout and values used for Direct2D rendering.
-Provider reads consume an `Arc<RwLock<SettingsAutomationSnapshot>>`; Invoke, Toggle, Slider, and
-focus actions are queued back to the Settings HWND. Native child BUTTON/TRACKBAR semantic overlays
-are not created. The separate native LISTBOX picker remains keyboard navigable with focus-loss,
-Escape, and Enter/click behavior. The hotkey recorder returns focus to the Settings window before
-capture so global capture remains generation-safe.
+## Design tokens
 
-UI Automation contract policy: picker and hotkey rows are Button controls with Invoke; they do not
-claim ComboBox or Edit semantics. Their displayed text is exposed read-only through ValuePattern,
-and `SetValue` returns `UIA_E_INVALIDOPERATION`. The fragment root returns the Settings HWND host
-provider; logical children return no host provider. Unsupported patterns, missing navigation
-boundaries, and outside point queries complete successfully with null results. Runtime IDs are
-null for the hosted root and use `UiaAppendRuntimeId` plus a stable child index for descendants.
-The provider tracks whether focus belongs to Settings, the native picker, or outside WinShort, so
-logical child focus is never advertised while the picker LISTBOX owns keyboard focus. Snapshot
-updates raise UIA property events only when focus, toggle, slider value, enabled, offscreen,
-bounds, name, or displayed value actually changes.
+`src/ui/theme.rs::UiTokens` centralizes the shell geometry and spacing language:
 
-Snapshot publication only commits state and queues typed notifications; UIA delivery is deferred
-to a Settings HWND message after the `SettingsUi` borrow is dropped. Duplicate target/property
-changes coalesce. Picker and hotkey Invoke actions raise one deferred Invoked event when accepted.
+- 216 DIP navigation rail;
+- 80 DIP top bar;
+- 34 DIP status footer;
+- 32 DIP page margins;
+- 58 DIP setting rows with an 8 DIP rhythm;
+- 7–12 DIP control/card radii;
+- 184 DIP shortcut value boxes and 206 DIP picker/slider boxes.
 
-Provider action errors remain state-specific: disabled controls return
-`UIA_E_ELEMENTNOTENABLED`, invalid slider values return `E_INVALIDARG`, unsupported
-direct pattern calls return `UIA_E_NOTSUPPORTED`, and retained providers after
-teardown return `UIA_E_ELEMENTNOTAVAILABLE`.
+All coordinates are 96-DPI logical units. The renderer retargets Direct2D/DirectWrite to the window's current PMv2 DPI. The visual system uses the existing light/dark semantic theme pairs and high-contrast system pairs.
 
-## Settings interaction — current
+Every shared interactive control has idle, hover, pressed, focus, and disabled treatment. Focus is a visible outline rather than a color-only state. Shadows are disabled automatically in high contrast.
 
-**Status: Implemented.** Audio device pickers show Default, current inventory, and a synthetic
-`Selected device unavailable` choice when an explicit opaque endpoint is missing. The missing
-selection is preserved until the user chooses another value. Endpoint role rows remain visible
-but disabled with explanatory help when an explicit endpoint is selected.
+## Page experience
 
-Monitor choices are Foreground, Primary, and stable `Device(String)` names with current
-resolution/work-area labels. A disconnected configured device remains as an unavailable choice;
-`index:N` is never reintroduced into the UI.
+### Home
 
-Reset Settings requires a second explicit `Confirm reset` activation. It changes only the draft;
-Save is still required, and the registry-authoritative Start with Windows state is untouched.
+Home answers “What is WinShort doing right now?” with real cached runtime state:
 
-Settings position is persisted in the separate WinShort-owned `settings-window.txt` UI-state file
-when the window closes or the app shuts down. Restored rectangles scale from their saved DPI,
-select the nearest current monitor, and clamp enough of the window/title area into the work area.
+- current speaker name and mute/volume status;
+- current microphone name and mute/input-volume status;
+- current normal desktop when the native backend can resolve it;
+- Special Workspace state (`Ready`, `Off`, or `Unavailable`);
+- previous-desktop and Special quick actions;
+- selected display profile summary without claiming that it matches the active topology;
+- shortcut count and conflict health;
+- degraded subsystem notice with a Details route to Diagnostics.
 
-Help uses inline row descriptions, native accessibility names, and delayed native
-`TOOLTIPS_CLASS` popups for non-obvious settings. The overlay reads Windows animation,
-high-contrast, and overlapped-content preferences and refreshes them at runtime.
+The page does not display endpoint identifiers, roles, GUIDs, HRESULTs, or backend names.
 
-## Widget set — planned (NOT implemented)
+### Shortcuts
 
-No #30 overlay accessibility behavior remains planned here. Full live Narrator acceptance
-of the native Settings surface remains tracked separately in #29.
+Shortcuts are grouped by actions:
 
-## Settings layout — current
+- Audio: Mute microphone, Mute speakers, Next microphone, Next speaker, Mute current app, and current-app volume up/down;
+- Workspaces: Desktop 1–9, Previous desktop, Move window to Special, and Open / close Special;
+- Display profiles: shortcut for the selected profile.
 
-Width 610 logical dip; height fits content up to work area − 48. Sections top-to-bottom:
-General, Hotkeys, Audio, Virtual Desktops, Overlay, Advanced (temporary Debug logging,
-Diagnostics & support entry, config folder, reset draft).
-Dirty-state: Save enabled only when draft ≠ live; Cancel restores the live snapshot.
+Selecting a shortcut enters the existing global capture mode. Captured chords are validated against the canonical conflict and reserved-family rules, persisted through the atomic config path, and published as one coherent runtime change. Escape cancels capture. A failed save restores the previous draft and reports a human recovery message; the hook is not reinstalled.
 
-## Diagnostics & Support — current
+### Audio
 
-**Status: Implemented.** The Advanced entry opens a separate native owner-drawn window rather
-than expanding the Settings scroll page. It uses the shared Direct2D HwndRenderTarget,
-DirectWrite, theme tokens, rounded DWM chrome, and PMv2 DPI handling.
+Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. Device changes use human labels and a `Follow Windows default` mode; opaque endpoint strings stay internal.
 
-The page is a dense read-only operator view: application/Windows build, keyboard hook and
-bindings, audio endpoint availability and foreground aggregate, desktop backend/count/last
-served, config path/schema/latch/warnings, overlay target/DPI, startup registration, runtime log
-level/default/retention/buffering, and degraded startup reasons. It also exposes Copy Diagnostics,
-Open Logs, Create Support Bundle, Run Self-Test, and Close.
+The Next speaker and Next microphone pickers retain the real active-device allowlist semantics:
 
-Self-Test is passive: it observes current cached services, endpoint inventory, config metadata,
-desktop status, overlay availability, logging directory metadata, and startup readability. It
-does not mute audio, inject keys, switch desktops, change the registry, restart services, or
-show an overlay.
+- Use all available devices;
+- Disable cycling;
+- explicit device selections;
+- unavailable saved devices remain visible as reconnectable choices without leaking their IDs.
 
-Support exports use an explicit sanitizer projection rather than scraping UI text. Config and
-logs are sanitized before a bounded local ZIP is written; endpoint IDs become report-local
-tokens, absolute executable paths become basename + path token, and raw key history, window
-titles, command lines, and unrelated process identity are excluded. No upload or telemetry is
-performed.
+Current app audio explains the mute and ±5% volume actions without exposing session GUIDs, process resolution stages, or endpoint scans. Windows default roles remain available in Advanced.
 
-## Overlay — current
+### Workspaces
 
-Window: `WS_POPUP` with `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
-WS_EX_TRANSPARENT`. Never activates, never taskbar/Alt-Tab, click-through. Positioned per config
-within the selected monitor's work area (foreground / primary / device match with fallback).
+The page uses normal workspace language. It shows the cached normal desktop/count when available, the Special Workspace readiness state, and the existing controls for:
 
-Rendering: one persistent layered HWND; each `show()` renders the card bitmap once at the
-target monitor's effective DPI (#49), then a Phase state machine (`Appearing` 140 ms →
-`Holding` → `Leaving` 180 ms) ticks a 16 ms timer varying layer alpha (ease curves) and slide
-offset — CPU-composited frames through `UpdateLayeredWindow`, no GPU swapchain. When Windows
-client-area animations are disabled, the overlay uses a single settled frame with no fade or
-slide. High contrast uses system window/highlight colors, an opaque surface, strong borders,
-and no shadow. `SPI_GETDISABLEOVERLAPPEDCONTENT` also selects an opaque, shadow-free palette.
-`WM_SETTINGCHANGE`, `WM_SYSCOLORCHANGE`, and `WM_THEMECHANGED` refresh the live policy.
-`WM_DPICHANGED` is deliberately ignored for the overlay: it owns its own size/position and
-re-renders at the new monitor's DPI on next show.
+- workspace shortcuts;
+- configurable Desktop 1–9 family;
+- move-and-follow and silent move modifiers;
+- Previous desktop;
+- Move window to Special;
+- Open / close Special.
 
-Settings Preview posts the current draft `OverlayCfg` directly; it does not save
-or replace the live `ConfigHandle`. Normal hotkey/status presentations continue
-to use the saved config. A deterministic active microphone row is used for the
-preview.
+Numbered desktop and Special behavior remains owned by the pinned desktop backend. The Special Workspace is never included in normal ordinals. The UI does not expose Shell ABI details, GUIDs, or persistence files.
 
-High-contrast state circles use `COLOR_WINDOW`/`COLOR_WINDOWTEXT` for normal
-states and the paired `COLOR_HIGHLIGHT`/`COLOR_HIGHLIGHTTEXT` colors for Changed.
-State text remains explicit. Coalesced updates during Appearing preserve the
-full configured settled hold after the appearance completes; a matching delayed
-status query refreshes the multi-row status presentation instead of creating a
-foreground-only result.
+### Displays
 
-Icons: hand-authored D2D path geometry (microphone, speaker, app window, desktop grid,
-warning). Vector at every DPI; no emoji fonts, no bitmaps.
+Displays presents saved profiles as a responsive two-column card grid when space permits. Cards show the real profile name, a human display-route summary, its profile shortcut, and whether it is ready to activate or needs a test. Selecting a card updates the stable active profile reference; activating an already selected confirmed card sends the existing validated apply request.
 
-## DPI — current (#49)
+The page includes a visible three-step guide:
 
-Process-wide PerMonitorV2 before any window creation. Settings sizes itself to the primary
-monitor's DPI and handles `WM_DPICHANGED` (clamp ≥ 96, retarget + rebuild formats, resize to
-suggested rect, relayout). Overlay uses `effective_render_dpi(target_monitor)` — the selected
-monitor's effective DPI, never maxed across monitors.
+1. Which displays — select active/inactive connected routes while preserving same-panel/different-GPU distinction internally;
+2. How they work — choose Extend or Duplicate through the existing picker;
+3. Name and shortcut — use Rename and the stable profile shortcut recorder.
 
-## Quality gate
+New/Capture Current, Update, Rename, Duplicate, Delete, profile selection, profile shortcut binding, advanced route selection, and route editing remain reachable. Output/topology edits are local until Test profile; Discard display edits restores the last saved profile. Profile IDs are never replaced by names. Duplicate creates a new ID and does not steal the original binding.
 
-Applies to changes under `src/ui/`: spacing consistent on the 8 px grid, text crisp at
-100–200 %, hover/press/focus/disabled states present, dark+light checked, error/empty states
-designed (device missing, backend unsupported, invalid hotkey). Screenshot automation does not
-exist yet (planned; see TEST_PLAN.md).
+When a display test is pending, the guide becomes a recovery banner explaining Keep/Revert and the automatic timeout. A failed recovery keeps Revert available. Normal overlay messages are human-readable; technical causes remain in logs and Diagnostics.
+
+### Overlay
+
+Overlay has a visual preview panel and concise controls:
+
+- enabled;
+- System, Light, or Dark appearance;
+- position and monitor;
+- show changes made outside WinShort;
+- Small/Normal/Large size;
+- Low/Normal/High opacity;
+- Short/Normal/Long duration;
+- Preview.
+
+Preview sends the edited `OverlayCfg` directly to the existing layered overlay and never persists or replaces the live `ConfigHandle`. Exact slider ranges remain available through truthful UI Automation RangeValue semantics and the technical backend, not as required normal-user vocabulary.
+
+### System
+
+System is intentionally short:
+
+- Start WinShort with Windows;
+- Pause all shortcuts;
+- Diagnostics and support;
+- Open configuration folder;
+- deliberate two-step Reset WinShort action;
+- About with the actual package version.
+
+Startup remains registry-authoritative and applies immediately. Pause persists the existing `start_hotkeys_enabled` value through the canonical config commit path.
+
+### Advanced
+
+Advanced contains only technical user-configurable controls that already exist:
+
+- Windows default-device roles;
+- exact display route editing;
+- temporary debug logging;
+- Diagnostics entry.
+
+It is not a dump of runtime diagnostics. Dense implementation state remains in Diagnostics.
+
+## Local search
+
+The shell search box is a local, case-insensitive deterministic index in `src/ui/navigation.rs`. Descriptors contain human titles, keywords, page, section, and target control. Search results rank exact/title matches before keyword matches, prefer common user destinations, and are capped to a small result set.
+
+Typing is handled by the owner-drawn shell; UI Automation exposes the search control as an editable Edit/ValuePattern node. Enter opens the first result, while selecting a result navigates to its page and stable target. No network, telemetry, or raw config-key labels are involved.
+
+## First run
+
+`src/ui/first_run.rs` stores one atomic UI-owned marker at `%LOCALAPPDATA%\\WinShort\\control-center-ui-state.txt`. It never changes the config schema.
+
+On a genuinely new installation with no config file and no completion marker, the shell shows:
+
+1. speaker allowlist choice;
+2. microphone allowlist choice;
+3. Desktop 1–9 choice;
+4. a ready screen showing actual configured microphone, desktop, and Special shortcuts.
+
+Existing users are not inferred from an absent new field. The presence of any real `config.toml` suppresses onboarding, even when it contains only defaults. Completing onboarding writes only the UI marker.
+
+## Persistence model
+
+Simple controls commit locally:
+
+1. clone the current draft;
+2. mutate the selected typed value;
+3. run canonical validation and atomic save;
+4. publish one `ConfigApplied` snapshot;
+5. refresh dependent workers and UI;
+6. show “Changes applied”.
+
+This includes toggles, audio/workspace/overlay pickers, sliders, safe profile CRUD, profile selection, and accepted hotkeys. A failure restores the pre-action value in the UI and keeps the original error for Diagnostics/logging.
+
+Display output and topology edits remain explicit local draft/risky work. Test profile captures rollback state, validates and applies through DisplayConfig, starts the existing bounded confirmation timer, and never treats timeout as acceptance. Keep persists only after explicit confirmation; Revert, timeout, and Discard display edits restore the saved topology/profile.
+
+## Accessibility and lifetime
+
+The Control Center preserves the established custom provider rules:
+
+- navigation nodes are Buttons with truthful Invoke semantics;
+- the root name includes the current page and selected navigation is announced in its accessible name;
+- search is an editable Edit with mutable ValuePattern;
+- toggles expose TogglePattern;
+- sliders expose RangeValuePattern;
+- picker triggers remain Button/Invoke with read-only displayed values;
+- unsupported patterns return successful null/empty results rather than fabricated interfaces;
+- stale providers return `UIA_E_ELEMENTNOTAVAILABLE`;
+- UIA reads consume immutable snapshots only;
+- actions are posted back to the Control Center HWND;
+- UIA event delivery is deferred until state borrows are released;
+- focus is repaired when a mutation disables the focused control;
+- native picker LISTBOX focus is distinct from logical shell focus;
+- popup teardown is idempotent and happens before the owner hides;
+- no child HWND is invented for painted Control Center rows.
+
+The owner window remains PMv2-aware, responds to `WM_DPICHANGED`, persists/restores reachable bounds, and stops its timer when motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; the layered runtime overlay retains its established reduced-motion policy.
+
+## Diagnostics & Support
+
+Diagnostics remains a separate native window backed by `App::diagnostics_snapshot`. It preserves Copy Diagnostics, Open Logs, Support Bundle, Self-Test, sanitized endpoint/path/config projections, bounded log collection, and no telemetry. The Home and System pages route friendly Details actions there instead of leaking technical state into normal controls.
+
+## Degraded mode
+
+The shell is constructed from cached state and never requires every optional worker to be present. Audio, workspace, overlay, keyboard, display inventory, and startup failures appear as human state or an actionable Details path. Painting does not enumerate COM devices, query DisplayConfig, scan files, or inspect processes.
+
+## Verification expectations
+
+Native visual acceptance remains a real Windows/manual concern. Automated tests cover search policy, first-run safety, layout geometry, profile-card layout, terminology, picker semantics, UIA snapshots/actions, overlay copy, and existing backend safety state machines. No screenshot or manual acceptance is claimed unless exercised on the final revision.

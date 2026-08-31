@@ -24,16 +24,15 @@ Every OS handle/interface has exactly one owner thread or struct.
 |---|---|---|---|
 | Instance mutex / activate + shutdown events | `platform/single_instance.rs` | process lifetime | OS reclaims; watcher signalled before window teardown (#24) |
 | `HHOOK` (WH_KEYBOARD_LL) | keyboard thread | keyboard thread only | `HookGuard` drop → `UnhookWindowsHookEx`, then `HOOK_STATE` nulled — all on the hook's own pumping thread (#42) |
-| Hidden main / settings / overlay HWNDs | main thread | main thread | overlay+settings destroyed in `begin_shutdown`; main via posted `WM_CLOSE` after borrows end |
-| Tray icon (NOTIFYICON_VERSION_4) | main thread | tray module | `NIM_DELETE` in `begin_shutdown`; icon HICON owned by `OwnedIcon` → `DestroyIcon` on Drop/replacement |
-| Settings renderer (D2D factory, `ID2D1HwndRenderTarget`, brushes, text formats) | main thread | `ui::renderer::Renderer` | dropped with the settings UI; any `EndDraw` failure drops the whole Renderer so the next paint rebuilds it from scratch |
+| Hidden main / Control Center / overlay HWNDs | main thread | main thread | overlay+Control Center destroyed in `begin_shutdown`; main via posted `WM_CLOSE` after borrows end |
+| Control Center renderer (D2D factory, `ID2D1HwndRenderTarget`, brushes, text formats) | main thread | `ui::renderer::Renderer` | dropped with the Control Center UI; any `EndDraw` failure drops the whole Renderer so the next paint rebuilds it from scratch |
 | Overlay surface (WIC bitmap, DIB section, compatible DC) | main thread | `OverlayGraphics`/`LayeredSurface` | re-created per `show()`; released with the overlay |
 | Diagnostics HWND | main thread | `DiagnosticsWindow` / main thread | hidden on close; destroyed during `App::begin_shutdown` |
 | Special Workspace GUID + return GUID | desktop thread | `DesktopController::{special_workspace,special_return}` plus `%LOCALAPPDATA%\WinShort\special-workspace.guid` for workspace identity only | `special_return` is process-only; external deletion clears stale identity; disable/orderly shutdown removes the dedicated VD and clears persisted identity; a hard kill/reboot can leave the VD alive, and the next process reclaims it only by the exact persisted GUID |
 | Support worker | one-shot filesystem thread | `App::support_bundle: Option<JoinHandle<()>>` | completion posts an event; App joins it before diagnostics HWND teardown |
 | Clipboard HGLOBAL | main thread during Copy Diagnostics | Windows after successful `SetClipboardData(CF_UNICODETEXT, ...)` | WinShort frees it only when allocation/clipboard transfer fails |
-| Settings picker HWND + LISTBOX | main thread | `PickerPopup` | focus loss/Escape/commit drops popup; Settings shutdown drops it before process exit |
-| Settings UI Automation provider | main/UIA COM callers | `SettingsAutomation` shared snapshot + queued action mutex | provider owns only `Arc<RwLock<SettingsAutomationSnapshot>>`; reads never borrow `SettingsUi`, actions post `WM_APP_SETTINGS_AUTOMATION` to the Settings HWND |
+| Control Center picker HWND + LISTBOX | main thread | `PickerPopup` | focus loss/Escape/commit drops popup; Control Center shutdown drops it before process exit |
+| Control Center UI Automation provider | main/UIA COM callers | `SettingsAutomation` shared snapshot + queued action mutex | provider owns only `Arc<RwLock<SettingsAutomationSnapshot>>`; reads never borrow Control Center UI, actions post `WM_APP_SETTINGS_AUTOMATION` to the Control Center HWND |
 | Display rollback token | main thread | `App::display_rollback` | pre-apply paths/modes and route snapshot stay in memory; Keep commits, Revert/timeout restores, failed restore remains retryable |
 | WinEvent hook (foreground) | main thread | foreground tracker | unhooked when tracker drops in shutdown |
 
@@ -77,7 +76,7 @@ Exact sequence of `App::begin_shutdown`:
 6. foreground tracker dropped            // WinEvent hook gone
 7. overlay.hide(); DestroyWindow(overlay)
 8. tray.remove()                         // NIM_DELETE (+ DestroyIcon via OwnedIcon drop)
-9. DestroyWindow(settings)
+9. DestroyWindow(control_center)
 10. PostMessageW(main_hwnd, WM_CLOSE)    // destruction outside any App borrow
 ```
 

@@ -23,8 +23,8 @@ IMMDeviceEnumerator (CoCreateInstance MMDeviceEnumerator)
   communications; both default **console**).
 * Endpoints are rebuilt on default-change and device-removal events. Rebuild =
   unregister old callbacks → drop old interfaces → create new → register callbacks → publish
-  state. Device enumeration failures degrade per-flow with warnings surfaced in Settings (#36),
-  never aborting the whole subsystem.
+state. Device enumeration failures degrade per-flow with warnings surfaced in the Control Center
+and Diagnostics (#36), never aborting the whole subsystem.
 
 ## System-default device cycling
 
@@ -33,7 +33,7 @@ default as the cycle cursor, select the next endpoint by opaque ID, and set
 that endpoint as the Windows default for Console, Multimedia, and
 Communications. The isolated `IPolicyConfig` wrapper performs the native
 default switch; successful switches immediately rebuild both endpoint flows
-and publish the normal device-cycle overlay. The Settings draft is not
+and publish the normal device-cycle overlay. The Control Center draft is not
 rewritten by a cycle hotkey.
 
 `audio.cycle_input_allowlist` and `audio.cycle_output_allowlist` optionally restrict each
@@ -43,7 +43,7 @@ planning time, so a disconnected endpoint is skipped without deleting its config
 `RefreshAll` after a device notification rebuilds the inventory; a later reconnect makes the
 configured endpoint eligible again without polling or migration.
 
-The Settings device picker contains only real active endpoints. A `Default`
+The Control Center device picker contains only real active endpoints. A `Default`
 configuration selection remains a follow-the-system-default binding mode, but
 it is represented by current-default metadata rather than a selectable
 `Default device` pseudo-entry. Missing explicit bindings fall back to the
