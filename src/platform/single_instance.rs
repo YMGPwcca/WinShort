@@ -1,6 +1,6 @@
 //! Single-instance enforcement via a named mutex plus an activation event
-//! (spec §7). A secondary instance signals the primary to open Settings and exits.
-//! The primary's watcher waits on BOTH the activation event and a shutdown
+//! (spec §7). A secondary instance signals the primary to open the Control Center
+//! and exits. The primary's watcher waits on BOTH the activation event and a shutdown
 //! event via WaitForMultipleObjects — no polling (#24).
 
 use std::sync::OnceLock;
@@ -112,8 +112,8 @@ impl Drop for WatcherRuntime {
 }
 
 /// Watch the activation event; on each signal invoke `on_activate` (which
-/// should post ShowSettings to the main window). Exits when shutdown is
-/// signalled. Runs on a dedicated plain thread with no COM.
+/// should post the Control Center activation event to the main window). Exits
+/// when shutdown is signalled. Runs on a dedicated plain thread with no COM.
 pub fn spawn_watcher(
     activate_event: HANDLE,
     on_activate: impl Fn() + Send + 'static,

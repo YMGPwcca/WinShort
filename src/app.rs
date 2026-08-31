@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::event::{self, AppEvent, AudioEventOrigin, HotkeyAction, WM_APP_EVENT};
 use crate::platform::window as win;
 use crate::tray::{menu as tray_menu, Tray, TrayEvent, TrayState};
-use crate::ui::settings::SettingsWindow;
+use crate::ui::control_center::ControlCenterWindow;
 
 pub static CONFIG: std::sync::OnceLock<std::sync::Arc<crate::config::ConfigHandle>> =
     std::sync::OnceLock::new();
@@ -72,7 +72,7 @@ pub fn taskbar_created_msg() -> u32 {
 pub struct App {
     pub hwnd: HWND,
     tray: Option<Tray>,
-    settings: Option<SettingsWindow>,
+    settings: Option<ControlCenterWindow>,
     diagnostics: Option<crate::ui::diagnostics::DiagnosticsWindow>,
     overlay: Option<crate::ui::overlay::OverlayWindow>,
     foreground: Option<crate::platform::foreground::ForegroundTracker>,
@@ -187,6 +187,7 @@ impl App {
                 fallback: crate::desktop::BackendAvailability::Available,
                 active: crate::desktop::BackendKind::KeyboardFallback,
                 desktop_count: None,
+                current_desktop: None,
                 last_served: None,
             },
             microphone_state: crate::audio::AudioState::Unavailable {
@@ -273,7 +274,7 @@ impl App {
             self.show_display_feedback(
                 crate::ui::overlay::OverlayTone::Unavailable,
                 "Display profile",
-                "Display profiles are disabled in Settings",
+                "Display profiles are disabled in Displays",
             );
             return;
         }
@@ -289,10 +290,11 @@ impl App {
             self.show_display_feedback(
                 crate::ui::overlay::OverlayTone::Unavailable,
                 "Display profile needs testing",
-                "Use Test Apply, then Keep display configuration before normal Apply",
+                "Test this profile, then Keep it before using it normally",
             );
             return;
         }
+        self.display_rollback_error = None;
         match crate::display::apply_profile(&mut profile, !test) {
             Ok(rollback) if test => {
                 self.display_rollback = Some(PendingDisplayRollback {
@@ -301,7 +303,6 @@ impl App {
                     state: crate::display::ConfirmationState::Pending,
                 });
                 self.sync_display_settings_state();
-                self.display_rollback_error = None;
                 let timer_started = unsafe {
                     SetTimer(
                         Some(self.hwnd),
@@ -326,6 +327,7 @@ impl App {
             }
             Ok(_rollback) => {
                 self.display_rollback_error = None;
+                self.refresh_settings_runtime();
                 self.show_display_feedback(
                     crate::ui::overlay::OverlayTone::Changed,
                     format!("Display profile: {}", profile.name),
@@ -346,13 +348,13 @@ impl App {
                     self.show_display_feedback(
                         crate::ui::overlay::OverlayTone::Unavailable,
                         "Display recovery failed",
-                        format!("{reason}. Retry Revert in Settings"),
+                        "The display setup could not be recovered. Retry Revert in Displays",
                     );
                 } else {
                     self.show_display_feedback(
                         crate::ui::overlay::OverlayTone::Unavailable,
                         "Display profile not applied",
-                        reason,
+                        "The display setup is not available. Open Displays and try again",
                     );
                 }
             }
@@ -382,7 +384,7 @@ impl App {
             self.show_display_feedback(
                 crate::ui::overlay::OverlayTone::Unavailable,
                 "Display configuration not kept",
-                reason,
+                "The display setup could not be kept",
             );
             return;
         }
@@ -394,7 +396,7 @@ impl App {
             self.show_display_feedback(
                 crate::ui::overlay::OverlayTone::Unavailable,
                 "Display configuration not kept",
-                format!("Saving the Windows display configuration failed: {reason}"),
+                "The display setup could not be saved",
             );
             return;
         }
@@ -414,11 +416,14 @@ impl App {
                         let _ = KillTimer(Some(self.hwnd), DISPLAY_ROLLBACK_TIMER_ID);
                     }
                     self.sync_display_settings_state();
+                    if let Some(settings) = &mut self.settings {
+                        settings.discard_uncommitted_draft();
+                    }
                     self.invalidate_settings();
                     self.show_display_feedback(
                         crate::ui::overlay::OverlayTone::Unavailable,
                         "Display configuration not kept",
-                        format!("Saving confirmation failed: {reason}; previous topology restored"),
+                        "The setting was not saved, so the previous display setup was restored",
                     );
                 }
                 Err(rollback_error) => {
@@ -439,7 +444,7 @@ impl App {
                     self.show_display_feedback(
                         crate::ui::overlay::OverlayTone::Unavailable,
                         "Display recovery failed",
-                        format!("{recovery_reason}. Retry Revert in Settings"),
+                        "The display setup could not be recovered. Retry Revert in Displays",
                     );
                 }
             }
@@ -493,6 +498,9 @@ impl App {
                     let _ = KillTimer(Some(self.hwnd), DISPLAY_ROLLBACK_TIMER_ID);
                 }
                 self.sync_display_settings_state();
+                if let Some(settings) = &mut self.settings {
+                    settings.discard_uncommitted_draft();
+                }
                 self.invalidate_settings();
                 self.show_display_feedback(
                     crate::ui::overlay::OverlayTone::Changed,
@@ -517,7 +525,7 @@ impl App {
                 self.show_display_feedback(
                     crate::ui::overlay::OverlayTone::Unavailable,
                     "Display recovery failed",
-                    format!("{success_title}: {reason}. Retry Revert in Settings"),
+                    "The previous display setup could not be restored. Retry Revert in Displays",
                 );
             }
         }
@@ -560,8 +568,10 @@ impl App {
             .display_rollback
             .as_ref()
             .is_some_and(|pending| pending.state == crate::display::ConfirmationState::Pending);
+        let runtime = self.control_center_runtime();
         if let Some(settings) = &mut self.settings {
             settings.set_display_rollback_state(active, keep_available);
+            settings.set_runtime_snapshot(runtime);
         }
     }
 
@@ -583,6 +593,38 @@ impl App {
             .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, r)| r.clone())
+    }
+    pub(crate) fn control_center_runtime(
+        &self,
+    ) -> crate::ui::control_center::ControlCenterRuntimeSnapshot {
+        crate::ui::control_center::ControlCenterRuntimeSnapshot {
+            microphone: self.microphone_state.clone(),
+            microphone_name: self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.runtime_snapshot().capture.map(|device| device.name)),
+            output: self.output_state.clone(),
+            foreground: self.foreground_state.clone(),
+            desktop: self.desktop_status.clone(),
+            degraded: self
+                .degraded
+                .iter()
+                .map(|(name, reason)| ((*name).into(), reason.clone()))
+                .collect(),
+            display_rollback_active: self.display_rollback.is_some(),
+            display_keep_available: self
+                .display_rollback
+                .as_ref()
+                .is_some_and(|pending| pending.state == crate::display::ConfirmationState::Pending),
+            display_rollback_error: self.display_rollback_error.clone(),
+        }
+    }
+
+    fn refresh_settings_runtime(&mut self) {
+        let snapshot = self.control_center_runtime();
+        if let Some(settings) = &mut self.settings {
+            settings.set_runtime_snapshot(snapshot);
+        }
     }
     fn next_audio_request_id(&mut self) -> u64 {
         self.next_audio_request_id = self.next_audio_request_id.wrapping_add(1);
@@ -620,9 +662,9 @@ impl App {
     fn ensure_settings(
         &mut self,
         devices: crate::audio::devices::DeviceLists,
-    ) -> Result<&mut SettingsWindow> {
+    ) -> Result<&mut ControlCenterWindow> {
         if self.settings.is_none() {
-            self.settings = Some(SettingsWindow::create(devices)?);
+            self.settings = Some(ControlCenterWindow::create(devices)?);
             info!("settings window created");
         }
         let active = self.display_rollback.is_some();
@@ -630,16 +672,20 @@ impl App {
             .display_rollback
             .as_ref()
             .is_some_and(|pending| pending.state == crate::display::ConfirmationState::Pending);
+        let runtime = self.control_center_runtime();
         if let Some(settings) = &mut self.settings {
             settings.set_display_rollback_state(active, keep_available);
+            settings.set_runtime_snapshot(runtime);
         }
         Ok(self.settings.as_mut().expect("just created"))
     }
 
     pub fn show_settings(&mut self) {
         let devices = self.audio_devices();
+        let runtime = self.control_center_runtime();
         match self.ensure_settings(devices.clone()) {
             Ok(settings) => {
+                settings.set_runtime_snapshot(runtime);
                 settings.refresh_devices(devices);
                 if let Err(error) = settings.show() {
                     error_!("show settings failed: {error}");
@@ -1020,7 +1066,7 @@ impl App {
                     self.show_display_feedback(
                         crate::ui::overlay::OverlayTone::Unavailable,
                         "Display profile hotkey ambiguous",
-                        format!("Stable profile key 0x{profile_key:04X} is not unique"),
+                        "A display profile shortcut is ambiguous. Open Displays to fix it",
                     );
                     return;
                 }
@@ -1031,7 +1077,7 @@ impl App {
             self.show_display_feedback(
                 crate::ui::overlay::OverlayTone::Unavailable,
                 "Display profile hotkey unavailable",
-                format!("No profile binding exists for key 0x{profile_key:04X}"),
+                "This display profile shortcut is no longer available",
             );
             return;
         };
@@ -1044,7 +1090,7 @@ impl App {
             self.show_display_feedback(
                 crate::ui::overlay::OverlayTone::Unavailable,
                 "Display profile unavailable",
-                format!("Profile `{}` no longer exists", binding.profile_id),
+                "This display profile is no longer available",
             );
             return;
         };
@@ -1208,6 +1254,48 @@ impl App {
         }
         match ev {
             AppEvent::ShowSettings => self.show_settings(),
+            AppEvent::SwitchPreviousDesktopFromUi => {
+                if let Some(desktop) = &self.desktop {
+                    desktop.switch_previous();
+                } else {
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::OverlayRow {
+                            icon: crate::ui::overlay::OverlayIcon::Info,
+                            tone: crate::ui::overlay::OverlayTone::Unavailable,
+                            title: "Previous desktop unavailable".into(),
+                            detail: "Workspace service is not available right now".into(),
+                        },
+                    ));
+                }
+            }
+            AppEvent::SwitchDesktopFromUi { index } => {
+                if let Some(desktop) = &self.desktop {
+                    desktop.switch_to(index);
+                } else {
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::OverlayRow {
+                            icon: crate::ui::overlay::OverlayIcon::Info,
+                            tone: crate::ui::overlay::OverlayTone::Unavailable,
+                            title: "Desktop switching unavailable".into(),
+                            detail: "Workspace service is not available right now".into(),
+                        },
+                    ));
+                }
+            }
+            AppEvent::ToggleSpecialWorkspaceFromUi => {
+                if let Some(desktop) = &self.desktop {
+                    desktop.toggle_scratchpad();
+                } else {
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::OverlayRow {
+                            icon: crate::ui::overlay::OverlayIcon::Info,
+                            tone: crate::ui::overlay::OverlayTone::Unavailable,
+                            title: "Special Workspace unavailable".into(),
+                            detail: "Workspace service is not available right now".into(),
+                        },
+                    ));
+                }
+            }
             AppEvent::ShowDiagnostics => self.show_diagnostics(),
             AppEvent::OpenSettingsPicker(kind) => self.open_settings_picker(kind),
             AppEvent::ShowStatusOverlay => self.show_status_overlay(),
@@ -1224,7 +1312,7 @@ impl App {
             } => {
                 self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus);
             }
-            AppEvent::SettingsWindowClosed => {
+            AppEvent::ControlCenterWindowClosed => {
                 self.close_settings_window();
                 self.remember_settings_position();
             }
@@ -1310,11 +1398,46 @@ impl App {
                     );
                 }
                 info!("config applied (seq {seq}, origin {:?})", stamp.origin);
+                self.refresh_settings_runtime();
             }
             AppEvent::ForegroundWindowChanged { hwnd_raw } => {
                 if let Some(desktop) = &self.desktop {
                     desktop.foreground_changed(hwnd_raw);
                 }
+            }
+            AppEvent::DesktopActionCompleted { kind } => {
+                let (title, detail) = match kind {
+                    crate::event::DesktopActionKind::Switched => {
+                        ("Desktop changed", "Switched to the selected desktop")
+                    }
+                    crate::event::DesktopActionKind::MovedAndFollowed => {
+                        ("Window moved", "Moved to the selected desktop")
+                    }
+                    crate::event::DesktopActionKind::MovedSilently => {
+                        ("Window moved", "Moved without changing desktops")
+                    }
+                    crate::event::DesktopActionKind::Previous => {
+                        ("Previous desktop", "Returned to the last normal desktop")
+                    }
+                    crate::event::DesktopActionKind::SentToSpecial => {
+                        ("Special Workspace", "Window moved")
+                    }
+                    crate::event::DesktopActionKind::EnteredSpecial => {
+                        ("Special Workspace", "Workspace opened")
+                    }
+                    crate::event::DesktopActionKind::LeftSpecial => {
+                        ("Special Workspace", "Returned to the previous desktop")
+                    }
+                };
+                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                    crate::ui::overlay::OverlayRow {
+                        icon: crate::ui::overlay::OverlayIcon::Workspace,
+                        tone: crate::ui::overlay::OverlayTone::Changed,
+                        title: title.into(),
+                        detail: detail.into(),
+                    },
+                ));
+                self.refresh_settings_runtime();
             }
             AppEvent::DesktopActionFailed { action, reason } => {
                 error_!("desktop action {action} failed: {reason}");
@@ -1322,8 +1445,8 @@ impl App {
                     crate::ui::overlay::OverlayRow {
                         icon: crate::ui::overlay::OverlayIcon::Info,
                         tone: crate::ui::overlay::OverlayTone::Unavailable,
-                        title: "Virtual desktop".into(),
-                        detail: format!("{action}: {reason}"),
+                        title: "Couldn't change workspace".into(),
+                        detail: "Try again or open Diagnostics for help".into(),
                     },
                 ));
             }
@@ -1345,6 +1468,7 @@ impl App {
                 if should_show {
                     self.show_microphone_overlay();
                 }
+                self.refresh_settings_runtime();
             }
             AppEvent::OutputStateChanged { state, origin } => {
                 let changed = self.output_state != state;
@@ -1361,6 +1485,7 @@ impl App {
                 if should_show {
                     self.show_output_overlay();
                 }
+                self.refresh_settings_runtime();
             }
             AppEvent::DefaultOutputChanged(device) => {
                 let row = crate::ui::overlay::output_changed_row(&device);
@@ -1371,6 +1496,7 @@ impl App {
                 if let Some(settings) = &mut self.settings {
                     settings.refresh_devices(devices);
                 }
+                self.refresh_settings_runtime();
             }
             AppEvent::ForegroundAudioChanged { state, origin } => {
                 let changed = self.foreground_state != state;
@@ -1404,6 +1530,7 @@ impl App {
                         self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
                     }
                 }
+                self.refresh_settings_runtime();
             }
             AppEvent::ForegroundVolumeChanged { state, origin } => {
                 if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
@@ -1411,9 +1538,11 @@ impl App {
                         crate::ui::overlay::application_volume_row(&state),
                     ));
                 }
+                self.refresh_settings_runtime();
             }
             AppEvent::DesktopBackendChanged(status) => {
                 self.desktop_status = status;
+                self.refresh_settings_runtime();
             }
         }
     }
@@ -1790,7 +1919,7 @@ impl App {
                     self.show_display_feedback(
                         crate::ui::overlay::OverlayTone::Unavailable,
                         "Shutdown cancelled",
-                        format!("Display recovery failed: {reason}. Retry Revert in Settings"),
+                        "Display recovery failed. Retry Revert in Displays",
                     );
                     return false;
                 }
@@ -1882,7 +2011,6 @@ fn output_state_label(state: &crate::audio::OutputState) -> String {
 fn tray_menu_state(app: &App) -> tray_menu::MenuState {
     tray_menu::MenuState {
         suspended: app.is_suspended(),
-        start_with_windows: crate::platform::startup::is_enabled(),
     }
 }
 
@@ -2020,14 +2148,7 @@ fn apply_menu_command(app: &mut App, cmd: Option<u32>) {
         Some(cmd::OPEN_SETTINGS) => app.show_settings(),
         Some(cmd::SHOW_STATUS) => app.route_event(AppEvent::ShowStatusOverlay),
         Some(cmd::SUSPEND_HOTKEYS) => app.toggle_suspended(),
-        Some(cmd::START_WITH_WINDOWS) => {
-            let enable = !crate::platform::startup::is_enabled();
-            if let Err(e) = crate::platform::startup::set_enabled(enable) {
-                error_!("startup registry update failed: {e}");
-            } else {
-                info!("start with windows = {enable}");
-            }
-        }
+        Some(cmd::SHOW_DIAGNOSTICS) => app.show_diagnostics(),
         Some(cmd::EXIT) => {
             let _ = app.begin_shutdown();
         }
@@ -2070,6 +2191,7 @@ mod shutdown_gate_tests {
                 fallback: crate::desktop::BackendAvailability::Available,
                 active: crate::desktop::BackendKind::KeyboardFallback,
                 desktop_count: None,
+                current_desktop: None,
                 last_served: None,
             },
             microphone_state: crate::audio::AudioState::Unavailable {

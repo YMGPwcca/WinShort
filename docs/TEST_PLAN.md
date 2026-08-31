@@ -52,7 +52,8 @@ date/time formatting, future/malformed file preservation, support-bundle
 flush integration, panic emergency persistence, and panic-path sanitization.
 The panic acceptance uses a deterministic child test process; no machine
 timezone mutation or production crash flag is used.
-## Settings interaction and accessibility (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
+
+## Control Center interaction and accessibility (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
 
 Automated coverage:
 
@@ -61,55 +62,67 @@ Automated coverage:
 - Explicit unavailable devices remain in picker choices; their opaque selection is not rewritten.
 - Endpoint roles are disabled when an explicit device is selected.
 - Reset requires two activations and changes draft state only.
-- Restored Settings rectangles are fully contained in the selected work area and use target-DPI
-  scaling.
-- Custom Settings UIA snapshot nodes expose logical control types, names/help, bounds, offscreen,
-  enabled/focus state, toggle state, and slider range/value semantics without child HWND creation.
-- Direct provider ABI tests verify S_OK/null unsupported patterns, navigation boundaries, hosted-root
-  and child RuntimeIds, root-only host providers, truthful Button/Invoke mappings, read-only
+- Restored Control Center rectangles are fully contained in the selected work area and use
+  target-DPI scaling.
+- Custom Control Center UIA snapshot nodes expose logical control types, names/help, bounds,
+  offscreen, enabled/focus state, toggle state, and slider range/value semantics without child
+  HWND creation.
+- Direct provider ABI tests verify S_OK/null unsupported patterns, navigation boundaries, hosted
+  root and child RuntimeIds, root-only host providers, truthful Button/Invoke mappings, read-only
   ValuePattern failure, and root/child/outside point queries.
-- UIA focus tests distinguish Settings HWND, native picker LISTBOX, and outside focus; focus actions
-  are queued to the Settings HWND. Snapshot publication filters property events to actual focus,
-  toggle, slider value, enabled, offscreen, bounds, name, and displayed-value changes.
-- UIA actions are queued to the Settings HWND; UIA `SetFocus` publishes actual Settings focus
-  after Win32 confirms it, while an open picker publishes native LISTBOX focus.
+- UIA focus tests distinguish Control Center HWND, native picker LISTBOX, and outside focus;
+  focus actions are queued to the Control Center HWND. Snapshot publication filters property
+  events to actual focus, toggle, slider value, enabled, offscreen, bounds, name, and displayed
+  value changes.
+- UIA actions are queued to the Control Center HWND; UIA `SetFocus` publishes actual Control
+  Center focus after Win32 confirms it, while an open picker publishes native LISTBOX focus.
 - Native picker/listbox retains fixed-order keyboard navigation, generation-checked close, and
-  idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are pure-tested.
+  idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are
+  pure-tested.
 
-- UIA publication is two-phase: a SettingsUi `RefCell` may commit and queue state changes, but
-  only the later borrow-free Settings HWND flush may simulate UIA delivery. Tests cover provider
-  re-query during flush, initial-notification suppression, and target/property coalescing.
+- UIA publication is two-phase: the Control Center UI `RefCell` may commit and queue state
+  changes, but only the later borrow-free Control Center flush may simulate UIA delivery. Tests
+  cover provider re-query during flush, initial-notification suppression, and target/property
+  coalescing.
 - Raw property tests verify `VT_EMPTY` for inapplicable values, BSTR/BOOL values for ValuePattern,
   and normal Boolean pattern-availability properties. COM identity tests verify root-only
   FragmentRoot support, shared root identity, and stable child navigation.
 - Invoke event tests verify one deferred Invoked notification per accepted Button action; picker
-  construction tests verify HWND registration before activation and direct Settings-to-Picker focus.
+  construction tests verify HWND registration before activation and direct Control-Center-to-
+  Picker focus.
 
 - Direct provider HRESULT tests distinguish disabled (`UIA_E_ELEMENTNOTENABLED`), stale
   (`UIA_E_ELEMENTNOTAVAILABLE`), unsupported (`UIA_E_NOTSUPPORTED`), and invalid argument
   (`E_INVALIDARG`) paths without changing the live unsupported-property `VT_EMPTY` contract.
-- The `nullable_provider_abi_regression` test calls each successful-null COM
-  output path through its raw vtable and runs in both normal and release
-  profiles; hosted Windows CI runs the release-profile case in the x86_64
-  release-build job.
-- Settings regression seams verify parent-wheel picker dismissal, close ordering
-  before parent hide, pending activation blocking, and focus repair when Save
-  or dependent controls become disabled.
-- Bounded value rendering tests verify chevron reservation and DirectWrite
-  trailing-character trimming; applied status text remains generic.
+- The `nullable_provider_abi_regression` test calls each successful-null COM output path through
+  its raw vtable and runs in both normal and release profiles; hosted Windows CI runs the
+  release-profile case in the x86_64 release-build job.
+- Control Center regression seams verify parent-wheel picker dismissal, close ordering before
+  parent hide, pending activation blocking, and focus repair when a local mutation disables the
+  current control.
+- Bounded value rendering tests verify chevron reservation and DirectWrite trailing-character
+  trimming; applied status text remains generic.
+- Navigation/search tests verify case-insensitive deterministic user-concept matching and reject
+  internal configuration names from the normal search index.
+- Onboarding policy tests verify that a meaningful existing `config.toml` suppresses the
+  first-run flow and that UI state remains separate from configuration.
 
 Manual matrix:
 
-- Input/output picker: Default, available explicit device, disconnected explicit device.
-- Hover/focus non-obvious controls and verify delayed native help text closes on pointer/focus change.
-- Role rows enable only for Default and announce the reason when disabled.
-- Overlay position and monitor picker: Foreground, Primary, each `Device(String)`, disconnected
-  configured monitor, long labels, popup above/below and DPI changes.
+- Input/output picker: follow Windows default, available explicit device, disconnected explicit
+  device.
+- Hover/focus non-obvious controls and verify delayed native help text closes on pointer/focus
+  change.
+- Role rows enable only for Follow Windows default and announce the reason when disabled.
+- Overlay position and monitor picker: Foreground, Primary, each configured monitor, disconnected
+  configured monitor, long labels, popup above/below, and DPI changes.
 - Mouse and keyboard: Tab/Shift-Tab, Enter, Space, Escape, arrows, Home/End, Page Up/Down,
-  picker focus loss, hotkey recorder transitions, Save, Cancel, and reset confirmation.
-- Settings restore after restart, removed monitor, negative coordinates, 100/125/150/200% DPI.
-- Narrator or Accessibility Insights: Settings window, toggle names/values, picker selection,
-  disabled role help, slider range/value, Save/Cancel, and sensible focus order.
+  picker focus loss, hotkey recorder transitions, local commit/cancel, and reset confirmation.
+- Control Center restore after restart, removed monitor, negative coordinates, 100/125/150/200%
+  DPI.
+- Narrator or Accessibility Insights: Control Center navigation, page headings, toggle names/
+  values, picker selection, disabled role help, slider range/value, local action feedback, and
+  sensible focus order.
 - Dark/light themes, large DPI, focus visibility, and disconnected-device presentation.
 
 If an interactive desktop is unavailable, GUI and Narrator results remain unverified; automated
@@ -201,10 +214,9 @@ refresh the multi-row status presentation. Coalesced updates preserve the full s
 
 Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
 flag exists).
-
 ## G. Process-level smoke (MANUAL / HARDWARE-DEPENDENT)
 
-release exe launches silently · tray icon present · double-click opens one settings window ·
+release exe launches silently · tray icon present · double-click opens one Control Center window ·
 close keeps process alive · Exit removes icon and process ends · second launch activates first
 instance and exits · idle CPU ≈ 0.
 
@@ -248,12 +260,12 @@ fuzz campaign is claimed or running.
 - Multi-session foreground app (browser with media)
 - Same-basename different installations (#46 ambiguous case)
 - Same-full-path independent instances (accepted limitation)
-- Cycle Input/Output hotkeys change the Windows system default for all three roles
+- Next microphone/Next speaker hotkeys change the Windows system default for all three roles
 - Foreground volume up/down changes only matched application sessions by 5 percentage points
-- Settings allowlist picker selects multiple input/output endpoints and offers
-  explicit All-active and No-endpoint controls
-- An allowlisted endpoint unplugged from Windows is skipped without losing its
-  configured ID; reconnect notification makes it eligible again
+- Control Center allowlist picker selects multiple input/output devices and offers explicit
+  Use all available devices and Disable cycling controls
+- An allowlisted device unplugged from Windows is skipped without losing its configured ID;
+  reconnect notification makes it eligible again
 
 ### Virtual desktop
 - Configurable numbered modifier family and `1..9` action derivation

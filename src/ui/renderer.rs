@@ -2,7 +2,7 @@
 //!
 //! Coordinates are 96-DPI logical pixels. The render target owns the current
 //! window DPI, so moving between monitors rerenders vector/text content instead
-//! of raster scaling. This renderer is used by the settings and diagnostics
+//! of raster scaling. This renderer is used by the Control Center and diagnostics
 //! windows; the overlay has its own WIC/DIB path.
 
 use std::collections::HashMap;
@@ -24,8 +24,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
 };
 
 use crate::error::{Error, Result};
@@ -61,6 +61,7 @@ pub enum TextStyle {
     Title,
     Subtitle,
     Section,
+    SectionDescription,
     Body,
     BodyStrong,
     Caption,
@@ -71,7 +72,18 @@ pub enum TextStyle {
 }
 
 fn trimming_for(style: TextStyle) -> Option<DWRITE_TRIMMING> {
-    matches!(style, TextStyle::Value).then_some(DWRITE_TRIMMING {
+    matches!(
+        style,
+        TextStyle::Section
+            | TextStyle::Body
+            | TextStyle::BodyStrong
+            | TextStyle::Caption
+            | TextStyle::CaptionRight
+            | TextStyle::Button
+            | TextStyle::ButtonSmall
+            | TextStyle::Value
+    )
+    .then_some(DWRITE_TRIMMING {
         granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
         delimiter: 0,
         delimiterCount: 0,
@@ -99,7 +111,7 @@ impl Renderer {
                 D2D1_FACTORY_TYPE_SINGLE_THREADED,
                 Some(&D2D1_FACTORY_OPTIONS::default()),
             )
-            .map_err(|e| Error::win("D2D1CreateFactory(settings)", &e))?;
+            .map_err(|e| Error::win("D2D1CreateFactory(control center)", &e))?;
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
                 .map_err(|e| Error::win("DWriteCreateFactory", &e))?;
@@ -271,6 +283,29 @@ impl Renderer {
         self.draw_text(text, rect, style, role, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    /// Measure wrapped text using the same DirectWrite format used for
+    /// painting. Layout callers reserve a safe block; this keeps the actual
+    /// line geometry driven by the installed font rather than character counts.
+    pub fn text_height(&self, text: &str, style: TextStyle, width: f32, max_height: f32) -> f32 {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let Ok(layout) = (unsafe {
+            self.dwrite.CreateTextLayout(
+                &wide,
+                self.format(style),
+                width.max(1.0),
+                max_height.max(1.0),
+            )
+        }) else {
+            return 0.0;
+        };
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        if unsafe { layout.GetMetrics(&mut metrics) }.is_ok() {
+            metrics.height
+        } else {
+            0.0
+        }
+    }
+
     fn draw_text(
         &self,
         text: &str,
@@ -319,43 +354,49 @@ impl Renderer {
         let entries = [
             (
                 TextStyle::Title,
-                24.0,
+                28.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::Subtitle,
-                13.0,
+                14.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::Section,
-                14.0,
+                17.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
-                TextStyle::Body,
+                TextStyle::SectionDescription,
                 13.0,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
+            ),
+            (
+                TextStyle::Body,
+                14.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::BodyStrong,
-                13.0,
+                14.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::Caption,
-                11.0,
+                12.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
             (
                 TextStyle::CaptionRight,
-                11.0,
+                12.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_TRAILING,
             ),
@@ -367,19 +408,29 @@ impl Renderer {
             ),
             (
                 TextStyle::ButtonSmall,
-                11.5,
+                12.0,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_TEXT_ALIGNMENT_CENTER,
             ),
             (
                 TextStyle::Value,
-                12.0,
+                13.0,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_TEXT_ALIGNMENT_LEADING,
             ),
         ];
         for (style, size, weight, alignment) in entries {
             let format = self.create_format(size, weight, alignment)?;
+            if matches!(
+                style,
+                TextStyle::Title | TextStyle::Subtitle | TextStyle::SectionDescription
+            ) {
+                unsafe {
+                    format
+                        .SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)
+                        .map_err(|e| Error::win("IDWriteTextFormat::SetWordWrapping", &e))?;
+                }
+            }
             if let Some(trimming) = trimming_for(style) {
                 let sign = unsafe { self.dwrite.CreateEllipsisTrimmingSign(&format) }
                     .map_err(|e| Error::win("CreateEllipsisTrimmingSign", &e))?;
@@ -498,6 +549,6 @@ mod tests {
         assert_eq!(trimming.granularity, DWRITE_TRIMMING_GRANULARITY_CHARACTER);
         assert_eq!(trimming.delimiter, 0);
         assert_eq!(trimming.delimiterCount, 0);
-        assert!(trimming_for(TextStyle::Body).is_none());
+        assert!(trimming_for(TextStyle::Body).is_some());
     }
 }

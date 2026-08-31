@@ -102,6 +102,7 @@ pub enum OverlayIcon {
     Microphone,
     Output,
     Application,
+    Workspace,
     /// Reserved for informational rows (tone ladder completeness).
     #[allow(dead_code)]
     Info,
@@ -260,7 +261,8 @@ fn row_rank(icon: OverlayIcon) -> usize {
         OverlayIcon::Microphone => 0,
         OverlayIcon::Output => 1,
         OverlayIcon::Application => 2,
-        OverlayIcon::Info => 3,
+        OverlayIcon::Workspace => 3,
+        OverlayIcon::Info => 4,
     }
 }
 
@@ -323,20 +325,20 @@ pub fn microphone_row(state: &crate::audio::AudioState) -> OverlayRow {
         AudioState::Muted { volume_pct } => OverlayRow {
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Muted,
-            title: "Microphone".into(),
-            detail: format!("Muted • {volume_pct}% input volume"),
+            title: "Microphone muted".into(),
+            detail: format!("{volume_pct}% input volume"),
         },
         AudioState::Active { volume_pct } => OverlayRow {
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Active,
             title: "Microphone".into(),
-            detail: format!("Active • {volume_pct}% input volume"),
+            detail: format!("Ready · {volume_pct}% input volume"),
         },
-        AudioState::Unavailable { reason } => OverlayRow {
+        AudioState::Unavailable { .. } => OverlayRow {
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Unavailable,
             title: "Microphone unavailable".into(),
-            detail: concise(reason),
+            detail: "Windows Audio is not available".into(),
         },
     }
 }
@@ -355,18 +357,22 @@ pub fn output_row(state: &crate::audio::OutputState) -> OverlayRow {
             } else {
                 OverlayTone::Active
             },
-            title: device.name.clone(),
-            detail: if *muted {
-                "Output muted".into()
+            title: if *muted {
+                "Speaker muted".into()
             } else {
-                format!("{volume_pct}% volume")
+                device.name.clone()
+            },
+            detail: if *muted {
+                "Speaker output is muted".into()
+            } else {
+                format!("Default speaker · {volume_pct}% volume")
             },
         },
-        OutputState::Unavailable { reason } => OverlayRow {
+        OutputState::Unavailable { .. } => OverlayRow {
             icon: OverlayIcon::Output,
             tone: OverlayTone::Unavailable,
-            title: "Output".into(),
-            detail: concise(reason),
+            title: "Speakers unavailable".into(),
+            detail: "Windows Audio is not available".into(),
         },
     }
 }
@@ -380,25 +386,22 @@ pub fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow {
         Aggregate::NoSession => (OverlayTone::Unavailable, "No audio session".to_string()),
         Aggregate::Error => (
             OverlayTone::Unavailable,
-            state
-                .error
-                .clone()
-                .map(|reason| format!("Audio error: {reason}"))
-                .unwrap_or_else(|| "Audio error".into()),
+            "Couldn't update current app audio".to_string(),
         ),
         Aggregate::NoExternalApp => (
             OverlayTone::Unavailable,
-            "No external application selected".to_string(),
+            "No current app with audio".to_string(),
         ),
     };
     OverlayRow {
         icon: OverlayIcon::Application,
         tone,
-        title: state
-            .app_name
-            .clone()
-            .unwrap_or_else(|| "Current app".into()),
-        detail,
+        title: "Current app audio".into(),
+        detail: if let Some(app_name) = &state.app_name {
+            format!("{app_name} · {detail}")
+        } else {
+            detail
+        },
     }
 }
 
@@ -406,17 +409,19 @@ pub fn device_cycle_row(
     flow: crate::audio::DeviceCycleFlow,
     device: &crate::audio::DeviceId,
 ) -> OverlayRow {
-    let title = match flow {
-        crate::audio::DeviceCycleFlow::Input => "Input device",
-        crate::audio::DeviceCycleFlow::Output => "Output device",
-    };
+    let input = matches!(flow, crate::audio::DeviceCycleFlow::Input);
     OverlayRow {
-        icon: match flow {
-            crate::audio::DeviceCycleFlow::Input => OverlayIcon::Microphone,
-            crate::audio::DeviceCycleFlow::Output => OverlayIcon::Output,
+        icon: if input {
+            OverlayIcon::Microphone
+        } else {
+            OverlayIcon::Output
         },
         tone: OverlayTone::Changed,
-        title: title.into(),
+        title: if input {
+            "Next microphone".into()
+        } else {
+            "Next speaker".into()
+        },
         detail: concise(&device.name),
     }
 }
@@ -431,19 +436,19 @@ pub fn device_cycle_no_devices_row(flow: crate::audio::DeviceCycleFlow) -> Overl
         },
         tone: OverlayTone::Unavailable,
         title: if input {
-            "Input device".into()
+            "Next microphone unavailable".into()
         } else {
-            "Output device".into()
+            "Next speaker unavailable".into()
         },
         detail: if input {
-            "No active input devices".into()
+            "No active microphones are available".into()
         } else {
-            "No active output devices".into()
+            "No active speakers are available".into()
         },
     }
 }
 
-pub fn device_cycle_error_row(flow: crate::audio::DeviceCycleFlow, error: &str) -> OverlayRow {
+pub fn device_cycle_error_row(flow: crate::audio::DeviceCycleFlow, _error: &str) -> OverlayRow {
     let input = matches!(flow, crate::audio::DeviceCycleFlow::Input);
     OverlayRow {
         icon: if input {
@@ -453,76 +458,72 @@ pub fn device_cycle_error_row(flow: crate::audio::DeviceCycleFlow, error: &str) 
         },
         tone: OverlayTone::Unavailable,
         title: if input {
-            "Input device unavailable".into()
+            "Next microphone unavailable".into()
         } else {
-            "Output device unavailable".into()
+            "Next speaker unavailable".into()
         },
-        detail: concise(error),
+        detail: "Couldn't change the device. Open Diagnostics for help".into(),
     }
 }
 
 pub fn application_volume_row(state: &crate::audio::AppVolumeState) -> OverlayRow {
-    let title = state
-        .app_name
-        .as_deref()
-        .map_or_else(|| "Current app".into(), concise);
     let (tone, detail) = if state.app_name.is_none() {
-        (
-            OverlayTone::Unavailable,
-            state
-                .error
-                .as_deref()
-                .map_or_else(|| "No external application selected".into(), concise),
-        )
+        (OverlayTone::Unavailable, "No current app with audio".into())
     } else {
         match (
             state.min_volume_pct,
             state.max_volume_pct,
             state.sessions,
-            state.error.as_deref(),
+            state.error.is_some(),
         ) {
-            (Some(min), Some(max), _, error) => {
+            (Some(min), Some(max), _, has_error) => {
                 let value = if min == max {
                     format!("Volume {min}%")
                 } else {
                     format!("Volume {min}–{max}%")
                 };
                 (
-                    if error.is_some() {
+                    if has_error {
                         OverlayTone::Unavailable
                     } else {
                         OverlayTone::Changed
                     },
-                    error.map_or(value.clone(), |error| {
-                        format!("{value} • {}", concise(error))
-                    }),
+                    if has_error {
+                        format!("{value} · Some sessions couldn't be updated")
+                    } else {
+                        value
+                    },
                 )
             }
-            (_, _, 0, Some(error)) => (OverlayTone::Unavailable, concise(error)),
-            (_, _, 0, None) => (OverlayTone::Unavailable, "No active audio session".into()),
+            (_, _, 0, true) => (
+                OverlayTone::Unavailable,
+                "Couldn't change current app audio".into(),
+            ),
+            (_, _, 0, false) => (OverlayTone::Unavailable, "No active audio session".into()),
             _ => (
                 OverlayTone::Unavailable,
-                state
-                    .error
-                    .as_deref()
-                    .map_or_else(|| "Volume unavailable".into(), concise),
+                "Current app volume unavailable".into(),
             ),
         }
     };
     OverlayRow {
         icon: OverlayIcon::Application,
         tone,
-        title,
-        detail,
+        title: "Current app audio".into(),
+        detail: if let Some(app_name) = &state.app_name {
+            format!("{app_name} · {detail}")
+        } else {
+            detail
+        },
     }
 }
 
-/// Transient "output changed" card (#17b).
+/// Transient "speaker changed" card (#17b).
 pub fn output_changed_row(device: &crate::audio::state::DeviceId) -> OverlayRow {
     OverlayRow {
         icon: OverlayIcon::Output,
         tone: OverlayTone::Changed,
-        title: "Output changed".into(),
+        title: "Speaker changed".into(),
         detail: concise(&device.name),
     }
 }
@@ -1395,6 +1396,49 @@ unsafe fn draw_icon(
                     None,
                 );
             }
+            OverlayIcon::Workspace => {
+                target.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: cx - 9.0 * scale,
+                            top: cy - 7.0 * scale,
+                            right: cx + 9.0 * scale,
+                            bottom: cy + 7.0 * scale,
+                        },
+                        radiusX: 2.0 * scale,
+                        radiusY: 2.0 * scale,
+                    },
+                    brush,
+                    w,
+                    None,
+                );
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx,
+                        Y: cy - 6.0 * scale,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx,
+                        Y: cy + 6.0 * scale,
+                    },
+                    brush,
+                    w * 0.8,
+                    None,
+                );
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: cx - 7.0 * scale,
+                        Y: cy,
+                    },
+                    windows_numerics::Vector2 {
+                        X: cx + 7.0 * scale,
+                        Y: cy,
+                    },
+                    brush,
+                    w * 0.8,
+                    None,
+                );
+            }
             OverlayIcon::Info => {
                 target.DrawEllipse(
                     &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
@@ -1483,7 +1527,9 @@ fn position_for(
         OverlayPosition::TopLeft => (left, top),
         OverlayPosition::TopCenter => (center_x, top),
         OverlayPosition::TopRight => (right, top),
+        OverlayPosition::CenterLeft => (left, center_y),
         OverlayPosition::Center => (center_x, center_y),
+        OverlayPosition::CenterRight => (right, center_y),
         OverlayPosition::BottomLeft => (left, bottom),
         OverlayPosition::BottomCenter => (center_x, bottom),
         OverlayPosition::BottomRight => (right, bottom),
@@ -1543,6 +1589,7 @@ unsafe extern "system" fn overlay_wndproc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::RECT;
 
     fn row(icon: OverlayIcon, title: &str) -> OverlayRow {
         OverlayRow {
@@ -1712,7 +1759,7 @@ mod tests {
             name: "USB Microphone".into(),
         };
         let row = device_cycle_row(crate::audio::DeviceCycleFlow::Input, &device);
-        assert_eq!(row.title, "Input device");
+        assert_eq!(row.title, "Next microphone");
         assert_eq!(row.detail, "USB Microphone");
     }
 
@@ -1725,7 +1772,7 @@ mod tests {
             max_volume_pct: Some(65),
             error: None,
         });
-        assert_eq!(exact.detail, "Volume 65%");
+        assert_eq!(exact.detail, "Player · Volume 65%");
 
         let range = application_volume_row(&crate::audio::AppVolumeState {
             app_name: Some("Player".into()),
@@ -1734,13 +1781,32 @@ mod tests {
             max_volume_pct: Some(70),
             error: None,
         });
-        assert_eq!(range.detail, "Volume 45–70%");
+        assert_eq!(range.detail, "Player · Volume 45–70%");
 
         let empty = application_volume_row(&crate::audio::AppVolumeState::no_session(Some(
             "Player".into(),
         )));
-        assert_eq!(empty.detail, "No active audio session");
+        assert_eq!(empty.detail, "Player · No active audio session");
         let no_external = application_volume_row(&crate::audio::AppVolumeState::no_external());
-        assert_eq!(no_external.detail, "No external application selected");
+        assert_eq!(no_external.detail, "No current app with audio");
+    }
+
+    #[test]
+    fn center_edge_positions_use_the_work_area_axes() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 800,
+        };
+        let size = SIZE { cx: 100, cy: 80 };
+        assert_eq!(
+            position_for(work, size, OverlayPosition::CenterLeft, 96),
+            POINT { x: 22, y: 360 }
+        );
+        assert_eq!(
+            position_for(work, size, OverlayPosition::CenterRight, 96),
+            POINT { x: 878, y: 360 }
+        );
     }
 }

@@ -125,6 +125,16 @@ pub enum AudioEventOrigin {
     WinShortAction(u64),
     StatusRequest(u64),
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopActionKind {
+    Switched,
+    MovedAndFollowed,
+    MovedSilently,
+    Previous,
+    SentToSpecial,
+    EnteredSpecial,
+    LeftSpecial,
+}
 
 /// Events routed through the main window. Payloads live in the process-wide
 /// queue; `PostMessageW` carries only a wake-up message or packed action.
@@ -132,6 +142,11 @@ pub enum AudioEventOrigin {
 pub enum AppEvent {
     // Commands executed on the main thread.
     ShowSettings,
+    SwitchPreviousDesktopFromUi,
+    SwitchDesktopFromUi {
+        index: usize,
+    },
+    ToggleSpecialWorkspaceFromUi,
     ShowDiagnostics,
     OpenSettingsPicker(crate::ui::picker::PickerKind),
     ShowStatusOverlay,
@@ -150,7 +165,7 @@ pub enum AppEvent {
         popup_hwnd: isize,
         restore_focus: bool,
     },
-    SettingsWindowClosed,
+    ControlCenterWindowClosed,
     OpenDisplayRenamePrompt {
         profile_id: String,
         current_name: String,
@@ -189,6 +204,9 @@ pub enum AppEvent {
     /// Event-driven foreground HWND sample for desktop focus bookkeeping.
     ForegroundWindowChanged {
         hwnd_raw: isize,
+    },
+    DesktopActionCompleted {
+        kind: DesktopActionKind,
     },
     DesktopActionFailed {
         action: String,

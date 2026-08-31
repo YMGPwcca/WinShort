@@ -20,7 +20,7 @@ use crate::desktop::keyboard_fallback::KeyboardFallback;
 use crate::desktop::state::DesktopHistory;
 use crate::desktop::workspace_state;
 use crate::error::{Error, Result};
-use crate::event::AppEvent;
+use crate::event::{AppEvent, DesktopActionKind};
 
 const SPECIAL_WORKSPACE_NAME: &str = "WinShort Special Workspace";
 
@@ -217,6 +217,8 @@ impl DesktopController {
                 self.last_served = Some(BackendKind::NativeShell);
                 if let Err(error) = self.restore_focus(target) {
                     self.publish_failure("restore desktop focus", error);
+                } else {
+                    self.publish_completed(DesktopActionKind::Switched);
                 }
                 self.publish_status();
             }
@@ -233,6 +235,7 @@ impl DesktopController {
                         );
                         self.history.clear_identity();
                         self.last_served = Some(BackendKind::KeyboardFallback);
+                        self.publish_completed(DesktopActionKind::Switched);
                         self.publish_status();
                     }
                     Err(fallback_error) => self.publish_failure("switch desktop", fallback_error),
@@ -309,6 +312,11 @@ impl DesktopController {
         match result {
             Ok(()) => {
                 self.last_served = Some(BackendKind::NativeShell);
+                self.publish_completed(if follow {
+                    DesktopActionKind::MovedAndFollowed
+                } else {
+                    DesktopActionKind::MovedSilently
+                });
                 self.publish_status();
             }
             Err(error) => {
@@ -382,10 +390,12 @@ impl DesktopController {
         match result {
             Ok((target, left_special_workspace)) => {
                 self.last_served = Some(BackendKind::NativeShell);
-                if !left_special_workspace {
-                    if let Err(error) = self.restore_focus(target) {
-                        self.publish_failure("restore previous desktop focus", error);
-                    }
+                if left_special_workspace {
+                    self.publish_completed(DesktopActionKind::Previous);
+                } else if let Err(error) = self.restore_focus(target) {
+                    self.publish_failure("restore previous desktop focus", error);
+                } else {
+                    self.publish_completed(DesktopActionKind::Previous);
                 }
                 self.publish_status();
             }
@@ -431,6 +441,7 @@ impl DesktopController {
         // Foreground events also let Previous Desktop observe switches made
         // outside WinShort without introducing a polling loop.
         self.observe_current_desktop();
+        self.publish_status();
     }
 
     fn configure_scratchpad(&mut self, managed: bool) {
@@ -637,6 +648,7 @@ impl DesktopController {
         match result {
             Ok(()) => {
                 self.last_served = Some(BackendKind::NativeShell);
+                self.publish_completed(DesktopActionKind::SentToSpecial);
                 self.publish_status();
                 crate::info!("moved foreground window into the special workspace");
             }
@@ -689,6 +701,11 @@ impl DesktopController {
                 // This is a real Virtual Desktop transition. Deliberately let
                 // Shell own foreground/focus selection instead of replaying
                 // Phase-1 SetForegroundWindow restoration here.
+                self.publish_completed(if entering {
+                    DesktopActionKind::EnteredSpecial
+                } else {
+                    DesktopActionKind::LeftSpecial
+                });
                 self.publish_status();
                 crate::info!(
                     "{} special workspace",
@@ -840,13 +857,18 @@ impl DesktopController {
             }
         }
     }
-
     fn status(&self) -> BackendStatus {
-        let count = self.native.as_ref().and_then(|native| {
-            native
-                .desktop_ids()
-                .ok()
-                .map(|ids| numbered_desktop_ids(&ids, self.special_workspace).len())
+        let ids = self
+            .native
+            .as_ref()
+            .and_then(|native| native.desktop_ids().ok());
+        let desktop_count = ids
+            .as_ref()
+            .map(|ids| numbered_desktop_ids(ids, self.special_workspace).len());
+        let current_desktop = ids.as_ref().and_then(|ids| {
+            let current = self.native.as_ref()?.current_desktop_id().ok()?;
+            let normal = numbered_desktop_ids(ids, self.special_workspace);
+            normal.iter().position(|id| *id == current)
         });
         BackendStatus {
             native: self.native_availability.clone(),
@@ -856,11 +878,18 @@ impl DesktopController {
             } else {
                 BackendKind::KeyboardFallback
             },
-            desktop_count: count,
+            desktop_count,
+            current_desktop,
             last_served: self.last_served,
         }
     }
 
+    fn publish_completed(&self, kind: DesktopActionKind) {
+        let hwnd = HWND(self.hwnd_raw as *mut _);
+        unsafe {
+            let _ = crate::event::post_event(hwnd, AppEvent::DesktopActionCompleted { kind });
+        }
+    }
     fn publish_failure(&self, action: &str, error: DesktopError) {
         crate::error_!("desktop action {action} failed: {error}");
         let hwnd = HWND(self.hwnd_raw as *mut _);

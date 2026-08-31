@@ -174,8 +174,8 @@ any input injection (#20): a too-large target never triggers SendInput keys.
 
 ## Status surface
 
-Settings → Advanced shows one composed read-only row ("Virtual desktop engine"): active
-backend label, desktop count when known, native availability/reason (`Unsupported build N`),
+The Control Center → Advanced page shows one composed read-only row ("Virtual desktop engine"):
+active backend label, desktop count when known, native availability/reason (`Unsupported build N`),
 and last served. `last_served` (#21/#22) records the backend that actually completed the most
 recent switch — native success updates it even after a rebuild; a failed fallback walk leaves
 it unchanged.
