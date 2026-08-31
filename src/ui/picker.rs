@@ -1,9 +1,8 @@
-//! Native, keyboard-accessible picker popups used by Settings.
+//! Native, keyboard-accessible picker popups used by the Control Center.
 //!
 //! A real LISTBOX is hosted in a small owner window rather than cycling values
-//! in the painted Settings row. The native list supplies selection semantics to
-//! UI Automation/Narrator while the surrounding Settings surface remains D2D.
-
+//! in a painted Control Center row. The native list supplies selection semantics
+//! to UI Automation/Narrator while the surrounding Control Center remains D2D.
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     OnceLock,
@@ -41,7 +40,7 @@ use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
 use crate::ui::theme::{Color, Theme};
 
-const CLASS_NAME: &str = "WinShort.SettingsPicker";
+const CLASS_NAME: &str = "WinShort.ControlCenterPicker";
 const LB_ADDSTRING: u32 = 0x0180;
 const LB_SETCURSEL: u32 = 0x0186;
 const LB_GETCURSEL: u32 = 0x0188;

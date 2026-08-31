@@ -188,6 +188,8 @@ pub enum MonitorChoice {
 }
 
 impl MonitorChoice {
+    /// Compatibility helper retained for non-shell callers.
+    #[allow(dead_code)]
     pub fn label(&self) -> String {
         match self {
             MonitorChoice::Foreground => "Foreground window's monitor".into(),
@@ -710,7 +712,7 @@ impl Config {
 
         if t.general.start_with_windows {
             warnings.push(
-                "ignored general.start_with_windows; startup is managed in Settings/tray (registry)".into(),
+                "ignored general.start_with_windows; startup is managed in the Control Center/tray (registry)".into(),
             );
         }
         c.general.start_hotkeys_enabled = t.general.start_hotkeys_enabled;

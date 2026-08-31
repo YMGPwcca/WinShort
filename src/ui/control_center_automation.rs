@@ -1,9 +1,9 @@
-//! Custom UI Automation surface for the owner-drawn Settings window.
+//! Custom UI Automation surface for the owner-drawn Control Center window.
 //!
-//! The provider never reaches into SettingsUi. Reads use the last published
-//! immutable snapshot; actions are queued back to the Settings HWND. Snapshot
-//! changes queue typed notifications, and only a later Settings HWND flush
-//! crosses the external UI Automation boundary.
+//! The provider never reaches into Control Center UI state. Reads use the last
+//! published immutable snapshot; actions are queued back to the Control Center
+//! HWND. Snapshot changes queue typed notifications, and only a later Control
+//! Center flush crosses the external UI Automation boundary.
 
 #![allow(non_upper_case_globals)]
 
@@ -29,18 +29,18 @@ use windows::Win32::UI::Accessibility::{
     ProviderOptions_ProviderOwnsSetFocus, ProviderOptions_ServerSideProvider, ToggleState,
     ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId, UIA_AutomationIdPropertyId,
     UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
-    UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_HasKeyboardFocusPropertyId,
-    UIA_HelpTextPropertyId, UIA_InvokePatternId, UIA_Invoke_InvokedEventId,
-    UIA_IsContentElementPropertyId, UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId,
-    UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_IsInvokePatternAvailablePropertyId,
-    UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
-    UIA_IsRangeValuePatternAvailablePropertyId, UIA_IsTogglePatternAvailablePropertyId,
-    UIA_IsValuePatternAvailablePropertyId, UIA_NamePropertyId, UIA_ProviderDescriptionPropertyId,
-    UIA_RangeValueLargeChangePropertyId, UIA_RangeValueMaximumPropertyId,
-    UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId, UIA_RangeValueSmallChangePropertyId,
-    UIA_RangeValueValuePropertyId, UIA_SliderControlTypeId, UIA_TogglePatternId,
-    UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId, UIA_ValuePatternId,
-    UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
+    UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_EditControlTypeId,
+    UIA_HasKeyboardFocusPropertyId, UIA_HelpTextPropertyId, UIA_InvokePatternId,
+    UIA_Invoke_InvokedEventId, UIA_IsContentElementPropertyId, UIA_IsControlElementPropertyId,
+    UIA_IsEnabledPropertyId, UIA_IsExpandCollapsePatternAvailablePropertyId,
+    UIA_IsInvokePatternAvailablePropertyId, UIA_IsKeyboardFocusablePropertyId,
+    UIA_IsOffscreenPropertyId, UIA_IsRangeValuePatternAvailablePropertyId,
+    UIA_IsTogglePatternAvailablePropertyId, UIA_IsValuePatternAvailablePropertyId,
+    UIA_NamePropertyId, UIA_ProviderDescriptionPropertyId, UIA_RangeValueLargeChangePropertyId,
+    UIA_RangeValueMaximumPropertyId, UIA_RangeValueMinimumPropertyId, UIA_RangeValuePatternId,
+    UIA_RangeValueSmallChangePropertyId, UIA_RangeValueValuePropertyId, UIA_SliderControlTypeId,
+    UIA_TogglePatternId, UIA_ToggleToggleStatePropertyId, UIA_ValueIsReadOnlyPropertyId,
+    UIA_ValuePatternId, UIA_ValueValuePropertyId, UiaAppendRuntimeId, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaRect, UiaReturnRawElementProvider, UiaRootObjectId,
     UIA_E_ELEMENTNOTAVAILABLE, UIA_E_ELEMENTNOTENABLED, UIA_E_INVALIDOPERATION, UIA_E_NOTSUPPORTED,
     UIA_PATTERN_ID, UIA_PROPERTY_ID,
@@ -144,6 +144,7 @@ pub(crate) struct SettingsAutomationSnapshot {
     pub focused: Option<ElementId>,
     pub focus_owner: AutomationFocusOwner,
     pub picker_open_for: Option<ElementId>,
+    pub page: crate::ui::navigation::Page,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutomationTarget {
@@ -243,6 +244,7 @@ pub(crate) enum SettingsAutomationAction {
     Invoke(ElementId),
     Toggle(ElementId),
     SetSlider { id: ElementId, value: f64 },
+    SetSearch(String),
     SetFocus(ElementId),
     SetWindowFocus,
 }
@@ -350,7 +352,7 @@ impl SettingsAutomation {
         pending.flush_posted = false;
         std::mem::take(&mut pending.notifications)
     }
-    /// Phase 2: deliver notifications after the owning SettingsUi borrow is gone.
+    /// Phase 2: deliver notifications after the owning Control Center UI borrow is gone.
     pub(crate) fn flush_pending_events(&self) {
         for notification in self.take_pending_notifications() {
             self.emit_notification(notification);
@@ -559,6 +561,7 @@ pub(crate) fn snapshot_from_settings(
             AutomationFocusOwner::Outside
         },
         picker_open_for: None,
+        page: layout.page,
     }
 }
 
@@ -824,6 +827,20 @@ fn snapshot_notifications(
                 AutomationValue::Rect(current.window),
             ));
         }
+        if previous.page != current.page {
+            notifications.push(AutomationNotification::property(
+                AutomationTarget::Root,
+                UIA_NamePropertyId,
+                AutomationValue::String(format!(
+                    "WinShort Control Center — {}",
+                    previous.page.label()
+                )),
+                AutomationValue::String(format!(
+                    "WinShort Control Center — {}",
+                    current.page.label()
+                )),
+            ));
+        }
     }
 
     for node in &current.nodes {
@@ -845,7 +862,6 @@ fn snapshot_notifications(
     }
     notifications
 }
-
 pub(crate) fn node_has_invoke(kind: ElementKind) -> bool {
     matches!(
         kind,
@@ -854,29 +870,34 @@ pub(crate) fn node_has_invoke(kind: ElementKind) -> bool {
             | ElementKind::Action
             | ElementKind::ButtonSecondary
             | ElementKind::ButtonPrimary
+            | ElementKind::Navigation
     )
 }
-
 fn node_has_value(kind: ElementKind) -> bool {
-    // Picker triggers and hotkey actions expose their current display value,
-    // but neither accepts arbitrary text through ValuePattern.
-    matches!(kind, ElementKind::Value | ElementKind::Hotkey)
+    // Picker triggers and hotkey actions expose their current display value;
+    // Search is the one editable ValuePattern in the custom shell.
+    matches!(
+        kind,
+        ElementKind::Value | ElementKind::Hotkey | ElementKind::Search
+    )
 }
 
 fn control_type(kind: ElementKind) -> i32 {
     match kind {
         ElementKind::Toggle => UIA_CheckBoxControlTypeId.0,
         ElementKind::Slider => UIA_SliderControlTypeId.0,
+        ElementKind::Search => UIA_EditControlTypeId.0,
         ElementKind::Value
         | ElementKind::Hotkey
         | ElementKind::Action
         | ElementKind::ButtonSecondary
-        | ElementKind::ButtonPrimary => UIA_ButtonControlTypeId.0,
+        | ElementKind::ButtonPrimary
+        | ElementKind::Navigation
+        | ElementKind::Card => UIA_ButtonControlTypeId.0,
     }
 }
-
 fn automation_id(id: ElementId) -> String {
-    format!("WinShort.Settings.{id:?}")
+    format!("WinShort.ControlCenter.{id:?}")
 }
 
 fn element_unavailable_error() -> windows::core::Error {
@@ -904,8 +925,11 @@ fn root_property_value(
         | UIA_IsRangeValuePatternAvailablePropertyId
         | UIA_IsValuePatternAvailablePropertyId
         | UIA_IsExpandCollapsePatternAvailablePropertyId => Ok(bool_variant(false)),
-        UIA_NamePropertyId => Ok(string_variant("WinShort Settings")),
-        UIA_HelpTextPropertyId => Ok(string_variant("WinShort Settings")),
+        UIA_NamePropertyId => Ok(string_variant(&format!(
+            "WinShort Control Center — {}",
+            snapshot.page.label()
+        ))),
+        UIA_HelpTextPropertyId => Ok(string_variant("WinShort Control Center")),
         UIA_ControlTypePropertyId => Ok(i32_variant(
             windows::Win32::UI::Accessibility::UIA_WindowControlTypeId.0,
         )),
@@ -918,10 +942,10 @@ fn root_property_value(
         )),
         UIA_IsOffscreenPropertyId => Ok(bool_variant(false)),
         UIA_BoundingRectanglePropertyId => rect_variant(snapshot.window),
-        UIA_AutomationIdPropertyId => Ok(string_variant("WinShort.Settings")),
-        UIA_ClassNamePropertyId => Ok(string_variant("WinShort.Settings")),
+        UIA_AutomationIdPropertyId => Ok(string_variant("WinShort.ControlCenter")),
+        UIA_ClassNamePropertyId => Ok(string_variant("WinShort.ControlCenter")),
         UIA_ProviderDescriptionPropertyId => Ok(string_variant(
-            "WinShort custom Settings UI Automation provider",
+            "WinShort Control Center UI Automation provider",
         )),
         _ => Ok(VARIANT::default()),
     }
@@ -942,9 +966,9 @@ fn node_property_value(
         UIA_IsContentElementPropertyId | UIA_IsControlElementPropertyId => Ok(bool_variant(true)),
         UIA_BoundingRectanglePropertyId => rect_variant(node.bounds),
         UIA_AutomationIdPropertyId => Ok(string_variant(&automation_id(node.id))),
-        UIA_ClassNamePropertyId => Ok(string_variant("WinShort.Settings.Item")),
+        UIA_ClassNamePropertyId => Ok(string_variant("WinShort.ControlCenter.Item")),
         UIA_ProviderDescriptionPropertyId => Ok(string_variant(
-            "WinShort custom Settings UI Automation provider",
+            "WinShort Control Center UI Automation provider",
         )),
         UIA_IsInvokePatternAvailablePropertyId => Ok(bool_variant(node_has_invoke(node.kind))),
         UIA_IsTogglePatternAvailablePropertyId => Ok(bool_variant(node.toggle.is_some())),
@@ -980,7 +1004,7 @@ fn node_property_value(
             VARIANT::default()
         }),
         UIA_ValueIsReadOnlyPropertyId => Ok(if node.is_value_pattern_available() {
-            bool_variant(true)
+            bool_variant(node.kind != ElementKind::Search)
         } else {
             VARIANT::default()
         }),
@@ -1615,14 +1639,26 @@ impl IRangeValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
 }
 
 impl IValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
-    fn SetValue(&self, _val: &windows::core::PCWSTR) -> windows::core::Result<()> {
+    fn SetValue(&self, val: &windows::core::PCWSTR) -> windows::core::Result<()> {
         let node = self.node()?;
-        if !node_has_value(node.kind) {
-            return unsupported();
+        if node.kind != ElementKind::Search {
+            return if node_has_value(node.kind) {
+                Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    UIA_E_INVALIDOPERATION as i32,
+                )))
+            } else {
+                unsupported()
+            };
         }
-        Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-            UIA_E_INVALIDOPERATION as i32,
-        )))
+        if !node.enabled {
+            return element_not_enabled();
+        }
+        let value = unsafe { val.to_string() }.or_else(|_| invalid_argument())?;
+        if value.chars().count() > 256 {
+            return invalid_argument();
+        }
+        self.automation()?
+            .enqueue(SettingsAutomationAction::SetSearch(value))
     }
 
     fn Value(&self) -> windows::core::Result<BSTR> {
@@ -1638,7 +1674,7 @@ impl IValueProvider_Impl for SettingsAutomationNodeProvider_Impl {
         if !node_has_value(node.kind) {
             return unsupported();
         }
-        Ok(true.into())
+        Ok((node.kind != ElementKind::Search).into())
     }
 }
 
@@ -1829,23 +1865,23 @@ mod tests {
         let expected = [
             (
                 ElementId::CycleInputHotkey,
-                "Cycle input device",
-                "Switch WinShort to the next input endpoint",
+                "Next microphone",
+                "Switch to the next selected microphone",
             ),
             (
                 ElementId::CycleOutputHotkey,
-                "Cycle output device",
-                "Switch WinShort to the next output endpoint",
+                "Next speaker",
+                "Switch to the next selected speaker",
             ),
             (
                 ElementId::ForegroundVolumeUpHotkey,
-                "App volume up",
-                "Raise foreground app volume by 5%",
+                "Current app volume up",
+                "Raise the current app by five percent",
             ),
             (
                 ElementId::ForegroundVolumeDownHotkey,
-                "App volume down",
-                "Lower foreground app volume by 5%",
+                "Current app volume down",
+                "Lower the current app by five percent",
             ),
         ];
         for (id, name, help_text) in expected {
@@ -2191,7 +2227,7 @@ mod tests {
                     .expect("child automation id")
             }
             .to_string(),
-            "WinShort.Settings.StartWithWindows"
+            "WinShort.ControlCenter.StartWithWindows"
         );
     }
 

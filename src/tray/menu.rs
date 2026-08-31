@@ -12,36 +12,29 @@ pub mod cmd {
     pub const OPEN_SETTINGS: u32 = 100;
     pub const SHOW_STATUS: u32 = 101;
     pub const SUSPEND_HOTKEYS: u32 = 102;
-    pub const START_WITH_WINDOWS: u32 = 103;
+    pub const SHOW_DIAGNOSTICS: u32 = 103;
     pub const EXIT: u32 = 104;
 }
 
-/// Menu model reflecting live app state.
+/// Menu state reflecting the one frequently changed tray action.
 pub struct MenuState {
     pub suspended: bool,
-    pub start_with_windows: bool,
 }
 
 pub fn build(state: &MenuState) -> Result<HMENU> {
     unsafe {
         let menu = CreatePopupMenu().map_err(|e| Error::win("CreatePopupMenu", &e))?;
-        append(menu, cmd::OPEN_SETTINGS, "&Open Settings", false)?;
-        append(menu, cmd::SHOW_STATUS, "&Show Status", false)?;
+        append(menu, cmd::OPEN_SETTINGS, "&Open WinShort", false)?;
+        append(menu, cmd::SHOW_STATUS, "Show &status", false)?;
         separator(menu)?;
         append(
             menu,
             cmd::SUSPEND_HOTKEYS,
-            "&Suspend Hotkeys",
+            "&Pause shortcuts",
             state.suspended,
         )?;
         separator(menu)?;
-        append(
-            menu,
-            cmd::START_WITH_WINDOWS,
-            "&Start with Windows",
-            state.start_with_windows,
-        )?;
-        separator(menu)?;
+        append(menu, cmd::SHOW_DIAGNOSTICS, "&Diagnostics", false)?;
         append(menu, cmd::EXIT, "E&xit", false)?;
         Ok(menu)
     }

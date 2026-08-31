@@ -104,6 +104,7 @@ pub enum ElementId {
     DeleteDisplayProfile,
     KeepDisplayChange,
     UndoDisplayChange,
+    DiscardDisplayEdits,
     DebugLogging,
     DiagnosticsStatus,
     InputRole,
@@ -233,6 +234,7 @@ pub struct SectionLabel {
 pub struct SettingsLayout {
     pub width: f32,
     pub height: f32,
+    pub page: Page,
     pub content_clip: Rect,
     pub footer: Rect,
     pub elements: Vec<Element>,
@@ -294,7 +296,7 @@ impl SettingsLayout {
         layout
     }
 
-    fn shell_base(width: f32, height: f32, _page: Page) -> Self {
+    fn shell_base(width: f32, height: f32, page: Page) -> Self {
         const TOP_BAR_HEIGHT: f32 = UiTokens::TOP_BAR_HEIGHT;
         const NAV_WIDTH: f32 = UiTokens::NAV_WIDTH;
         const FOOTER_HEIGHT: f32 = UiTokens::FOOTER_HEIGHT;
@@ -311,6 +313,7 @@ impl SettingsLayout {
         Self {
             width,
             height,
+            page,
             content_clip,
             footer,
             elements: Vec::new(),
@@ -806,6 +809,38 @@ fn add_card(
     });
     *y += UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
 }
+fn add_card_pair(
+    layout: &mut SettingsLayout,
+    y: &mut f32,
+    left: (ElementId, &str, &str),
+    right: (ElementId, &str, &str),
+) {
+    let gap = UiTokens::CARD_GAP;
+    let available = layout.content_clip.w - UiTokens::PAGE_MARGIN * 2.0;
+    let card_w = ((available - gap) * 0.5).max(180.0);
+    if card_w < 280.0 {
+        add_card(layout, y, left.0, left.1, left.2);
+        add_card(layout, y, right.0, right.1, right.2);
+        return;
+    }
+    let x = layout.content_clip.x + UiTokens::PAGE_MARGIN;
+    for (index, (id, label, description)) in [left, right].into_iter().enumerate() {
+        layout.elements.push(Element {
+            id,
+            kind: ElementKind::Action,
+            rect: Rect::new(
+                x + index as f32 * (card_w + gap),
+                *y,
+                card_w,
+                UiTokens::CARD_HEIGHT,
+            ),
+            label: label.into(),
+            description: description.into(),
+            scrolls: true,
+        });
+    }
+    *y += UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
+}
 
 fn add_profile_card(layout: &mut SettingsLayout, y: &mut f32, id: u8, index: usize) {
     let gap = UiTokens::CARD_GAP;
@@ -823,7 +858,7 @@ fn add_profile_card(layout: &mut SettingsLayout, y: &mut f32, id: u8, index: usi
     });
 }
 
-fn add_home(layout: &mut SettingsLayout, profile_count: usize) {
+fn add_home(layout: &mut SettingsLayout, _profile_count: usize) {
     let mut y = layout.content_clip.y + 26.0;
     add_heading(
         layout,
@@ -833,19 +868,19 @@ fn add_home(layout: &mut SettingsLayout, profile_count: usize) {
     );
     y += 20.0;
     add_heading(layout, "Audio", "Your current Windows devices.", &mut y);
-    add_card(
+    add_card_pair(
         layout,
         &mut y,
-        ElementId::HomeSpeaker,
-        "Speakers",
-        "Current playback device",
-    );
-    add_card(
-        layout,
-        &mut y,
-        ElementId::HomeMicrophone,
-        "Microphone",
-        "Current recording device",
+        (
+            ElementId::HomeSpeaker,
+            "Speakers",
+            "Current playback device",
+        ),
+        (
+            ElementId::HomeMicrophone,
+            "Microphone",
+            "Current recording device",
+        ),
     );
     add_heading(
         layout,
@@ -853,12 +888,19 @@ fn add_home(layout: &mut SettingsLayout, profile_count: usize) {
         "Keep your windows within reach.",
         &mut y,
     );
-    add_card(
+    add_card_pair(
         layout,
         &mut y,
-        ElementId::HomeCurrentDesktop,
-        "Current desktop",
-        "Your current normal workspace",
+        (
+            ElementId::HomeCurrentDesktop,
+            "Current desktop",
+            "Your current normal workspace",
+        ),
+        (
+            ElementId::HomeSpecial,
+            "Special Workspace",
+            "Keep windows you want to bring back quickly",
+        ),
     );
     add_row(
         layout,
@@ -868,43 +910,25 @@ fn add_home(layout: &mut SettingsLayout, profile_count: usize) {
         "Previous desktop",
         "Return to the last normal desktop",
     );
-    add_card(
-        layout,
-        &mut y,
-        ElementId::HomeSpecial,
-        "Special Workspace",
-        "Keep windows you want to bring back quickly",
-    );
     add_heading(
         layout,
-        "Display",
-        "Switch a saved screen arrangement safely.",
+        "Display and shortcuts",
+        "The two things you reach for most often.",
         &mut y,
     );
-    add_card(
+    add_card_pair(
         layout,
         &mut y,
-        ElementId::HomeDisplayProfile,
-        if profile_count == 0 {
-            "No display profile yet"
-        } else {
-            "Display profile"
-        },
-        "Open display profiles",
-    );
-    add_heading(
-        layout,
-        "Shortcuts",
-        "A quick health check for your everyday actions.",
-        &mut y,
-    );
-    add_row(
-        layout,
-        &mut y,
-        ElementId::HomeShortcutHealth,
-        ElementKind::Action,
-        "Shortcut health",
-        "Review active shortcuts and conflicts",
+        (
+            ElementId::HomeDisplayProfile,
+            "Display profile",
+            "Open saved screen arrangements",
+        ),
+        (
+            ElementId::HomeShortcutHealth,
+            "Shortcut health",
+            "Review active shortcuts and conflicts",
+        ),
     );
     add_row(
         layout,
@@ -975,6 +999,22 @@ fn add_shortcuts(layout: &mut SettingsLayout) {
         "Workspaces",
         "Move between desktops with a predictable rhythm.",
         &mut y,
+    );
+    add_row(
+        layout,
+        &mut y,
+        ElementId::WinNumberEnabled,
+        ElementKind::Toggle,
+        "Desktop 1–9 shortcuts",
+        "Switch to numbered desktops with WinShort",
+    );
+    add_row(
+        layout,
+        &mut y,
+        ElementId::DesktopNumberModifier,
+        ElementKind::Value,
+        "Desktop shortcut modifier",
+        "Choose the modifier used with 1–9",
     );
     for (id, label, description) in [
         (
@@ -1344,6 +1384,14 @@ fn add_displays(layout: &mut SettingsLayout, profile_count: usize) {
             "Advanced display output",
             "Edit exact position, mode, refresh, or rotation",
         );
+        add_row(
+            layout,
+            &mut y,
+            ElementId::DiscardDisplayEdits,
+            ElementKind::ButtonSecondary,
+            "Discard display edits",
+            "Return to the last saved profile",
+        );
     }
 }
 
@@ -1707,6 +1755,27 @@ mod tests {
         assert!(layout.element(ElementId::Nav(Page::Audio)).is_some());
         assert!(layout.element(ElementId::HomeSpeaker).is_some());
     }
+    #[test]
+    fn home_cards_use_dashboard_grid_then_stack_when_narrow() {
+        let wide = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
+        let wide_speaker = wide
+            .element(ElementId::HomeSpeaker)
+            .expect("wide speaker card");
+        let wide_microphone = wide
+            .element(ElementId::HomeMicrophone)
+            .expect("wide microphone card");
+        assert_eq!(wide_speaker.rect.y, wide_microphone.rect.y);
+        assert!(wide_microphone.rect.x > wide_speaker.rect.x);
+
+        let narrow = SettingsLayout::build_shell(760.0, 660.0, 0.0, Page::Home, "", 0, None);
+        let narrow_speaker = narrow
+            .element(ElementId::HomeSpeaker)
+            .expect("narrow speaker card");
+        let narrow_microphone = narrow
+            .element(ElementId::HomeMicrophone)
+            .expect("narrow microphone card");
+        assert!(narrow_microphone.rect.y > narrow_speaker.rect.y);
+    }
 
     #[test]
     fn content_hit_testing_excludes_scrolled_elements_outside_viewport() {
@@ -1735,5 +1804,53 @@ mod tests {
                 .map(|element| element.kind),
             Some(ElementKind::Slider)
         ));
+    }
+    #[test]
+    fn every_page_has_a_heading_and_reachable_navigation() {
+        let pages = Page::PRIMARY.into_iter().chain(Page::SECONDARY);
+        for page in pages {
+            let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, page, "", 0, None);
+            let expected = if page == Page::Home {
+                "Welcome back"
+            } else {
+                page.label()
+            };
+            assert_eq!(
+                layout
+                    .sections
+                    .first()
+                    .map(|section| section.title.as_str()),
+                Some(expected)
+            );
+            assert!(layout.element(ElementId::Nav(page)).is_some());
+            assert!(!layout.focus_order().is_empty());
+        }
+    }
+
+    #[test]
+    fn display_profiles_use_a_responsive_two_column_grid() {
+        let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Displays, "", 3, None);
+        let first = layout
+            .element(ElementId::DisplayProfileCard(0))
+            .expect("first profile card");
+        let second = layout
+            .element(ElementId::DisplayProfileCard(1))
+            .expect("second profile card");
+        let third = layout
+            .element(ElementId::DisplayProfileCard(2))
+            .expect("third profile card");
+        assert!(second.rect.x > first.rect.x);
+        assert_eq!(third.rect.y, first.rect.y + 136.0);
+        assert!(first.rect.w > 200.0);
+    }
+
+    #[test]
+    fn onboarding_steps_expose_real_choices_and_shortcut_values() {
+        let first = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, Some(1));
+        assert!(first.element(ElementId::OutputAllowlist).is_some());
+        assert!(first.element(ElementId::OnboardingContinue).is_some());
+        let ready = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, Some(2));
+        assert!(ready.element(ElementId::MicHotkey).is_some());
+        assert!(ready.element(ElementId::OnboardingOpen).is_some());
     }
 }

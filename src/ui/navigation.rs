@@ -5,8 +5,9 @@
 
 use crate::ui::layout::ElementId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Page {
+    #[default]
     Home,
     Shortcuts,
     Audio,

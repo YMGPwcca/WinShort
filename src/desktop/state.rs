@@ -76,6 +76,7 @@ impl DesktopHistory {
         self.previous_desktop = None;
     }
 
+    #[allow(dead_code)] // Retained for backend recovery policies.
     pub(crate) fn clear_identity(&mut self) {
         self.current_desktop = None;
         self.previous_desktop = None;

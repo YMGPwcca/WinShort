@@ -118,7 +118,7 @@ fn run(role: PrimaryRole, _com: crate::platform::com::ComApartment) -> Result<()
         .ok_or_else(|| error::Error::internal("config handle missing"))?;
 
     // Degraded startup (#27): each subsystem failure is recorded and logged;
-    // only the main window itself is fatal. Settings/tray still come up.
+    // only the main window itself is fatal. Control Center/tray still come up.
     let install_errors = app::with_app(|app| -> Vec<String> {
         let mut failures = Vec::new();
         macro_rules! step {

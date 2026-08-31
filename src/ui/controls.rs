@@ -332,7 +332,7 @@ pub fn draw_home_card(
             BrushRole::Accent
         },
     );
-    r.text(
+    r.text_clipped(
         title,
         Rect::new(rect.x + 60.0, rect.y + 13.0, rect.w - 190.0, 22.0).d2d(),
         TextStyle::BodyStrong,
@@ -356,7 +356,11 @@ pub fn draw_home_card(
         detail,
         Rect::new(rect.x + 60.0, rect.y + 67.0, rect.w - 190.0, 18.0).d2d(),
         TextStyle::Caption,
-        BrushRole::TextSecondary,
+        if interaction.disabled {
+            BrushRole::TextDisabled
+        } else {
+            BrushRole::TextSecondary
+        },
     );
     r.text(
         action,
