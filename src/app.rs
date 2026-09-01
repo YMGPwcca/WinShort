@@ -2231,6 +2231,14 @@ mod shutdown_gate_tests {
     }
 
     #[test]
+    fn control_center_close_event_hides_without_application_shutdown() {
+        let mut app = test_app();
+        app.route_event(AppEvent::ControlCenterWindowClosed);
+        assert!(!app.shutting_down);
+        assert!(app.settings.is_none());
+    }
+
+    #[test]
     fn gated_route_event_creates_nothing_after_shutdown_begins() {
         // #43: once shutdown begins, user-facing events must not create state.
         let mut app = test_app();

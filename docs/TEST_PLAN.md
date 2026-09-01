@@ -62,8 +62,8 @@ Automated coverage:
 - Device pickers expose only active real endpoints; disconnected legacy explicit bindings remain configured but are not selectable system targets.
 - Endpoint roles are disabled when an explicit device is selected.
 - Reset requires two activations and changes draft state only.
-- Restored Control Center rectangles are fully contained in the selected work area and use
-  target-DPI scaling.
+- Restored Control Center rectangles retain the fixed logical window size, use
+  target-DPI scaling, and clamp only the saved position to the selected work area.
 - Custom Control Center UIA snapshot nodes expose logical control types, names/help, bounds,
   offscreen, enabled/focus state, toggle state, and slider range/value semantics without
   inventing child HWNDs for painted rows.
@@ -106,13 +106,16 @@ Automated coverage:
 - Bounded value rendering tests verify chevron reservation and DirectWrite trailing-character
   trimming; applied status text remains generic.
 - Control Center layout tests cover removal of the Workspaces desktop strip, Special Workspace
-  hierarchy, stable shortcut-card gaps across scroll positions, shared right-side control widths,
-  compact/blank custom titlebar geometry, section accent alignment, one Current app audio
-  heading, and responsive two-column/stacked overlay placement.
+  hierarchy, exact sibling ROW_GAP/SECTION_CONTENT_GAP geometry across Audio, Home, and
+  Workspaces, shared right-side control widths, one-row brand/search/Close chrome, one Close
+  action, fixed-window capability geometry, and fixed side-by-side Overlay placement.
 - Overlay geometry tests cover dynamic monitor aspect fitting, monitor-as-preview containment,
   normalized position semantics, and the absence of a nested preview-container surface.
 - Motion tests cover hover/toggle channels only; wheel and Page Up/Down scroll update the model
   directly without a Scroll channel, target, or timer tween.
+- Fixed-window tests cover a DPI-scaled constant size, blocked minimize/maximize/resize system
+  commands, no non-client resize hit zones, no double-click maximize path, and Close-only UIA
+  Button/Invoke exposure.
 - Overlay policy tests cover opaque fallback for High Contrast, disabled overlapped content,
   and unavailable DWM backdrop APIs.
 - Audio presentation tests cover canonical primary endpoint names with diagnostic-only adapter
@@ -127,8 +130,12 @@ Manual matrix:
 - Scroll behavior: wheel notches update the viewport immediately and accumulate across rapid
   input with no queued/tweened motion; Page Up/Down update immediately; scrollbar dragging is
   direct and reduced-motion settings do not alter scrolling.
-- Section rhythm: each divider sits in whitespace between sections, while every cyan accent is
-  vertically centered on its heading title line.
+- Sidebar brand geometry: the app mark and one-line WinShort label share the exact brand-row
+  vertical center.
+- Top chrome: the search field and sole Close button share one row; the gap is draggable caption
+  space, while Search and Close remain HTCLIENT.
+- Section rhythm: each divider sits in whitespace between sections, every cyan accent is
+  vertically centered on its title line, and sibling cards/rows use exact ROW_GAP.
 - Workspaces page: no Normal desktops strip is present; numbered 1–9 shortcut configuration
   remains available; Special Workspace has one heading, description, and two evenly spaced
   shortcut cards.
@@ -142,17 +149,20 @@ Manual matrix:
   as GS25F2, SAMSUNG, and SIMGOT EW300 DSP; adapter metadata is absent from normal visible rows.
 - Current app audio: the page has one section heading; the status row says `No controllable
   app` when appropriate and does not repeat the heading inside a large card.
-- Overlay preview: on wide windows, the monitor preview sits beside Position and Monitor
-  controls; on narrow windows the same controls stack below it. Foreground, Primary, saved,
-  disconnected, 16:9, 16:10, ultrawide, and portrait targets use the correct work-area ratio
-  without stretching, and the monitor frame is the sole preview surface.
+- Overlay preview: the fixed-size window always places the monitor preview beside Position and
+  Monitor controls. Foreground, Primary, saved, disconnected, 16:9, 16:10, ultrawide, and
+  portrait targets use the correct work-area ratio without stretching, and the monitor frame is
+  the sole preview surface.
+- Custom titlebar: the fixed-size window has one blank draggable top region and one compact Close
+  button. Minimize, Maximize/Restore, resize edges/corners, double-click maximize, and Snap
+  Layout are unavailable; DPI, dark/light/high-contrast themes, and rounded corners remain intact.
+- Close lifecycle: clicking Close cancels any picker first, discards only the uncommitted UI draft
+  under existing policy, hides Control Center with SW_HIDE, preserves the process/tray, and
+  allows the tray Open action to show the same fixed-size window again.
 - Overlay backdrop: with reduced opacity, content behind the overlay is visibly blurred by
   documented DWM Desktop Acrylic (`DWMWA_SYSTEMBACKDROP_TYPE` /
   `DWMSBT_TRANSIENTWINDOW`); High Contrast, disabled overlapped content, API failure, and
   transparency-disabled states use an opaque accessible surface.
-- Custom titlebar: the titlebar is blank except for restrained caption glyphs; Minimize,
-  Maximize/Restore, and Close work; drag and all resize edges/corners behave natively; DPI,
-  dark/light/high-contrast themes, rounded corners, and maximize Snap Layout hover remain intact.
 - Picker focus: opening a picker keeps the Control Center as the sole active top-level HWND;
   the child host appears above D2D content, the real LISTBOX owns keyboard focus, arrows/Home/End/
   PageUp/PageDown/Tab/Escape remain deterministic, and outside click/focus loss closes it.

@@ -36,20 +36,20 @@ Control Center
 
 Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed navigation rail, compact blank custom titlebar, and top search bar remain visible while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
+The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dimensions. A fixed navigation rail, single custom top-chrome row, and page content remain stable while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. The navigation rail begins below the brand row without an extra title band. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
 
-`src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, spaced section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, titlebar-button, slider-cluster, and icon vocabulary.
+`src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, spaced section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, Close-button, slider-cluster, and icon vocabulary.
 
 ## Design tokens
 
 `src/ui/theme.rs::UiTokens` centralizes the shell geometry and spacing language:
 
 - 216 DIP navigation rail;
-- 80 DIP top bar;
 - 34 DIP status footer;
 - 32 DIP page margins;
+- 40 DIP single top-chrome row with one 44 × 32 DIP Close hit target and a blank draggable caption gap;
 - 92 DIP page headers and 88 DIP section headers; non-page headings share one 20 DIP inter-section breathing-room token;
-- 32 DIP custom titlebar with 44 × 28 DIP caption hit targets and compact glyphs;
+- 12 DIP section-content gap before a section's first control and 8 DIP ROW_GAP between sibling rows/cards;
 - 58 DIP setting rows with an 8 DIP rhythm;
 - one shared 206 DIP right-side control column for dropdowns, keycaps, and equivalent value controls;
 - 32 DIP native picker rows with GDI-metric-sized text envelopes;
@@ -114,10 +114,9 @@ Output/topology edits remain local until Test and Keep. Moving between steps nev
 
 ### Overlay
 
-Overlay has a responsive visual placement area:
+Overlay uses one fixed side-by-side placement area at the supported Control Center size:
 
-- on sufficiently wide windows, the monitor preview sits beside Position's 3×3 selector and Monitor target;
-- on narrow windows, the same preview and controls stack in one column;
+- the monitor preview sits beside Position's 3×3 selector and Monitor target;
 - the monitor frame itself is the preview surface; there is no outer preview card around it;
 - enabled;
 - System, Light, or Dark appearance;
@@ -200,9 +199,8 @@ The Control Center preserves the established custom provider rules:
 - toggles and device checkbox options expose TogglePattern;
 - mutually exclusive audio modes, topology choices, and overlay positions expose RadioButton/SelectionItem semantics;
 - sliders expose RangeValuePattern;
-- custom titlebar Minimize, Maximize/Restore, and Close nodes remain UIA Buttons with truthful Invoke semantics;
 - picker triggers remain Button/Invoke with read-only displayed values;
-- unsupported patterns return successful null/empty results rather than fabricated interfaces;
+- the custom titlebar Close node remains a UIA Button with truthful Invoke semantics;
 - stale providers return `UIA_E_ELEMENTNOTAVAILABLE`;
 - UIA reads consume immutable snapshots only;
 - actions are posted back to the Control Center HWND;
@@ -212,9 +210,7 @@ The Control Center preserves the established custom provider rules:
 - child picker teardown is idempotent and happens before the owner hides;
 - no child HWND is invented for painted Control Center rows.
 
-The owner window is PMv2-aware, uses a native custom frame with a blank draggable titlebar, compact caption hit targets, supported resize hit testing, and DWM rounded corners, responds to `WM_DPICHANGED`, persists/restores reachable bounds, and stops its timer when hover/toggle motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; scrolling is always direct. The DWM-backed overlay retains its reduced-motion policy and falls back to an opaque surface when acrylic is unavailable or disabled.
-
-## Diagnostics & Support
+The owner window is PMv2-aware, fixed-size, and uses a blank custom top-chrome row with a Close hit target and DWM rounded corners. It responds to `WM_DPICHANGED` by preserving the logical client size, persists/restores only its reachable position, hides to the tray on Close, and stops its timer when hover/toggle motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; scrolling is always direct. The DWM-backed overlay retains its reduced-motion policy and falls back to an opaque surface when acrylic is unavailable or disabled.
 
 Diagnostics remains a separate native window backed by `App::diagnostics_snapshot`. It preserves Copy Diagnostics, Open Logs, Support Bundle, Self-Test, sanitized endpoint/path/config projections, bounded log collection, and no telemetry. The Home and System pages route friendly Details actions there instead of leaking technical state into normal controls.
 

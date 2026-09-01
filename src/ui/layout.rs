@@ -99,8 +99,6 @@ pub enum ElementId {
     Search,
     Nav(Page),
     SearchResult(u8),
-    WindowMinimize,
-    WindowMaximize,
     WindowClose,
     HomeSpeaker,
     HomeCurrentDesktop,
@@ -249,12 +247,7 @@ impl ElementId {
     pub fn is_shell_chrome(self) -> bool {
         matches!(
             self,
-            Self::Search
-                | Self::Nav(_)
-                | Self::SearchResult(_)
-                | Self::WindowMinimize
-                | Self::WindowMaximize
-                | Self::WindowClose
+            Self::Search | Self::Nav(_) | Self::SearchResult(_) | Self::WindowClose
         )
     }
 }
@@ -314,6 +307,69 @@ pub struct SectionLabel {
     pub height: f32,
     pub page_header: bool,
 }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BrandRowGeometry {
+    pub row: Rect,
+    pub icon: Rect,
+    pub text: Rect,
+}
+
+pub(crate) fn brand_row_geometry(nav_width: f32) -> BrandRowGeometry {
+    let row = Rect::new(0.0, 0.0, nav_width, UiTokens::TITLEBAR_HEIGHT);
+    let icon = Rect::new(
+        UiTokens::BRAND_ROW_LEFT,
+        row.y + (row.h - UiTokens::BRAND_ICON_SIZE) * 0.5,
+        UiTokens::BRAND_ICON_SIZE,
+        UiTokens::BRAND_ICON_SIZE,
+    );
+    let text_x = icon.right() + UiTokens::BRAND_TEXT_GAP;
+    let text = Rect::new(
+        text_x,
+        row.y + (row.h - UiTokens::BRAND_TEXT_HEIGHT) * 0.5,
+        (nav_width - text_x - UiTokens::BRAND_ROW_RIGHT).max(1.0),
+        UiTokens::BRAND_TEXT_HEIGHT,
+    );
+    BrandRowGeometry { row, icon, text }
+}
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TopChromeGeometry {
+    pub row: Rect,
+    pub search: Rect,
+    pub close: Rect,
+    pub caption: Rect,
+}
+
+pub(crate) fn top_chrome_geometry(width: f32, nav_width: f32) -> TopChromeGeometry {
+    let row = Rect::new(
+        nav_width,
+        0.0,
+        (width - nav_width).max(1.0),
+        UiTokens::TOP_BAR_HEIGHT,
+    );
+    let control_y = row.y + UiTokens::TITLEBAR_BUTTON_TOP;
+    let close = Rect::new(
+        width - UiTokens::TITLEBAR_BUTTON_RIGHT - UiTokens::TITLEBAR_BUTTON_WIDTH,
+        control_y,
+        UiTokens::TITLEBAR_BUTTON_WIDTH,
+        UiTokens::TITLEBAR_BUTTON_HEIGHT,
+    );
+    let search_x = nav_width + 32.0;
+    let search_available = (close.x - search_x - UiTokens::TOP_CHROME_SEARCH_GAP).max(1.0);
+    let search_width = search_available.clamp(180.0_f32.min(search_available), 440.0);
+    let search = Rect::new(search_x, control_y, search_width, 32.0);
+    let caption = Rect::new(
+        search.right(),
+        row.y,
+        (close.x - search.right()).max(0.0),
+        row.h,
+    );
+    TopChromeGeometry {
+        row,
+        search,
+        close,
+        caption,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutContext {
@@ -372,6 +428,7 @@ pub struct SettingsLayout {
     pub max_scroll: f32,
     pub scroll: f32,
     pub nav_width: f32,
+    pub brand: BrandRowGeometry,
     pub top_bar: Rect,
     pub search_rect: Rect,
 }
@@ -511,23 +568,21 @@ impl SettingsLayout {
             max_scroll: 0.0,
             scroll: 0.0,
             nav_width: UiTokens::NAV_WIDTH,
+            brand: brand_row_geometry(UiTokens::NAV_WIDTH),
             top_bar,
-            search_rect: Rect::new(UiTokens::NAV_WIDTH + 32.0, 21.0, 360.0, 38.0),
+            search_rect: Rect::new(
+                UiTokens::NAV_WIDTH + 32.0,
+                (UiTokens::TOP_BAR_HEIGHT - 32.0) * 0.5,
+                360.0,
+                32.0,
+            ),
         }
     }
 
     fn add_chrome(&mut self) {
-        let titlebar_width = UiTokens::TITLEBAR_BUTTON_WIDTH * 3.0
-            + UiTokens::TITLEBAR_BUTTON_GAP * 2.0
-            + UiTokens::TITLEBAR_BUTTON_RIGHT;
-        let search_width =
-            (self.width - self.nav_width - 64.0 - titlebar_width).clamp(180.0, 440.0);
-        self.search_rect = Rect::new(
-            self.nav_width + 32.0,
-            UiTokens::TITLEBAR_HEIGHT + 4.0,
-            search_width,
-            32.0,
-        );
+        let chrome = top_chrome_geometry(self.width, self.nav_width);
+        self.top_bar = chrome.row;
+        self.search_rect = chrome.search;
         self.elements.push(Element {
             id: ElementId::Search,
             kind: ElementKind::Search,
@@ -537,7 +592,7 @@ impl SettingsLayout {
             scrolls: false,
         });
 
-        let mut y = 98.0;
+        let mut y = chrome.row.bottom() + 18.0;
         for page in Page::PRIMARY {
             self.elements.push(Element {
                 id: ElementId::Nav(page),
@@ -562,46 +617,14 @@ impl SettingsLayout {
             y += 44.0;
         }
 
-        let button_start = self.width
-            - UiTokens::TITLEBAR_BUTTON_RIGHT
-            - UiTokens::TITLEBAR_BUTTON_WIDTH * 3.0
-            - UiTokens::TITLEBAR_BUTTON_GAP * 2.0;
-        for (index, (id, label, description)) in [
-            (
-                ElementId::WindowMinimize,
-                "Minimize",
-                "Minimize the Control Center window",
-            ),
-            (
-                ElementId::WindowMaximize,
-                "Maximize",
-                "Maximize or restore the Control Center window",
-            ),
-            (
-                ElementId::WindowClose,
-                "Close",
-                "Close the Control Center window",
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            self.elements.push(Element {
-                id,
-                kind: ElementKind::ButtonSecondary,
-                rect: Rect::new(
-                    button_start
-                        + index as f32
-                            * (UiTokens::TITLEBAR_BUTTON_WIDTH + UiTokens::TITLEBAR_BUTTON_GAP),
-                    UiTokens::TITLEBAR_BUTTON_TOP,
-                    UiTokens::TITLEBAR_BUTTON_WIDTH,
-                    UiTokens::TITLEBAR_BUTTON_HEIGHT,
-                ),
-                label: label.into(),
-                description: description.into(),
-                scrolls: false,
-            });
-        }
+        self.elements.push(Element {
+            id: ElementId::WindowClose,
+            kind: ElementKind::ButtonSecondary,
+            rect: chrome.close,
+            label: "Close".into(),
+            description: "Hide the Control Center and keep WinShort running".into(),
+            scrolls: false,
+        });
     }
 
     fn finish_content(&mut self, content_end: f32, requested_scroll: f32) {
@@ -1004,6 +1027,9 @@ fn add_heading(layout: &mut SettingsLayout, title: &str, description: &str, y: &
     });
     *y += height;
 }
+fn add_section_content_gap(y: &mut f32) {
+    *y += UiTokens::SECTION_CONTENT_GAP;
+}
 
 fn add_region(layout: &mut SettingsLayout, kind: RegionKind, y: &mut f32, height: f32) -> Rect {
     let rect = Rect::new(layout.content_column.x, *y, layout.content_column.w, height);
@@ -1012,7 +1038,7 @@ fn add_region(layout: &mut SettingsLayout, kind: RegionKind, y: &mut f32, height
         rect,
         scrolls: true,
     });
-    *y += height + UiTokens::GROUP_GAP;
+    *y += height + UiTokens::ROW_GAP;
     rect
 }
 
@@ -1092,7 +1118,7 @@ fn add_card_pair(
     left: (ElementId, &str, &str),
     right: (ElementId, &str, &str),
 ) {
-    let gap = UiTokens::CARD_GAP;
+    let gap = UiTokens::CARD_COLUMN_GAP;
     let available = layout.content_column.w;
     let card_w = ((available - gap) * 0.5).max(180.0);
     if card_w < 280.0 {
@@ -1117,7 +1143,7 @@ fn add_card_pair(
             ),
         );
     }
-    *y = row_y + UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
+    *y = row_y + UiTokens::CARD_HEIGHT + UiTokens::ROW_GAP;
 }
 
 fn add_managed_hotkey(
@@ -1137,10 +1163,13 @@ fn add_managed_hotkey(
         scrolls: true,
     });
     let control_x = card.right() - 18.0 - UiTokens::CONTROL_WIDTH;
+    let keycap_y = card.y + 10.0;
+    let keycap_height = 32.0;
+    let actions_y = keycap_y + keycap_height + UiTokens::ROW_GAP;
     layout.elements.push(Element {
         id: capture_id,
         kind: ElementKind::Hotkey,
-        rect: Rect::new(control_x, card.y + 10.0, UiTokens::CONTROL_WIDTH, 32.0),
+        rect: Rect::new(control_x, keycap_y, UiTokens::CONTROL_WIDTH, keycap_height),
         label: format!("{label} shortcut"),
         description: "Record a new shortcut".into(),
         scrolls: true,
@@ -1150,7 +1179,7 @@ fn add_managed_hotkey(
     layout.elements.push(Element {
         id: ElementId::HotkeyEnabled(slot),
         kind: ElementKind::ButtonSecondary,
-        rect: Rect::new(control_x, card.y + 50.0, button_width, 28.0),
+        rect: Rect::new(control_x, actions_y, button_width, 28.0),
         label: "Shortcut state".into(),
         description: format!("Enable or disable {label}"),
         scrolls: true,
@@ -1160,7 +1189,7 @@ fn add_managed_hotkey(
         kind: ElementKind::ButtonSecondary,
         rect: Rect::new(
             control_x + button_width + button_gap,
-            card.y + 50.0,
+            actions_y,
             button_width,
             28.0,
         ),
@@ -1171,7 +1200,8 @@ fn add_managed_hotkey(
 }
 
 fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId, &str, &str)]) {
-    let gap = UiTokens::CARD_GAP;
+    let column_gap = UiTokens::CARD_COLUMN_GAP;
+    let row_gap = UiTokens::ROW_GAP;
     let columns = if layout.content_column.w >= 980.0 {
         2
     } else {
@@ -1180,7 +1210,7 @@ fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId
     let card_w = if columns == 1 {
         layout.content_column.w
     } else {
-        (layout.content_column.w - gap) * 0.5
+        (layout.content_column.w - column_gap) * 0.5
     };
     let row_h = 88.0;
     let start = *y;
@@ -1191,8 +1221,8 @@ fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId
         let row = index / columns;
         let column = index % columns;
         let card = Rect::new(
-            layout.content_column.x + column as f32 * (card_w + gap),
-            start + row as f32 * (row_h + gap),
+            layout.content_column.x + column as f32 * (card_w + column_gap),
+            start + row as f32 * (row_h + row_gap),
             card_w,
             row_h,
         );
@@ -1200,7 +1230,7 @@ fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId
     }
     if !items.is_empty() {
         let rows = items.len().div_ceil(columns);
-        *y = start + rows as f32 * row_h + rows.saturating_sub(1) as f32 * gap;
+        *y = start + rows as f32 * row_h + rows.saturating_sub(1) as f32 * row_gap;
     }
 }
 
@@ -1209,17 +1239,17 @@ fn add_button_grid(
     y: &mut f32,
     items: &[(ElementId, ElementKind, &str, &str)],
 ) {
-    let gap = 8.0;
+    let column_gap = UiTokens::CARD_COLUMN_GAP;
+    let row_gap = UiTokens::ROW_GAP;
     let widths = [142.0, 142.0, 142.0];
     let mut x = layout.content_column.x;
     let mut row_y = *y;
-    let mut row_height = 36.0;
+    let row_height = 36.0;
     for (index, (id, kind, label, description)) in items.iter().copied().enumerate() {
         let width = widths[index % widths.len()];
         if index > 0 && x + width > layout.content_column.right() {
             x = layout.content_column.x;
-            row_y += row_height + gap;
-            row_height = 36.0;
+            row_y += row_height + row_gap;
         }
         add_element(
             layout,
@@ -1228,12 +1258,12 @@ fn add_button_grid(
             kind,
             label,
             description,
-            Rect::new(x, row_y, width.min(layout.content_column.w), 36.0),
+            Rect::new(x, row_y, width.min(layout.content_column.w), row_height),
         );
-        x += width + gap;
+        x += width + column_gap;
     }
     if !items.is_empty() {
-        *y = row_y + row_height + gap;
+        *y = row_y + row_height;
     }
 }
 
@@ -1244,15 +1274,15 @@ fn add_profile_card(
     index: usize,
     columns: usize,
 ) {
-    let gap = UiTokens::CARD_GAP;
+    let column_gap = UiTokens::CARD_COLUMN_GAP;
     let available = layout.content_column.w;
     let columns = columns.max(1);
     let card_w = if columns == 1 {
         available
     } else {
-        (available - gap) * 0.5
+        (available - column_gap) * 0.5
     };
-    let x = layout.content_column.x + (index % columns) as f32 * (card_w + gap);
+    let x = layout.content_column.x + (index % columns) as f32 * (card_w + column_gap);
     let row_y = *y + (index / columns) as f32 * UiTokens::PROFILE_ROW_STEP;
     layout.elements.push(Element {
         id: ElementId::DisplayProfileCard(id),
@@ -1271,6 +1301,9 @@ fn add_audio_mode_group(
     mode: AllowlistMode,
     device_count: usize,
 ) {
+    let row_gap = UiTokens::ROW_GAP;
+    let mode_height = 36.0;
+    let mode_step = mode_height + row_gap;
     let start = *y;
     for (index, candidate) in [
         AllowlistMode::All,
@@ -1302,15 +1335,15 @@ fn add_audio_mode_group(
             },
             Rect::new(
                 layout.content_column.x,
-                start + index as f32 * 42.0,
+                start + index as f32 * mode_step,
                 layout.content_column.w,
-                36.0,
+                mode_height,
             ),
         );
     }
-    *y = start + 3.0 * 42.0;
+    *y = start + 3.0 * mode_step;
     if mode == AllowlistMode::Selected && device_count > 0 {
-        let gap = 8.0;
+        let column_gap = UiTokens::CARD_COLUMN_GAP;
         let columns = if layout.content_column.w >= 660.0 {
             2
         } else {
@@ -1319,8 +1352,10 @@ fn add_audio_mode_group(
         let card_w = if columns == 1 {
             layout.content_column.w
         } else {
-            (layout.content_column.w - gap) * 0.5
+            (layout.content_column.w - column_gap) * 0.5
         };
+        let device_height = 42.0;
+        let device_step = device_height + row_gap;
         let device_start = *y;
         for index in 0..device_count.min(32) {
             let row = index / columns;
@@ -1341,16 +1376,16 @@ fn add_audio_mode_group(
                 format!("{} option", kind.noun()),
                 "Use this device when cycling",
                 Rect::new(
-                    layout.content_column.x + column as f32 * (card_w + gap),
-                    device_start + row as f32 * 48.0,
+                    layout.content_column.x + column as f32 * (card_w + column_gap),
+                    device_start + row as f32 * device_step,
                     card_w,
-                    42.0,
+                    device_height,
                 ),
             );
         }
-        *y = device_start + device_count.min(32).div_ceil(columns) as f32 * 48.0;
+        let rows = device_count.min(32).div_ceil(columns);
+        *y = device_start + rows as f32 * device_step;
     }
-    *y += UiTokens::GROUP_GAP;
 }
 
 fn add_home(layout: &mut SettingsLayout) {
@@ -1362,6 +1397,7 @@ fn add_home(layout: &mut SettingsLayout) {
         &mut y,
     );
     add_heading(layout, "Audio", "Your current Windows devices.", &mut y);
+    add_section_content_gap(&mut y);
     add_card_pair(
         layout,
         &mut y,
@@ -1382,6 +1418,7 @@ fn add_home(layout: &mut SettingsLayout) {
         "Keep your windows within reach.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_card_pair(
         layout,
         &mut y,
@@ -1417,6 +1454,7 @@ fn add_home(layout: &mut SettingsLayout) {
         "The two things you reach for most often.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_card_pair(
         layout,
         &mut y,
@@ -1457,6 +1495,7 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
         &mut y,
     );
     if context.paused {
+        add_section_content_gap(&mut y);
         add_region(layout, RegionKind::PauseNotice, &mut y, 68.0);
     }
     add_heading(
@@ -1465,6 +1504,7 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Control devices and the app in front of you.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_hotkey_grid(
         layout,
         &mut y,
@@ -1512,6 +1552,7 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Desktop actions are available when Workspace shortcuts are on.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -1556,6 +1597,7 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
         &mut y,
     );
     if context.workspace_enabled {
+        add_section_content_gap(&mut y);
         add_row(
             layout,
             &mut y,
@@ -1579,6 +1621,7 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Give the selected arrangement a shortcut.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_hotkey_grid(
         layout,
         &mut y,
@@ -1604,6 +1647,7 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Choose the Windows playback device and cycling mode.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -1625,6 +1669,7 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Choose the Windows recording device and cycling mode.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -1646,6 +1691,7 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         "WinShort itself is not a target for these actions.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_region(layout, RegionKind::AudioCurrentApp, &mut y, 64.0);
     add_hotkey_grid(
         layout,
@@ -1683,6 +1729,7 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         "One master switch controls desktop and Special actions.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -1727,6 +1774,7 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         "The modifier applies to the nine normal desktop numbers.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -1774,6 +1822,7 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         "A dedicated place for windows you want nearby but out of the way.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_hotkey_grid(
         layout,
         &mut y,
@@ -1801,6 +1850,7 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Build an arrangement, then test it before keeping it.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_region(layout, RegionKind::DisplayWizardSteps, &mut y, 58.0);
     match step {
         DisplayWizardStep::Displays => {
@@ -1814,10 +1864,11 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 },
                 &mut y,
             );
+            add_section_content_gap(&mut y);
             if context.display_output_count == 0 {
                 add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 104.0);
             } else {
-                let gap = UiTokens::CARD_GAP;
+                let column_gap = UiTokens::CARD_COLUMN_GAP;
                 let columns = if layout.content_column.w >= 660.0 {
                     2
                 } else {
@@ -1826,7 +1877,7 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 let card_w = if columns == 1 {
                     layout.content_column.w
                 } else {
-                    (layout.content_column.w - gap) * 0.5
+                    (layout.content_column.w - column_gap) * 0.5
                 };
                 let start = y;
                 for index in 0..context.display_output_count.min(32) {
@@ -1840,14 +1891,15 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                         "Screen",
                         "Select this screen",
                         Rect::new(
-                            layout.content_column.x + column as f32 * (card_w + gap),
-                            start + row as f32 * 74.0,
+                            layout.content_column.x + column as f32 * (card_w + column_gap),
+                            start + row as f32 * (66.0 + UiTokens::ROW_GAP),
                             card_w,
                             66.0,
                         ),
                     );
                 }
-                y = start + context.display_output_count.min(32).div_ceil(columns) as f32 * 74.0;
+                let rows = context.display_output_count.min(32).div_ceil(columns);
+                y = start + rows as f32 * (66.0 + UiTokens::ROW_GAP);
             }
         }
         DisplayWizardStep::Arrangement => {
@@ -1857,6 +1909,7 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 "Choose a simple arrangement for the selected screens.",
                 &mut y,
             );
+            add_section_content_gap(&mut y);
             if context.display_route_count <= 1 {
                 add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 122.0);
             } else {
@@ -1882,7 +1935,6 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                             170.0,
                         ),
                     );
-                    y += 10.0;
                 }
             }
         }
@@ -1893,6 +1945,7 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 "Give this arrangement a name people can recognize.",
                 &mut y,
             );
+            add_section_content_gap(&mut y);
             add_row(
                 layout,
                 &mut y,
@@ -1917,6 +1970,7 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                 "Check the summary, then test the display setup safely.",
                 &mut y,
             );
+            add_section_content_gap(&mut y);
             let summary_rect = add_region(layout, RegionKind::DisplayWizardSummary, &mut y, 178.0);
             add_element(
                 layout,
@@ -1939,7 +1993,6 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
                     Rect::new(layout.content_column.x, discard_y, 150.0, 36.0),
                 );
             }
-            y += 8.0;
             let test_y = y;
             add_element(
                 layout,
@@ -1961,7 +2014,7 @@ fn add_display_wizard(layout: &mut SettingsLayout, context: &LayoutContext) {
             );
         }
     }
-    let nav_y = y + 8.0;
+    let nav_y = y;
     if step.previous().is_some() {
         add_element(
             layout,
@@ -2011,8 +2064,8 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Save the way your screens work, then test before you keep it.",
         &mut y,
     );
-    y += UiTokens::GROUP_GAP;
     if !context.display_profiles_enabled {
+        add_section_content_gap(&mut y);
         add_row(
             layout,
             &mut y,
@@ -2025,6 +2078,7 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
         return;
     }
     if context.display_rollback_active {
+        add_section_content_gap(&mut y);
         add_region(layout, RegionKind::DisplaySafety, &mut y, 94.0);
         let safety_action_y = y;
         if context.display_keep_available {
@@ -2060,6 +2114,7 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Select a profile to activate it or open its editor.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     if context.profile_count == 0 {
         add_card(
             layout,
@@ -2076,6 +2131,7 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
     } else {
         1
     };
+    let profile_start = y;
     for index in 0..count {
         add_profile_card(
             layout,
@@ -2085,13 +2141,17 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
             if count == 1 { 1 } else { columns },
         );
     }
-    y += count.div_ceil(columns) as f32 * UiTokens::PROFILE_ROW_STEP;
+    let rows = count.div_ceil(columns);
+    y = profile_start
+        + rows as f32 * UiTokens::PROFILE_CARD_HEIGHT
+        + rows.saturating_sub(1) as f32 * UiTokens::ROW_GAP;
     add_heading(
         layout,
         "Manage selected profile",
         "Actions stay with the profile they change.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_button_grid(
         layout,
         &mut y,
@@ -2136,8 +2196,7 @@ const PREVIEW_CANVAS_MIN_HEIGHT: f32 = 118.0;
 const PREVIEW_CANVAS_MAX_HEIGHT: f32 = 220.0;
 const PREVIEW_TITLE_HEIGHT: f32 = 44.0;
 const PREVIEW_BOTTOM_INSET: f32 = 18.0;
-const OVERLAY_PLACEMENT_MIN_WIDTH: f32 = 760.0;
-const OVERLAY_PLACEMENT_GAP: f32 = 24.0;
+const OVERLAY_PLACEMENT_GAP: f32 = 16.0;
 const OVERLAY_PLACEMENT_CONTROLS_WIDTH: f32 = 360.0;
 const OVERLAY_PLACEMENT_HEADER_HEIGHT: f32 = 44.0;
 const OVERLAY_POSITION_GRID_STEP: f32 = 44.0;
@@ -2149,7 +2208,7 @@ const OVERLAY_MONITOR_HEIGHT: f32 = 58.0;
 pub(crate) struct OverlayPlacementGeometry {
     pub region: Rect,
     pub preview: Rect,
-    pub controls: Option<Rect>,
+    pub controls: Rect,
 }
 
 pub(crate) fn overlay_position_controls_height() -> f32 {
@@ -2187,20 +2246,17 @@ pub(crate) fn overlay_placement_geometry(
     origin: Rect,
     aspect: (u32, u32),
 ) -> OverlayPlacementGeometry {
-    let two_column = origin.w >= OVERLAY_PLACEMENT_MIN_WIDTH;
-    let controls = two_column.then(|| {
-        Rect::new(
-            origin.right() - OVERLAY_PLACEMENT_CONTROLS_WIDTH,
-            origin.y,
-            OVERLAY_PLACEMENT_CONTROLS_WIDTH,
-            overlay_position_controls_height(),
-        )
-    });
-    let preview_width = controls.map_or(origin.w, |controls| {
-        (controls.x - OVERLAY_PLACEMENT_GAP - origin.x).max(280.0)
-    });
+    let controls_width =
+        OVERLAY_PLACEMENT_CONTROLS_WIDTH.min((origin.w - OVERLAY_PLACEMENT_GAP - 240.0).max(1.0));
+    let controls = Rect::new(
+        origin.right() - controls_width,
+        origin.y,
+        controls_width,
+        overlay_position_controls_height(),
+    );
+    let preview_width = (controls.x - OVERLAY_PLACEMENT_GAP - origin.x).max(1.0);
     let preview_height = overlay_preview_region_height(preview_width, aspect);
-    let region_height = controls.map_or(preview_height, |controls| preview_height.max(controls.h));
+    let region_height = preview_height.max(controls.h);
     OverlayPlacementGeometry {
         region: Rect::new(origin.x, origin.y, origin.w, region_height),
         preview: Rect::new(origin.x, origin.y, preview_width, region_height),
@@ -2279,7 +2335,7 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         "A compact visual cue that never interrupts your work.",
         &mut y,
     );
-    y += UiTokens::GROUP_GAP;
+    add_section_content_gap(&mut y);
     let placement = overlay_placement_geometry(
         Rect::new(layout.content_column.x, y, layout.content_column.w, 0.0),
         context.overlay_preview_aspect,
@@ -2290,24 +2346,7 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         &mut y,
         placement.region.h,
     );
-    if let Some(controls) = placement.controls {
-        add_overlay_position_elements(layout, controls);
-    } else {
-        add_heading(
-            layout,
-            "Position",
-            "Choose a location on the monitor work area.",
-            &mut y,
-        );
-        let controls = Rect::new(
-            layout.content_column.x,
-            y,
-            layout.content_column.w,
-            overlay_position_controls_height(),
-        );
-        add_overlay_position_elements(layout, controls);
-        y = controls.bottom() + UiTokens::GROUP_GAP;
-    }
+    add_overlay_position_elements(layout, placement.controls);
     add_row(
         layout,
         &mut y,
@@ -2322,6 +2361,7 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Shape the overlay without guessing where it will land.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -2336,6 +2376,7 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Adjust the compact status card with familiar ranges.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     for (id, label, description) in [
         (ElementId::OverlayScale, "Size", "Small, normal, or large"),
         (ElementId::OverlayOpacity, "Opacity", "Low, normal, or high"),
@@ -2360,7 +2401,6 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
                 56.0,
             ),
         );
-        y += 8.0;
     }
     let preview_y = y;
     add_element(
@@ -2388,6 +2428,7 @@ fn add_system(layout: &mut SettingsLayout) {
         "Decide whether WinShort is ready after sign-in.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -2402,6 +2443,7 @@ fn add_system(layout: &mut SettingsLayout) {
         "Pause everything without changing your shortcuts.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -2416,6 +2458,7 @@ fn add_system(layout: &mut SettingsLayout) {
         "Keep technical details available when you need them.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     let diagnostics_y = y;
     add_element(
         layout,
@@ -2452,6 +2495,7 @@ fn add_system(layout: &mut SettingsLayout) {
         "Reset is destructive and always asks twice.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     let reset_y = y;
     add_element(
         layout,
@@ -2484,6 +2528,7 @@ fn add_advanced(layout: &mut SettingsLayout) {
         &mut y,
     );
     add_heading(layout, "Audio", "Windows default-device behavior.", &mut y);
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -2506,6 +2551,7 @@ fn add_advanced(layout: &mut SettingsLayout) {
         "Exact values are useful when a profile needs repair.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -2535,6 +2581,7 @@ fn add_advanced(layout: &mut SettingsLayout) {
         "Temporary diagnostics only; no setting is persisted here.",
         &mut y,
     );
+    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
@@ -2570,6 +2617,7 @@ fn add_search_results(layout: &mut SettingsLayout, query: &str) {
             "Try microphone, desktop, display, or overlay.",
             &mut y,
         );
+        add_section_content_gap(&mut y);
         add_region(layout, RegionKind::WorkspaceNotice, &mut y, 76.0);
         return;
     }
@@ -2579,7 +2627,7 @@ fn add_search_results(layout: &mut SettingsLayout, query: &str) {
         "Choose a result to open the right page.",
         &mut y,
     );
-    y += UiTokens::GROUP_GAP;
+    add_section_content_gap(&mut y);
     for (index, result) in matches.iter().enumerate() {
         add_row(
             layout,
@@ -2601,6 +2649,7 @@ fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
             "Choose the defaults you want to use every day.",
             &mut y,
         );
+        add_section_content_gap(&mut y);
         add_row(
             layout,
             &mut y,
@@ -2642,6 +2691,7 @@ fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
             "You can change every choice later.",
             &mut y,
         );
+        add_section_content_gap(&mut y);
         add_hotkey_grid(
             layout,
             &mut y,
@@ -2679,12 +2729,28 @@ fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        overlay_monitor_rect, overlay_placement_geometry, overlay_position_grid_rect,
-        overlay_preview_canvas_rect, overlay_preview_canvas_size, ElementId, ElementKind,
-        HotkeySlot, RegionKind, SettingsLayout,
+        brand_row_geometry, overlay_monitor_rect, overlay_placement_geometry,
+        overlay_position_grid_rect, overlay_preview_canvas_rect, overlay_preview_canvas_size,
+        top_chrome_geometry, ElementId, ElementKind, HotkeySlot, RegionKind, SettingsLayout,
     };
     use crate::ui::navigation::Page;
     use crate::ui::presentation::{AllowlistMode, DisplayWizardStep};
+
+    #[test]
+    fn brand_row_centers_icon_and_text_from_shared_row_geometry() {
+        let brand = brand_row_geometry(216.0);
+        let row_center = brand.row.y + brand.row.h * 0.5;
+        assert_eq!(brand.icon.y + brand.icon.h * 0.5, row_center);
+        assert_eq!(brand.text.y + brand.text.h * 0.5, row_center);
+        assert_eq!(
+            brand.icon.y + brand.icon.h * 0.5,
+            brand.text.y + brand.text.h * 0.5
+        );
+        assert_eq!(
+            brand.text.x,
+            brand.icon.right() + super::UiTokens::BRAND_TEXT_GAP
+        );
+    }
 
     #[test]
     fn shell_has_primary_navigation_and_search() {
@@ -2957,6 +3023,51 @@ mod tests {
     }
 
     #[test]
+    fn sibling_cards_and_rows_use_named_row_gap() {
+        let audio = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Audio, "", 0, None);
+        let speakers = audio
+            .sections
+            .iter()
+            .find(|section| section.title == "Speakers")
+            .expect("speakers heading");
+        let output = audio.element(ElementId::OutputDevice).expect("output row");
+        assert_eq!(
+            output.rect.y - (speakers.y + speakers.height),
+            super::UiTokens::SECTION_CONTENT_GAP
+        );
+        let status = audio
+            .regions
+            .iter()
+            .find(|region| region.kind == RegionKind::AudioCurrentApp)
+            .expect("current app status");
+        let mute = audio
+            .element(ElementId::HotkeyCard(HotkeySlot::Foreground))
+            .expect("mute current app card");
+        let volume_up = audio
+            .element(ElementId::HotkeyCard(HotkeySlot::ForegroundVolumeUp))
+            .expect("current app volume card");
+        assert_eq!(mute.rect.y - status.rect.bottom(), super::UiTokens::ROW_GAP);
+        assert_eq!(
+            volume_up.rect.y - mute.rect.bottom(),
+            super::UiTokens::ROW_GAP
+        );
+
+        let home = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Home, "", 0, None);
+        let desktop = home
+            .element(ElementId::HomeCurrentDesktop)
+            .expect("current desktop card");
+        let special = home.element(ElementId::HomeSpecial).expect("special card");
+        let previous = home
+            .element(ElementId::HomePreviousDesktop)
+            .expect("previous desktop row");
+        assert_eq!(desktop.rect.y, special.rect.y);
+        assert_eq!(
+            previous.rect.y - desktop.rect.bottom(),
+            super::UiTokens::ROW_GAP
+        );
+    }
+
+    #[test]
     fn special_workspace_uses_a_heading_and_consistent_shortcut_cards() {
         let layout = SettingsLayout::build_shell_with_context(
             960.0,
@@ -2984,7 +3095,7 @@ mod tests {
             .expect("toggle card");
         assert_eq!(
             toggle_card.rect.y - move_card.rect.bottom(),
-            super::UiTokens::CARD_GAP
+            super::UiTokens::ROW_GAP
         );
         assert_eq!(toggle_card.rect.x, move_card.rect.x);
         assert_eq!(toggle_card.rect.w, move_card.rect.w);
@@ -3010,7 +3121,7 @@ mod tests {
                 .expect("toggle card");
             assert_eq!(
                 toggle_card.rect.y - move_card.rect.bottom(),
-                super::UiTokens::CARD_GAP
+                super::UiTokens::ROW_GAP
             );
             assert_eq!(toggle_card.rect.w, move_card.rect.w);
         }
@@ -3195,101 +3306,70 @@ mod tests {
     }
 
     #[test]
-    fn overlay_placement_is_responsive_and_uses_monitor_surface_as_preview() {
-        let wide = SettingsLayout::build_shell_with_context(
-            1200.0,
-            900.0,
-            0.0,
-            Page::Overlay,
-            "",
-            super::LayoutContext {
-                overlay_preview_aspect: (16, 9),
-                ..Default::default()
-            },
-            None,
-        );
-        let wide_region = wide
-            .regions
-            .iter()
-            .find(|region| region.kind == RegionKind::OverlayPreview)
-            .expect("wide overlay placement");
-        let wide_geometry = overlay_placement_geometry(
-            super::Rect::new(
-                wide.content_column.x,
-                wide_region.rect.y,
-                wide.content_column.w,
+    fn fixed_overlay_placement_is_always_side_by_side() {
+        for width in [960.0, 1200.0, 1920.0] {
+            let layout = SettingsLayout::build_shell_with_context(
+                width,
+                900.0,
                 0.0,
-            ),
-            (16, 9),
-        );
-        assert_eq!(wide_region.rect, wide_geometry.region);
-        let controls = wide_geometry.controls.expect("wide placement controls");
-        assert!(wide_geometry.preview.w < wide_geometry.region.w);
-        assert_eq!(
-            wide_geometry.preview.right() + super::OVERLAY_PLACEMENT_GAP,
-            controls.x
-        );
-        assert_eq!(
-            wide.element(ElementId::OverlayPositionCell(0))
-                .expect("wide position cell")
-                .rect,
-            overlay_position_grid_rect(controls, 0)
-        );
-        assert_eq!(
-            wide.element(ElementId::OverlayMonitor)
-                .expect("wide monitor selector")
-                .rect,
-            overlay_monitor_rect(controls)
-        );
-        let canvas = overlay_preview_canvas_rect(wide_geometry.preview, (16, 9));
-        assert!(canvas.x >= wide_geometry.preview.x);
-        assert!(canvas.y >= wide_geometry.preview.y);
-        assert!(canvas.right() <= wide_geometry.preview.right());
-        assert!(canvas.bottom() <= wide_geometry.preview.bottom());
-        assert_ne!(canvas, wide_geometry.region);
-
-        let narrow = SettingsLayout::build_shell_with_context(
-            960.0,
-            900.0,
-            0.0,
-            Page::Overlay,
-            "",
-            super::LayoutContext {
-                overlay_preview_aspect: (16, 9),
-                ..Default::default()
-            },
-            None,
-        );
-        let narrow_region = narrow
-            .regions
-            .iter()
-            .find(|region| region.kind == RegionKind::OverlayPreview)
-            .expect("narrow overlay preview");
-        let narrow_geometry = overlay_placement_geometry(
-            super::Rect::new(
-                narrow.content_column.x,
-                narrow_region.rect.y,
-                narrow.content_column.w,
-                0.0,
-            ),
-            (16, 9),
-        );
-        assert!(narrow_geometry.controls.is_none());
-        let position = narrow
-            .sections
-            .iter()
-            .find(|section| section.title == "Position")
-            .expect("stacked position heading");
-        assert!(position.y > narrow_region.rect.bottom());
-        assert_eq!(
-            narrow
-                .element(ElementId::OverlayPositionCell(0))
-                .expect("narrow position cell")
-                .rect
-                .x,
-            narrow.content_column.x
-        );
-        assert_eq!(narrow_region.rect, narrow_geometry.region);
+                Page::Overlay,
+                "",
+                super::LayoutContext {
+                    overlay_preview_aspect: (16, 9),
+                    ..Default::default()
+                },
+                None,
+            );
+            let region = layout
+                .regions
+                .iter()
+                .find(|region| region.kind == RegionKind::OverlayPreview)
+                .expect("overlay placement");
+            let geometry = overlay_placement_geometry(
+                super::Rect::new(
+                    layout.content_column.x,
+                    region.rect.y,
+                    layout.content_column.w,
+                    0.0,
+                ),
+                (16, 9),
+            );
+            assert_eq!(region.rect, geometry.region);
+            assert!(geometry.preview.w > 0.0);
+            assert_eq!(
+                geometry.preview.right() + super::OVERLAY_PLACEMENT_GAP,
+                geometry.controls.x
+            );
+            assert_eq!(geometry.controls.right(), layout.content_column.right());
+            assert_eq!(
+                layout
+                    .element(ElementId::OverlayPositionCell(0))
+                    .expect("position cell")
+                    .rect,
+                overlay_position_grid_rect(geometry.controls, 0)
+            );
+            assert_eq!(
+                layout
+                    .element(ElementId::OverlayMonitor)
+                    .expect("monitor selector")
+                    .rect,
+                overlay_monitor_rect(geometry.controls)
+            );
+            assert_eq!(
+                layout
+                    .sections
+                    .iter()
+                    .filter(|section| section.title == "Position")
+                    .count(),
+                0
+            );
+            let canvas = overlay_preview_canvas_rect(geometry.preview, (16, 9));
+            assert!(canvas.x >= geometry.preview.x);
+            assert!(canvas.y >= geometry.preview.y);
+            assert!(canvas.right() <= geometry.preview.right());
+            assert!(canvas.bottom() <= geometry.preview.bottom());
+            assert_ne!(canvas, geometry.region);
+        }
     }
 
     #[test]
@@ -3327,35 +3407,34 @@ mod tests {
     }
 
     #[test]
-    fn custom_titlebar_controls_are_aligned_and_clear_of_search() {
+    fn fixed_top_chrome_has_one_close_and_aligned_search() {
         let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
-        let minimize = layout
-            .element(ElementId::WindowMinimize)
-            .expect("minimize button");
-        let maximize = layout
-            .element(ElementId::WindowMaximize)
-            .expect("maximize button");
+        let chrome = top_chrome_geometry(layout.width, layout.nav_width);
         let close = layout
             .element(ElementId::WindowClose)
             .expect("close button");
-        assert_eq!(minimize.rect.y, super::UiTokens::TITLEBAR_BUTTON_TOP);
-        assert_eq!(minimize.rect.h, super::UiTokens::TITLEBAR_BUTTON_HEIGHT);
-        assert_eq!(maximize.rect.y, minimize.rect.y);
-        assert_eq!(close.rect.y, minimize.rect.y);
+        assert_eq!(layout.top_bar, chrome.row);
+        assert_eq!(layout.search_rect, chrome.search);
+        assert_eq!(close.rect, chrome.close);
+        assert_eq!(layout.search_rect.y, close.rect.y);
+        assert_eq!(layout.search_rect.h, close.rect.h);
+        assert!(chrome.caption.w > 0.0);
+        assert!(layout.search_rect.right() < close.rect.x);
         assert_eq!(
-            maximize.rect.x - minimize.rect.right(),
-            super::UiTokens::TITLEBAR_BUTTON_GAP
+            layout
+                .elements
+                .iter()
+                .filter(|element| {
+                    !element.scrolls && element.kind == ElementKind::ButtonSecondary
+                })
+                .map(|element| element.id)
+                .collect::<Vec<_>>(),
+            vec![ElementId::WindowClose]
         );
         assert_eq!(
-            close.rect.x - maximize.rect.right(),
-            super::UiTokens::TITLEBAR_BUTTON_GAP
+            layout.content_clip.y,
+            chrome.row.bottom() + super::UiTokens::VIEWPORT_TOP_INSET
         );
-        assert!(layout.search_rect.right() <= minimize.rect.x);
-        assert_eq!(layout.search_rect.y, super::UiTokens::TITLEBAR_HEIGHT + 4.0);
-        assert!(layout
-            .sections
-            .iter()
-            .all(|section| section.title != "Control Center"));
     }
 
     #[test]

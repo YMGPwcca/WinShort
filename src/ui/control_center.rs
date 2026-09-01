@@ -9,27 +9,25 @@ use std::borrow::Cow;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, EndPaint, InvalidateRect, ScreenToClient, PAINTSTRUCT,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
-    TRACKMOUSEEVENT,
+    GetFocus, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, GetWindowRect, IsZoomed, KillTimer, SetTimer, SetWindowPos, ShowWindow,
-    CREATESTRUCTW, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTCLOSE, HTLEFT,
-    HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE,
-    SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE,
-    WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE,
-    WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_CAPTION, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW, HTCAPTION,
+    HTCLIENT, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOWPOS, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_GETOBJECT,
+    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
+    WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_WINDOWPOSCHANGING, WS_CLIPCHILDREN,
+    WS_POPUP,
 };
 
 use crate::config::model::{
@@ -59,8 +57,8 @@ use crate::ui::presentation::{
     DeviceSelectionPresentation, DisplayWizardStep,
 };
 use crate::ui::prompt::{PromptAction, TextPrompt};
-use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
-use crate::ui::theme::{Color, Theme, ThemeMode, UiTokens};
+use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
+use crate::ui::theme::{Color, Theme, ThemeMode};
 
 pub const CLASS_NAME: &str = "WinShort.ControlCenter";
 pub const DESIGN_WIDTH: f32 = 960.0;
@@ -69,6 +67,7 @@ const UI_TIMER: usize = 1;
 const UI_TIMER_MS: u32 = 16;
 const WHEEL_SCROLL_DIP: f32 = 80.0;
 const APPLIED_STATUS: &str = "Changes applied";
+const CONTROL_CENTER_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_POPUP.0 | WS_CLIPCHILDREN.0);
 
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -704,10 +703,11 @@ impl SettingsUi {
             BrushRole::Border,
             1.0,
         );
-        controls::draw_app_mark(&renderer, UiRect::new(24.0, 22.0, 34.0, 34.0));
+        let brand = self.layout.brand;
+        controls::draw_app_mark(&renderer, brand.icon);
         renderer.text(
             "WinShort",
-            rect(70.0, 17.0, self.layout.nav_width - 18.0, 45.0),
+            brand.text.d2d(),
             TextStyle::Section,
             BrushRole::Text,
         );
@@ -777,7 +777,7 @@ impl SettingsUi {
         // Paint the persistent top bar after the scrollable viewport. The
         // viewport clip is still authoritative; this final layer also makes
         // the shell visually non-scrollable if a backend render call overdraws.
-        self.draw_top_bar(&renderer, hwnd);
+        self.draw_top_bar(&renderer);
         renderer.fill_rect(self.layout.footer.d2d(), BrushRole::BackgroundSubtle);
         renderer.line(
             0.0,
@@ -795,10 +795,10 @@ impl SettingsUi {
         }
         result
     }
-    fn draw_top_bar(&self, renderer: &Renderer, hwnd: HWND) {
+    fn draw_top_bar(&self, renderer: &Renderer) {
         renderer.fill_rect(self.layout.top_bar.d2d(), BrushRole::Background);
         renderer.line(
-            self.layout.nav_width,
+            0.0,
             self.layout.top_bar.bottom(),
             self.layout.width,
             self.layout.top_bar.bottom(),
@@ -812,21 +812,19 @@ impl SettingsUi {
             self.visual_focus(ElementId::Search),
             self.hovered == Some(ElementId::Search),
         );
-        let maximized = unsafe { IsZoomed(hwnd).as_bool() };
-        for element in &self.layout.elements {
-            if matches!(
-                element.id,
-                ElementId::WindowMinimize | ElementId::WindowMaximize | ElementId::WindowClose
-            ) {
-                controls::draw_titlebar_button(
-                    renderer,
-                    element,
-                    self.hovered == Some(element.id),
-                    self.pressed == Some(element.id),
-                    self.visual_focus(element.id),
-                    maximized,
-                );
-            }
+        if let Some(element) = self
+            .layout
+            .elements
+            .iter()
+            .find(|element| element.id == ElementId::WindowClose)
+        {
+            controls::draw_close_button(
+                renderer,
+                element,
+                self.hovered == Some(ElementId::WindowClose),
+                self.pressed == Some(ElementId::WindowClose),
+                self.visual_focus(ElementId::WindowClose),
+            );
         }
     }
 
@@ -1307,20 +1305,19 @@ impl SettingsUi {
             TextStyle::Section,
             BrushRole::Text,
         );
-        if let Some(controls) = placement.controls {
-            renderer.text(
-                "Position",
-                UiRect::new(controls.x, controls.y + 8.0, controls.w, 24.0).d2d(),
-                TextStyle::Section,
-                BrushRole::Text,
-            );
-            renderer.text_clipped(
-                "Choose a location on the monitor work area.",
-                UiRect::new(controls.x, controls.y + 32.0, controls.w, 16.0).d2d(),
-                TextStyle::Caption,
-                BrushRole::TextSecondary,
-            );
-        }
+        let controls = placement.controls;
+        renderer.text(
+            "Position",
+            UiRect::new(controls.x, controls.y + 8.0, controls.w, 24.0).d2d(),
+            TextStyle::Section,
+            BrushRole::Text,
+        );
+        renderer.text_clipped(
+            "Choose a location on the monitor work area.",
+            UiRect::new(controls.x, controls.y + 32.0, controls.w, 16.0).d2d(),
+            TextStyle::Caption,
+            BrushRole::TextSecondary,
+        );
         let canvas = overlay_preview_canvas_rect(preview, self.overlay_preview_aspect);
         renderer.fill_rounded(canvas.translated_y(2.0).d2d(), 8.0, BrushRole::Shadow);
         renderer.fill_rounded(canvas.d2d(), 8.0, BrushRole::Card);
@@ -2063,8 +2060,6 @@ impl SettingsUi {
                     ControlValue::Action(Cow::Borrowed(""))
                 }
             }
-            ElementId::WindowMinimize => ControlValue::Action(Cow::Borrowed("Minimize")),
-            ElementId::WindowMaximize => ControlValue::Action(Cow::Borrowed("Maximize")),
             ElementId::WindowClose => ControlValue::Action(Cow::Borrowed("Close")),
             ElementId::HomeSpeaker => ControlValue::Text(Cow::Owned(self.current_output_name())),
             ElementId::HomeCurrentDesktop => ControlValue::Text(Cow::Owned(
@@ -2844,17 +2839,6 @@ impl SettingsUi {
             self.delete_profile_confirm = false;
         }
         match id {
-            ElementId::WindowMinimize => unsafe {
-                let _ = ShowWindow(hwnd, SW_MINIMIZE);
-            },
-            ElementId::WindowMaximize => unsafe {
-                let command = if IsZoomed(hwnd).as_bool() {
-                    SW_RESTORE
-                } else {
-                    SW_MAXIMIZE
-                };
-                let _ = ShowWindow(hwnd, command);
-            },
             ElementId::WindowClose => unsafe {
                 let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                     Some(hwnd),
@@ -4029,17 +4013,6 @@ impl SettingsUi {
                         node.value = value;
                         node.help_text = detail;
                     }
-                    ElementId::WindowMaximize => {
-                        let maximized = unsafe { IsZoomed(hwnd).as_bool() };
-                        let action = if maximized { "Restore" } else { "Maximize" };
-                        node.name = format!("{action} Control Center");
-                        node.value = action.into();
-                        node.help_text = if maximized {
-                            "Restore the Control Center window".into()
-                        } else {
-                            "Maximize the Control Center window".into()
-                        };
-                    }
                     ElementId::InputCycleMode(index) => {
                         let mode =
                             allowlist_mode(self.draft.audio.cycle_input_allowlist.as_deref());
@@ -4318,9 +4291,7 @@ impl ControlCenterWindow {
 
         let primary = crate::platform::monitor::primary();
         let primary_dpi = primary.as_ref().map_or(96, |m| m.dpi);
-        let scale = primary_dpi as f32 / 96.0;
-        let default_width = (DESIGN_WIDTH * scale) as i32;
-        let default_height = (DESIGN_HEIGHT * scale) as i32;
+        let (default_width, default_height) = fixed_window_size(primary_dpi);
         let saved = load_settings_rect();
         let (x, y, w, h, dpi) = window_geometry(
             primary.as_ref().map(|monitor| monitor.work),
@@ -4336,7 +4307,7 @@ impl ControlCenterWindow {
                 WINDOW_EX_STYLE::default(),
                 windows::core::PCWSTR(windows::core::HSTRING::from(CLASS_NAME).as_ptr()),
                 windows::core::PCWSTR(windows::core::HSTRING::from("WinShort").as_ptr()),
-                WINDOW_STYLE((WS_OVERLAPPEDWINDOW.0 & !WS_CAPTION.0) | WS_CLIPCHILDREN.0),
+                CONTROL_CENTER_STYLE,
                 x,
                 y,
                 w,
@@ -4348,17 +4319,6 @@ impl ControlCenterWindow {
             )
         }
         .map_err(|e| Error::win("CreateWindowExW(settings)", &e))?;
-        unsafe {
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                0,
-                0,
-                0,
-                0,
-                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
 
         let actual_dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96);
         if actual_dpi != dpi {
@@ -4709,14 +4669,11 @@ impl ControlCenterWindow {
 
     pub(crate) fn close_for_hide(&mut self) {
         self.close_rename_prompt();
+        self.cancel_picker_without_focus();
         self.discard_uncommitted_draft();
-        let hwnd = self.hwnd;
-        close_picker_before_settings_hide(
-            || self.cancel_picker_without_focus(),
-            || unsafe {
-                let _ = ShowWindow(hwnd, SW_HIDE);
-            },
-        );
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
     }
 
     fn cancel_picker_impl(&mut self, restore_focus: bool) {
@@ -4782,6 +4739,13 @@ fn load_settings_rect() -> Option<SavedSettingsRect> {
         dpi: dpi?.max(96),
     })
 }
+fn fixed_window_size(dpi: u32) -> (i32, i32) {
+    let scale = dpi.max(96) as f32 / 96.0;
+    (
+        (DESIGN_WIDTH * scale).round() as i32,
+        (DESIGN_HEIGHT * scale).round() as i32,
+    )
+}
 
 fn window_geometry(
     primary_work: Option<RECT>,
@@ -4807,9 +4771,7 @@ fn window_geometry(
             .map(|monitor| monitor.dpi)
             .unwrap_or(primary_dpi)
             .max(96);
-        let (width, height) = scaled_saved_size(saved.rect, saved.dpi, target_dpi);
-        let width = width.max((DESIGN_WIDTH * target_dpi as f32 / 96.0).round() as i32);
-        let height = height.max((DESIGN_HEIGHT * target_dpi as f32 / 96.0).round() as i32);
+        let (width, height) = fixed_window_size(target_dpi);
         let rect = clamp_window_rect(
             RECT {
                 left: saved.rect.left,
@@ -4865,14 +4827,6 @@ pub(crate) fn clamp_window_rect(saved: RECT, work: RECT) -> RECT {
         right: left + width,
         bottom: top + height,
     }
-}
-
-fn scaled_saved_size(rect: RECT, saved_dpi: u32, target_dpi: u32) -> (i32, i32) {
-    let scale = target_dpi.max(96) as f32 / saved_dpi.max(96) as f32;
-    (
-        ((rect.right - rect.left) as f32 * scale).round() as i32,
-        ((rect.bottom - rect.top) as f32 * scale).round() as i32,
-    )
 }
 
 fn picker_element(kind: PickerKind) -> Option<ElementId> {
@@ -5387,81 +5341,32 @@ fn current_picker_value(
     }
 }
 
-fn screen_point_from_lparam(lparam: LPARAM) -> (i32, i32) {
-    (
-        (lparam.0 as u32 & 0xFFFF) as u16 as i16 as i32,
-        ((lparam.0 as u32 >> 16) & 0xFFFF) as u16 as i16 as i32,
-    )
-}
-
-fn titlebar_button_at(ui: &SettingsUi, hwnd: HWND, x: i32, y: i32) -> Option<ElementId> {
-    let mut window = RECT::default();
-    if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
-        return None;
-    }
-    let scale = 96.0 / unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as f32;
-    let x = (x - window.left) as f32 * scale;
-    let y = (y - window.top) as f32 * scale;
-    match ui.layout.hit_test(x, y) {
-        Some(
-            id @ (ElementId::WindowMinimize | ElementId::WindowMaximize | ElementId::WindowClose),
-        ) => Some(id),
-        _ => None,
-    }
-}
-
-fn titlebar_button_for_hit_test(hit: u32) -> Option<ElementId> {
-    Some(match hit {
-        HTMINBUTTON => ElementId::WindowMinimize,
-        HTMAXBUTTON => ElementId::WindowMaximize,
-        HTCLOSE => ElementId::WindowClose,
-        _ => return None,
-    })
-}
-
-fn custom_frame_hit_test(hwnd: HWND, x: i32, y: i32) -> u32 {
-    let mut window = RECT::default();
-    if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
-        return HTCLIENT;
-    }
-    let scale = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0;
-    let border = (6.0 * scale).round().max(4.0) as i32;
-    let left = x < window.left + border;
-    let right = x >= window.right - border;
-    let top = y < window.top + border;
-    let bottom = y >= window.bottom - border;
-    if !unsafe { IsZoomed(hwnd).as_bool() } {
-        if top && left {
-            return HTTOPLEFT;
-        }
-        if top && right {
-            return HTTOPRIGHT;
-        }
-        if bottom && left {
-            return HTBOTTOMLEFT;
-        }
-        if bottom && right {
-            return HTBOTTOMRIGHT;
-        }
-        if top {
-            return HTTOP;
-        }
-        if bottom {
-            return HTBOTTOM;
-        }
-        if left {
-            return HTLEFT;
-        }
-        if right {
-            return HTRIGHT;
-        }
-    }
-    let titlebar_height = (UiTokens::TITLEBAR_HEIGHT * scale).round() as i32;
-    if y < window.top + titlebar_height {
+fn chrome_hit_test_dip(chrome: crate::ui::layout::TopChromeGeometry, x: f32, y: f32) -> u32 {
+    if chrome.search.contains(x, y) || chrome.close.contains(x, y) {
+        HTCLIENT
+    } else if chrome.caption.contains(x, y) {
         HTCAPTION
     } else {
         HTCLIENT
     }
+}
+fn blocked_fixed_window_command(command: usize) -> bool {
+    matches!(command & 0xFFF0, 0xF000 | 0xF020 | 0xF030 | 0xF120)
+}
+
+fn chrome_hit_test(ui: &SettingsUi, hwnd: HWND, lparam: LPARAM) -> u32 {
+    let mut point = POINT {
+        x: (lparam.0 as u32 & 0xFFFF) as u16 as i16 as i32,
+        y: ((lparam.0 as u32 >> 16) & 0xFFFF) as u16 as i16 as i32,
+    };
+    if !unsafe { ScreenToClient(hwnd, &mut point) }.as_bool() {
+        return HTCLIENT;
+    }
+    let scale = 96.0 / unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as f32;
+    let x = point.x as f32 * scale;
+    let y = point.y as f32 * scale;
+    let chrome = crate::ui::layout::top_chrome_geometry(ui.layout.width, ui.layout.nav_width);
+    chrome_hit_test_dip(chrome, x, y)
 }
 
 fn apply_chrome(hwnd: HWND, theme: Theme) {
@@ -5519,89 +5424,11 @@ unsafe extern "system" fn settings_wndproc(
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
         match msg {
-            WM_NCCALCSIZE => {
-                if wparam.0 != 0 {
-                    LRESULT(0)
-                } else {
-                    win::def_proc(hwnd, msg, wparam, lparam)
-                }
-            }
             WM_NCHITTEST => {
-                let (x, y) = screen_point_from_lparam(lparam);
-                let button = {
-                    let ui = cell.borrow();
-                    titlebar_button_at(&ui, hwnd, x, y)
-                };
-                button.map_or_else(
-                    || LRESULT(custom_frame_hit_test(hwnd, x, y) as isize),
-                    |id| {
-                        LRESULT(match id {
-                            ElementId::WindowMinimize => HTMINBUTTON,
-                            ElementId::WindowMaximize => HTMAXBUTTON,
-                            ElementId::WindowClose => HTCLOSE,
-                            _ => HTCLIENT,
-                        } as isize)
-                    },
-                )
+                let ui = cell.borrow();
+                LRESULT(chrome_hit_test(&ui, hwnd, lparam) as isize)
             }
-            WM_NCMOUSEMOVE => {
-                let (x, y) = screen_point_from_lparam(lparam);
-                let id = {
-                    let ui = cell.borrow();
-                    titlebar_button_at(&ui, hwnd, x, y)
-                };
-                let mut track = TRACKMOUSEEVENT {
-                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                    dwFlags: TME_LEAVE | TME_NONCLIENT,
-                    hwndTrack: hwnd,
-                    dwHoverTime: 0,
-                };
-                let _ = TrackMouseEvent(&mut track);
-                cell.borrow_mut().set_hover(hwnd, id);
-                LRESULT(0)
-            }
-            WM_NCMOUSELEAVE => {
-                cell.borrow_mut().set_hover(hwnd, None);
-                LRESULT(0)
-            }
-            WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK => {
-                let Some(id) = titlebar_button_for_hit_test(wparam.0 as u32) else {
-                    return win::def_proc(hwnd, msg, wparam, lparam);
-                };
-                if msg == WM_NCLBUTTONDBLCLK {
-                    if id == ElementId::WindowMaximize {
-                        cell.borrow_mut().activate(hwnd, id);
-                        return LRESULT(0);
-                    }
-                    return LRESULT(0);
-                }
-                {
-                    let mut ui = cell.borrow_mut();
-                    ui.pressed = Some(id);
-                    ui.focused = Some(id);
-                    ui.focus_visible = false;
-                }
-                let _ = SetCapture(hwnd);
-                let _ = SetFocus(Some(hwnd));
-                invalidate(hwnd);
-                LRESULT(0)
-            }
-            WM_NCLBUTTONUP => {
-                let id = titlebar_button_for_hit_test(wparam.0 as u32);
-                let activate = {
-                    let mut ui = cell.borrow_mut();
-                    let pressed = ui.pressed.take();
-                    pressed.is_some() && pressed == id
-                };
-                let _ = ReleaseCapture();
-                if activate {
-                    if let Some(id) = id {
-                        cell.borrow_mut().activate(hwnd, id);
-                    }
-                }
-                invalidate(hwnd);
-                LRESULT(0)
-            }
+            WM_SYSCOMMAND if blocked_fixed_window_command(wparam.0) => LRESULT(0),
             WM_GETOBJECT => {
                 // Clone only; UiaReturnRawElementProvider must run without a
                 // live SettingsUi RefCell borrow.
@@ -5683,6 +5510,13 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
+            WM_WINDOWPOSCHANGING => {
+                let position = &mut *(lparam.0 as *mut WINDOWPOS);
+                let (width, height) = fixed_window_size(cell.borrow().dpi);
+                position.cx = width;
+                position.cy = height;
+                LRESULT(0)
+            }
             WM_SIZE => {
                 let picker_hwnd = cell.borrow().picker_hwnd;
                 if let Some(popup_hwnd) = picker_hwnd {
@@ -5719,13 +5553,14 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
                 let suggested = &*(lparam.0 as *const RECT);
+                let (fixed_width, fixed_height) = fixed_window_size(new_dpi);
                 let _ = SetWindowPos(
                     hwnd,
                     None,
                     suggested.left,
                     suggested.top,
-                    suggested.right - suggested.left,
-                    suggested.bottom - suggested.top,
+                    fixed_width,
+                    fixed_height,
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 let mut ui = cell.borrow_mut();
@@ -5803,13 +5638,24 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
-                let picker_hwnd = cell.borrow().picker_hwnd;
+                let (picker_hwnd, close_hit) = {
+                    let mut ui = cell.borrow_mut();
+                    let picker_hwnd = ui.picker_hwnd;
+                    let close_hit = picker_hwnd.is_some_and(|_| {
+                        let (x, y) = mouse_point(lparam, ui.dpi);
+                        ui.rebuild_layout(hwnd);
+                        ui.layout.hit_test(x, y) == Some(ElementId::WindowClose)
+                    });
+                    (picker_hwnd, close_hit)
+                };
                 if let Some(popup_hwnd) = picker_hwnd {
                     crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
                         popup_hwnd: popup_hwnd.0 as isize,
                         restore_focus: true,
                     });
-                    return LRESULT(0);
+                    if !close_hit {
+                        return LRESULT(0);
+                    }
                 }
                 let (focus_requested, capture_requested) = {
                     let mut ui = cell.borrow_mut();
@@ -6026,14 +5872,6 @@ unsafe extern "system" fn settings_wndproc(
                 }
                 LRESULT(0)
             }
-            WM_GETMINMAXINFO => {
-                let info =
-                    &mut *(lparam.0 as *mut windows::Win32::UI::WindowsAndMessaging::MINMAXINFO);
-                let scale = cell.borrow_mut().dpi as f32 / 96.0;
-                info.ptMinTrackSize.x = (760.0 * scale) as i32;
-                info.ptMinTrackSize.y = (540.0 * scale) as i32;
-                LRESULT(0)
-            }
             WM_CHAR => {
                 let mut ui = cell.borrow_mut();
                 if ui.handle_search_char(hwnd, wparam.0 as u16) {
@@ -6093,12 +5931,18 @@ fn settings_wheel_action(
     )
 }
 
-fn close_picker_before_settings_hide<Cancel, Hide>(cancel_picker: Cancel, hide_settings: Hide)
-where
+#[cfg(test)]
+fn close_picker_before_settings_hide<Cancel, Discard, Hide>(
+    cancel_picker: Cancel,
+    discard_draft: Discard,
+    hide_settings: Hide,
+) where
     Cancel: FnOnce(),
+    Discard: FnOnce(),
     Hide: FnOnce(),
 {
     cancel_picker();
+    discard_draft();
     hide_settings();
 }
 fn invalidate(hwnd: HWND) {
@@ -6676,17 +6520,30 @@ mod interaction_tests {
         );
     }
     #[test]
-    fn saved_size_scales_from_saved_to_target_dpi() {
-        let rect = RECT {
+    fn fixed_window_size_is_dpi_scaled_and_not_user_sized() {
+        assert_eq!(fixed_window_size(96), (960, 660));
+        assert_eq!(fixed_window_size(144), (1440, 990));
+        assert_eq!(fixed_window_size(192), (1920, 1320));
+        assert_eq!(fixed_window_size(0), (960, 660));
+
+        let work = RECT {
             left: 0,
             top: 0,
-            right: 600,
-            bottom: 400,
+            right: 2400,
+            bottom: 1600,
         };
-        assert_eq!(scaled_saved_size(rect, 144, 144), (600, 400));
-        assert_eq!(scaled_saved_size(rect, 96, 144), (900, 600));
-        assert_eq!(scaled_saved_size(rect, 144, 96), (400, 267));
-        assert_eq!(scaled_saved_size(rect, 0, 144), (900, 600));
+        let (width, height) = fixed_window_size(144);
+        let rect = clamp_window_rect(
+            RECT {
+                left: 100,
+                top: 100,
+                right: 100 + width,
+                bottom: 100 + height,
+            },
+            work,
+        );
+        assert_eq!(rect.right - rect.left, width);
+        assert_eq!(rect.bottom - rect.top, height);
     }
 
     #[test]
@@ -7032,18 +6889,67 @@ mod interaction_tests {
     }
 
     #[test]
-    fn custom_titlebar_actions_are_focusable_automation_buttons() {
+    fn fixed_titlebar_exposes_only_close_and_no_resize_actions() {
         let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
-        for id in [
-            ElementId::WindowMinimize,
-            ElementId::WindowMaximize,
-            ElementId::WindowClose,
-        ] {
-            let element = layout.element(id).expect("titlebar action");
-            assert_eq!(element.kind, ElementKind::ButtonSecondary);
-            assert!(node_has_invoke(element.kind));
-            assert!(layout.focus_order().contains(&id));
-        }
+        let close = layout
+            .element(ElementId::WindowClose)
+            .expect("close button");
+        assert_eq!(close.kind, ElementKind::ButtonSecondary);
+        assert!(node_has_invoke(close.kind));
+        assert!(layout.focus_order().contains(&close.id));
+        assert_eq!(
+            layout
+                .elements
+                .iter()
+                .filter(|element| {
+                    !element.scrolls && element.kind == ElementKind::ButtonSecondary
+                })
+                .map(|element| element.id)
+                .collect::<Vec<_>>(),
+            vec![ElementId::WindowClose]
+        );
+
+        let forbidden = windows::Win32::UI::WindowsAndMessaging::WS_THICKFRAME.0
+            | windows::Win32::UI::WindowsAndMessaging::WS_MINIMIZEBOX.0
+            | windows::Win32::UI::WindowsAndMessaging::WS_MAXIMIZEBOX.0;
+        assert_eq!(CONTROL_CENTER_STYLE.0 & forbidden, 0);
+        assert_eq!(
+            CONTROL_CENTER_STYLE.0 & windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0,
+            windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0
+        );
+        assert!(blocked_fixed_window_command(0xF000));
+        assert!(blocked_fixed_window_command(0xF020));
+        assert!(blocked_fixed_window_command(0xF030));
+        assert!(blocked_fixed_window_command(0xF120));
+        assert!(!blocked_fixed_window_command(0xF060));
+
+        let chrome = crate::ui::layout::top_chrome_geometry(layout.width, layout.nav_width);
+        assert_eq!(layout.search_rect.y, chrome.close.y);
+        assert_eq!(layout.search_rect.h, chrome.close.h);
+        assert_eq!(
+            chrome_hit_test_dip(
+                chrome,
+                chrome.search.x + chrome.search.w * 0.5,
+                chrome.search.y + chrome.search.h * 0.5,
+            ),
+            HTCLIENT
+        );
+        assert_eq!(
+            chrome_hit_test_dip(
+                chrome,
+                chrome.caption.x + chrome.caption.w * 0.5,
+                chrome.caption.y + chrome.caption.h * 0.5,
+            ),
+            HTCAPTION
+        );
+        assert_eq!(
+            chrome_hit_test_dip(chrome, chrome.row.x + 1.0, chrome.row.y + 1.0),
+            HTCLIENT
+        );
+        assert_eq!(
+            chrome_hit_test_dip(chrome, 1.0, layout.height - 1.0),
+            HTCLIENT
+        );
     }
     #[test]
     fn preview_work_area_aspect_uses_real_bounds_and_16_9_fallback() {
@@ -7088,9 +6994,10 @@ mod interaction_tests {
         let steps = RefCell::new(Vec::new());
         close_picker_before_settings_hide(
             || steps.borrow_mut().push("picker"),
+            || steps.borrow_mut().push("discard"),
             || steps.borrow_mut().push("settings"),
         );
-        assert_eq!(&*steps.borrow(), &["picker", "settings"]);
+        assert_eq!(&*steps.borrow(), &["picker", "discard", "settings"]);
     }
 
     #[test]

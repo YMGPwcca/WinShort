@@ -292,13 +292,12 @@ pub(crate) fn titlebar_glyph_bounds(rect: Rect) -> Rect {
     )
 }
 
-pub fn draw_titlebar_button(
+pub fn draw_close_button(
     r: &Renderer,
     element: &Element,
     hovered: bool,
     pressed: bool,
     focused: bool,
-    maximized: bool,
 ) {
     let state = interaction_state(Interaction {
         hovered,
@@ -308,70 +307,34 @@ pub fn draw_titlebar_button(
         hover_t: 0.0,
         state_t: 0.0,
     });
-    let close = element.id == crate::ui::layout::ElementId::WindowClose;
     if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
-        r.fill_rounded(
-            element.rect.d2d(),
-            4.0,
-            if close {
-                BrushRole::Danger
-            } else {
-                BrushRole::ControlHover
-            },
-        );
+        r.fill_rounded(element.rect.d2d(), 4.0, BrushRole::Danger);
     }
     if focused {
         r.stroke_rounded(element.rect.inset(-2.0).d2d(), 6.0, BrushRole::Focus, 1.5);
     }
-    let role = if close && matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
+    let role = if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
         BrushRole::AccentText
     } else {
         BrushRole::TextSecondary
     };
     let glyph = titlebar_glyph_bounds(element.rect);
-    match element.id {
-        crate::ui::layout::ElementId::WindowMinimize => {
-            let y = glyph.bottom() - 2.0;
-            r.line(glyph.x + 1.0, y, glyph.right() - 1.0, y, role, 1.25);
-        }
-        crate::ui::layout::ElementId::WindowMaximize => {
-            if maximized {
-                r.stroke_rounded(
-                    Rect::new(glyph.x + 2.0, glyph.y, glyph.w - 2.0, glyph.h - 2.0).d2d(),
-                    1.5,
-                    role,
-                    1.25,
-                );
-                r.stroke_rounded(
-                    Rect::new(glyph.x, glyph.y + 3.0, glyph.w - 2.0, glyph.h - 2.0).d2d(),
-                    1.5,
-                    role,
-                    1.25,
-                );
-            } else {
-                r.stroke_rounded(glyph.d2d(), 1.5, role, 1.25);
-            }
-        }
-        crate::ui::layout::ElementId::WindowClose => {
-            r.line(
-                glyph.x + 1.5,
-                glyph.y + 1.5,
-                glyph.right() - 1.5,
-                glyph.bottom() - 1.5,
-                role,
-                1.25,
-            );
-            r.line(
-                glyph.right() - 1.5,
-                glyph.y + 1.5,
-                glyph.x + 1.5,
-                glyph.bottom() - 1.5,
-                role,
-                1.25,
-            );
-        }
-        _ => {}
-    }
+    r.line(
+        glyph.x + 1.5,
+        glyph.y + 1.5,
+        glyph.right() - 1.5,
+        glyph.bottom() - 1.5,
+        role,
+        1.25,
+    );
+    r.line(
+        glyph.right() - 1.5,
+        glyph.y + 1.5,
+        glyph.x + 1.5,
+        glyph.bottom() - 1.5,
+        role,
+        1.25,
+    );
 }
 
 pub fn draw_nav_item(
@@ -515,15 +478,18 @@ pub(crate) fn section_accent_rect(rect: Rect) -> Rect {
     let height = 18.0;
     Rect::new(rect.x, title.y + (title.h - height) * 0.5, 3.0, height)
 }
+pub(crate) fn section_divider_y(rect: Rect) -> f32 {
+    rect.y - UiTokens::SECTION_GAP * 0.5
+}
 
 pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &str) {
     // Keep the divider in the inter-section breathing room. The accent is
     // centered from the title's actual text rectangle, not the whole block.
     r.line(
         rect.x,
-        rect.y + 8.0,
+        section_divider_y(rect),
         rect.right(),
-        rect.y + 8.0,
+        section_divider_y(rect),
         BrushRole::Border,
         1.0,
     );
@@ -2066,9 +2032,9 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
 mod tests {
     use super::{
         device_value_rect, interaction_state, scroll_from_scrollbar_pointer, scrollbar_hit_rect,
-        scrollbar_thumb_rect, section_accent_rect, section_title_text_rect, shortcut_icon_geometry,
-        titlebar_glyph_bounds, value_control_rect, value_text_rect, Interaction, InteractionState,
-        CONTROL_WIDTH, VALUE_TEXT_PADDING,
+        scrollbar_thumb_rect, section_accent_rect, section_divider_y, section_title_text_rect,
+        shortcut_icon_geometry, titlebar_glyph_bounds, value_control_rect, value_text_rect,
+        Interaction, InteractionState, CONTROL_WIDTH, VALUE_TEXT_PADDING,
     };
     use crate::ui::layout::{ElementKind, Rect};
 
@@ -2165,7 +2131,7 @@ mod tests {
     }
     #[test]
     fn titlebar_glyph_bounds_are_compact_inside_full_hit_target() {
-        let button = Rect::new(900.0, 2.0, 44.0, 28.0);
+        let button = Rect::new(900.0, 4.0, 44.0, 32.0);
         let glyph = titlebar_glyph_bounds(button);
         assert_eq!(glyph.w, 12.0);
         assert_eq!(glyph.h, 12.0);
@@ -2182,5 +2148,12 @@ mod tests {
         assert_eq!(accent.x, heading.x);
         assert_eq!(accent.y + accent.h * 0.5, title.y + title.h * 0.5);
         assert!(heading.y + 8.0 < title.y);
+    }
+    #[test]
+    fn section_divider_stays_inside_named_section_gap() {
+        let heading = Rect::new(40.0, 120.0, 620.0, 88.0);
+        let divider = section_divider_y(heading);
+        assert!(divider > heading.y - super::UiTokens::SECTION_GAP);
+        assert!(divider < section_title_text_rect(heading).y);
     }
 }

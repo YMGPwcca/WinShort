@@ -41,19 +41,24 @@ pub struct UiTokens;
 
 impl UiTokens {
     pub const NAV_WIDTH: f32 = 216.0;
-    pub const TOP_BAR_HEIGHT: f32 = 80.0;
+    pub const TOP_BAR_HEIGHT: f32 = 40.0;
     pub const FOOTER_HEIGHT: f32 = 34.0;
     pub const PAGE_MARGIN: f32 = 32.0;
     pub const VIEWPORT_TOP_INSET: f32 = 8.0;
-    pub const TITLEBAR_HEIGHT: f32 = 32.0;
+    pub const TITLEBAR_HEIGHT: f32 = Self::TOP_BAR_HEIGHT;
     pub const TITLEBAR_BUTTON_WIDTH: f32 = 44.0;
-    pub const TITLEBAR_BUTTON_HEIGHT: f32 = 28.0;
-    pub const TITLEBAR_BUTTON_TOP: f32 = 2.0;
-    pub const TITLEBAR_BUTTON_GAP: f32 = 0.0;
+    pub const TITLEBAR_BUTTON_HEIGHT: f32 = 32.0;
+    pub const TITLEBAR_BUTTON_TOP: f32 = 4.0;
     pub const TITLEBAR_BUTTON_RIGHT: f32 = 8.0;
+    pub const BRAND_ROW_LEFT: f32 = 24.0;
+    pub const BRAND_ICON_SIZE: f32 = 32.0;
+    pub const BRAND_TEXT_GAP: f32 = 12.0;
+    pub const BRAND_TEXT_HEIGHT: f32 = 28.0;
+    pub const BRAND_ROW_RIGHT: f32 = 16.0;
+    pub const TOP_CHROME_SEARCH_GAP: f32 = 24.0;
     pub const ROW_HEIGHT: f32 = 58.0;
     pub const ROW_GAP: f32 = 8.0;
-    pub const GROUP_GAP: f32 = 18.0;
+    pub const SECTION_CONTENT_GAP: f32 = 12.0;
     pub const SECTION_GAP: f32 = 20.0;
     pub const PAGE_HEADER_HEIGHT: f32 = 92.0;
     pub const SECTION_HEADER_HEIGHT: f32 = 88.0;
@@ -62,9 +67,9 @@ impl UiTokens {
     pub const NAV_RADIUS: f32 = 8.0;
     pub const CONTROL_WIDTH: f32 = 206.0;
     pub const CARD_HEIGHT: f32 = 104.0;
-    pub const CARD_GAP: f32 = 16.0;
+    pub const CARD_COLUMN_GAP: f32 = 16.0;
     pub const PROFILE_CARD_HEIGHT: f32 = 120.0;
-    pub const PROFILE_ROW_STEP: f32 = 136.0;
+    pub const PROFILE_ROW_STEP: f32 = Self::PROFILE_CARD_HEIGHT + Self::ROW_GAP;
 
     pub const fn content_max_width(page: crate::ui::navigation::Page) -> f32 {
         match page {

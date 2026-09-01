@@ -7,13 +7,21 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Corrected the fixed Control Center acceptance model: brand icon/text now share
+  one row, Search and Close share one top-chrome row, and sibling card/row
+  spacing uses named section-content, section, and ROW_GAP semantics.
+- Removed Control Center minimize, maximize, resize, Snap, and double-click
+  maximize behavior. The window now uses a fixed DPI-scaled size with one
+  Close action that hides to the tray without ending WinShort.
+- Fixed Overlay placement to the supported side-by-side Preview/Position/Monitor
+  geometry; monitor aspect fitting and monitor-as-preview rendering remain intact.
 - Corrected the failed Control Center acceptance pass: Settings scrolling is immediate
   with no scroll tween state, the Shortcuts icon is an unmistakable keyboard, Current
   app audio is a compact single-heading status row, and the custom titlebar is blank
   with restrained caption glyphs.
-- Reworked Overlay placement into one responsive preview/control layout with a
-  monitor-as-preview surface, and moved the native LISTBOX picker host inside the
-  active Control Center child hierarchy without foreground transfer.
+- Reworked Overlay placement into one fixed side-by-side preview/control layout
+  with a monitor-as-preview surface, and kept the native LISTBOX picker host
+  inside the active Control Center child hierarchy without foreground transfer.
 
 - Hardened the custom Settings UI Automation provider: unsupported patterns,
   navigation boundaries, outside point queries, and logical child host providers
@@ -57,9 +65,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Made the Overlay preview fit the selected monitor work-area aspect ratio and
   refactored the runtime overlay to a non-layered Direct2D HWND using documented
   DWM Desktop Acrylic with opaque accessibility fallbacks.
-- Added a native custom Control Center titlebar with supported resize hit
-  testing and UI Automation Invoke nodes for Minimize, Maximize/Restore, and
-  Close.
+- Replaced the resizable custom Control Center frame with a fixed-size blank
+  top-chrome row and one Close UIA Button/Invoke action; Close keeps WinShort
+  alive and routes through the existing hide-to-tray lifecycle.
 - Associated every published config revision with its commit origin in one
   coherent live stamp, so audio preflight drift preserves DeviceCycle
   provenance and delayed ConfigChanged notifications remain stale-safe.
