@@ -8,7 +8,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 `write_all` → `flush` → `sync_all` → `rename` over the target; temp removed on rename failure.
 No backup copies are kept.
 
-schema_version = 9              # u8; CURRENT value is 9 (v1/v2/v3/v4/v5/v6/v7/v8 files migrate on load)
+schema_version = 10              # u8; CURRENT value is 9 (v1/v2/v3/v4/v5/v6/v7/v8 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -40,6 +40,12 @@ cycle_input_device = ""         # unassigned by default
 cycle_output_device = ""
 foreground_volume_up = ""
 foreground_volume_down = ""
+
+# Disabled shortcuts keep their chord here while the active field stays empty.
+# This lets each shortcut be re-enabled without losing the user's assignment.
+[[hotkeys.disabled]]
+action = "cycle_output_device"
+hotkey = "Alt+Win+F2"
 # Each record binds one stable profile ID; profile names are not references.
 [[hotkeys.display_profiles]]
 profile_id = "gaming-id"

@@ -42,7 +42,7 @@ use crate::ui::control_center_automation::{
 };
 use crate::ui::controls::{self, ControlValue, Interaction};
 use crate::ui::layout::{
-    ElementId, ElementKind, LayoutContext, Rect as UiRect, RegionKind, SettingsLayout,
+    ElementId, ElementKind, HotkeySlot, LayoutContext, Rect as UiRect, RegionKind, SettingsLayout,
 };
 use crate::ui::navigation::{search, Page};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
@@ -986,6 +986,39 @@ impl SettingsUi {
                         topology == crate::display::DisplayTopology::Clone,
                         interaction,
                     );
+                }
+                ElementId::HotkeyCard(slot) => {
+                    controls::draw_hotkey_card(renderer, element, self.hotkey_enabled(slot));
+                }
+                ElementId::HotkeyEnabled(_) | ElementId::HotkeyUnassign(_) => {
+                    let label = match self.value_for(element.id) {
+                        ControlValue::Action(value) => value.into_owned(),
+                        _ => element.label.clone(),
+                    };
+                    controls::draw_button_style(
+                        renderer,
+                        element.rect,
+                        &label,
+                        controls::ButtonStyle::Secondary,
+                        interaction,
+                    );
+                }
+                ElementId::MicHotkey
+                | ElementId::OutputHotkey
+                | ElementId::ForegroundHotkey
+                | ElementId::CycleInputHotkey
+                | ElementId::CycleOutputHotkey
+                | ElementId::ForegroundVolumeUpHotkey
+                | ElementId::ForegroundVolumeDownHotkey
+                | ElementId::PreviousDesktopHotkey
+                | ElementId::AssignScratchpadHotkey
+                | ElementId::ToggleScratchpadHotkey
+                | ElementId::DisplayProfileHotkey => {
+                    let value = match self.value_for(element.id) {
+                        ControlValue::Text(value) => value.into_owned(),
+                        _ => String::new(),
+                    };
+                    controls::draw_hotkey_keycap(renderer, element, &value, interaction);
                 }
                 ElementId::DesktopStripItem(index) => {
                     controls::draw_desktop_item(
@@ -2151,31 +2184,27 @@ impl SettingsUi {
             ElementId::StartHotkeysEnabled => {
                 ControlValue::Toggle(!self.draft.general.start_hotkeys_enabled)
             }
-            ElementId::MicHotkey => self.hotkey_value(id, self.draft.hotkeys.toggle_microphone),
-            ElementId::OutputHotkey => self.hotkey_value(id, self.draft.hotkeys.toggle_output),
-            ElementId::ForegroundHotkey => {
-                self.hotkey_value(id, self.draft.hotkeys.toggle_foreground_audio)
+            ElementId::HotkeyCard(_) => ControlValue::Action(Cow::Borrowed("")),
+            ElementId::HotkeyEnabled(slot) => {
+                ControlValue::Action(Cow::Borrowed(if self.hotkey_enabled(slot) {
+                    "Disable"
+                } else {
+                    "Enable"
+                }))
             }
-            ElementId::CycleInputHotkey => {
-                self.hotkey_value(id, self.draft.hotkeys.cycle_input_device)
-            }
-            ElementId::CycleOutputHotkey => {
-                self.hotkey_value(id, self.draft.hotkeys.cycle_output_device)
-            }
-            ElementId::ForegroundVolumeUpHotkey => {
-                self.hotkey_value(id, self.draft.hotkeys.foreground_volume_up)
-            }
-            ElementId::ForegroundVolumeDownHotkey => {
-                self.hotkey_value(id, self.draft.hotkeys.foreground_volume_down)
-            }
-            ElementId::PreviousDesktopHotkey => {
-                self.hotkey_value(id, self.draft.virtual_desktops.previous_desktop)
-            }
-            ElementId::AssignScratchpadHotkey => {
-                self.hotkey_value(id, self.draft.virtual_desktops.scratchpad_assign)
-            }
-            ElementId::ToggleScratchpadHotkey => {
-                self.hotkey_value(id, self.draft.virtual_desktops.scratchpad_toggle)
+            ElementId::HotkeyUnassign(_) => ControlValue::Action(Cow::Borrowed("Unassign")),
+            ElementId::MicHotkey
+            | ElementId::OutputHotkey
+            | ElementId::ForegroundHotkey
+            | ElementId::CycleInputHotkey
+            | ElementId::CycleOutputHotkey
+            | ElementId::ForegroundVolumeUpHotkey
+            | ElementId::ForegroundVolumeDownHotkey
+            | ElementId::PreviousDesktopHotkey
+            | ElementId::AssignScratchpadHotkey
+            | ElementId::ToggleScratchpadHotkey => {
+                let slot = HotkeySlot::from_capture_id(id).expect("hotkey slot");
+                self.hotkey_value(id, self.configured_hotkey(slot))
             }
             ElementId::InputDevice | ElementId::OutputDevice => {
                 ControlValue::Text(Cow::Owned(self.device_selection_view(id).primary))
@@ -2202,7 +2231,9 @@ impl SettingsUi {
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "No profile selected".into()),
             )),
-            ElementId::DisplayProfileHotkey => self.hotkey_value(id, self.active_profile_hotkey()),
+            ElementId::DisplayProfileHotkey => {
+                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::DisplayProfile))
+            }
             ElementId::DisplayOutputs => {
                 ControlValue::Text(Cow::Owned(self.display_outputs_label()))
             }
@@ -2318,6 +2349,117 @@ impl SettingsUi {
         }
     }
 
+    fn hotkey_action(&self, slot: HotkeySlot) -> Option<String> {
+        Some(match slot {
+            HotkeySlot::Microphone => "toggle_microphone".into(),
+            HotkeySlot::Output => "toggle_output".into(),
+            HotkeySlot::Foreground => "toggle_foreground_audio".into(),
+            HotkeySlot::CycleInput => "cycle_input_device".into(),
+            HotkeySlot::CycleOutput => "cycle_output_device".into(),
+            HotkeySlot::ForegroundVolumeUp => "foreground_volume_up".into(),
+            HotkeySlot::ForegroundVolumeDown => "foreground_volume_down".into(),
+            HotkeySlot::PreviousDesktop => "previous_desktop".into(),
+            HotkeySlot::AssignSpecial => "scratchpad_assign".into(),
+            HotkeySlot::ToggleSpecial => "scratchpad_toggle".into(),
+            HotkeySlot::DisplayProfile => format!(
+                "display_profile:{}",
+                self.draft.display_profiles.active()?.id
+            ),
+        })
+    }
+
+    fn active_hotkey(&self, slot: HotkeySlot) -> Option<Hotkey> {
+        match slot {
+            HotkeySlot::Microphone => self.draft.hotkeys.toggle_microphone,
+            HotkeySlot::Output => self.draft.hotkeys.toggle_output,
+            HotkeySlot::Foreground => self.draft.hotkeys.toggle_foreground_audio,
+            HotkeySlot::CycleInput => self.draft.hotkeys.cycle_input_device,
+            HotkeySlot::CycleOutput => self.draft.hotkeys.cycle_output_device,
+            HotkeySlot::ForegroundVolumeUp => self.draft.hotkeys.foreground_volume_up,
+            HotkeySlot::ForegroundVolumeDown => self.draft.hotkeys.foreground_volume_down,
+            HotkeySlot::PreviousDesktop => self.draft.virtual_desktops.previous_desktop,
+            HotkeySlot::AssignSpecial => self.draft.virtual_desktops.scratchpad_assign,
+            HotkeySlot::ToggleSpecial => self.draft.virtual_desktops.scratchpad_toggle,
+            HotkeySlot::DisplayProfile => self.active_profile_hotkey(),
+        }
+    }
+
+    fn configured_hotkey(&self, slot: HotkeySlot) -> Option<Hotkey> {
+        self.active_hotkey(slot).or_else(|| {
+            self.hotkey_action(slot)
+                .as_deref()
+                .and_then(|action| self.draft.hotkeys.disabled_hotkey(action))
+        })
+    }
+
+    fn hotkey_enabled(&self, slot: HotkeySlot) -> bool {
+        self.active_hotkey(slot).is_some()
+    }
+
+    fn set_active_hotkey(&mut self, slot: HotkeySlot, hotkey: Option<Hotkey>) {
+        match slot {
+            HotkeySlot::Microphone => self.draft.hotkeys.toggle_microphone = hotkey,
+            HotkeySlot::Output => self.draft.hotkeys.toggle_output = hotkey,
+            HotkeySlot::Foreground => self.draft.hotkeys.toggle_foreground_audio = hotkey,
+            HotkeySlot::CycleInput => self.draft.hotkeys.cycle_input_device = hotkey,
+            HotkeySlot::CycleOutput => self.draft.hotkeys.cycle_output_device = hotkey,
+            HotkeySlot::ForegroundVolumeUp => self.draft.hotkeys.foreground_volume_up = hotkey,
+            HotkeySlot::ForegroundVolumeDown => self.draft.hotkeys.foreground_volume_down = hotkey,
+            HotkeySlot::PreviousDesktop => self.draft.virtual_desktops.previous_desktop = hotkey,
+            HotkeySlot::AssignSpecial => self.draft.virtual_desktops.scratchpad_assign = hotkey,
+            HotkeySlot::ToggleSpecial => self.draft.virtual_desktops.scratchpad_toggle = hotkey,
+            HotkeySlot::DisplayProfile => self.set_active_profile_hotkey(hotkey),
+        }
+    }
+
+    fn set_recorded_hotkey(&mut self, slot: HotkeySlot, hotkey: Hotkey) {
+        let Some(action) = self.hotkey_action(slot) else {
+            return;
+        };
+        if self.active_hotkey(slot).is_none()
+            && self.draft.hotkeys.disabled_hotkey(&action).is_some()
+        {
+            self.draft.hotkeys.set_disabled_hotkey(action, hotkey);
+        } else {
+            self.set_active_hotkey(slot, Some(hotkey));
+            self.draft.hotkeys.clear_disabled_hotkey(&action);
+        }
+    }
+
+    fn toggle_hotkey_enabled(&mut self, hwnd: HWND, slot: HotkeySlot) {
+        let Some(action) = self.hotkey_action(slot) else {
+            return;
+        };
+        let before = self.draft.clone();
+        if let Some(hotkey) = self.active_hotkey(slot) {
+            self.set_active_hotkey(slot, None);
+            self.draft.hotkeys.set_disabled_hotkey(action, hotkey);
+        } else if let Some(hotkey) = self.draft.hotkeys.take_disabled_hotkey(&action) {
+            self.set_active_hotkey(slot, Some(hotkey));
+            let violations = crate::config::validate(&self.draft);
+            if !violations.is_empty() {
+                self.replace_draft(before);
+                self.validation = violations;
+                return;
+            }
+        } else {
+            return;
+        }
+        self.commit_local_change(hwnd, before);
+    }
+
+    fn unassign_hotkey(&mut self, hwnd: HWND, slot: HotkeySlot) {
+        let Some(action) = self.hotkey_action(slot) else {
+            return;
+        };
+        let before = self.draft.clone();
+        self.set_active_hotkey(slot, None);
+        self.draft.hotkeys.clear_disabled_hotkey(&action);
+        if self.draft != before {
+            self.commit_local_change(hwnd, before);
+        }
+    }
+
     fn choice_selected(&self, id: ElementId) -> bool {
         let (mode, index) = match id {
             ElementId::InputCycleMode(index) => (
@@ -2410,6 +2552,18 @@ impl SettingsUi {
 
     fn is_disabled(&self, id: ElementId) -> bool {
         match id {
+            ElementId::HotkeyEnabled(slot) | ElementId::HotkeyUnassign(slot) => {
+                self.configured_hotkey(slot).is_none()
+                    || (matches!(
+                        slot,
+                        HotkeySlot::PreviousDesktop
+                            | HotkeySlot::AssignSpecial
+                            | HotkeySlot::ToggleSpecial
+                    ) && !self.draft.virtual_desktops.enabled)
+                    || (slot == HotkeySlot::DisplayProfile
+                        && self.draft.display_profiles.active().is_none())
+            }
+            ElementId::HotkeyCard(_) => false,
             ElementId::WinNumberEnabled => !self.draft.virtual_desktops.enabled,
             ElementId::DesktopNumberModifier => {
                 !self.draft.virtual_desktops.enabled
@@ -2881,6 +3035,9 @@ impl SettingsUi {
                     self.animate_toggle(hwnd, id, !self.draft.general.start_hotkeys_enabled);
                 }
             }
+            ElementId::HotkeyCard(_) => {}
+            ElementId::HotkeyEnabled(slot) => self.toggle_hotkey_enabled(hwnd, slot),
+            ElementId::HotkeyUnassign(slot) => self.unassign_hotkey(hwnd, slot),
             ElementId::MicHotkey
             | ElementId::OutputHotkey
             | ElementId::ForegroundHotkey
@@ -3594,31 +3751,8 @@ impl SettingsUi {
             modifiers: self.recording_modifiers,
             key: VirtualKey(vk),
         };
-        match id {
-            ElementId::MicHotkey => self.draft.hotkeys.toggle_microphone = Some(hotkey),
-            ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
-            ElementId::ForegroundHotkey => {
-                self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
-            }
-            ElementId::CycleInputHotkey => self.draft.hotkeys.cycle_input_device = Some(hotkey),
-            ElementId::CycleOutputHotkey => self.draft.hotkeys.cycle_output_device = Some(hotkey),
-            ElementId::ForegroundVolumeUpHotkey => {
-                self.draft.hotkeys.foreground_volume_up = Some(hotkey)
-            }
-            ElementId::ForegroundVolumeDownHotkey => {
-                self.draft.hotkeys.foreground_volume_down = Some(hotkey)
-            }
-            ElementId::PreviousDesktopHotkey => {
-                self.draft.virtual_desktops.previous_desktop = Some(hotkey)
-            }
-            ElementId::AssignScratchpadHotkey => {
-                self.draft.virtual_desktops.scratchpad_assign = Some(hotkey)
-            }
-            ElementId::ToggleScratchpadHotkey => {
-                self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
-            }
-            ElementId::DisplayProfileHotkey => self.set_active_profile_hotkey(Some(hotkey)),
-            _ => {}
+        if let Some(slot) = HotkeySlot::from_capture_id(id) {
+            self.set_recorded_hotkey(slot, hotkey);
         }
         if self.display_editor.is_some() && self.draft != before {
             self.display_draft_dirty = true;
@@ -3649,41 +3783,18 @@ impl SettingsUi {
                         modifiers: chord.modifiers,
                         key,
                     };
-                    match id {
-                        ElementId::MicHotkey => self.draft.hotkeys.toggle_microphone = Some(hotkey),
-                        ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
-                        ElementId::ForegroundHotkey => {
-                            self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
-                        }
-                        ElementId::CycleInputHotkey => {
-                            self.draft.hotkeys.cycle_input_device = Some(hotkey)
-                        }
-                        ElementId::CycleOutputHotkey => {
-                            self.draft.hotkeys.cycle_output_device = Some(hotkey)
-                        }
-                        ElementId::ForegroundVolumeUpHotkey => {
-                            self.draft.hotkeys.foreground_volume_up = Some(hotkey)
-                        }
-                        ElementId::ForegroundVolumeDownHotkey => {
-                            self.draft.hotkeys.foreground_volume_down = Some(hotkey)
-                        }
-                        ElementId::PreviousDesktopHotkey => {
-                            self.draft.virtual_desktops.previous_desktop = Some(hotkey)
-                        }
-                        ElementId::AssignScratchpadHotkey => {
-                            self.draft.virtual_desktops.scratchpad_assign = Some(hotkey)
-                        }
-                        ElementId::ToggleScratchpadHotkey => {
-                            self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
-                        }
-                        ElementId::DisplayProfileHotkey => {
-                            if key == VirtualKey(0x2E) && chord.modifiers.is_empty() {
-                                self.set_active_profile_hotkey(None);
-                            } else {
-                                self.set_active_profile_hotkey(Some(hotkey));
+                    if let Some(slot) = HotkeySlot::from_capture_id(id) {
+                        if slot == HotkeySlot::DisplayProfile
+                            && key == VirtualKey(0x2E)
+                            && chord.modifiers.is_empty()
+                        {
+                            self.set_active_hotkey(slot, None);
+                            if let Some(action) = self.hotkey_action(slot) {
+                                self.draft.hotkeys.clear_disabled_hotkey(&action);
                             }
+                        } else {
+                            self.set_recorded_hotkey(slot, hotkey);
                         }
-                        _ => {}
                     }
                 }
                 if self.display_editor.is_some() {

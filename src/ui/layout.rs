@@ -61,6 +61,40 @@ impl Rect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotkeySlot {
+    Microphone,
+    Output,
+    Foreground,
+    CycleInput,
+    CycleOutput,
+    ForegroundVolumeUp,
+    ForegroundVolumeDown,
+    PreviousDesktop,
+    AssignSpecial,
+    ToggleSpecial,
+    DisplayProfile,
+}
+
+impl HotkeySlot {
+    pub fn from_capture_id(id: ElementId) -> Option<Self> {
+        Some(match id {
+            ElementId::MicHotkey => Self::Microphone,
+            ElementId::OutputHotkey => Self::Output,
+            ElementId::ForegroundHotkey => Self::Foreground,
+            ElementId::CycleInputHotkey => Self::CycleInput,
+            ElementId::CycleOutputHotkey => Self::CycleOutput,
+            ElementId::ForegroundVolumeUpHotkey => Self::ForegroundVolumeUp,
+            ElementId::ForegroundVolumeDownHotkey => Self::ForegroundVolumeDown,
+            ElementId::PreviousDesktopHotkey => Self::PreviousDesktop,
+            ElementId::AssignScratchpadHotkey => Self::AssignSpecial,
+            ElementId::ToggleScratchpadHotkey => Self::ToggleSpecial,
+            ElementId::DisplayProfileHotkey => Self::DisplayProfile,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ElementId {
     Search,
     Nav(Page),
@@ -91,6 +125,9 @@ pub enum ElementId {
     OnboardingOpen,
     StartWithWindows,
     StartHotkeysEnabled,
+    HotkeyCard(HotkeySlot),
+    HotkeyEnabled(HotkeySlot),
+    HotkeyUnassign(HotkeySlot),
     MicHotkey,
     OutputHotkey,
     ForegroundHotkey,
@@ -1025,9 +1062,52 @@ fn add_card_pair(
     *y = row_y + UiTokens::CARD_HEIGHT + UiTokens::CARD_GAP;
 }
 
+fn add_managed_hotkey(
+    layout: &mut SettingsLayout,
+    card: Rect,
+    slot: HotkeySlot,
+    capture_id: ElementId,
+    label: &str,
+    description: &str,
+) {
+    layout.elements.push(Element {
+        id: ElementId::HotkeyCard(slot),
+        kind: ElementKind::Card,
+        rect: card,
+        label: label.into(),
+        description: description.into(),
+        scrolls: true,
+    });
+    let control_x = card.right() - 188.0;
+    layout.elements.push(Element {
+        id: capture_id,
+        kind: ElementKind::Hotkey,
+        rect: Rect::new(control_x, card.y + 10.0, 172.0, 32.0),
+        label: format!("{label} shortcut"),
+        description: "Record a new shortcut".into(),
+        scrolls: true,
+    });
+    layout.elements.push(Element {
+        id: ElementId::HotkeyEnabled(slot),
+        kind: ElementKind::ButtonSecondary,
+        rect: Rect::new(control_x, card.y + 50.0, 82.0, 28.0),
+        label: "Shortcut state".into(),
+        description: format!("Enable or disable {label}"),
+        scrolls: true,
+    });
+    layout.elements.push(Element {
+        id: ElementId::HotkeyUnassign(slot),
+        kind: ElementKind::ButtonSecondary,
+        rect: Rect::new(control_x + 90.0, card.y + 50.0, 82.0, 28.0),
+        label: "Unassign".into(),
+        description: format!("Remove the shortcut for {label}"),
+        scrolls: true,
+    });
+}
+
 fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId, &str, &str)]) {
     let gap = UiTokens::CARD_GAP;
-    let columns = if layout.content_column.w >= 660.0 {
+    let columns = if layout.content_column.w >= 980.0 {
         2
     } else {
         1
@@ -1037,25 +1117,21 @@ fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId
     } else {
         (layout.content_column.w - gap) * 0.5
     };
-    let row_h = 74.0;
+    let row_h = 88.0;
     let start = *y;
-    for (index, (id, label, description)) in items.iter().copied().enumerate() {
+    for (index, (capture_id, label, description)) in items.iter().copied().enumerate() {
+        let Some(slot) = HotkeySlot::from_capture_id(capture_id) else {
+            continue;
+        };
         let row = index / columns;
         let column = index % columns;
-        add_element(
-            layout,
-            y,
-            id,
-            ElementKind::Hotkey,
-            label,
-            description,
-            Rect::new(
-                layout.content_column.x + column as f32 * (card_w + gap),
-                start + row as f32 * (row_h + gap),
-                card_w,
-                row_h,
-            ),
+        let card = Rect::new(
+            layout.content_column.x + column as f32 * (card_w + gap),
+            start + row as f32 * (row_h + gap),
+            card_w,
+            row_h,
         );
+        add_managed_hotkey(layout, card, slot, capture_id, label, description);
     }
     if !items.is_empty() {
         *y = start + items.len().div_ceil(columns) as f32 * (row_h + gap);
@@ -1488,13 +1564,14 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Give the selected arrangement a shortcut.",
         &mut y,
     );
-    add_row(
+    add_hotkey_grid(
         layout,
         &mut y,
-        ElementId::DisplayProfileHotkey,
-        ElementKind::Hotkey,
-        "Selected display profile",
-        "Activate the selected profile from any app",
+        &[(
+            (ElementId::DisplayProfileHotkey),
+            "Selected display profile",
+            "Activate the selected profile from any app",
+        )],
     );
 }
 
@@ -1657,13 +1734,14 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Move window quietly",
         "Move without leaving the current desktop",
     );
-    add_row(
+    add_hotkey_grid(
         layout,
         &mut y,
-        ElementId::PreviousDesktopHotkey,
-        ElementKind::Hotkey,
-        "Previous desktop",
-        "Return to the last normal desktop",
+        &[(
+            ElementId::PreviousDesktopHotkey,
+            "Previous desktop",
+            "Return to the last normal desktop",
+        )],
     );
     add_heading(
         layout,
