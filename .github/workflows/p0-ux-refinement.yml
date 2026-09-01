@@ -6,13 +6,12 @@ on:
 
 permissions:
   contents: write
-
 defaults:
   run:
     shell: bash
 
 jobs:
-  validate-pass-1:
+  materialize-validated-patch:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -21,23 +20,17 @@ jobs:
           ref: wip/p0-ux-refinement
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt,clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Apply pass 1
-        run: python .github/scripts/p0_ux_pass1.py
-      - name: Format
-        run: cargo fmt --all
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Targeted UI regressions
-        run: cargo test --all-features ui:: -- --nocapture
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Full tests
-        run: cargo test --all-features
-      - name: Release build
-        run: cargo build --release --all-features
-      - name: Commit pass 1
+          components: rustfmt
+      - name: Materialize and validate UX pass 1
+        run: |
+          python .github/scripts/p0_ux_pass1.py
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --all-features ui:: -- --nocapture
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
+          cargo build --release --all-features
+      - name: Commit validated UX pass 1
         env:
           BRANCH: wip/p0-ux-refinement
         run: |
