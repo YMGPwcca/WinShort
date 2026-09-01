@@ -81,33 +81,54 @@ impl HotkeysCfg {
     pub fn disabled_hotkey(&self, action: &str) -> Option<Hotkey> {
         self.disabled
             .iter()
-            .find(|binding| binding.action == action)
+            .find(|binding| binding.action.eq_ignore_ascii_case(action))
             .map(|binding| binding.hotkey)
     }
 
     pub fn set_disabled_hotkey(&mut self, action: String, hotkey: Hotkey) {
-        if let Some(binding) = self
-            .disabled
-            .iter_mut()
-            .find(|binding| binding.action == action)
-        {
-            binding.hotkey = hotkey;
-        } else {
-            self.disabled.push(DisabledHotkey { action, hotkey });
-        }
+        self.clear_disabled_hotkey(&action);
+        self.disabled.push(DisabledHotkey { action, hotkey });
     }
 
     pub fn take_disabled_hotkey(&mut self, action: &str) -> Option<Hotkey> {
         let index = self
             .disabled
             .iter()
-            .position(|binding| binding.action == action)?;
-        Some(self.disabled.remove(index).hotkey)
+            .position(|binding| binding.action.eq_ignore_ascii_case(action))?;
+        let hotkey = self.disabled.remove(index).hotkey;
+        self.clear_disabled_hotkey(action);
+        Some(hotkey)
     }
 
     pub fn clear_disabled_hotkey(&mut self, action: &str) {
-        self.disabled.retain(|binding| binding.action != action);
+        self.disabled
+            .retain(|binding| !binding.action.eq_ignore_ascii_case(action));
     }
+}
+
+const DISABLED_STATIC_ACTIONS: [&str; 10] = [
+    "toggle_microphone",
+    "toggle_output",
+    "toggle_foreground_audio",
+    "cycle_input_device",
+    "cycle_output_device",
+    "foreground_volume_up",
+    "foreground_volume_down",
+    "previous_desktop",
+    "scratchpad_assign",
+    "scratchpad_toggle",
+];
+
+fn display_profile_id_from_disabled_action(action: &str) -> Option<&str> {
+    let (prefix, profile_id) = action.split_once(':')?;
+    (prefix.eq_ignore_ascii_case("display_profile") && !profile_id.trim().is_empty())
+        .then_some(profile_id.trim())
+}
+fn static_disabled_action(action: &str) -> Option<&'static str> {
+    DISABLED_STATIC_ACTIONS
+        .iter()
+        .copied()
+        .find(|known| known.eq_ignore_ascii_case(action.trim()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -661,6 +682,64 @@ fn parse_optional_modifier(
 }
 
 impl Config {
+    pub(crate) fn canonical_disabled_action(&self, action: &str) -> Option<String> {
+        let action = action.trim();
+        if let Some(static_action) = static_disabled_action(action) {
+            return Some(static_action.into());
+        }
+        let profile_id = display_profile_id_from_disabled_action(action)?;
+        self.display_profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.id.eq_ignore_ascii_case(profile_id))
+            .map(|profile| format!("display_profile:{}", profile.id))
+    }
+
+    pub(crate) fn has_active_hotkey_action(&self, action: &str) -> bool {
+        match static_disabled_action(action) {
+            Some("toggle_microphone") => self.hotkeys.toggle_microphone.is_some(),
+            Some("toggle_output") => self.hotkeys.toggle_output.is_some(),
+            Some("toggle_foreground_audio") => self.hotkeys.toggle_foreground_audio.is_some(),
+            Some("cycle_input_device") => self.hotkeys.cycle_input_device.is_some(),
+            Some("cycle_output_device") => self.hotkeys.cycle_output_device.is_some(),
+            Some("foreground_volume_up") => self.hotkeys.foreground_volume_up.is_some(),
+            Some("foreground_volume_down") => self.hotkeys.foreground_volume_down.is_some(),
+            Some("previous_desktop") => self.virtual_desktops.previous_desktop.is_some(),
+            Some("scratchpad_assign") => self.virtual_desktops.scratchpad_assign.is_some(),
+            Some("scratchpad_toggle") => self.virtual_desktops.scratchpad_toggle.is_some(),
+            _ => display_profile_id_from_disabled_action(action).is_some_and(|profile_id| {
+                self.hotkeys
+                    .display_profiles
+                    .iter()
+                    .any(|binding| binding.profile_id.eq_ignore_ascii_case(profile_id))
+            }),
+        }
+    }
+
+    pub(crate) fn clear_active_hotkey_action(&mut self, action: &str) {
+        match static_disabled_action(action) {
+            Some("toggle_microphone") => self.hotkeys.toggle_microphone = None,
+            Some("toggle_output") => self.hotkeys.toggle_output = None,
+            Some("toggle_foreground_audio") => self.hotkeys.toggle_foreground_audio = None,
+            Some("cycle_input_device") => self.hotkeys.cycle_input_device = None,
+            Some("cycle_output_device") => self.hotkeys.cycle_output_device = None,
+            Some("foreground_volume_up") => self.hotkeys.foreground_volume_up = None,
+            Some("foreground_volume_down") => self.hotkeys.foreground_volume_down = None,
+            Some("previous_desktop") => self.virtual_desktops.previous_desktop = None,
+            Some("scratchpad_assign") => self.virtual_desktops.scratchpad_assign = None,
+            Some("scratchpad_toggle") => self.virtual_desktops.scratchpad_toggle = None,
+            _ => {
+                if let Some(profile_id) = display_profile_id_from_disabled_action(action) {
+                    self.hotkeys
+                        .display_profiles
+                        .retain(|binding| !binding.profile_id.eq_ignore_ascii_case(profile_id));
+                }
+            }
+        }
+    }
+}
+
+impl Config {
     pub fn to_toml(&self) -> ConfigToml {
         ConfigToml {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -914,20 +993,6 @@ impl Config {
             }
         }
 
-        for (index, binding) in t.hotkeys.disabled.iter().enumerate() {
-            let action = binding.action.trim();
-            if action.is_empty() {
-                warnings.push(format!(
-                    "hotkeys.disabled[{index}].action: must not be empty"
-                ));
-                continue;
-            }
-            match Hotkey::parse(&binding.hotkey) {
-                Ok(hotkey) => c.hotkeys.set_disabled_hotkey(action.to_string(), hotkey),
-                Err(error) => warnings.push(format!("hotkeys.disabled[{index}].hotkey: {error}")),
-            }
-        }
-
         c.virtual_desktops.enabled = t.virtual_desktops.enabled;
         c.virtual_desktops.win_number_switching = t.virtual_desktops.win_number_switching;
         c.virtual_desktops.number_modifier = parse_modifier(
@@ -979,7 +1044,41 @@ impl Config {
                     .into(),
             );
         }
+
         c.display_profiles = t.display_profiles.clone();
+
+        for (index, binding) in t.hotkeys.disabled.iter().enumerate() {
+            let raw_action = binding.action.trim();
+            if raw_action.is_empty() {
+                warnings.push(format!(
+                    "hotkeys.disabled[{index}].action: must not be empty"
+                ));
+                continue;
+            }
+            let Some(action) = c.canonical_disabled_action(raw_action) else {
+                warnings.push(format!(
+                    "hotkeys.disabled[{index}].action: unknown action `{raw_action}`"
+                ));
+                continue;
+            };
+            match Hotkey::parse(&binding.hotkey) {
+                Ok(hotkey) => {
+                    if c.hotkeys.disabled_hotkey(&action).is_some() {
+                        warnings.push(format!(
+                            "hotkeys.disabled[{index}].action: duplicate; last value wins"
+                        ));
+                    }
+                    if c.has_active_hotkey_action(&action) {
+                        warnings.push(format!(
+                            "hotkeys.{action}: active binding cleared because it is disabled"
+                        ));
+                    }
+                    c.hotkeys.set_disabled_hotkey(action.clone(), hotkey);
+                    c.clear_active_hotkey_action(&action);
+                }
+                Err(error) => warnings.push(format!("hotkeys.disabled[{index}].hotkey: {error}")),
+            }
+        }
 
         (c, warnings)
     }
@@ -1054,6 +1153,9 @@ impl Config {
         let profile_hotkeys_invalid = violations
             .iter()
             .any(|violation| violation.field.starts_with("hotkeys.display_profiles"));
+        let disabled_hotkeys_invalid = violations
+            .iter()
+            .any(|violation| violation.field.starts_with("hotkeys.disabled["));
         for v in violations {
             match v.field.as_str() {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
@@ -1241,6 +1343,25 @@ impl Config {
                     && used.insert(binding.hotkey)
             });
             self.hotkeys.display_profiles.truncate(u8::MAX as usize + 1);
+        }
+        if disabled_hotkeys_invalid {
+            let disabled = std::mem::take(&mut self.hotkeys.disabled);
+            let mut seen = std::collections::HashSet::new();
+            let mut normalized = Vec::with_capacity(disabled.len());
+            for binding in disabled {
+                let Some(action) = self.canonical_disabled_action(&binding.action) else {
+                    continue;
+                };
+                if !seen.insert(action.to_ascii_lowercase()) {
+                    continue;
+                }
+                self.clear_active_hotkey_action(&action);
+                normalized.push(DisabledHotkey {
+                    action,
+                    hotkey: binding.hotkey,
+                });
+            }
+            self.hotkeys.disabled = normalized;
         }
     }
 }
@@ -1527,7 +1648,7 @@ desktop = 2
     }
 
     #[test]
-    fn current_v9_without_routing_round_trips_unchanged() {
+    fn legacy_v9_without_routing_round_trips_unchanged() {
         let raw = r#"
 schema_version = 9
 [virtual_desktops]
@@ -1661,6 +1782,124 @@ move_silent_modifier = "Ctrl+Alt"
 
         assert_eq!(config.virtual_desktops.number_modifier, ModifierMask::WIN);
         assert!(config.hotkeys.toggle_output.is_none());
+        assert!(crate::config::validate(&config).is_empty());
+    }
+    #[test]
+    fn disabled_chords_do_not_conflict_until_reenabled() {
+        let mut config = Config::default();
+        let disabled_chord = config.hotkeys.toggle_microphone.unwrap();
+        config.hotkeys.toggle_output = None;
+        config
+            .hotkeys
+            .set_disabled_hotkey("toggle_output".into(), disabled_chord);
+
+        assert!(crate::config::validate(&config).is_empty());
+    }
+
+    #[test]
+    fn disabled_hotkeys_round_trip_with_empty_active_field() {
+        let mut config = Config::default();
+        let hotkey = Hotkey::parse("Ctrl+Alt+F20").unwrap();
+        config.hotkeys.toggle_output = None;
+        config
+            .hotkeys
+            .set_disabled_hotkey("toggle_output".into(), hotkey);
+
+        let text = toml::to_string_pretty(&config.to_toml()).unwrap();
+        let boundary: ConfigToml = toml::from_str(&text).unwrap();
+        assert_eq!(boundary.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(boundary.hotkeys.toggle_output.is_empty());
+        assert_eq!(boundary.hotkeys.disabled.len(), 1);
+        assert_eq!(boundary.hotkeys.disabled[0].action, "toggle_output");
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(round_tripped, config);
+    }
+
+    #[test]
+    fn disabled_display_profile_hotkey_clears_matching_active_record() {
+        let mut config = Config::default();
+        config.display_profiles.active_profile = Some("gaming".into());
+        config.display_profiles.profiles = vec![DisplayProfile {
+            id: "gaming".into(),
+            name: "Gaming".into(),
+            ..Default::default()
+        }];
+        let hotkey = Hotkey::parse("Ctrl+Alt+F20").unwrap();
+        config.hotkeys.display_profiles.push(DisplayProfileHotkey {
+            profile_id: "gaming".into(),
+            hotkey,
+        });
+        config
+            .hotkeys
+            .set_disabled_hotkey("display_profile:gaming".into(), hotkey);
+
+        let boundary: ConfigToml =
+            toml::from_str(&toml::to_string_pretty(&config.to_toml()).unwrap()).unwrap();
+        let (round_tripped, warnings) = Config::from_toml(&boundary);
+
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("active binding cleared")));
+        assert!(round_tripped.hotkeys.display_profiles.is_empty());
+        assert_eq!(
+            round_tripped
+                .hotkeys
+                .disabled_hotkey("display_profile:gaming"),
+            Some(hotkey)
+        );
+    }
+
+    #[test]
+    fn disabled_hotkeys_clear_inconsistent_active_bindings_on_load() {
+        let raw = r#"
+schema_version = 10
+[hotkeys]
+toggle_output = "Ctrl+Alt+F2"
+[[hotkeys.disabled]]
+action = " TOGGLE_OUTPUT "
+hotkey = "Ctrl+Alt+F20"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("active binding cleared")));
+        assert!(config.hotkeys.toggle_output.is_none());
+        assert_eq!(
+            config.hotkeys.disabled_hotkey("toggle_output"),
+            Some(Hotkey::parse("Ctrl+Alt+F20").unwrap())
+        );
+    }
+
+    #[test]
+    fn repair_normalizes_invalid_disabled_hotkey_records() {
+        let mut config = Config::default();
+        config.hotkeys.toggle_output = Some(Hotkey::parse("Ctrl+Alt+F2").unwrap());
+        config.hotkeys.disabled = vec![
+            DisabledHotkey {
+                action: "toggle_output".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F20").unwrap(),
+            },
+            DisabledHotkey {
+                action: "unknown".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F21").unwrap(),
+            },
+            DisabledHotkey {
+                action: "TOGGLE_OUTPUT".into(),
+                hotkey: Hotkey::parse("Ctrl+Alt+F22").unwrap(),
+            },
+        ];
+
+        let violations = crate::config::validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field.starts_with("hotkeys.disabled[")));
+        config.repair(&violations);
+
+        assert!(config.hotkeys.toggle_output.is_none());
+        assert_eq!(config.hotkeys.disabled.len(), 1);
+        assert_eq!(config.hotkeys.disabled[0].action, "toggle_output");
         assert!(crate::config::validate(&config).is_empty());
     }
 }

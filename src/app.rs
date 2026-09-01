@@ -1547,7 +1547,7 @@ impl App {
                     origin,
                     self.foreground_seen,
                     changed,
-                    false,
+                    crate::app::config().overlay.show_external_audio_changes,
                     status_request_matches,
                 );
                 self.foreground_state = state;
@@ -2263,6 +2263,35 @@ mod shutdown_gate_tests {
         app.dispatch_action(HotkeyAction::ToggleMicrophone);
         app.dispatch_action(HotkeyAction::SwitchDesktop(0));
         assert_eq!(app.next_audio_request_id, 0);
+    }
+
+    #[test]
+    fn system_endpoint_events_refresh_state_without_winshort_osd() {
+        let mut app = test_app();
+        let microphone = crate::audio::AudioState::Muted { volume_pct: 20 };
+        let output = crate::audio::OutputState::Current {
+            device: crate::audio::DeviceId {
+                endpoint: "output".into(),
+                name: "Speakers".into(),
+            },
+            muted: false,
+            volume_pct: 80,
+        };
+
+        app.route_event(AppEvent::MicrophoneStateChanged {
+            state: microphone.clone(),
+        });
+        app.route_event(AppEvent::OutputStateChanged {
+            state: output.clone(),
+        });
+        app.route_event(AppEvent::DefaultOutputChanged(crate::audio::DeviceId {
+            endpoint: "new-output".into(),
+            name: "New speakers".into(),
+        }));
+
+        assert_eq!(app.microphone_state, microphone);
+        assert_eq!(app.output_state, output);
+        assert!(app.overlay.is_none());
     }
 
     #[test]

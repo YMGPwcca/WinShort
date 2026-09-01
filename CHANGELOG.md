@@ -75,6 +75,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Schema v9 adds stable-ID display-profile hotkeys, complete New/Update/Rename/Duplicate/
   Delete workflows, supported route editing, confirmation state, and centralized cleanup
   and conflict repair.
+- Schema v10 adds independently enabled/disabled configurable shortcuts. Disabled
+  chords remain persisted outside the active binding table and can be changed or
+  unassigned without being reactivated.
 
 ## [0.1.0] - 2026-08-24
 

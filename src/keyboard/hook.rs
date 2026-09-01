@@ -694,6 +694,23 @@ mod tests {
             Some(HotkeyAction::SwitchDesktop(8))
         );
     }
+    #[test]
+    fn disabled_shortcut_chord_is_not_added_to_active_bindings() {
+        let mut config = crate::config::Config::default();
+        let hotkey = Hotkey::parse("Ctrl+Alt+F20").unwrap();
+        config.hotkeys.toggle_output = None;
+        config
+            .hotkeys
+            .set_disabled_hotkey("toggle_output".into(), hotkey);
+
+        let table = build_bindings(&config);
+        assert_eq!(
+            table.lookup(hotkey.modifiers, hotkey.key),
+            None,
+            "disabled chord must stay out of the active table"
+        );
+        assert_eq!(table.len(), 11);
+    }
 
     #[test]
     fn configurable_desktop_families_bind_all_number_keys() {

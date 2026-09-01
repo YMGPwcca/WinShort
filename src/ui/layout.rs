@@ -2523,7 +2523,7 @@ fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ElementId, ElementKind, RegionKind, SettingsLayout};
+    use super::{ElementId, ElementKind, HotkeySlot, RegionKind, SettingsLayout};
     use crate::ui::navigation::Page;
     use crate::ui::presentation::{AllowlistMode, DisplayWizardStep};
 
@@ -2936,6 +2936,41 @@ mod tests {
         assert!(!layout
             .focus_order()
             .contains(&ElementId::DisplayWizardSummary));
+    }
+
+    #[test]
+    fn managed_shortcut_cards_include_record_state_and_unassign_controls() {
+        let layout = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Shortcuts, "", 0, None);
+        for (slot, capture) in [
+            (HotkeySlot::Microphone, ElementId::MicHotkey),
+            (HotkeySlot::CycleOutput, ElementId::CycleOutputHotkey),
+            (HotkeySlot::DisplayProfile, ElementId::DisplayProfileHotkey),
+        ] {
+            let card = layout
+                .element(ElementId::HotkeyCard(slot))
+                .expect("shortcut card");
+            let keycap = layout.element(capture).expect("shortcut keycap");
+            let enabled = layout
+                .element(ElementId::HotkeyEnabled(slot))
+                .expect("shortcut state button");
+            let unassign = layout
+                .element(ElementId::HotkeyUnassign(slot))
+                .expect("shortcut unassign button");
+            assert!(card.rect.contains(keycap.rect.x, keycap.rect.y));
+            assert!(card.rect.contains(enabled.rect.x, enabled.rect.y));
+            assert!(card
+                .rect
+                .contains(unassign.rect.right(), unassign.rect.bottom()));
+            assert!(layout.focus_order().contains(&capture));
+            assert!(layout.focus_order().contains(&enabled.id));
+            assert!(layout.focus_order().contains(&unassign.id));
+        }
+    }
+
+    #[test]
+    fn overlay_layout_has_no_duplicate_windows_audio_toggle() {
+        let layout = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Overlay, "", 0, None);
+        assert!(layout.element(ElementId::OverlayExternalChanges).is_none());
     }
 
     #[test]

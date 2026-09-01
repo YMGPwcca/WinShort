@@ -1886,8 +1886,9 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
 #[cfg(test)]
 mod tests {
     use super::{
-        device_value_rect, interaction_state, value_control_rect, value_text_rect, Interaction,
-        InteractionState, VALUE_TEXT_PADDING,
+        device_value_rect, interaction_state, scroll_from_scrollbar_pointer, scrollbar_hit_rect,
+        scrollbar_thumb_rect, value_control_rect, value_text_rect, Interaction, InteractionState,
+        VALUE_TEXT_PADDING,
     };
     use crate::ui::layout::{ElementKind, Rect};
 
@@ -1949,5 +1950,25 @@ mod tests {
         let hotkey = value_control_rect(row, ElementKind::Hotkey);
         let hotkey_text = value_text_rect(row, ElementKind::Hotkey);
         assert_eq!(hotkey_text.right(), hotkey.right() - VALUE_TEXT_PADDING);
+    }
+    #[test]
+    fn scrollbar_drag_maps_thumb_centers_to_scroll_extremes() {
+        let viewport = Rect::new(200.0, 100.0, 400.0, 300.0);
+        let max_scroll = 600.0;
+        let start = scrollbar_thumb_rect(viewport, 0.0, max_scroll).expect("start thumb");
+        let end = scrollbar_thumb_rect(viewport, max_scroll, max_scroll).expect("end thumb");
+        assert!(end.y > start.y);
+
+        let offset = start.h * 0.5;
+        let start_scroll =
+            scroll_from_scrollbar_pointer(viewport, start.y + offset, offset, max_scroll);
+        let end_scroll =
+            scroll_from_scrollbar_pointer(viewport, end.y + end.h * 0.5, offset, max_scroll);
+        assert!(start_scroll.abs() < f32::EPSILON);
+        assert!((end_scroll - max_scroll).abs() < f32::EPSILON);
+
+        let hit = scrollbar_hit_rect(viewport);
+        assert!(hit.contains(viewport.right() - 8.0, viewport.y + 20.0));
+        assert!(!hit.contains(viewport.right() - 20.0, viewport.y + 20.0));
     }
 }

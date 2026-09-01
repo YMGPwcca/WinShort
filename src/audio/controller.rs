@@ -328,14 +328,8 @@ impl AudioController {
         }
         self.refresh_config_if_needed();
         match command {
-            AudioCommand::ToggleMicrophone(request_id) => self.toggle(
-                EndpointFlow::Capture,
-                crate::event::AudioEventOrigin::WinShortAction(request_id),
-            ),
-            AudioCommand::ToggleOutput(request_id) => self.toggle(
-                EndpointFlow::Render,
-                crate::event::AudioEventOrigin::WinShortAction(request_id),
-            ),
+            AudioCommand::ToggleMicrophone(_) => self.toggle(EndpointFlow::Capture),
+            AudioCommand::ToggleOutput(_) => self.toggle(EndpointFlow::Render),
             AudioCommand::ToggleForeground { pid, request_id } => {
                 let config = self.config.get();
                 let state =
@@ -396,7 +390,7 @@ impl AudioController {
             }
             AudioCommand::RefreshEndpoint(flow) => {
                 crate::log_debug!("audio {:?} endpoint notification", flow);
-                self.publish(flow, crate::event::AudioEventOrigin::External);
+                self.publish(flow);
             }
             // ConfigChanged is consumed by handle() above; refresh_config_if_needed
             // covers any residual revision drift.
@@ -655,8 +649,8 @@ impl AudioController {
             }
             self.post(AppEvent::DevicesChanged);
         }
-        self.publish(EndpointFlow::Capture, origin);
-        self.publish(EndpointFlow::Render, origin);
+        self.publish(EndpointFlow::Capture);
+        self.publish(EndpointFlow::Render);
     }
 
     fn rebuild(&mut self, flow: EndpointFlow, config: &crate::config::Config) {
@@ -713,7 +707,7 @@ impl AudioController {
         }
     }
 
-    fn toggle(&mut self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
+    fn toggle(&mut self, flow: EndpointFlow) {
         let missing = match flow {
             EndpointFlow::Capture => self.capture.is_none(),
             EndpointFlow::Render => self.render.is_none(),
@@ -732,10 +726,10 @@ impl AudioController {
         if let Err(e) = result {
             crate::warn_!("audio toggle {:?} failed: {e}", flow);
         }
-        self.publish(flow, origin);
+        self.publish(flow);
     }
 
-    fn publish(&self, flow: EndpointFlow, _origin: crate::event::AudioEventOrigin) {
+    fn publish(&self, flow: EndpointFlow) {
         match flow {
             EndpointFlow::Capture => {
                 let state = self

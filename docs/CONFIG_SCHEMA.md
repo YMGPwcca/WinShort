@@ -8,7 +8,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 `write_all` → `flush` → `sync_all` → `rename` over the target; temp removed on rename failure.
 No backup copies are kept.
 
-schema_version = 10              # u8; CURRENT value is 9 (v1/v2/v3/v4/v5/v6/v7/v8 files migrate on load)
+schema_version = 10              # u8; CURRENT value is 10 (v1/v2/v3/v4/v5/v6/v7/v8/v9 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -133,8 +133,9 @@ Route identity combines the target device path with source/target IDs; saved ada
 disambiguate same-panel connector collisions, while unresolved or missing routes fail closed.
 
 `HotkeysCfg` retains the three existing defaulted toggle bindings, four optional audio/volume
-fields, and `display_profiles`, a list of `{ profile_id, hotkey }` records. Profile IDs are stable
-references; renaming does not change them and deleting a profile removes its record.
+fields, `display_profiles`, a list of `{ profile_id, hotkey }` records, and `disabled`, a list
+of `{ action, hotkey }` records. A disabled record retains a chord while the corresponding
+active binding is empty; `display_profile:<id>` identifies a profile shortcut.
 
 ## Display profile lifecycle
 
@@ -147,14 +148,14 @@ discarding the change.
 
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 9` (`config/load.rs::load`):
+Loading a document with `schema_version > 10` (`config/load.rs::load`):
 
 An absent `schema_version` is treated as legacy source schema v1. New files
-serialized by `Config::to_toml()` always write schema v9.
+serialized by `Config::to_toml()` always write schema v10.
 
 Diagnostics separates `source_schema_version` from `effective_schema_version`:
-missing/corrupt input has no source version and effective v9; v1/v2/v3/v4/v5/v6/v7/v8 input has
-its source version and effective v9; v9 input has source and effective v9. A future source version
+missing/corrupt input has no source version and effective v10; v1/v2/v3/v4/v5/v6/v7/v8/v9 input has
+its source version and effective v10; v10 input has source and effective v10. A future source version
 is retained while runtime state falls back to safe defaults and the read-only latch remains active.
 
 * logs an error and warns "config written by a newer WinShort; not overwriting",
@@ -242,11 +243,13 @@ workflow fields, v5 defaults for the legacy-named `scratchpad_*` hotkeys (now Sp
 Workspace actions), v7 defaults for
 input/output allowlists, v8 defaults for display profiles, and v9 defaults for
 display profile hotkeys plus
-`confirmed = false` on profiles that predate the safety bit. Schema v2/v3/v4/v5/v6/v7/v8
+`confirmed = false` on profiles that predate the safety bit. Schema v10 adds the
+`hotkeys.disabled` records; v1 through v9 files default that list to empty.
+Schema v2/v3/v4/v5/v6/v7/v8/v9
 files preserve all existing values and default only the newly introduced fields.
 Schema-v6 executable-routing tables remain parse-compatible but are ignored as a removed,
 unreleased feature and are not serialized again. Load diagnostics records the source/effective
-transition. A successful Save writes schema v9
-and updates active load diagnostics to source v9. Legacy `overlay.monitor = "index:N"` still
+transition. A successful Save writes schema v10
+and updates active load diagnostics to source v10. Legacy `overlay.monitor = "index:N"` still
 maps to `primary`, and `general.start_with_windows` remains ignored because startup is
 registry-owned.

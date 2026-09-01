@@ -52,7 +52,7 @@ mod tests {
             std::env::temp_dir().join(format!("winshort-ui-config-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("test directory");
-        std::fs::write(dir.join("config.toml"), "schema_version = 9\n").expect("config");
+        std::fs::write(dir.join("config.toml"), "schema_version = 10\n").expect("config");
         assert!(!should_show(&dir));
         let _ = std::fs::remove_dir_all(dir);
     }

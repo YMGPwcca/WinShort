@@ -67,7 +67,7 @@ Home answers “What is WinShort doing right now?” with real cached runtime st
 - current speaker name and mute/volume status;
 - current microphone name and mute/input-volume status;
 - current normal desktop when the native backend can resolve it;
-- Special Workspace state (`Ready`, `Off`, or `Unavailable`);
+- Special Workspace state (`Available`, `Off`, or `Unavailable`; normal content is centered without a redundant status badge);
 - previous-desktop and Special quick actions;
 - selected display profile summary without claiming that it matches the active topology;
 - shortcut count and conflict health;
@@ -118,7 +118,6 @@ Overlay has a visual schematic preview and concise controls:
 - System, Light, or Dark appearance;
 - a 3×3 position grid with accessible Top left through Bottom right cells;
 - monitor;
-- Show Windows audio changes;
 - Small/Normal/Large size;
 - Low/Normal/High opacity;
 - Short/Normal/Long duration;

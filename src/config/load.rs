@@ -21,7 +21,7 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
             match toml::from_str::<ConfigToml>(&text) {
                 Ok(toml) => {
                     // Versionless documents deserialize as the legacy v1
-                    // baseline; newly serialized documents always include v9.
+                    // baseline; newly serialized documents always include v10.
                     let parsed_schema = toml.schema_version;
                     if parsed_schema > CURRENT_SCHEMA_VERSION {
                         let msg = format!(
@@ -58,14 +58,15 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     let mut migrations = Vec::new();
                     if parsed_schema < CURRENT_SCHEMA_VERSION {
                         let detail = match parsed_schema {
-                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            3 => "v4 desktop workflow, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            4 => "v5 scratchpad fields, v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            5 => "v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            6 => "v7 audio allowlists, v8 display profiles, and v9 profile hotkeys defaulted",
-                            7 => "v8 display profiles and v9 profile hotkeys defaulted",
-                            8 => "v9 display profile hotkeys and confirmation state defaulted",
+                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
+                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
+                            3 => "v4 desktop workflow, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
+                            4 => "v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
+                            5 => "v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
+                            6 => "v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
+                            7 => "v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
+                            8 => "v9 profile hotkeys, confirmation state, and v10 disabled shortcut records defaulted",
+                            9 => "v10 disabled shortcut records defaulted",
                             _ => "newer fields defaulted",
                         };
                         migrations.push(format!(
@@ -227,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_defaults_new_hotkeys_and_records_v8_migration() {
+    fn schema_v2_defaults_new_hotkeys_and_records_v10_migration() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_v2_{}", std::process::id()));
@@ -255,7 +256,7 @@ mod tests {
         assert!(diagnostics
             .migrations
             .iter()
-            .any(|value| value.contains("schema v2 migrated") && value.contains("v8")));
+            .any(|value| value.contains("schema v2 migrated") && value.contains("v10")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -321,8 +322,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
-
-    fn saving_migrated_config_updates_diagnostics_to_v8() {
+    fn saving_migrated_config_updates_diagnostics_to_v10() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_save_{}", std::process::id()));
@@ -414,6 +414,46 @@ desktop = 2
             Some(CURRENT_SCHEMA_VERSION)
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn schema_v9_migrates_with_disabled_list_defaulted() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir =
+            std::env::temp_dir().join(format!("ws_schema_v9_disabled_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            r#"schema_version = 9
+[hotkeys]
+toggle_output = "Ctrl+Alt+F2"
+"#,
+        )
+        .unwrap();
+
+        let (config, warnings) = load(&dir);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            config.hotkeys.toggle_output,
+            Some(Hotkey::parse("Ctrl+Alt+F2").unwrap())
+        );
+        assert!(config.hotkeys.disabled.is_empty());
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(diagnostics.source_schema_version, Some(9));
+        assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(diagnostics
+            .migrations
+            .iter()
+            .any(|value| value.contains("schema v9 migrated") && value.contains("v10")));
+
+        crate::config::save::save(&dir, &config).unwrap();
+        let saved: ConfigToml =
+            toml::from_str(&std::fs::read_to_string(config_path(&dir)).unwrap()).unwrap();
+        assert_eq!(saved.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(saved.hotkeys.disabled.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

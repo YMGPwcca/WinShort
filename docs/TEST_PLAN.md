@@ -100,6 +100,8 @@ Automated coverage:
 - Control Center regression seams verify parent-wheel picker dismissal, close ordering before
   parent hide, pending activation blocking, and focus repair when a local mutation disables the
   current control.
+- Managed shortcut coverage verifies assigned, disabled, re-enabled, changed-while-disabled,
+  and unassigned chords; disabled chords stay out of the active binding table.
 - Bounded value rendering tests verify chevron reservation and DirectWrite trailing-character
   trimming; applied status text remains generic.
 - Navigation/search tests verify case-insensitive deterministic user-concept matching and reject
@@ -169,24 +171,25 @@ parse; canonical display ordering; numpad distinct from top row (#11).
 ## C. Config (AUTOMATED IN CI + PROPERTY TEST)
 
 defaults load when file missing; corrupt file → defaults + warning; schema v2 → v3 migration
-preserves existing values and leaves the four new hotkeys unassigned; validation violations and
-repair idempotence (`config_props.rs`: endpoint-ID round-trips over generated opaque IDs,
-boundary repair idempotence); future-schema read-only latch (deterministic + arbitrary TOML
-fuzz strategy proving latched configs never enable writes); atomic save leaves no temp residue;
-round-trip serialize→parse equality; unknown-field warnings; failed persistence never publishes a
-new `ConfigHandle` snapshot and successful persistence increments its revision once.
+preserves existing values and leaves the four new hotkeys unassigned; schema v9 → v10 migration
+preserves existing values and defaults the new disabled list to empty; schema-v10 disabled
+records round-trip with empty active fields; validation violations and repair idempotence
+(`config_props.rs`: endpoint-ID round-trips over generated opaque IDs, boundary repair
+idempotence); future-schema read-only latch (deterministic + arbitrary TOML fuzz strategy proving
+latched configs never enable writes); atomic save leaves no temp residue; round-trip
+serialize→parse equality; unknown-field warnings; failed persistence never publishes a new
+`ConfigHandle` snapshot and successful persistence increments its revision once.
 
 ## D. Audio matrix (MANUAL / HARDWARE-DEPENDENT)
 
 mute/unmute default mic · change default mic while running · disconnect mic (state event, no
-crash) · output device switch (overlay "Output changed") · external volume change arrives via
-callback (own events filtered) · foreground app mute · foreground app volume ±5% with clamping ·
-app without audio ("no audio session") · multi-session app (aggregate Mixed→mute-all) · app exits
-mid-enumeration · audio service restart (`net stop audiosrv`) → endpoints rebuild · same-basename
-different installations (ambiguous refusal) · same-full-path independent instances (accepted
-limitation) · input/output cycle through active real endpoints and
-set all three Windows default roles, including unavailable-endpoint recovery
-and duplicate friendly names.
+crash) · output device switch (Windows default/device-cycle feedback) · external volume change
+arrives via callback (own events filtered) · foreground app mute · foreground app volume ±5% with
+clamping · app without audio ("no audio session") · multi-session app (aggregate Mixed→mute-all) ·
+app exits mid-enumeration · audio service restart (`net stop audiosrv`) → endpoints rebuild ·
+same-basename different installations (ambiguous refusal) · same-full-path independent instances
+(accepted limitation) · input/output cycle through active real endpoints and set all three Windows
+default roles, including unavailable-endpoint recovery and duplicate friendly names.
 
 Policy-level properties run in CI: resolver ladder grouping invariants (#37).
 

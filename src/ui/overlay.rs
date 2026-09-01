@@ -1752,6 +1752,19 @@ mod tests {
         assert_eq!(row.title, "Next microphone");
         assert_eq!(row.detail, "USB Microphone");
     }
+    #[test]
+    fn long_output_names_are_bounded_before_overlay_rendering() {
+        let row = output_row(&crate::audio::OutputState::Current {
+            device: crate::audio::DeviceId {
+                endpoint: "opaque-id".into(),
+                name: "A".repeat(100),
+            },
+            muted: false,
+            volume_pct: 50,
+        });
+        assert_eq!(row.title.chars().count(), 58);
+        assert!(row.title.ends_with('…'));
+    }
 
     #[test]
     fn volume_rows_show_exact_values_ranges_and_no_session_state() {

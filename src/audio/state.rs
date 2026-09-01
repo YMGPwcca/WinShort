@@ -54,9 +54,8 @@ pub enum AudioState {
     Active { volume_pct: u8 },
 }
 
-/// Output / render state. Transient "output changed" presentation is carried
-/// by the dedicated [`crate::event::AppEvent::DefaultOutputChanged`] event
-/// instead of a persistent-state variant (#17b).
+/// Output / render state. Endpoint changes refresh this state without creating
+/// a duplicate WinShort OSD over Windows' own system feedback.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputState {
     Unavailable {

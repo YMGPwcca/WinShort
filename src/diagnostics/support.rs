@@ -845,6 +845,15 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
                     hotkey: binding.hotkey.to_string(),
                 })
                 .collect(),
+            disabled: config
+                .hotkeys
+                .disabled
+                .iter()
+                .map(|binding| SafeDisabledHotkey {
+                    action: binding.action.clone(),
+                    hotkey: binding.hotkey.to_string(),
+                })
+                .collect(),
         },
         virtual_desktops: SafeVirtualDesktops {
             enabled: config.virtual_desktops.enabled,
@@ -966,10 +975,16 @@ struct SafeHotkeys {
     foreground_volume_up: String,
     foreground_volume_down: String,
     display_profiles: Vec<SafeDisplayProfileHotkey>,
+    disabled: Vec<SafeDisabledHotkey>,
 }
 #[derive(Debug, Serialize)]
 struct SafeDisplayProfileHotkey {
     profile_id: String,
+    hotkey: String,
+}
+#[derive(Debug, Serialize)]
+struct SafeDisabledHotkey {
+    action: String,
     hotkey: String,
 }
 
@@ -1374,6 +1389,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keyboard::binding::Hotkey;
 
     #[test]
     fn path_redaction_removes_user_and_project_components() {
@@ -1447,12 +1463,20 @@ safe=1"#,
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("opaque-endpoint".into());
         config.audio.cycle_input_allowlist = Some(vec!["opaque-allowlist".into()]);
+        config.hotkeys.toggle_output = None;
+        config.hotkeys.set_disabled_hotkey(
+            "toggle_output".into(),
+            Hotkey::parse("Ctrl+Alt+F20").unwrap(),
+        );
         let output = format_config(&config, 1, &mut sanitizer);
         assert!(output.contains("schema_version = 1"));
         assert!(output.contains("endpoint#01"));
         assert!(!output.contains("opaque-endpoint"));
         assert!(output.contains("endpoint#02"));
         assert!(!output.contains("opaque-allowlist"));
+        assert!(output.contains("disabled"));
+        assert!(output.contains("toggle_output"));
+        assert!(output.contains("Ctrl+Alt+F20"));
     }
 
     #[cfg(windows)]

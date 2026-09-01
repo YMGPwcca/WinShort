@@ -223,8 +223,8 @@ pub enum AppEvent {
     OutputStateChanged {
         state: OutputState,
     },
-    /// Transient "default output changed" presentation (#17b): the overlay
-    /// shows a one-shot card; persistent state stays OutputState::Current.
+    /// Legacy default-output notification retained for worker compatibility.
+    /// The application deliberately does not surface a duplicate endpoint OSD.
     DefaultOutputChanged(crate::audio::state::DeviceId),
     ForegroundAudioChanged {
         state: AppAudioState,

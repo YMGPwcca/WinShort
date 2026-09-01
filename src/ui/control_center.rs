@@ -352,6 +352,7 @@ impl SettingsUi {
 
     fn commit_local_change(&mut self, hwnd: HWND, before: Config) -> bool {
         if self.display_draft_dirty {
+            self.draft = before;
             self.validation = vec![Violation {
                 field: "Displays".into(),
                 message:
@@ -1889,7 +1890,7 @@ impl SettingsUi {
             crate::desktop::BackendAvailability::Available
         ) {
             (
-                "Ready".into(),
+                "Available".into(),
                 "A dedicated workspace for windows kept out of the way".into(),
                 "Open Special".into(),
             )
@@ -2367,6 +2368,21 @@ impl SettingsUi {
             ),
         })
     }
+    fn hotkey_subject(slot: HotkeySlot) -> &'static str {
+        match slot {
+            HotkeySlot::Microphone => "Mute microphone shortcut",
+            HotkeySlot::Output => "Mute speakers shortcut",
+            HotkeySlot::Foreground => "Mute current app shortcut",
+            HotkeySlot::CycleInput => "Next microphone shortcut",
+            HotkeySlot::CycleOutput => "Next speaker shortcut",
+            HotkeySlot::ForegroundVolumeUp => "Current app volume up shortcut",
+            HotkeySlot::ForegroundVolumeDown => "Current app volume down shortcut",
+            HotkeySlot::PreviousDesktop => "Previous desktop shortcut",
+            HotkeySlot::AssignSpecial => "Move window to Special shortcut",
+            HotkeySlot::ToggleSpecial => "Open or close Special shortcut",
+            HotkeySlot::DisplayProfile => "Selected display profile shortcut",
+        }
+    }
 
     fn active_hotkey(&self, slot: HotkeySlot) -> Option<Hotkey> {
         match slot {
@@ -2433,6 +2449,7 @@ impl SettingsUi {
         let before = self.draft.clone();
         if let Some(hotkey) = self.active_hotkey(slot) {
             self.set_active_hotkey(slot, None);
+            self.draft.hotkeys.clear_disabled_hotkey(&action);
             self.draft.hotkeys.set_disabled_hotkey(action, hotkey);
         } else if let Some(hotkey) = self.draft.hotkeys.take_disabled_hotkey(&action) {
             self.set_active_hotkey(slot, Some(hotkey));
@@ -3675,6 +3692,9 @@ impl SettingsUi {
                 .hotkeys
                 .display_profiles
                 .retain(|binding| !binding.profile_id.eq_ignore_ascii_case(&active));
+            self.draft
+                .hotkeys
+                .clear_disabled_hotkey(&format!("display_profile:{active}"));
             self.selected_display_route = 0;
         }
         self.validation.clear();
@@ -3712,8 +3732,11 @@ impl SettingsUi {
             return true;
         }
         if id == ElementId::DisplayProfileHotkey && vk == 0x2E && down {
+            let action = self.hotkey_action(HotkeySlot::DisplayProfile);
             self.set_active_profile_hotkey(None);
-            self.recording = None;
+            if let Some(action) = action {
+                self.draft.hotkeys.clear_disabled_hotkey(&action);
+            }
             self.recording_modifiers = ModifierMask::NONE;
             self.stop_capture();
             self.validation = crate::config::validate(&self.draft);
@@ -4147,6 +4170,30 @@ impl SettingsUi {
                             } else {
                                 "Switch to this normal desktop".into()
                             };
+                    }
+                    ElementId::HotkeyEnabled(slot) => {
+                        let state = if self.hotkey_enabled(slot) {
+                            "Disable"
+                        } else {
+                            "Enable"
+                        };
+                        node.name = format!("{} {}", state, Self::hotkey_subject(slot));
+                        node.help_text = if self.configured_hotkey(slot).is_some() {
+                            format!(
+                                "{} this shortcut without changing its assigned chord",
+                                state
+                            )
+                        } else {
+                            "Assign a shortcut before enabling it".into()
+                        };
+                    }
+                    ElementId::HotkeyUnassign(slot) => {
+                        node.name = format!("Unassign {}", Self::hotkey_subject(slot));
+                        node.help_text = if self.configured_hotkey(slot).is_some() {
+                            "Remove this shortcut completely".into()
+                        } else {
+                            "No shortcut is assigned".into()
+                        };
                     }
                     _ => {}
                 }
@@ -4600,7 +4647,7 @@ impl ControlCenterWindow {
         let anchor = PopupRect::new(anchor.left, anchor.top, anchor.right, anchor.bottom);
         let scale = dpi.max(96) as f32 / 96.0;
         let width = (picker_width_dip(control_rect.w, &choices) * scale).round() as i32;
-        let height = ((choices.len().min(10) as f32 * 30.0) * scale).round() as i32 + 2;
+        let height = picker_height_px(choices.len(), scale);
         let geometry = crate::ui::picker::place_popup(anchor, work, width, height);
         let owner =
             picker_element(kind).ok_or_else(|| Error::internal("settings picker row missing"))?;
@@ -4908,6 +4955,10 @@ fn screen_rect(hwnd: HWND, rect: UiRect, dpi: u32) -> Result<RECT> {
         bottom: bottom_right.y,
     })
 }
+fn picker_height_px(choice_count: usize, scale: f32) -> i32 {
+    ((choice_count.min(10) as f32 * 30.0) * scale).round() as i32 + 2
+}
+
 fn picker_width_dip(control_width: f32, choices: &[PickerChoice]) -> f32 {
     // The native list uses a single-line GDI item renderer. Reserve a
     // conservative text envelope for the longest concise label, then clamp
@@ -6554,6 +6605,14 @@ mod interaction_tests {
         assert!(picker_width_dip(190.0, &long) > 400.0);
         assert_eq!(picker_width_dip(900.0, &long), 520.0);
     }
+    #[test]
+    fn picker_height_has_only_list_rows_and_border_allowance() {
+        assert_eq!(picker_height_px(0, 1.0), 2);
+        assert_eq!(picker_height_px(3, 1.0), 92);
+        assert_eq!(picker_height_px(12, 1.0), 302);
+        assert_eq!(picker_height_px(3, 1.5), 137);
+    }
+
     fn empty_settings_ui() -> SettingsUi {
         let mut ui = SettingsUi::new(
             96,
@@ -6620,6 +6679,31 @@ mod interaction_tests {
             };
         });
         assert_eq!(delivered.get(), 1);
+    }
+
+    #[test]
+    fn managed_shortcut_buttons_expose_dynamic_uia_names() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = empty_settings_ui();
+        ui.page = Page::Shortcuts;
+        ui.rebuild_layout(hwnd);
+        ui.install_automation(hwnd);
+
+        let snapshot = ui.automation.as_ref().expect("automation").snapshot();
+        let state = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == ElementId::HotkeyEnabled(HotkeySlot::Microphone))
+            .expect("shortcut state node");
+        assert_eq!(state.name, "Disable Mute microphone shortcut");
+        assert!(state.enabled);
+        let unassign = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == ElementId::HotkeyUnassign(HotkeySlot::Microphone))
+            .expect("shortcut unassign node");
+        assert_eq!(unassign.name, "Unassign Mute microphone shortcut");
+        assert!(unassign.enabled);
     }
 
     #[test]
@@ -6912,6 +6996,10 @@ mod interaction_tests {
                 profile_id: "first".into(),
                 hotkey: Hotkey::parse("Ctrl+Alt+F3").unwrap(),
             });
+        ui.draft.hotkeys.set_disabled_hotkey(
+            "display_profile:first".into(),
+            Hotkey::parse("Ctrl+Alt+F4").unwrap(),
+        );
 
         ui.delete_active_display_profile();
 
@@ -6921,6 +7009,11 @@ mod interaction_tests {
         );
         assert!(ui.draft.display_profiles.active().is_some());
         assert!(ui.draft.hotkeys.display_profiles.is_empty());
+        assert!(ui
+            .draft
+            .hotkeys
+            .disabled_hotkey("display_profile:first")
+            .is_none());
     }
 
     #[test]
@@ -6978,6 +7071,100 @@ mod interaction_tests {
             key: Some(VirtualKey(0x2E)),
         });
         assert!(ui.draft.hotkeys.display_profiles.is_empty());
+    }
+
+    #[test]
+    fn disabled_shortcut_re_recording_keeps_it_disabled() {
+        let mut ui = empty_settings_ui();
+        let replacement = Hotkey::parse("Ctrl+Alt+F20").unwrap();
+        ui.draft
+            .hotkeys
+            .set_disabled_hotkey("cycle_output_device".into(), replacement);
+
+        ui.set_recorded_hotkey(
+            HotkeySlot::CycleOutput,
+            Hotkey::parse("Ctrl+Alt+F21").unwrap(),
+        );
+
+        assert!(ui.draft.hotkeys.cycle_output_device.is_none());
+        assert_eq!(
+            ui.draft.hotkeys.disabled_hotkey("cycle_output_device"),
+            Some(Hotkey::parse("Ctrl+Alt+F21").unwrap())
+        );
+        assert_eq!(
+            ui.configured_hotkey(HotkeySlot::CycleOutput),
+            Some(Hotkey::parse("Ctrl+Alt+F21").unwrap())
+        );
+        assert!(!ui.hotkey_enabled(HotkeySlot::CycleOutput));
+        assert!(!ui.is_disabled(ElementId::HotkeyEnabled(HotkeySlot::CycleOutput)));
+    }
+
+    #[test]
+    fn unassigning_a_shortcut_removes_active_and_disabled_copies() {
+        let mut ui = empty_settings_ui();
+        let hotkey = Hotkey::parse("Ctrl+Alt+F20").unwrap();
+        ui.draft.hotkeys.cycle_output_device = Some(hotkey);
+        ui.draft
+            .hotkeys
+            .set_disabled_hotkey("cycle_output_device".into(), hotkey);
+        let action = ui.hotkey_action(HotkeySlot::CycleOutput).unwrap();
+
+        ui.set_active_hotkey(HotkeySlot::CycleOutput, None);
+        ui.draft.hotkeys.clear_disabled_hotkey(&action);
+
+        assert!(ui.draft.hotkeys.cycle_output_device.is_none());
+        assert!(ui.draft.hotkeys.disabled_hotkey(&action).is_none());
+        assert!(ui.is_disabled(ElementId::HotkeyUnassign(HotkeySlot::CycleOutput)));
+    }
+
+    #[test]
+    fn normal_special_workspace_summary_uses_available_without_ready_badge() {
+        let mut ui = empty_settings_ui();
+        ui.runtime.desktop.native = crate::desktop::BackendAvailability::Available;
+
+        let (status, detail, action) = ui.special_workspace_summary();
+
+        assert_eq!(status, "Available");
+        assert!(!detail.is_empty());
+        assert_eq!(action, "Open Special");
+    }
+
+    #[test]
+    fn dirty_display_edits_block_other_changes_without_mutating_draft() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = empty_settings_ui();
+        ui.display_draft_dirty = true;
+        let before = ui.draft.clone();
+        ui.draft.overlay.enabled = !ui.draft.overlay.enabled;
+
+        assert!(!ui.commit_local_change(hwnd, before.clone()));
+        assert_eq!(ui.draft, before);
+        assert!(ui
+            .validation
+            .iter()
+            .any(|violation| violation.field == "Displays"));
+    }
+
+    #[test]
+    fn reenable_validates_disabled_chord_against_active_bindings() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = empty_settings_ui();
+        let conflict = ui.draft.hotkeys.toggle_microphone.unwrap();
+        ui.draft
+            .hotkeys
+            .set_disabled_hotkey("cycle_output_device".into(), conflict);
+
+        ui.toggle_hotkey_enabled(hwnd, HotkeySlot::CycleOutput);
+
+        assert!(ui.draft.hotkeys.cycle_output_device.is_none());
+        assert_eq!(
+            ui.draft.hotkeys.disabled_hotkey("cycle_output_device"),
+            Some(conflict)
+        );
+        assert!(ui
+            .validation
+            .iter()
+            .any(|violation| violation.message.contains("conflicts")));
     }
 
     #[test]
