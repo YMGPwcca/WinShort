@@ -17,8 +17,7 @@ const ROW_RADIUS: f32 = UiTokens::CARD_RADIUS - 2.0;
 const CONTROL_RADIUS: f32 = UiTokens::CONTROL_RADIUS;
 const NAV_RADIUS: f32 = UiTokens::NAV_RADIUS;
 const BODY_LEFT: f32 = 18.0;
-const VALUE_WIDTH: f32 = UiTokens::VALUE_WIDTH;
-const HOTKEY_WIDTH: f32 = UiTokens::HOTKEY_WIDTH;
+const CONTROL_WIDTH: f32 = UiTokens::CONTROL_WIDTH;
 
 pub enum ControlValue<'a> {
     Toggle(bool),
@@ -33,6 +32,13 @@ pub enum ButtonStyle {
     Secondary,
     Subtle,
     Danger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconKind {
+    Page(Page),
+    Speaker,
+    Microphone,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -277,6 +283,109 @@ pub fn draw_button_style(
     }
     r.text_clipped(label, rect.d2d(), TextStyle::Button, text);
 }
+pub fn draw_titlebar_button(
+    r: &Renderer,
+    element: &Element,
+    hovered: bool,
+    pressed: bool,
+    focused: bool,
+    maximized: bool,
+) {
+    let state = interaction_state(Interaction {
+        hovered,
+        pressed,
+        focused,
+        disabled: false,
+        hover_t: 0.0,
+        state_t: 0.0,
+    });
+    let close = element.id == crate::ui::layout::ElementId::WindowClose;
+    let background = match state {
+        InteractionState::Pressed => {
+            if close {
+                BrushRole::Danger
+            } else {
+                BrushRole::CardPressed
+            }
+        }
+        InteractionState::Hovered => {
+            if close {
+                BrushRole::Danger
+            } else {
+                BrushRole::ControlHover
+            }
+        }
+        _ => BrushRole::Background,
+    };
+    r.fill_rounded(element.rect.d2d(), 4.0, background);
+    if focused {
+        r.stroke_rounded(element.rect.inset(-2.0).d2d(), 6.0, BrushRole::Focus, 1.5);
+    }
+    let role = if close && matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
+        BrushRole::AccentText
+    } else {
+        BrushRole::TextSecondary
+    };
+    let rect = element.rect;
+    match element.id {
+        crate::ui::layout::ElementId::WindowMinimize => {
+            let y = rect.y + rect.h * 0.58;
+            r.line(rect.x + 14.0, y, rect.right() - 14.0, y, role, 1.5);
+        }
+        crate::ui::layout::ElementId::WindowMaximize => {
+            if maximized {
+                r.stroke_rounded(
+                    Rect::new(rect.x + 16.0, rect.y + 10.0, 12.0, 12.0).d2d(),
+                    1.0,
+                    role,
+                    1.4,
+                );
+                r.line(
+                    rect.x + 13.0,
+                    rect.y + 13.0,
+                    rect.x + 13.0,
+                    rect.y + 21.0,
+                    role,
+                    1.4,
+                );
+                r.line(
+                    rect.x + 13.0,
+                    rect.y + 13.0,
+                    rect.x + 24.0,
+                    rect.y + 13.0,
+                    role,
+                    1.4,
+                );
+            } else {
+                r.stroke_rounded(
+                    Rect::new(rect.x + 13.0, rect.y + 9.0, 18.0, 16.0).d2d(),
+                    1.5,
+                    role,
+                    1.5,
+                );
+            }
+        }
+        crate::ui::layout::ElementId::WindowClose => {
+            r.line(
+                rect.x + 14.0,
+                rect.y + 10.0,
+                rect.right() - 14.0,
+                rect.bottom() - 10.0,
+                role,
+                1.5,
+            );
+            r.line(
+                rect.right() - 14.0,
+                rect.y + 10.0,
+                rect.x + 14.0,
+                rect.bottom() - 10.0,
+                role,
+                1.5,
+            );
+        }
+        _ => {}
+    }
+}
 
 pub fn draw_nav_item(
     r: &Renderer,
@@ -411,18 +520,19 @@ pub fn draw_search_box(r: &Renderer, rect: Rect, text: &str, focused: bool, hove
 }
 
 pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &str) {
-    // A quiet rule and accent marker separate functional groups without
-    // turning every setting row into another nested card.
+    // The divider lives in the inter-section breathing room, not against the
+    // title. Layout reserves the matching gap before every non-page heading.
+    let divider_y = rect.y + 8.0;
     r.line(
         rect.x,
-        rect.y + 2.0,
+        divider_y,
         rect.right(),
-        rect.y + 2.0,
+        divider_y,
         BrushRole::Border,
         1.0,
     );
     r.fill_rounded(
-        Rect::new(rect.x, rect.y + 12.0, 3.0, 18.0).d2d(),
+        Rect::new(rect.x, rect.y + 22.0, 3.0, 18.0).d2d(),
         1.5,
         BrushRole::Accent,
     );
@@ -430,7 +540,7 @@ pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &
     let text_width = (rect.w - 12.0).max(1.0);
     r.text_clipped(
         title,
-        Rect::new(text_x, rect.y, text_width, 28.0).d2d(),
+        Rect::new(text_x, rect.y + 20.0, text_width, 28.0).d2d(),
         TextStyle::Section,
         BrushRole::Text,
     );
@@ -440,12 +550,12 @@ pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &
                 description,
                 TextStyle::SectionDescription,
                 text_width,
-                (rect.h - 34.0).max(24.0),
+                (rect.h - 54.0).max(20.0),
             )
-            .clamp(20.0, (rect.h - 34.0).max(24.0));
+            .clamp(20.0, (rect.h - 54.0).max(20.0));
         r.text_clipped(
             description,
-            Rect::new(text_x, rect.y + 34.0, text_width, description_height).d2d(),
+            Rect::new(text_x, rect.y + 54.0, text_width, description_height).d2d(),
             TextStyle::SectionDescription,
             BrushRole::TextSecondary,
         );
@@ -484,7 +594,7 @@ pub fn draw_home_card(
     value: &str,
     detail: &str,
     action: &str,
-    icon: Page,
+    icon: IconKind,
     interaction: Interaction,
 ) {
     let state = interaction_state(interaction);
@@ -495,7 +605,7 @@ pub fn draw_home_card(
         InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
     };
     draw_surface(r, rect.inset(1.0), surface, state, 12.0);
-    draw_page_icon(
+    draw_icon_kind(
         r,
         Rect::new(rect.x + 18.0, rect.y + 18.0, 28.0, 28.0),
         icon,
@@ -650,8 +760,16 @@ pub fn draw_profile_card(
     }
 }
 
+fn draw_icon_kind(r: &Renderer, rect: Rect, icon: IconKind, role: BrushRole) {
+    match icon {
+        IconKind::Page(page) => draw_page_icon(r, rect, page, role),
+        IconKind::Speaker => draw_speaker_icon(r, rect, role),
+        IconKind::Microphone => draw_microphone_icon(r, rect, role),
+    }
+}
+
 pub fn draw_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
-    draw_page_icon(r, rect, page, role);
+    draw_icon_kind(r, rect, IconKind::Page(page), role);
 }
 pub fn draw_profile_name_row(
     r: &Renderer,
@@ -704,21 +822,8 @@ pub fn draw_profile_name_row(
 }
 
 pub(crate) fn device_value_rect(row: Rect) -> Rect {
-    let width = if row.w >= 560.0 {
-        250.0
-    } else if row.w >= 420.0 {
-        VALUE_WIDTH
-    } else {
-        180.0
-    };
-    Rect::new(
-        row.right() - 18.0 - width,
-        row.y + 4.0,
-        width,
-        (row.h - 8.0).max(42.0),
-    )
+    control_rect(row, CONTROL_WIDTH)
 }
-
 pub fn draw_device_row(
     r: &Renderer,
     element: &Element,
@@ -785,28 +890,12 @@ pub fn draw_device_row(
         (value_rect.w - 32.0).max(1.0),
         (value_rect.h - 10.0).max(1.0),
     );
-    if let Some(secondary) = presentation.secondary.as_deref() {
-        let top = inner.y + (inner.h - 31.0) * 0.5;
-        r.text_clipped(
-            &presentation.primary,
-            Rect::new(inner.x, top, inner.w, 18.0).d2d(),
-            TextStyle::Value,
-            text_role,
-        );
-        r.text_clipped(
-            secondary,
-            Rect::new(inner.x, top + 18.0, inner.w, 13.0).d2d(),
-            TextStyle::Caption,
-            secondary_role,
-        );
-    } else {
-        r.text_clipped(
-            &presentation.primary,
-            inner.d2d(),
-            TextStyle::Value,
-            text_role,
-        );
-    }
+    r.text_clipped(
+        &presentation.primary,
+        inner.d2d(),
+        TextStyle::Value,
+        text_role,
+    );
     let x = value_rect.right() - 14.0;
     let y = value_rect.y + value_rect.h * 0.5;
     let chevron = if interaction.disabled {
@@ -844,7 +933,7 @@ pub fn draw_hotkey_card(r: &Renderer, element: &Element, enabled: bool) {
 }
 
 pub fn draw_hotkey_keycap(r: &Renderer, element: &Element, value: &str, interaction: Interaction) {
-    let rect = element.rect.inset(1.0);
+    let rect = element.rect;
     let state = interaction_state(interaction);
     r.fill_rounded(
         rect.d2d(),
@@ -889,13 +978,9 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
         InteractionState::Hovered => BrushRole::CardHover,
         InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
     };
+    let keycap = value_control_rect(rect, ElementKind::Hotkey);
     draw_surface(r, rect, surface, state, 10.0);
-    let keycap = Rect::new(
-        rect.right() - 174.0,
-        rect.y + (rect.h - 32.0) * 0.5,
-        156.0,
-        32.0,
-    );
+    let text_width = (keycap.x - rect.x - BODY_LEFT - 14.0).max(120.0);
     let keycap_role = if interaction.disabled {
         BrushRole::CardPressed
     } else {
@@ -917,7 +1002,7 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
         Rect::new(
             rect.x + BODY_LEFT,
             rect.y + (rect.h - 40.0) * 0.5,
-            rect.w - 204.0,
+            text_width,
             20.0,
         )
         .d2d(),
@@ -933,7 +1018,7 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
         Rect::new(
             rect.x + BODY_LEFT,
             rect.y + (rect.h - 40.0) * 0.5 + 22.0,
-            rect.w - 204.0,
+            text_width,
             18.0,
         )
         .d2d(),
@@ -1050,62 +1135,6 @@ pub fn draw_labeled_choice(
             BrushRole::Focus,
             1.5,
         );
-    }
-}
-
-pub fn draw_desktop_item(
-    r: &Renderer,
-    element: &Element,
-    index: usize,
-    current: bool,
-    interaction: Interaction,
-) {
-    let rect = element.rect.inset(1.0);
-    let state = interaction_state(Interaction {
-        focused: false,
-        ..interaction
-    });
-    let active_current = current && !interaction.disabled;
-    let fill = if active_current {
-        BrushRole::Accent
-    } else if current {
-        BrushRole::BackgroundSubtle
-    } else {
-        match state {
-            InteractionState::Hovered => BrushRole::CardHover,
-            InteractionState::Pressed => BrushRole::CardPressed,
-            _ => BrushRole::Card,
-        }
-    };
-    r.fill_rounded(rect.d2d(), 7.0, fill);
-    r.stroke_rounded(
-        rect.d2d(),
-        7.0,
-        if active_current {
-            BrushRole::Accent
-        } else if current {
-            BrushRole::BorderStrong
-        } else {
-            BrushRole::Border
-        },
-        1.0,
-    );
-    r.text(
-        &(index + 1).to_string(),
-        rect.d2d(),
-        TextStyle::Button,
-        if active_current {
-            BrushRole::AccentText
-        } else if current {
-            BrushRole::TextSecondary
-        } else if interaction.disabled {
-            BrushRole::TextDisabled
-        } else {
-            BrushRole::Text
-        },
-    );
-    if interaction.focused {
-        r.stroke_rounded(rect.inset(-3.0).d2d(), 9.0, BrushRole::Focus, 1.5);
     }
 }
 
@@ -1541,13 +1570,8 @@ fn control_rect(row: Rect, width: f32) -> Rect {
     )
 }
 
-pub(crate) fn value_control_rect(row: Rect, kind: ElementKind) -> Rect {
-    let width = match kind {
-        ElementKind::Hotkey => HOTKEY_WIDTH,
-        ElementKind::Value => VALUE_WIDTH,
-        _ => VALUE_WIDTH,
-    };
-    control_rect(row, width)
+pub(crate) fn value_control_rect(row: Rect, _kind: ElementKind) -> Rect {
+    control_rect(row, CONTROL_WIDTH)
 }
 
 const VALUE_TEXT_PADDING: f32 = 10.0;
@@ -1817,6 +1841,117 @@ fn page_for_nav(id: crate::ui::layout::ElementId) -> Page {
     }
 }
 
+fn draw_speaker_icon(r: &Renderer, rect: Rect, role: BrushRole) {
+    let cy = rect.y + rect.h * 0.5;
+    let scale = rect.w.min(rect.h) / 20.0;
+    let x = rect.x + 1.0 * scale;
+    r.fill_rounded(
+        Rect::new(x, cy - 2.5 * scale, 3.5 * scale, 5.0 * scale).d2d(),
+        scale,
+        role,
+    );
+    r.line(
+        x + 3.0 * scale,
+        cy - 2.5 * scale,
+        x + 8.0 * scale,
+        cy - 6.5 * scale,
+        role,
+        1.7 * scale,
+    );
+    r.line(
+        x + 3.0 * scale,
+        cy + 2.5 * scale,
+        x + 8.0 * scale,
+        cy + 6.5 * scale,
+        role,
+        1.7 * scale,
+    );
+    r.line(
+        x + 8.0 * scale,
+        cy - 6.5 * scale,
+        x + 8.0 * scale,
+        cy + 6.5 * scale,
+        role,
+        1.7 * scale,
+    );
+    r.line(
+        x + 12.0 * scale,
+        cy - 4.0 * scale,
+        x + 15.0 * scale,
+        cy - 1.5 * scale,
+        role,
+        1.4 * scale,
+    );
+    r.line(
+        x + 15.0 * scale,
+        cy - 1.5 * scale,
+        x + 15.0 * scale,
+        cy + 1.5 * scale,
+        role,
+        1.4 * scale,
+    );
+    r.line(
+        x + 15.0 * scale,
+        cy + 1.5 * scale,
+        x + 12.0 * scale,
+        cy + 4.0 * scale,
+        role,
+        1.4 * scale,
+    );
+}
+
+fn draw_microphone_icon(r: &Renderer, rect: Rect, role: BrushRole) {
+    let size = rect.w.min(rect.h);
+    let scale = size / 28.0;
+    let cx = rect.x + rect.w * 0.5;
+    let cy = rect.y + rect.h * 0.5;
+    r.stroke_rounded(
+        Rect::new(
+            cx - 4.0 * scale,
+            cy - 10.0 * scale,
+            8.0 * scale,
+            14.0 * scale,
+        )
+        .d2d(),
+        4.0 * scale,
+        role,
+        1.7 * scale,
+    );
+    let stroke = 1.7 * scale;
+    for (x1, y1, x2, y2) in [
+        (-8.0, 1.0, -8.0, 3.0),
+        (-8.0, 3.0, -6.0, 6.0),
+        (-6.0, 6.0, 0.0, 8.0),
+        (0.0, 8.0, 6.0, 6.0),
+        (6.0, 6.0, 8.0, 3.0),
+        (8.0, 3.0, 8.0, 1.0),
+        (0.0, 8.0, 0.0, 11.0),
+        (-4.0, 11.0, 4.0, 11.0),
+    ] {
+        r.line(
+            cx + x1 * scale,
+            cy + y1 * scale,
+            cx + x2 * scale,
+            cy + y2 * scale,
+            role,
+            stroke,
+        );
+    }
+}
+
+fn draw_shortcut_icon(r: &Renderer, rect: Rect, role: BrushRole) {
+    let outer = Rect::new(rect.x + 1.5, rect.y + 4.0, rect.w - 3.0, rect.h - 8.0);
+    r.stroke_rounded(outer.d2d(), 3.0, role, 1.6);
+    let key_y = rect.y + rect.h * 0.5 - 2.0;
+    for x in [rect.x + 5.0, rect.x + 10.0, rect.x + 15.0] {
+        r.fill_rounded(Rect::new(x, key_y, 2.5, 3.5).d2d(), 1.0, role);
+    }
+}
+
+fn draw_audio_icon(r: &Renderer, rect: Rect, role: BrushRole) {
+    draw_microphone_icon(r, rect, role);
+}
+
 fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
     let cx = rect.x + rect.w * 0.5;
     let cy = rect.y + rect.h * 0.5;
@@ -1841,70 +1976,8 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
                 1.7,
             );
         }
-        Page::Shortcuts => {
-            r.line(rect.x + 4.0, cy, rect.right() - 4.0, cy, role, 1.8);
-            r.line(rect.x + 8.0, cy - 5.0, rect.x + 8.0, cy + 5.0, role, 1.8);
-            r.line(
-                rect.right() - 8.0,
-                cy - 5.0,
-                rect.right() - 8.0,
-                cy + 5.0,
-                role,
-                1.8,
-            );
-        }
-        Page::Audio => {
-            let speaker_x = rect.x + 3.0;
-            r.fill_rounded(Rect::new(speaker_x, cy - 2.5, 3.5, 5.0).d2d(), 1.0, role);
-            r.line(
-                speaker_x + 3.0,
-                cy - 2.5,
-                speaker_x + 8.0,
-                cy - 6.5,
-                role,
-                1.7,
-            );
-            r.line(
-                speaker_x + 3.0,
-                cy + 2.5,
-                speaker_x + 8.0,
-                cy + 6.5,
-                role,
-                1.7,
-            );
-            r.line(
-                speaker_x + 8.0,
-                cy - 6.5,
-                speaker_x + 8.0,
-                cy + 6.5,
-                role,
-                1.7,
-            );
-            r.line(
-                speaker_x + 12.0,
-                cy - 4.0,
-                speaker_x + 15.0,
-                cy - 1.5,
-                role,
-                1.4,
-            );
-            r.line(
-                speaker_x + 15.0,
-                cy - 1.5,
-                speaker_x + 15.0,
-                cy + 1.5,
-                role,
-                1.4,
-            );
-            r.line(
-                speaker_x + 15.0,
-                cy + 1.5,
-                speaker_x + 12.0,
-                cy + 4.0,
-                role,
-                1.4,
-            );
-        }
+        Page::Shortcuts => draw_shortcut_icon(r, rect, role),
+        Page::Audio => draw_audio_icon(r, rect, role),
         Page::Workspaces => {
             r.stroke_rounded(
                 Rect::new(rect.x + 3.0, rect.y + 3.0, rect.w - 6.0, 7.0).d2d(),
@@ -1967,7 +2040,7 @@ mod tests {
     use super::{
         device_value_rect, interaction_state, scroll_from_scrollbar_pointer, scrollbar_hit_rect,
         scrollbar_thumb_rect, value_control_rect, value_text_rect, Interaction, InteractionState,
-        VALUE_TEXT_PADDING,
+        CONTROL_WIDTH, VALUE_TEXT_PADDING,
     };
     use crate::ui::layout::{ElementKind, Rect};
 
@@ -1997,23 +2070,23 @@ mod tests {
     }
 
     #[test]
-    fn value_control_geometry_is_right_aligned_and_kind_aware() {
+    fn value_control_geometry_is_right_aligned_and_shared_across_kinds() {
         let row = Rect::new(24.0, 100.0, 560.0, 58.0);
         let value = value_control_rect(row, ElementKind::Value);
         let hotkey = value_control_rect(row, ElementKind::Hotkey);
-        assert_eq!(value.w, 206.0);
-        assert_eq!(hotkey.w, 184.0);
-        assert!(value.x > row.x);
+        assert_eq!(value.w, CONTROL_WIDTH);
+        assert_eq!(hotkey.w, CONTROL_WIDTH);
+        assert_eq!(value.x, hotkey.x);
         assert_eq!(value.right(), row.right() - 18.0);
     }
 
     #[test]
-    fn device_value_geometry_preserves_a_text_column_at_narrow_widths() {
+    fn device_value_geometry_uses_the_shared_control_column() {
         let wide = Rect::new(24.0, 100.0, 800.0, 58.0);
         let narrow = Rect::new(24.0, 100.0, 330.0, 58.0);
-        assert_eq!(device_value_rect(wide).w, 250.0);
-        assert_eq!(device_value_rect(narrow).w, 180.0);
-        assert!(device_value_rect(narrow).x > narrow.x + 80.0);
+        assert_eq!(device_value_rect(wide).w, CONTROL_WIDTH);
+        assert_eq!(device_value_rect(narrow).w, CONTROL_WIDTH);
+        assert_eq!(device_value_rect(wide).right(), wide.right() - 18.0);
         assert_eq!(device_value_rect(narrow).right(), narrow.right() - 18.0);
     }
 

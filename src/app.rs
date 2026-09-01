@@ -1327,20 +1327,6 @@ impl App {
                     ));
                 }
             }
-            AppEvent::SwitchDesktopFromUi { index } => {
-                if let Some(desktop) = &self.desktop {
-                    desktop.switch_to(index);
-                } else {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::OverlayRow {
-                            icon: crate::ui::overlay::OverlayIcon::Info,
-                            tone: crate::ui::overlay::OverlayTone::Unavailable,
-                            title: "Desktop switching unavailable".into(),
-                            detail: "Workspace service is not available right now".into(),
-                        },
-                    ));
-                }
-            }
             AppEvent::ToggleSpecialWorkspaceFromUi => {
                 if let Some(desktop) = &self.desktop {
                     desktop.toggle_scratchpad();

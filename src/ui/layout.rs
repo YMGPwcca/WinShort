@@ -99,6 +99,9 @@ pub enum ElementId {
     Search,
     Nav(Page),
     SearchResult(u8),
+    WindowMinimize,
+    WindowMaximize,
+    WindowClose,
     HomeSpeaker,
     HomeCurrentDesktop,
     HomeMicrophone,
@@ -110,7 +113,6 @@ pub enum ElementId {
     DisplayProfileCard(u8),
     DisplayOutputCard(u8),
     DisplayTopologyChoice(u8),
-    DesktopStripItem(u8),
     InputCycleMode(u8),
     OutputCycleMode(u8),
     InputCycleDevice(u8),
@@ -245,7 +247,15 @@ impl ElementId {
     ];
 
     pub fn is_shell_chrome(self) -> bool {
-        matches!(self, Self::Search | Self::Nav(_) | Self::SearchResult(_))
+        matches!(
+            self,
+            Self::Search
+                | Self::Nav(_)
+                | Self::SearchResult(_)
+                | Self::WindowMinimize
+                | Self::WindowMaximize
+                | Self::WindowClose
+        )
     }
 }
 
@@ -269,10 +279,8 @@ pub enum ElementKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionKind {
-    WorkspaceStrip,
     WorkspaceNotice,
     PauseNotice,
-    SpecialWorkspace,
     AudioCurrentApp,
     OverlayPreview,
     DisplaySafety,
@@ -319,13 +327,12 @@ pub struct LayoutContext {
     pub display_keep_available: bool,
     pub display_inventory_unknown: bool,
     pub workspace_enabled: bool,
-    pub desktop_count: Option<usize>,
-    pub current_desktop: Option<usize>,
     pub paused: bool,
     pub input_cycle_mode: AllowlistMode,
     pub output_cycle_mode: AllowlistMode,
     pub input_device_count: usize,
     pub output_device_count: usize,
+    pub overlay_preview_aspect: (u32, u32),
 }
 
 impl Default for LayoutContext {
@@ -341,13 +348,12 @@ impl Default for LayoutContext {
             display_keep_available: false,
             display_inventory_unknown: false,
             workspace_enabled: true,
-            desktop_count: None,
-            current_desktop: None,
             paused: false,
             input_cycle_mode: AllowlistMode::All,
             output_cycle_mode: AllowlistMode::All,
             input_device_count: 0,
             output_device_count: 0,
+            overlay_preview_aspect: (16, 9),
         }
     }
 }
@@ -511,8 +517,17 @@ impl SettingsLayout {
     }
 
     fn add_chrome(&mut self) {
-        let search_width = (self.width - self.nav_width - 64.0).clamp(260.0, 440.0);
-        self.search_rect.w = search_width;
+        let titlebar_width = UiTokens::TITLEBAR_BUTTON_WIDTH * 3.0
+            + UiTokens::TITLEBAR_BUTTON_GAP * 2.0
+            + UiTokens::TITLEBAR_BUTTON_RIGHT;
+        let search_width =
+            (self.width - self.nav_width - 64.0 - titlebar_width).clamp(180.0, 440.0);
+        self.search_rect = Rect::new(
+            self.nav_width + 32.0,
+            UiTokens::TITLEBAR_HEIGHT + 4.0,
+            search_width,
+            32.0,
+        );
         self.elements.push(Element {
             id: ElementId::Search,
             kind: ElementKind::Search,
@@ -545,6 +560,47 @@ impl SettingsLayout {
                 scrolls: false,
             });
             y += 44.0;
+        }
+
+        let button_start = self.width
+            - UiTokens::TITLEBAR_BUTTON_RIGHT
+            - UiTokens::TITLEBAR_BUTTON_WIDTH * 3.0
+            - UiTokens::TITLEBAR_BUTTON_GAP * 2.0;
+        for (index, (id, label, description)) in [
+            (
+                ElementId::WindowMinimize,
+                "Minimize",
+                "Minimize the Control Center window",
+            ),
+            (
+                ElementId::WindowMaximize,
+                "Maximize",
+                "Maximize or restore the Control Center window",
+            ),
+            (
+                ElementId::WindowClose,
+                "Close",
+                "Close the Control Center window",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            self.elements.push(Element {
+                id,
+                kind: ElementKind::ButtonSecondary,
+                rect: Rect::new(
+                    button_start
+                        + index as f32
+                            * (UiTokens::TITLEBAR_BUTTON_WIDTH + UiTokens::TITLEBAR_BUTTON_GAP),
+                    UiTokens::TITLEBAR_BUTTON_TOP,
+                    UiTokens::TITLEBAR_BUTTON_WIDTH,
+                    UiTokens::TITLEBAR_BUTTON_HEIGHT,
+                ),
+                label: label.into(),
+                description: description.into(),
+                scrolls: false,
+            });
         }
     }
 
@@ -923,7 +979,7 @@ fn add_page(layout: &mut SettingsLayout, page: Page, context: &LayoutContext) {
         Page::Audio => add_audio(layout, context),
         Page::Workspaces => add_workspaces(layout, context),
         Page::Displays => add_displays(layout, context),
-        Page::Overlay => add_overlay(layout),
+        Page::Overlay => add_overlay(layout, context),
         Page::System => add_system(layout),
         Page::Advanced => add_advanced(layout),
     }
@@ -931,6 +987,9 @@ fn add_page(layout: &mut SettingsLayout, page: Page, context: &LayoutContext) {
 
 fn add_heading(layout: &mut SettingsLayout, title: &str, description: &str, y: &mut f32) {
     let page_header = layout.sections.is_empty();
+    if !page_header {
+        *y += UiTokens::SECTION_GAP;
+    }
     let height = if page_header {
         UiTokens::PAGE_HEADER_HEIGHT
     } else {
@@ -1000,7 +1059,6 @@ fn add_row(
         ),
     );
 }
-
 fn add_card(
     layout: &mut SettingsLayout,
     y: &mut f32,
@@ -1078,19 +1136,21 @@ fn add_managed_hotkey(
         description: description.into(),
         scrolls: true,
     });
-    let control_x = card.right() - 188.0;
+    let control_x = card.right() - 18.0 - UiTokens::CONTROL_WIDTH;
     layout.elements.push(Element {
         id: capture_id,
         kind: ElementKind::Hotkey,
-        rect: Rect::new(control_x, card.y + 10.0, 172.0, 32.0),
+        rect: Rect::new(control_x, card.y + 10.0, UiTokens::CONTROL_WIDTH, 32.0),
         label: format!("{label} shortcut"),
         description: "Record a new shortcut".into(),
         scrolls: true,
     });
+    let button_gap = UiTokens::ROW_GAP;
+    let button_width = (UiTokens::CONTROL_WIDTH - button_gap) * 0.5;
     layout.elements.push(Element {
         id: ElementId::HotkeyEnabled(slot),
         kind: ElementKind::ButtonSecondary,
-        rect: Rect::new(control_x, card.y + 50.0, 82.0, 28.0),
+        rect: Rect::new(control_x, card.y + 50.0, button_width, 28.0),
         label: "Shortcut state".into(),
         description: format!("Enable or disable {label}"),
         scrolls: true,
@@ -1098,7 +1158,12 @@ fn add_managed_hotkey(
     layout.elements.push(Element {
         id: ElementId::HotkeyUnassign(slot),
         kind: ElementKind::ButtonSecondary,
-        rect: Rect::new(control_x + 90.0, card.y + 50.0, 82.0, 28.0),
+        rect: Rect::new(
+            control_x + button_width + button_gap,
+            card.y + 50.0,
+            button_width,
+            28.0,
+        ),
         label: "Unassign".into(),
         description: format!("Remove the shortcut for {label}"),
         scrolls: true,
@@ -1134,7 +1199,8 @@ fn add_hotkey_grid(layout: &mut SettingsLayout, y: &mut f32, items: &[(ElementId
         add_managed_hotkey(layout, card, slot, capture_id, label, description);
     }
     if !items.is_empty() {
-        *y = start + items.len().div_ceil(columns) as f32 * (row_h + gap);
+        let rows = items.len().div_ceil(columns);
+        *y = start + rows as f32 * row_h + rows.saturating_sub(1) as f32 * gap;
     }
 }
 
@@ -1196,52 +1262,6 @@ fn add_profile_card(
         description: "Select this saved arrangement".into(),
         scrolls: true,
     });
-}
-
-fn add_desktop_strip(layout: &mut SettingsLayout, y: &mut f32, context: &LayoutContext) {
-    let count = context.desktop_count.unwrap_or(0).min(32);
-    let columns = count.clamp(1, 12);
-    let gap = 6.0;
-    let item_w =
-        ((layout.content_column.w - gap * (columns as f32 - 1.0)) / columns as f32).max(28.0);
-    let rows = if count == 0 {
-        1
-    } else {
-        count.div_ceil(columns)
-    };
-    let rect = add_region(
-        layout,
-        RegionKind::WorkspaceStrip,
-        y,
-        42.0 + rows as f32 * 36.0,
-    );
-    if count == 0 {
-        return;
-    }
-    for index in 0..count {
-        let row = index / columns;
-        let column = index % columns;
-        let current = context.current_desktop == Some(index);
-        let label = if current {
-            format!("Desktop {} (current)", index + 1)
-        } else {
-            format!("Desktop {}", index + 1)
-        };
-        add_element(
-            layout,
-            y,
-            ElementId::DesktopStripItem(index as u8),
-            ElementKind::ButtonSecondary,
-            label,
-            "Switch to this normal desktop",
-            Rect::new(
-                rect.x + column as f32 * (item_w + gap),
-                rect.y + 32.0 + row as f32 * 36.0,
-                item_w,
-                30.0,
-            ),
-        );
-    }
 }
 
 fn add_audio_mode_group(
@@ -1341,7 +1361,6 @@ fn add_home(layout: &mut SettingsLayout) {
         "What WinShort is doing right now.",
         &mut y,
     );
-    y += 12.0;
     add_heading(layout, "Audio", "Your current Windows devices.", &mut y);
     add_card_pair(
         layout,
@@ -1392,7 +1411,6 @@ fn add_home(layout: &mut SettingsLayout) {
             UiTokens::ROW_HEIGHT,
         ),
     );
-    y += 12.0;
     add_heading(
         layout,
         "Display and shortcuts",
@@ -1441,7 +1459,6 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
     if context.paused {
         add_region(layout, RegionKind::PauseNotice, &mut y, 68.0);
     }
-    y += 12.0;
     add_heading(
         layout,
         "Audio",
@@ -1489,7 +1506,6 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
             ),
         ],
     );
-    y += 4.0;
     add_heading(
         layout,
         "Workspaces",
@@ -1533,7 +1549,6 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
     } else {
         add_region(layout, RegionKind::WorkspaceNotice, &mut y, 70.0);
     }
-    y += 4.0;
     add_heading(
         layout,
         "Numbered desktops",
@@ -1583,7 +1598,6 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Choose Windows default devices and how Next speaker or microphone cycles.",
         &mut y,
     );
-    y += 12.0;
     add_heading(
         layout,
         "Speakers",
@@ -1660,13 +1674,9 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
     add_heading(
         layout,
         "Workspaces",
-        "Switch desktops without losing your place.",
+        "Configure desktop and Special Workspace shortcuts.",
         &mut y,
     );
-    y += 12.0;
-    if context.desktop_count.is_some() || context.current_desktop.is_some() {
-        add_desktop_strip(layout, &mut y, context);
-    }
     add_heading(
         layout,
         "Workspace shortcuts",
@@ -1687,7 +1697,28 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
     );
     if !context.workspace_enabled {
         add_region(layout, RegionKind::WorkspaceNotice, &mut y, 76.0);
-        add_region(layout, RegionKind::SpecialWorkspace, &mut y, 86.0);
+        add_heading(
+            layout,
+            "Special Workspace",
+            "A dedicated place for windows you want nearby but out of the way.",
+            &mut y,
+        );
+        add_hotkey_grid(
+            layout,
+            &mut y,
+            &[
+                (
+                    ElementId::AssignScratchpadHotkey,
+                    "Move window to Special",
+                    "Send the current window to Special Workspace",
+                ),
+                (
+                    ElementId::ToggleScratchpadHotkey,
+                    "Open / close Special",
+                    "Open Special Workspace or return",
+                ),
+            ],
+        );
         return;
     }
     add_heading(
@@ -1737,7 +1768,12 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
             "Return to the last normal desktop",
         )],
     );
-    add_region(layout, RegionKind::SpecialWorkspace, &mut y, 86.0);
+    add_heading(
+        layout,
+        "Special Workspace",
+        "A dedicated place for windows you want nearby but out of the way.",
+        &mut y,
+    );
     add_hotkey_grid(
         layout,
         &mut y,
@@ -1975,7 +2011,7 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
         "Save the way your screens work, then test before you keep it.",
         &mut y,
     );
-    y += 12.0;
+    y += UiTokens::GROUP_GAP;
     if !context.display_profiles_enabled {
         add_row(
             layout,
@@ -2094,7 +2130,44 @@ fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext) {
     );
 }
 
-fn add_overlay(layout: &mut SettingsLayout) {
+const PREVIEW_SIDE_INSET: f32 = 18.0;
+const PREVIEW_CANVAS_MAX_WIDTH: f32 = 720.0;
+const PREVIEW_CANVAS_MIN_HEIGHT: f32 = 118.0;
+const PREVIEW_CANVAS_MAX_HEIGHT: f32 = 220.0;
+const PREVIEW_TITLE_HEIGHT: f32 = 44.0;
+const PREVIEW_BOTTOM_INSET: f32 = 18.0;
+
+pub(crate) fn overlay_preview_canvas_size(available_width: f32, aspect: (u32, u32)) -> (f32, f32) {
+    let ratio = if aspect.0 == 0 || aspect.1 == 0 {
+        16.0 / 9.0
+    } else {
+        aspect.0 as f32 / aspect.1 as f32
+    };
+    let available_width = available_width.max(1.0);
+    let mut width = available_width.min(PREVIEW_CANVAS_MAX_WIDTH);
+    let mut height = width / ratio;
+    if height > PREVIEW_CANVAS_MAX_HEIGHT {
+        height = PREVIEW_CANVAS_MAX_HEIGHT;
+        width = height * ratio;
+    }
+    if height < PREVIEW_CANVAS_MIN_HEIGHT {
+        height = PREVIEW_CANVAS_MIN_HEIGHT;
+        width = height * ratio;
+        if width > available_width {
+            width = available_width;
+            height = width / ratio;
+        }
+    }
+    (width, height)
+}
+
+pub(crate) fn overlay_preview_region_height(content_width: f32, aspect: (u32, u32)) -> f32 {
+    let (_, height) =
+        overlay_preview_canvas_size((content_width - PREVIEW_SIDE_INSET * 2.0).max(1.0), aspect);
+    PREVIEW_TITLE_HEIGHT + height + PREVIEW_BOTTOM_INSET
+}
+
+fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
     let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
@@ -2102,8 +2175,10 @@ fn add_overlay(layout: &mut SettingsLayout) {
         "A compact visual cue that never interrupts your work.",
         &mut y,
     );
-    y += 12.0;
-    add_region(layout, RegionKind::OverlayPreview, &mut y, 164.0);
+    y += UiTokens::GROUP_GAP;
+    let preview_height =
+        overlay_preview_region_height(layout.content_column.w, context.overlay_preview_aspect);
+    add_region(layout, RegionKind::OverlayPreview, &mut y, preview_height);
     add_row(
         layout,
         &mut y,
@@ -2213,7 +2288,6 @@ fn add_system(layout: &mut SettingsLayout) {
         "Small choices that shape how WinShort lives on your PC.",
         &mut y,
     );
-    y += 12.0;
     add_heading(
         layout,
         "Startup",
@@ -2315,7 +2389,6 @@ fn add_advanced(layout: &mut SettingsLayout) {
         "Technical controls for troubleshooting and fine tuning.",
         &mut y,
     );
-    y += 12.0;
     add_heading(layout, "Audio", "Windows default-device behavior.", &mut y);
     add_row(
         layout,
@@ -2412,7 +2485,7 @@ fn add_search_results(layout: &mut SettingsLayout, query: &str) {
         "Choose a result to open the right page.",
         &mut y,
     );
-    y += 12.0;
+    y += UiTokens::GROUP_GAP;
     for (index, result) in matches.iter().enumerate() {
         add_row(
             layout,
@@ -2511,7 +2584,10 @@ fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ElementId, ElementKind, HotkeySlot, RegionKind, SettingsLayout};
+    use super::{
+        overlay_preview_canvas_size, overlay_preview_region_height, ElementId, ElementKind,
+        HotkeySlot, RegionKind, SettingsLayout,
+    };
     use crate::ui::navigation::Page;
     use crate::ui::presentation::{AllowlistMode, DisplayWizardStep};
 
@@ -2765,90 +2841,114 @@ mod tests {
     }
 
     #[test]
-    fn workspace_strip_uses_a_compact_single_line_header() {
+    fn workspaces_settings_has_no_desktop_switcher_surface() {
         let layout = SettingsLayout::build_shell_with_context(
             1200.0,
             900.0,
             0.0,
             Page::Workspaces,
             "",
-            super::LayoutContext {
-                desktop_count: Some(9),
-                current_desktop: Some(2),
-                ..Default::default()
-            },
+            super::LayoutContext::default(),
             None,
         );
-        let strip = layout
-            .regions
+        assert!(layout.regions.is_empty());
+        assert!(layout.element(ElementId::WinNumberEnabled).is_some());
+        assert!(layout.element(ElementId::DesktopNumberModifier).is_some());
+        assert!(layout.element(ElementId::PreviousDesktopHotkey).is_some());
+        assert!(layout
+            .sections
             .iter()
-            .find(|region| region.kind == RegionKind::WorkspaceStrip)
-            .expect("workspace strip");
-        assert_eq!(strip.rect.h, 78.0);
-        let desktop = layout
-            .element(ElementId::DesktopStripItem(0))
-            .expect("desktop item");
-        assert_eq!(desktop.rect.h, 30.0);
-        assert!((desktop.rect.y - strip.rect.y - 32.0).abs() < f32::EPSILON);
+            .all(|section| section.title != "Normal desktops"));
     }
 
     #[test]
-    fn special_workspace_region_owns_its_only_header() {
+    fn special_workspace_uses_a_heading_and_consistent_shortcut_cards() {
         let layout = SettingsLayout::build_shell_with_context(
             960.0,
             900.0,
             0.0,
             Page::Workspaces,
             "",
-            Default::default(),
+            super::LayoutContext::default(),
             None,
         );
+        let special = layout
+            .sections
+            .iter()
+            .find(|section| section.title == "Special Workspace")
+            .expect("special workspace heading");
         assert_eq!(
-            layout
-                .sections
-                .iter()
-                .filter(|section| section.title == "Special Workspace")
-                .count(),
-            0
+            special.description,
+            "A dedicated place for windows you want nearby but out of the way."
         );
+        let move_card = layout
+            .element(ElementId::HotkeyCard(HotkeySlot::AssignSpecial))
+            .expect("move card");
+        let toggle_card = layout
+            .element(ElementId::HotkeyCard(HotkeySlot::ToggleSpecial))
+            .expect("toggle card");
         assert_eq!(
-            layout
-                .regions
-                .iter()
-                .filter(|region| region.kind == RegionKind::SpecialWorkspace)
-                .count(),
-            1
+            toggle_card.rect.y - move_card.rect.bottom(),
+            super::UiTokens::CARD_GAP
         );
+        assert_eq!(toggle_card.rect.x, move_card.rect.x);
+        assert_eq!(toggle_card.rect.w, move_card.rect.w);
+        assert!(layout.regions.is_empty());
+    }
+    #[test]
+    fn special_shortcut_card_gap_is_stable_at_multiple_scroll_positions() {
+        for requested_scroll in [0.0, 120.0, 480.0] {
+            let layout = SettingsLayout::build_shell_with_context(
+                960.0,
+                660.0,
+                requested_scroll,
+                Page::Workspaces,
+                "",
+                super::LayoutContext::default(),
+                None,
+            );
+            let move_card = layout
+                .element(ElementId::HotkeyCard(HotkeySlot::AssignSpecial))
+                .expect("move card");
+            let toggle_card = layout
+                .element(ElementId::HotkeyCard(HotkeySlot::ToggleSpecial))
+                .expect("toggle card");
+            assert_eq!(
+                toggle_card.rect.y - move_card.rect.bottom(),
+                super::UiTokens::CARD_GAP
+            );
+            assert_eq!(toggle_card.rect.w, move_card.rect.w);
+        }
     }
 
     #[test]
-    fn workspace_strip_uses_runtime_count_and_excludes_special() {
-        let context = super::LayoutContext {
-            desktop_count: Some(9),
-            current_desktop: Some(2),
-            ..Default::default()
-        };
+    fn workspace_off_still_exposes_disabled_special_shortcuts() {
         let layout = SettingsLayout::build_shell_with_context(
-            1200.0,
+            960.0,
             900.0,
             0.0,
             Page::Workspaces,
             "",
-            context,
+            super::LayoutContext {
+                workspace_enabled: false,
+                ..Default::default()
+            },
             None,
-        );
-        assert_eq!(
-            layout
-                .elements
-                .iter()
-                .filter(|element| matches!(element.id, ElementId::DesktopStripItem(_)))
-                .count(),
-            9
         );
         assert!(layout
             .regions
             .iter()
-            .any(|region| region.kind == RegionKind::WorkspaceStrip));
+            .any(|region| region.kind == RegionKind::WorkspaceNotice));
+        assert!(layout
+            .sections
+            .iter()
+            .any(|section| section.title == "Special Workspace"));
+        assert!(layout
+            .element(ElementId::HotkeyCard(HotkeySlot::AssignSpecial))
+            .is_some());
+        assert!(layout
+            .element(ElementId::HotkeyCard(HotkeySlot::ToggleSpecial))
+            .is_some());
     }
 
     #[test]
@@ -2937,26 +3037,6 @@ mod tests {
     }
 
     #[test]
-    fn desktop_information_strip_remains_when_workspace_actions_are_off() {
-        let layout = SettingsLayout::build_shell_with_context(
-            960.0,
-            660.0,
-            0.0,
-            Page::Workspaces,
-            "",
-            super::LayoutContext {
-                workspace_enabled: false,
-                desktop_count: Some(4),
-                current_desktop: Some(1),
-                ..Default::default()
-            },
-            None,
-        );
-        assert!(layout.element(ElementId::DesktopStripItem(0)).is_some());
-        assert!(layout.element(ElementId::DesktopStripItem(3)).is_some());
-    }
-
-    #[test]
     fn review_summary_is_accessible_without_joining_keyboard_order() {
         let layout = SettingsLayout::build_shell_with_context(
             1200.0,
@@ -3019,14 +3099,71 @@ mod tests {
     }
 
     #[test]
-    fn overlay_preview_region_is_compact_enough_for_the_page() {
-        let layout = SettingsLayout::build_shell(1200.0, 900.0, 0.0, Page::Overlay, "", 0, None);
+    fn overlay_preview_region_expands_beyond_the_old_compact_surface() {
+        let layout = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Overlay,
+            "",
+            super::LayoutContext {
+                overlay_preview_aspect: (16, 9),
+                ..Default::default()
+            },
+            None,
+        );
         let preview = layout
             .regions
             .iter()
             .find(|region| region.kind == RegionKind::OverlayPreview)
             .expect("overlay preview");
-        assert_eq!(preview.rect.h, 164.0);
+        assert_eq!(
+            preview.rect.h,
+            overlay_preview_region_height(layout.content_column.w, (16, 9))
+        );
+        assert!(preview.rect.h > 164.0);
+    }
+
+    #[test]
+    fn overlay_preview_canvas_preserves_monitor_aspect_ratios() {
+        let available = 884.0;
+        for aspect in [(16, 9), (16, 10), (21, 9), (9, 16)] {
+            let (width, height) = overlay_preview_canvas_size(available, aspect);
+            let expected = aspect.0 as f32 / aspect.1 as f32;
+            assert!(((width / height) - expected).abs() < 0.001);
+        }
+        let (wide_width, wide_height) = overlay_preview_canvas_size(available, (21, 9));
+        let (portrait_width, portrait_height) = overlay_preview_canvas_size(available, (9, 16));
+        assert!(wide_width > wide_height);
+        assert!(portrait_height > portrait_width);
+    }
+
+    #[test]
+    fn custom_titlebar_controls_are_aligned_and_clear_of_search() {
+        let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
+        let minimize = layout
+            .element(ElementId::WindowMinimize)
+            .expect("minimize button");
+        let maximize = layout
+            .element(ElementId::WindowMaximize)
+            .expect("maximize button");
+        let close = layout
+            .element(ElementId::WindowClose)
+            .expect("close button");
+        assert_eq!(minimize.rect.y, super::UiTokens::TITLEBAR_BUTTON_TOP);
+        assert_eq!(minimize.rect.h, super::UiTokens::TITLEBAR_BUTTON_HEIGHT);
+        assert_eq!(maximize.rect.y, minimize.rect.y);
+        assert_eq!(close.rect.y, minimize.rect.y);
+        assert_eq!(
+            maximize.rect.x - minimize.rect.right(),
+            super::UiTokens::TITLEBAR_BUTTON_GAP
+        );
+        assert_eq!(
+            close.rect.x - maximize.rect.right(),
+            super::UiTokens::TITLEBAR_BUTTON_GAP
+        );
+        assert!(layout.search_rect.right() <= minimize.rect.x);
+        assert!(layout.search_rect.y >= super::UiTokens::TITLEBAR_HEIGHT);
     }
 
     #[test]

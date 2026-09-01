@@ -97,8 +97,11 @@ pub fn friendly_device_name(name: &str, kind: AudioDeviceKind) -> FriendlyLabel 
     let original = name.trim();
     let (without_prefix, _) = strip_index_wrapper(original);
     let (without_suffix, mut detail) = strip_index_suffix(without_prefix);
-    let mut primary = without_suffix.trim().to_string();
-    let fallback = primary.clone();
+    let (without_adapter, adapter_detail) = strip_known_adapter_suffix(without_suffix);
+    if detail.is_none() {
+        detail = adapter_detail;
+    }
+    let mut primary = without_adapter.trim().to_string();
     let categories = match kind {
         AudioDeviceKind::Speaker => ["speakers", "speaker"],
         AudioDeviceKind::Microphone => ["microphones", "microphone"],
@@ -124,11 +127,7 @@ pub fn friendly_device_name(name: &str, kind: AudioDeviceKind) -> FriendlyLabel 
         break;
     }
     if primary.is_empty() {
-        primary = detail
-            .take()
-            .filter(|value| !value.is_empty())
-            .or_else(|| (!fallback.is_empty()).then_some(fallback))
-            .unwrap_or_else(|| "Unknown device".into());
+        primary = format!("Unknown {}", kind.noun());
     }
     FriendlyLabel {
         primary,
@@ -150,6 +149,8 @@ pub fn device_selection_presentation(
         let label = friendly_device(device, kind);
         DeviceSelectionPresentation {
             primary: label.primary,
+            // Keep adapter/driver metadata available to accessibility while
+            // compact controls render only the canonical primary name.
             secondary: label.detail,
             status: None,
         }
@@ -161,13 +162,12 @@ pub fn device_selection_presentation(
         }
     }
 }
-
 pub fn device_choice_label(
     device: &DeviceId,
     _default: Option<&DeviceId>,
     kind: AudioDeviceKind,
 ) -> String {
-    friendly_device(device, kind).compact()
+    friendly_device(device, kind).primary
 }
 pub fn device_choice_label_at(
     devices: &[DeviceId],
@@ -320,6 +320,26 @@ fn strip_index_suffix(value: &str) -> (&str, Option<String>) {
     } else {
         (value[..open].trim_end(), Some(detail.to_string()))
     }
+}
+fn strip_known_adapter_suffix(value: &str) -> (&str, Option<String>) {
+    let is_adapter_metadata = |detail: &str| {
+        let detail = detail.to_ascii_lowercase();
+        detail.contains("audio device") || detail.contains("adapter") || detail.contains("driver")
+    };
+    if let Some(open) = value.rfind(" (") {
+        if value.ends_with(')') && open + 2 < value.len() - 1 {
+            let detail = &value[open + 2..value.len() - 1];
+            if is_adapter_metadata(detail) {
+                return (value[..open].trim_end(), Some(detail.trim().to_string()));
+            }
+        }
+    }
+    if let Some((primary, detail)) = value.rsplit_once(" · ") {
+        if !primary.trim().is_empty() && is_adapter_metadata(detail) {
+            return (primary.trim_end(), Some(detail.trim().to_string()));
+        }
+    }
+    (value, None)
 }
 
 fn indexed_separator(value: &str) -> Option<(usize, char)> {
@@ -481,8 +501,44 @@ mod tests {
         }
         assert_eq!(
             device_choice_label(&named, Some(&named), AudioDeviceKind::Speaker),
-            "SAMSUNG · AMD High Definition Audio Device"
+            "SAMSUNG"
         );
+    }
+    #[test]
+    fn normal_audio_controls_expose_only_the_canonical_primary_name() {
+        for (kind, raw, expected) in [
+            (
+                AudioDeviceKind::Speaker,
+                "GS25F2 (AMD High Definition Audio Device)",
+                "GS25F2",
+            ),
+            (
+                AudioDeviceKind::Speaker,
+                "SAMSUNG (AMD High Definition Audio Device)",
+                "SAMSUNG",
+            ),
+            (
+                AudioDeviceKind::Microphone,
+                "SIMGOT EW300 DSP",
+                "SIMGOT EW300 DSP",
+            ),
+        ] {
+            let device = DeviceId {
+                endpoint: raw.into(),
+                name: raw.into(),
+            };
+            assert_eq!(device_choice_label(&device, None, kind), expected);
+            assert_eq!(
+                device_selection_presentation(
+                    &DeviceSelection::Default,
+                    std::slice::from_ref(&device),
+                    Some(&device),
+                    kind,
+                )
+                .primary,
+                expected
+            );
+        }
     }
 
     #[test]
@@ -491,8 +547,11 @@ mod tests {
             "2 - Microphone (3- AMD High Definition Audio Device)",
             AudioDeviceKind::Microphone,
         );
-        assert_eq!(microphone.primary, "AMD High Definition Audio Device");
-        assert!(microphone.detail.is_none());
+        assert_eq!(microphone.primary, "Unknown microphone");
+        assert_eq!(
+            microphone.detail.as_deref(),
+            Some("AMD High Definition Audio Device")
+        );
 
         let speakers =
             friendly_device_name("Speakers (Realtek USB Audio)", AudioDeviceKind::Speaker);

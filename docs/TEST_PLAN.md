@@ -104,6 +104,10 @@ Automated coverage:
   and unassigned chords; disabled chords stay out of the active binding table.
 - Bounded value rendering tests verify chevron reservation and DirectWrite trailing-character
   trimming; applied status text remains generic.
+- Control Center layout tests cover removal of the Workspaces desktop strip, Special Workspace hierarchy, stable shortcut-card gaps across scroll positions, shared right-side control widths, custom titlebar geometry, and multi-aspect-ratio overlay preview fitting.
+- Motion tests cover short wheel/page retarget policy and replacing a scroll target from the latest visual position without accumulating a long stale tween.
+- Overlay policy tests cover opaque fallback for High Contrast, disabled overlapped content, and unavailable DWM backdrop APIs.
+- Audio presentation tests cover canonical primary endpoint names with diagnostic-only adapter metadata.
 - Navigation/search tests verify case-insensitive deterministic user-concept matching and reject
   internal configuration names from the normal search index.
 - Onboarding policy tests verify that a meaningful existing `config.toml` suppresses the
@@ -111,27 +115,38 @@ Automated coverage:
 
 Manual matrix:
 
-- Workspace page: the desktop strip reads as one compact control with no redundant helper text;
-  Special Workspace has one visible heading and coherent Open/Enable wording.
-- Page shell: each page presents one content title rather than repeating the same title in the
-  top bar, and section separators make functional groups distinct.
-- Overlay page: the preview is compact, remains legible at every position/scale, and does not
-  overwhelm the controls below.
-- Pointer and keyboard focus: pointer clicks keep semantic focus without a heavy ring; Tab,
-  Shift-Tab, UIA focus, and keyboard activation retain a visible focus cue.
-- Settings scrolling: wheel, Page Up/Down, focus-into-view, and scrollbar drag remain usable;
-  wheel and page movement ease instead of jumping.
-- Native picker text: long endpoint/driver names retain descenders, use trailing ellipsis only
-  when necessary, and remain readable at 100/125/150/200% DPI.
-- Audio naming: speaker and microphone cards, picker rows, and cycling choices use the same
-  friendly primary/detail normalization without endpoint IDs or default-status badges.
-- Home actions: device cards say Choose; navigation cards say Open; Special Workspace says
-  Enable only when disabled and Open otherwise.
-- Iconography: the Control Center mark and navigation glyphs remain crisp and visually coherent
-  with the packaged speaker icon in light, dark, and high-contrast themes.
+- Scroll behavior: wheel notches respond immediately, accumulate across rapid input, and settle
+  within a short native-feeling transition; Page Up/Down remain fast; scrollbar dragging is
+  direct and reduced-motion settings remove easing.
+- Section rhythm: each divider sits in balanced whitespace between the previous content and the
+  next heading; no accent rule touches a title.
+- Workspaces page: no Normal desktops strip is present; numbered 1–9 shortcut configuration
+  remains available; Special Workspace has one heading, description, and two evenly spaced
+  shortcut cards.
+- Control widths: dropdowns, keycaps, and value controls share the same right-side width and
+  alignment; managed shortcut actions divide that same column.
+- Audio iconography: the microphone reads as a capsule microphone with stem/base, not a speaker,
+  and the same glyph is used on Home, Audio navigation, and overlay surfaces.
+- Shortcut iconography: the navigation glyph reads as a keyboard/keycap symbol, not arbitrary
+  plus/hash marks.
+- Audio naming: speaker/microphone controls consistently show only canonical primary names such
+  as GS25F2, SAMSUNG, and SIMGOT EW300 DSP; adapter metadata is absent from normal visible rows.
+- Overlay preview: Foreground, Primary, saved, disconnected, 16:9, 16:10, ultrawide, and
+  portrait targets use the correct work-area ratio without stretching; placement matches the
+  real overlay's normalized semantics.
+- Overlay backdrop: with reduced opacity, content behind the overlay is visibly blurred by
+  documented DWM Desktop Acrylic (`DWMWA_SYSTEMBACKDROP_TYPE` /
+  `DWMSBT_TRANSIENTWINDOW`); High Contrast, disabled overlapped content, API failure, and
+  transparency-disabled states use an opaque accessible surface.
+- Custom titlebar: Minimize, Maximize/Restore, and Close work; drag and all resize edges/corners
+  behave natively; DPI, dark/light/high-contrast themes, rounded corners, and maximize Snap
+  Layout hover remain intact.
+- Focus and automation: pointer clicks avoid a lingering heavy ring; Tab, Shift-Tab, keyboard
+  activation, titlebar commands, and UIA focus remain truthful; UIA events arrive only after
+  mutable SettingsUi borrows are released.
 
-If an interactive desktop is unavailable, GUI and Narrator results remain unverified; automated
-geometry/state tests must not be described as live accessibility evidence.
+If an interactive desktop is unavailable, GUI, blur, titlebar, and Narrator results remain
+unverified; automated geometry/state tests must not be described as live accessibility evidence.
 
 ## A. Keyboard engine (AUTOMATED IN CI + PROPERTY TEST)
 
@@ -210,13 +225,15 @@ crispness at DPI 100–200% · single/multi monitor · per-monitor DPI moves inc
 (#49) · foreground-monitor follow · over fullscreen game (never steals focus) · rapid updates
 coalesce with timer reset · negative virtual-screen coordinates · monitor unplug/replug.
 
-#30 accessibility/source matrix: System/Dark/Light appearance, Windows animation-off yields
-settled overlay with no fade/slide, high-contrast uses paired system colors with an opaque
-surface/strong border/no shadow, overlapped-content preference removes translucency, and
-setting changes refresh an already-visible overlay. Preview uses unsaved draft appearance,
-scale, opacity, position, monitor, and duration without saving. External audio changes obey
-the saved policy; WinShort actions and status requests remain visible. Delayed status results
-refresh the multi-row status presentation. Coalesced updates preserve the full settled hold.
+The runtime overlay uses a non-layered Direct2D HWND with documented DWM Desktop Acrylic
+(`DwmSetWindowAttribute` / `DWMWA_SYSTEMBACKDROP_TYPE` /
+`DWMSBT_TRANSIENTWINDOW`) and `DwmExtendFrameIntoClientArea`. Reduced opacity must reveal
+blurred, not sharp, background content. High Contrast, `SPI_GETDISABLEOVERLAPPEDCONTENT`, an
+unsupported DWM attribute, or a failed frame extension must produce the opaque fallback.
+Preview uses unsaved draft appearance, scale, opacity, position, monitor, and duration without
+saving. External audio changes obey the saved policy; WinShort actions and status requests remain
+visible. Delayed status results refresh the multi-row status presentation. Coalesced updates
+preserve the full settled hold.
 
 Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
 flag exists).

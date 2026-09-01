@@ -16,15 +16,20 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetFocus, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
+    TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, KillTimer, SetTimer, SetWindowPos, ShowWindow, CREATESTRUCTW, SWP_NOACTIVATE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
+    CreateWindowExW, GetWindowRect, IsZoomed, KillTimer, SetTimer, SetWindowPos, ShowWindow,
+    CREATESTRUCTW, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTCLOSE, HTLEFT,
+    HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE,
+    SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DISPLAYCHANGE,
     WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
-    WM_NCDESTROY, WM_PAINT, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WM_TIMER, WS_OVERLAPPEDWINDOW,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE,
+    WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+    WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_CAPTION, WS_OVERLAPPEDWINDOW,
 };
 
 use crate::config::model::{
@@ -42,7 +47,8 @@ use crate::ui::control_center_automation::{
 };
 use crate::ui::controls::{self, ControlValue, Interaction};
 use crate::ui::layout::{
-    ElementId, ElementKind, HotkeySlot, LayoutContext, Rect as UiRect, RegionKind, SettingsLayout,
+    overlay_preview_canvas_size, ElementId, ElementKind, HotkeySlot, LayoutContext, Rect as UiRect,
+    RegionKind, SettingsLayout,
 };
 use crate::ui::navigation::{search, Page};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
@@ -54,13 +60,16 @@ use crate::ui::presentation::{
 };
 use crate::ui::prompt::{PromptAction, TextPrompt};
 use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
-use crate::ui::theme::{Color, Theme, ThemeMode};
+use crate::ui::theme::{Color, Theme, ThemeMode, UiTokens};
 
 pub const CLASS_NAME: &str = "WinShort.ControlCenter";
 pub const DESIGN_WIDTH: f32 = 960.0;
 pub const DESIGN_HEIGHT: f32 = 660.0;
 const UI_TIMER: usize = 1;
 const UI_TIMER_MS: u32 = 16;
+const WHEEL_SCROLL_DIP: f32 = 80.0;
+const WHEEL_SCROLL_DURATION_MS: u64 = 80;
+const PAGE_SCROLL_DURATION_MS: u64 = 120;
 const APPLIED_STATUS: &str = "Changes applied";
 
 static REGISTERED: OnceLock<u16> = OnceLock::new();
@@ -189,6 +198,7 @@ pub struct SettingsUi {
     display_keep_available: bool,
     runtime: ControlCenterRuntimeSnapshot,
     devices: crate::audio::devices::DeviceLists,
+    overlay_preview_aspect: (u32, u32),
     validation: Vec<Violation>,
     hovered: Option<ElementId>,
     pressed: Option<ElementId>,
@@ -249,6 +259,7 @@ impl SettingsUi {
             display_keep_available: false,
             runtime: ControlCenterRuntimeSnapshot::default(),
             devices,
+            overlay_preview_aspect: (16, 9),
             validation: Vec::new(),
             hovered: None,
             pressed: None,
@@ -290,14 +301,16 @@ impl SettingsUi {
             display_inventory_unknown: self.display_inventory_error.is_some()
                 || !self.display_inventory_loaded,
             workspace_enabled: self.draft.virtual_desktops.enabled,
-            desktop_count: self.runtime.desktop.desktop_count,
-            current_desktop: self.runtime.desktop.current_desktop,
             paused: !self.draft.general.start_hotkeys_enabled,
             input_cycle_mode: allowlist_mode(self.draft.audio.cycle_input_allowlist.as_deref()),
             output_cycle_mode: allowlist_mode(self.draft.audio.cycle_output_allowlist.as_deref()),
             input_device_count: self.devices.inputs.len(),
             output_device_count: self.devices.outputs.len(),
+            overlay_preview_aspect: self.overlay_preview_aspect,
         }
+    }
+    fn refresh_overlay_preview_aspect(&mut self) {
+        self.overlay_preview_aspect = overlay_preview_aspect(&self.draft.overlay.monitor);
     }
 
     fn rebuild_layout(&mut self, hwnd: HWND) {
@@ -333,10 +346,11 @@ impl SettingsUi {
         self.scroll_target = 0.0;
     }
 
-    fn animate_scroll_to(&mut self, hwnd: HWND, target: f32) {
+    fn animate_scroll_to(&mut self, hwnd: HWND, target: f32, duration_ms: u64) {
         let target = target.clamp(0.0, self.layout.max_scroll);
         let current = self.current_scroll().clamp(0.0, self.layout.max_scroll);
         self.scroll_target = target;
+        self.scroll = current;
         if (current - target).abs() < 0.001 {
             self.motion.clear_channel(MotionChannel::Scroll);
             self.scroll = target;
@@ -346,7 +360,7 @@ impl SettingsUi {
                 MotionChannel::Scroll,
                 current,
                 target,
-                180,
+                duration_ms,
             );
             start_timer(hwnd);
         } else {
@@ -390,6 +404,9 @@ impl SettingsUi {
             self.replace_draft((*crate::app::config()).clone());
         }
         self.page = page;
+        if page == Page::Overlay {
+            self.refresh_overlay_preview_aspect();
+        }
         self.search_query.clear();
         self.reset_scroll();
         self.validation.clear();
@@ -724,12 +741,6 @@ impl SettingsUi {
             TextStyle::Section,
             BrushRole::Text,
         );
-        renderer.text(
-            "Control Center",
-            rect(70.0, 41.0, self.layout.nav_width - 18.0, 64.0),
-            TextStyle::Caption,
-            BrushRole::TextSecondary,
-        );
         for element in &self.layout.elements {
             if let ElementId::Nav(page) = element.id {
                 controls::draw_nav_item(
@@ -796,7 +807,7 @@ impl SettingsUi {
         // Paint the persistent top bar after the scrollable viewport. The
         // viewport clip is still authoritative; this final layer also makes
         // the shell visually non-scrollable if a backend render call overdraws.
-        self.draw_top_bar(&renderer);
+        self.draw_top_bar(&renderer, hwnd);
         renderer.fill_rect(self.layout.footer.d2d(), BrushRole::BackgroundSubtle);
         renderer.line(
             0.0,
@@ -814,7 +825,7 @@ impl SettingsUi {
         }
         result
     }
-    fn draw_top_bar(&self, renderer: &Renderer) {
+    fn draw_top_bar(&self, renderer: &Renderer, hwnd: HWND) {
         renderer.fill_rect(self.layout.top_bar.d2d(), BrushRole::Background);
         renderer.line(
             self.layout.nav_width,
@@ -824,6 +835,18 @@ impl SettingsUi {
             BrushRole::Border,
             1.0,
         );
+        renderer.text(
+            "Control Center",
+            UiRect::new(
+                self.layout.nav_width + 32.0,
+                7.0,
+                (self.layout.width - self.layout.nav_width - 180.0).max(120.0),
+                26.0,
+            )
+            .d2d(),
+            TextStyle::Section,
+            BrushRole::Text,
+        );
         controls::draw_search_box(
             renderer,
             self.layout.search_rect,
@@ -831,6 +854,22 @@ impl SettingsUi {
             self.visual_focus(ElementId::Search),
             self.hovered == Some(ElementId::Search),
         );
+        let maximized = unsafe { IsZoomed(hwnd).as_bool() };
+        for element in &self.layout.elements {
+            if matches!(
+                element.id,
+                ElementId::WindowMinimize | ElementId::WindowMaximize | ElementId::WindowClose
+            ) {
+                controls::draw_titlebar_button(
+                    renderer,
+                    element,
+                    self.hovered == Some(element.id),
+                    self.pressed == Some(element.id),
+                    self.visual_focus(element.id),
+                    maximized,
+                );
+            }
+        }
     }
 
     fn draw_page(&self, renderer: &Renderer) {
@@ -858,7 +897,7 @@ impl SettingsUi {
                         &self.current_output_name(),
                         &detail,
                         "Choose",
-                        Page::Audio,
+                        controls::IconKind::Speaker,
                         interaction,
                     );
                 }
@@ -881,7 +920,7 @@ impl SettingsUi {
                         &self.current_input_name(),
                         &detail,
                         "Choose",
-                        Page::Audio,
+                        controls::IconKind::Microphone,
                         interaction,
                     );
                 }
@@ -897,7 +936,7 @@ impl SettingsUi {
                         &value,
                         "Normal workspace",
                         "Open",
-                        Page::Workspaces,
+                        controls::IconKind::Page(Page::Workspaces),
                         interaction,
                     );
                 }
@@ -910,7 +949,7 @@ impl SettingsUi {
                         &value,
                         &detail,
                         &action,
-                        Page::Workspaces,
+                        controls::IconKind::Page(Page::Workspaces),
                         interaction,
                     );
                 }
@@ -930,7 +969,7 @@ impl SettingsUi {
                         } else {
                             "Open"
                         },
-                        Page::Displays,
+                        controls::IconKind::Page(Page::Displays),
                         interaction,
                     );
                 }
@@ -943,7 +982,7 @@ impl SettingsUi {
                         &value,
                         &detail,
                         &action,
-                        Page::Shortcuts,
+                        controls::IconKind::Page(Page::Shortcuts),
                         interaction,
                     );
                 }
@@ -956,7 +995,7 @@ impl SettingsUi {
                         &value,
                         &detail,
                         "Open",
-                        Page::System,
+                        controls::IconKind::Page(Page::System),
                         interaction,
                     );
                 }
@@ -1047,15 +1086,6 @@ impl SettingsUi {
                         _ => String::new(),
                     };
                     controls::draw_hotkey_keycap(renderer, element, &value, interaction);
-                }
-                ElementId::DesktopStripItem(index) => {
-                    controls::draw_desktop_item(
-                        renderer,
-                        element,
-                        index as usize,
-                        self.runtime.desktop.current_desktop == Some(index as usize),
-                        interaction,
-                    );
                 }
                 ElementId::InputDevice | ElementId::OutputDevice => {
                     let presentation = self.device_selection_view(element.id);
@@ -1203,10 +1233,8 @@ impl SettingsUi {
                 continue;
             }
             match region.kind {
-                RegionKind::WorkspaceStrip => self.draw_workspace_status(renderer, region.rect),
                 RegionKind::WorkspaceNotice => self.draw_workspace_notice(renderer, region.rect),
                 RegionKind::PauseNotice => self.draw_pause_notice(renderer, region.rect),
-                RegionKind::SpecialWorkspace => self.draw_special_workspace(renderer, region.rect),
                 RegionKind::AudioCurrentApp => self.draw_current_app_audio(renderer, region.rect),
                 RegionKind::OverlayPreview => self.draw_overlay_preview(renderer, region.rect),
                 RegionKind::DisplaySafety => self.draw_display_safety(renderer, region.rect),
@@ -1216,31 +1244,6 @@ impl SettingsUi {
                 }
             }
         }
-    }
-
-    fn draw_workspace_status(&self, renderer: &Renderer, rect: UiRect) {
-        renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::Card);
-        renderer.stroke_rounded(rect.d2d(), 10.0, BrushRole::Border, 1.0);
-        renderer.text(
-            "Normal desktops",
-            UiRect::new(rect.x + 16.0, rect.y + 7.0, rect.w - 220.0, 20.0).d2d(),
-            TextStyle::BodyStrong,
-            BrushRole::Text,
-        );
-        let summary = match (
-            self.runtime.desktop.current_desktop,
-            self.runtime.desktop.desktop_count,
-        ) {
-            (Some(current), Some(count)) => format!("Desktop {} of {}", current + 1, count),
-            (Some(current), None) => format!("Desktop {}", current + 1),
-            _ => "Desktop status unavailable".into(),
-        };
-        renderer.text_clipped(
-            &summary,
-            UiRect::new(rect.right() - 190.0, rect.y + 8.0, 174.0, 18.0).d2d(),
-            TextStyle::CaptionRight,
-            BrushRole::TextSecondary,
-        );
     }
 
     fn draw_workspace_notice(&self, renderer: &Renderer, rect: UiRect) {
@@ -1275,59 +1278,6 @@ impl SettingsUi {
             TextStyle::Caption,
             BrushRole::TextSecondary,
         );
-    }
-
-    fn draw_special_workspace(&self, renderer: &Renderer, rect: UiRect) {
-        let (status, detail, role) = if !self.draft.virtual_desktops.enabled {
-            (
-                "Off",
-                "Turn on Workspace shortcuts to use Special Workspace.",
-                BrushRole::TextSecondary,
-            )
-        } else if matches!(
-            &self.runtime.desktop.native,
-            crate::desktop::BackendAvailability::Available
-        ) {
-            (
-                "",
-                "A dedicated place for windows kept out of the way.",
-                BrushRole::Border,
-            )
-        } else {
-            (
-                "Unavailable",
-                "Windows workspace service is unavailable right now.",
-                BrushRole::Warning,
-            )
-        };
-        renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::BackgroundSubtle);
-        renderer.stroke_rounded(rect.d2d(), 10.0, role, 1.0);
-        let text_width = if status.is_empty() {
-            rect.w - 32.0
-        } else {
-            rect.w - 180.0
-        };
-        let stack_top = rect.y + (rect.h - 40.0) * 0.5;
-        renderer.text(
-            "Special Workspace",
-            UiRect::new(rect.x + 16.0, stack_top, text_width, 20.0).d2d(),
-            TextStyle::BodyStrong,
-            BrushRole::Text,
-        );
-        renderer.text_clipped(
-            detail,
-            UiRect::new(rect.x + 16.0, stack_top + 22.0, text_width, 18.0).d2d(),
-            TextStyle::Caption,
-            BrushRole::TextSecondary,
-        );
-        if !status.is_empty() {
-            renderer.text(
-                status,
-                UiRect::new(rect.right() - 150.0, rect.y + 28.0, 134.0, 22.0).d2d(),
-                TextStyle::BodyStrong,
-                role,
-            );
-        }
     }
 
     fn draw_current_app_audio(&self, renderer: &Renderer, rect: UiRect) {
@@ -1390,7 +1340,15 @@ impl SettingsUi {
             TextStyle::CaptionRight,
             BrushRole::TextSecondary,
         );
-        let canvas = UiRect::new(rect.x + 18.0, rect.y + 44.0, rect.w - 36.0, rect.h - 56.0);
+        let available_width = (rect.w - 36.0).max(1.0);
+        let (canvas_width, canvas_height) =
+            overlay_preview_canvas_size(available_width, self.overlay_preview_aspect);
+        let canvas = UiRect::new(
+            rect.x + 18.0 + (available_width - canvas_width) * 0.5,
+            rect.y + 44.0,
+            canvas_width,
+            canvas_height,
+        );
         renderer.fill_rounded(canvas.d2d(), 8.0, BrushRole::Card);
         renderer.stroke_rounded(canvas.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
         let sample = overlay_preview_card_rect(
@@ -1863,7 +1821,7 @@ impl SettingsUi {
                         DeviceSelection::Default => None,
                     })
                     .unwrap_or_else(|| "Windows default microphone".into());
-                friendly_device_name(&raw, AudioDeviceKind::Microphone).compact()
+                friendly_device_name(&raw, AudioDeviceKind::Microphone).primary
             }
         }
     }
@@ -1871,7 +1829,7 @@ impl SettingsUi {
     fn current_output_name(&self) -> String {
         match &self.runtime.output {
             crate::audio::OutputState::Current { device, .. } => {
-                friendly_device(device, AudioDeviceKind::Speaker).compact()
+                friendly_device(device, AudioDeviceKind::Speaker).primary
             }
             crate::audio::OutputState::Unavailable { .. } => "Speakers unavailable".into(),
         }
@@ -2131,6 +2089,9 @@ impl SettingsUi {
                     ControlValue::Action(Cow::Borrowed(""))
                 }
             }
+            ElementId::WindowMinimize => ControlValue::Action(Cow::Borrowed("Minimize")),
+            ElementId::WindowMaximize => ControlValue::Action(Cow::Borrowed("Maximize")),
+            ElementId::WindowClose => ControlValue::Action(Cow::Borrowed("Close")),
             ElementId::HomeSpeaker => ControlValue::Text(Cow::Owned(self.current_output_name())),
             ElementId::HomeCurrentDesktop => ControlValue::Text(Cow::Owned(
                 self.runtime.desktop.current_desktop.map_or_else(
@@ -2175,13 +2136,6 @@ impl SettingsUi {
                         .is_some_and(|profile| profile.topology == topology),
                 )
             }
-            ElementId::DesktopStripItem(index) => ControlValue::Action(Cow::Owned(
-                if self.runtime.desktop.current_desktop == Some(index as usize) {
-                    "Current".into()
-                } else {
-                    "Switch".into()
-                },
-            )),
             ElementId::InputCycleMode(_) | ElementId::OutputCycleMode(_) => {
                 ControlValue::Toggle(self.choice_selected(id))
             }
@@ -2608,15 +2562,6 @@ impl SettingsUi {
             | ElementId::PreviousDesktopHotkey
             | ElementId::AssignScratchpadHotkey
             | ElementId::ToggleScratchpadHotkey => !self.draft.virtual_desktops.enabled,
-            ElementId::DesktopStripItem(index) => {
-                !self.draft.virtual_desktops.enabled
-                    || self.runtime.desktop.current_desktop.is_none()
-                    || self
-                        .runtime
-                        .desktop
-                        .desktop_count
-                        .is_none_or(|count| index as usize >= count)
-            }
             ElementId::DisplayProfile => {
                 !self.draft.display_profiles.enabled
                     || self.draft.display_profiles.active().is_none()
@@ -2925,6 +2870,25 @@ impl SettingsUi {
             self.delete_profile_confirm = false;
         }
         match id {
+            ElementId::WindowMinimize => unsafe {
+                let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            },
+            ElementId::WindowMaximize => unsafe {
+                let command = if IsZoomed(hwnd).as_bool() {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                };
+                let _ = ShowWindow(hwnd, command);
+            },
+            ElementId::WindowClose => unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(hwnd),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            },
             ElementId::Nav(page) => {
                 self.set_page(page);
                 self.focused = Some(ElementId::Nav(page));
@@ -3018,11 +2982,6 @@ impl SettingsUi {
             ElementId::DisplayOutputCard(index) => self.toggle_display_output(index),
             ElementId::DisplayTopologyChoice(index) => {
                 self.set_display_topology(index);
-            }
-            ElementId::DesktopStripItem(index) => {
-                post_main(crate::event::AppEvent::SwitchDesktopFromUi {
-                    index: index as usize,
-                });
             }
             ElementId::InputCycleMode(index) | ElementId::OutputCycleMode(index) => {
                 self.set_cycle_mode(hwnd, id, index);
@@ -4026,6 +3985,7 @@ impl SettingsUi {
             }
             (PickerKind::OverlayMonitor, PickerValue::Monitor(value)) => {
                 self.draft.overlay.monitor = value;
+                self.refresh_overlay_preview_aspect();
             }
             _ => {}
         }
@@ -4096,6 +4056,17 @@ impl SettingsUi {
                         node.name = title;
                         node.value = value;
                         node.help_text = detail;
+                    }
+                    ElementId::WindowMaximize => {
+                        let maximized = unsafe { IsZoomed(hwnd).as_bool() };
+                        let action = if maximized { "Restore" } else { "Maximize" };
+                        node.name = format!("{action} Control Center");
+                        node.value = action.into();
+                        node.help_text = if maximized {
+                            "Restore the Control Center window".into()
+                        } else {
+                            "Maximize the Control Center window".into()
+                        };
                     }
                     ElementId::InputCycleMode(index) => {
                         let mode =
@@ -4186,15 +4157,6 @@ impl SettingsUi {
                     ElementId::OverlayPositionCell(index) => {
                         node.name = overlay_position_label(index as usize).into();
                         node.help_text = "Choose this overlay position".into();
-                    }
-                    ElementId::DesktopStripItem(index) => {
-                        node.name = format!("Desktop {}", index + 1);
-                        node.help_text =
-                            if self.runtime.desktop.current_desktop == Some(index as usize) {
-                                "Current normal desktop".into()
-                            } else {
-                                "Switch to this normal desktop".into()
-                            };
                     }
                     ElementId::HotkeyEnabled(slot) => {
                         let state = if self.hotkey_enabled(slot) {
@@ -4402,7 +4364,7 @@ impl ControlCenterWindow {
                 WINDOW_EX_STYLE::default(),
                 windows::core::PCWSTR(windows::core::HSTRING::from(CLASS_NAME).as_ptr()),
                 windows::core::PCWSTR(windows::core::HSTRING::from("WinShort").as_ptr()),
-                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0),
+                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 & !WS_CAPTION.0),
                 x,
                 y,
                 w,
@@ -4414,6 +4376,17 @@ impl ControlCenterWindow {
             )
         }
         .map_err(|e| Error::win("CreateWindowExW(settings)", &e))?;
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
 
         let actual_dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96);
         if actual_dpi != dpi {
@@ -4424,6 +4397,7 @@ impl ControlCenterWindow {
         apply_chrome(hwnd, settings_theme());
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(hwnd) } {
             let mut ui = cell.borrow_mut();
+            ui.refresh_overlay_preview_aspect();
             ui.rebuild_layout(hwnd);
             ui.publish_automation_snapshot(hwnd);
         }
@@ -4566,6 +4540,7 @@ impl ControlCenterWindow {
                 ui.replace_draft((*crate::app::config()).clone());
             }
             ui.refresh_display_outputs();
+            ui.refresh_overlay_preview_aspect();
             ui.rebuild_layout(self.hwnd);
             ui.validation.clear();
             invalidate(self.hwnd);
@@ -5452,6 +5427,83 @@ fn current_picker_value(
     }
 }
 
+fn screen_point_from_lparam(lparam: LPARAM) -> (i32, i32) {
+    (
+        (lparam.0 as u32 & 0xFFFF) as u16 as i16 as i32,
+        ((lparam.0 as u32 >> 16) & 0xFFFF) as u16 as i16 as i32,
+    )
+}
+
+fn titlebar_button_at(ui: &SettingsUi, hwnd: HWND, x: i32, y: i32) -> Option<ElementId> {
+    let mut window = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
+        return None;
+    }
+    let scale = 96.0 / unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as f32;
+    let x = (x - window.left) as f32 * scale;
+    let y = (y - window.top) as f32 * scale;
+    match ui.layout.hit_test(x, y) {
+        Some(
+            id @ (ElementId::WindowMinimize | ElementId::WindowMaximize | ElementId::WindowClose),
+        ) => Some(id),
+        _ => None,
+    }
+}
+
+fn titlebar_button_for_hit_test(hit: u32) -> Option<ElementId> {
+    Some(match hit {
+        HTMINBUTTON => ElementId::WindowMinimize,
+        HTMAXBUTTON => ElementId::WindowMaximize,
+        HTCLOSE => ElementId::WindowClose,
+        _ => return None,
+    })
+}
+
+fn custom_frame_hit_test(hwnd: HWND, x: i32, y: i32) -> u32 {
+    let mut window = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
+        return HTCLIENT;
+    }
+    let scale = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0;
+    let border = (6.0 * scale).round().max(4.0) as i32;
+    let left = x < window.left + border;
+    let right = x >= window.right - border;
+    let top = y < window.top + border;
+    let bottom = y >= window.bottom - border;
+    if !unsafe { IsZoomed(hwnd).as_bool() } {
+        if top && left {
+            return HTTOPLEFT;
+        }
+        if top && right {
+            return HTTOPRIGHT;
+        }
+        if bottom && left {
+            return HTBOTTOMLEFT;
+        }
+        if bottom && right {
+            return HTBOTTOMRIGHT;
+        }
+        if top {
+            return HTTOP;
+        }
+        if bottom {
+            return HTBOTTOM;
+        }
+        if left {
+            return HTLEFT;
+        }
+        if right {
+            return HTRIGHT;
+        }
+    }
+    let titlebar_height = (UiTokens::TITLEBAR_HEIGHT * scale).round() as i32;
+    if y < window.top + titlebar_height {
+        HTCAPTION
+    } else {
+        HTCLIENT
+    }
+}
+
 fn apply_chrome(hwnd: HWND, theme: Theme) {
     unsafe {
         let dark: u32 = if theme.mode == ThemeMode::Dark { 1 } else { 0 };
@@ -5507,6 +5559,89 @@ unsafe extern "system" fn settings_wndproc(
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
         match msg {
+            WM_NCCALCSIZE => {
+                if wparam.0 != 0 {
+                    LRESULT(0)
+                } else {
+                    win::def_proc(hwnd, msg, wparam, lparam)
+                }
+            }
+            WM_NCHITTEST => {
+                let (x, y) = screen_point_from_lparam(lparam);
+                let button = {
+                    let ui = cell.borrow();
+                    titlebar_button_at(&ui, hwnd, x, y)
+                };
+                button.map_or_else(
+                    || LRESULT(custom_frame_hit_test(hwnd, x, y) as isize),
+                    |id| {
+                        LRESULT(match id {
+                            ElementId::WindowMinimize => HTMINBUTTON,
+                            ElementId::WindowMaximize => HTMAXBUTTON,
+                            ElementId::WindowClose => HTCLOSE,
+                            _ => HTCLIENT,
+                        } as isize)
+                    },
+                )
+            }
+            WM_NCMOUSEMOVE => {
+                let (x, y) = screen_point_from_lparam(lparam);
+                let id = {
+                    let ui = cell.borrow();
+                    titlebar_button_at(&ui, hwnd, x, y)
+                };
+                let mut track = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE | TME_NONCLIENT,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut track);
+                cell.borrow_mut().set_hover(hwnd, id);
+                LRESULT(0)
+            }
+            WM_NCMOUSELEAVE => {
+                cell.borrow_mut().set_hover(hwnd, None);
+                LRESULT(0)
+            }
+            WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK => {
+                let Some(id) = titlebar_button_for_hit_test(wparam.0 as u32) else {
+                    return win::def_proc(hwnd, msg, wparam, lparam);
+                };
+                if msg == WM_NCLBUTTONDBLCLK {
+                    if id == ElementId::WindowMaximize {
+                        cell.borrow_mut().activate(hwnd, id);
+                        return LRESULT(0);
+                    }
+                    return LRESULT(0);
+                }
+                {
+                    let mut ui = cell.borrow_mut();
+                    ui.pressed = Some(id);
+                    ui.focused = Some(id);
+                    ui.focus_visible = false;
+                }
+                let _ = SetCapture(hwnd);
+                let _ = SetFocus(Some(hwnd));
+                invalidate(hwnd);
+                LRESULT(0)
+            }
+            WM_NCLBUTTONUP => {
+                let id = titlebar_button_for_hit_test(wparam.0 as u32);
+                let activate = {
+                    let mut ui = cell.borrow_mut();
+                    let pressed = ui.pressed.take();
+                    pressed.is_some() && pressed == id
+                };
+                let _ = ReleaseCapture();
+                if activate {
+                    if let Some(id) = id {
+                        cell.borrow_mut().activate(hwnd, id);
+                    }
+                }
+                invalidate(hwnd);
+                LRESULT(0)
+            }
             WM_GETOBJECT => {
                 // Clone only; UiaReturnRawElementProvider must run without a
                 // live SettingsUi RefCell borrow.
@@ -5604,6 +5739,14 @@ unsafe extern "system" fn settings_wndproc(
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 let mut ui = cell.borrow_mut();
+                ui.rebuild_layout(hwnd);
+                ui.publish_automation_snapshot(hwnd);
+                invalidate(hwnd);
+                LRESULT(0)
+            }
+            WM_DISPLAYCHANGE => {
+                let mut ui = cell.borrow_mut();
+                ui.refresh_overlay_preview_aspect();
                 ui.rebuild_layout(hwnd);
                 ui.publish_automation_snapshot(hwnd);
                 invalidate(hwnd);
@@ -5788,7 +5931,7 @@ unsafe extern "system" fn settings_wndproc(
                     }
                     SettingsWheelAction::Scroll(scroll) => {
                         let mut ui = cell.borrow_mut();
-                        ui.animate_scroll_to(hwnd, scroll);
+                        ui.animate_scroll_to(hwnd, scroll, wheel_scroll_duration_ms());
                         ui.publish_automation_snapshot(hwnd);
                         invalidate(hwnd);
                     }
@@ -5838,7 +5981,7 @@ unsafe extern "system" fn settings_wndproc(
                         } else {
                             (current + page).min(ui.layout.max_scroll)
                         };
-                        ui.animate_scroll_to(hwnd, target);
+                        ui.animate_scroll_to(hwnd, target, page_scroll_duration_ms());
                         ui.publish_automation_snapshot(hwnd);
                         invalidate(hwnd);
                         LRESULT(0)
@@ -5941,9 +6084,15 @@ fn mouse_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
 }
 
 fn scroll_after_wheel(scroll: f32, delta: f32, max_scroll: f32) -> f32 {
-    (scroll - delta / 120.0 * 64.0).clamp(0.0, max_scroll)
+    (scroll - delta / 120.0 * WHEEL_SCROLL_DIP).clamp(0.0, max_scroll)
+}
+fn wheel_scroll_duration_ms() -> u64 {
+    WHEEL_SCROLL_DURATION_MS
 }
 
+fn page_scroll_duration_ms() -> u64 {
+    PAGE_SCROLL_DURATION_MS
+}
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SettingsWheelAction {
     ClosePicker(HWND),
@@ -6094,33 +6243,62 @@ fn allowlist_mode_for_index(index: u8) -> AllowlistMode {
 fn overlay_position(index: usize) -> OverlayPosition {
     OverlayPosition::ALL[index.min(OverlayPosition::ALL.len() - 1)]
 }
+fn work_area_aspect(work: Option<RECT>) -> (u32, u32) {
+    work.map_or((16, 9), |work| {
+        let width = work.right.saturating_sub(work.left).max(1) as u32;
+        let height = work.bottom.saturating_sub(work.top).max(1) as u32;
+        (width, height)
+    })
+}
+
+fn overlay_preview_aspect(choice: &MonitorChoice) -> (u32, u32) {
+    let work = match choice {
+        MonitorChoice::Primary => crate::platform::monitor::primary().map(|monitor| monitor.work),
+        MonitorChoice::Device(name) => crate::platform::monitor::all()
+            .into_iter()
+            .find(|monitor| monitor.device_name.eq_ignore_ascii_case(name))
+            .map(|monitor| monitor.work),
+        MonitorChoice::Foreground => {
+            let target =
+                crate::platform::foreground::last_external_hwnd().unwrap_or_else(|| unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                });
+            crate::platform::monitor::info_for(crate::platform::monitor::from_window(target))
+                .map(|monitor| monitor.work)
+        }
+    };
+    work_area_aspect(work)
+}
 
 fn overlay_preview_card_rect(canvas: UiRect, position: OverlayPosition, scale: f32) -> UiRect {
     let scale = scale.clamp(0.7, 1.6);
-    let width = (canvas.w * 0.36 * scale).clamp(150.0, canvas.w - 28.0);
-    let height = (canvas.h * 0.34 * scale).clamp(54.0, canvas.h - 20.0);
-    let margin = 12.0;
+    let margin_x = (canvas.w * 0.04).clamp(8.0, 48.0);
+    let margin_y = (canvas.h * 0.04).clamp(8.0, 32.0);
+    let max_width = (canvas.w - margin_x * 2.0).max(1.0);
+    let max_height = (canvas.h - margin_y * 2.0).max(1.0);
+    let width = (canvas.w * 0.36 * scale).min(max_width).max(1.0);
+    let height = (canvas.h * 0.34 * scale).min(max_height).max(1.0);
     let x = match position {
         OverlayPosition::TopLeft | OverlayPosition::CenterLeft | OverlayPosition::BottomLeft => {
-            canvas.x + margin
+            canvas.x + margin_x
         }
         OverlayPosition::TopCenter | OverlayPosition::Center | OverlayPosition::BottomCenter => {
             canvas.x + (canvas.w - width) * 0.5
         }
         OverlayPosition::TopRight | OverlayPosition::CenterRight | OverlayPosition::BottomRight => {
-            canvas.right() - margin - width
+            canvas.right() - margin_x - width
         }
     };
     let y = match position {
         OverlayPosition::TopLeft | OverlayPosition::TopCenter | OverlayPosition::TopRight => {
-            canvas.y + margin
+            canvas.y + margin_y
         }
         OverlayPosition::CenterLeft | OverlayPosition::Center | OverlayPosition::CenterRight => {
             canvas.y + (canvas.h - height) * 0.5
         }
         OverlayPosition::BottomLeft
         | OverlayPosition::BottomCenter
-        | OverlayPosition::BottomRight => canvas.bottom() - margin - height,
+        | OverlayPosition::BottomRight => canvas.bottom() - margin_y - height,
     };
     UiRect::new(x, y, width, height)
 }
@@ -6857,11 +7035,49 @@ mod interaction_tests {
         assert_eq!(ui.motion.value(id, MotionChannel::ToggleState, 0.0), 0.0);
     }
     #[test]
-    fn wheel_scroll_policy_is_independent_of_control_region() {
-        assert_eq!(scroll_after_wheel(128.0, 120.0, 512.0), 64.0);
-        assert_eq!(scroll_after_wheel(128.0, 120.0, 512.0), 64.0);
+    fn wheel_scroll_policy_accumulates_native_sized_deltas() {
+        assert_eq!(scroll_after_wheel(128.0, 120.0, 512.0), 48.0);
+        assert_eq!(scroll_after_wheel(48.0, 120.0, 512.0), 0.0);
+        assert_eq!(scroll_after_wheel(128.0, 240.0, 512.0), 0.0);
         assert_eq!(scroll_after_wheel(0.0, 120.0, 512.0), 0.0);
         assert_eq!(scroll_after_wheel(512.0, -120.0, 512.0), 512.0);
+    }
+
+    #[test]
+    fn wheel_and_page_scroll_use_short_retarget_durations() {
+        let wheel = wheel_scroll_duration_ms();
+        let page = page_scroll_duration_ms();
+        assert!((60..=100).contains(&wheel));
+        assert!(page > wheel);
+        assert!(page <= 140);
+    }
+
+    #[test]
+    fn custom_titlebar_actions_are_focusable_automation_buttons() {
+        let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
+        for id in [
+            ElementId::WindowMinimize,
+            ElementId::WindowMaximize,
+            ElementId::WindowClose,
+        ] {
+            let element = layout.element(id).expect("titlebar action");
+            assert_eq!(element.kind, ElementKind::ButtonSecondary);
+            assert!(node_has_invoke(element.kind));
+            assert!(layout.focus_order().contains(&id));
+        }
+    }
+    #[test]
+    fn preview_work_area_aspect_uses_real_bounds_and_16_9_fallback() {
+        assert_eq!(work_area_aspect(None), (16, 9));
+        assert_eq!(
+            work_area_aspect(Some(RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1200,
+            })),
+            (1920, 1200)
+        );
     }
 
     #[test]
@@ -6873,7 +7089,7 @@ mod interaction_tests {
         ));
         assert!(matches!(
             settings_wheel_action(None, 128.0, 120.0, 512.0),
-            SettingsWheelAction::Scroll(scroll) if (scroll - 64.0).abs() < f32::EPSILON
+            SettingsWheelAction::Scroll(scroll) if (scroll - 48.0).abs() < f32::EPSILON
         ));
     }
 

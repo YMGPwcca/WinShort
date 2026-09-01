@@ -180,6 +180,19 @@ mod tests {
         assert_eq!(tween.to, 320.0);
         assert_eq!(tween.value, 64.0);
     }
+    #[test]
+    fn scroll_retarget_restarts_only_a_short_tween_from_latest_visual_value() {
+        let mut motion = Motion::default();
+        motion.animate_from(ElementId::Search, MotionChannel::Scroll, 0.0, 80.0, 80);
+        motion.animate_from(ElementId::Search, MotionChannel::Scroll, 18.0, 160.0, 80);
+        let tween = motion
+            .tweens
+            .get(&key(ElementId::Search, MotionChannel::Scroll))
+            .expect("scroll retarget");
+        assert_eq!(tween.from, 18.0);
+        assert_eq!(tween.to, 160.0);
+        assert_eq!(tween.duration, Duration::from_millis(80));
+    }
 
     #[test]
     fn toggle_activation_animates_state_channel_from_false_to_true() {

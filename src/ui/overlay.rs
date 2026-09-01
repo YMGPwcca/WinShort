@@ -1,19 +1,21 @@
-//! Per-pixel-alpha status HUD. One persistent HWND updates in place for every
-//! event; it is topmost, no-activate, tool-window, click-through, and hidden
-//! when idle (spec §30–§33).
+//! DWM-backed status HUD. One persistent HWND updates in place for every event;
+//! it is topmost, no-activate, tool-window, click-through, and hidden when idle
+//! (spec §30–§33).
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory1, ID2D1RenderTarget, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
+    D2D1CreateFactory, ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1RenderTarget,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_FACTORY_OPTIONS,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_HWND_RENDER_TARGET_PROPERTIES,
+    D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
@@ -21,23 +23,19 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
-use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, AC_SRC_ALPHA,
-    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
-    HGDIOBJ,
+use windows::Win32::Graphics::Dwm::{
+    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW,
+    DWMWA_SYSTEMBACKDROP_TYPE,
 };
-use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmap, IWICImagingFactory,
-    WICBitmapCreateCacheOption,
-};
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, KillTimer, SetTimer, SetWindowPos, ShowWindow,
-    UpdateLayeredWindow, CREATESTRUCTW, HTTRANSPARENT, HWND_TOPMOST, MA_NOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_DPICHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY,
-    WM_NCHITTEST, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED, WM_TIMER, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetClientRect, KillTimer, SetTimer, SetWindowPos, ShowWindow,
+    CREATESTRUCTW, HTTRANSPARENT, HWND_TOPMOST, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DPICHANGED,
+    WM_DWMCOMPOSITIONCHANGED, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY,
+    WM_NCHITTEST, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_THEMECHANGED,
+    WM_TIMER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::config::model::{MonitorChoice, OverlayAppearance, OverlayCfg, OverlayPosition};
@@ -145,6 +143,64 @@ fn motion_policy(preferences: SystemVisualPreferences) -> MotionPolicy {
     } else {
         MotionPolicy::Reduced
     }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackdropMode {
+    Acrylic,
+    Opaque,
+}
+
+fn backdrop_mode(preferences: SystemVisualPreferences, api_available: bool) -> BackdropMode {
+    if preferences.high_contrast || preferences.disable_overlapped_content || !api_available {
+        BackdropMode::Opaque
+    } else {
+        BackdropMode::Acrylic
+    }
+}
+
+fn configure_backdrop(hwnd: HWND, preferences: SystemVisualPreferences) -> bool {
+    if backdrop_mode(preferences, true) == BackdropMode::Opaque {
+        return disable_backdrop(hwnd);
+    }
+    let backdrop = DWMSBT_TRANSIENTWINDOW;
+    let applied = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            std::ptr::from_ref(&backdrop).cast(),
+            std::mem::size_of_val(&backdrop) as u32,
+        )
+    }
+    .is_ok();
+    if !applied {
+        return disable_backdrop(hwnd);
+    }
+    let margins = MARGINS {
+        cxLeftWidth: -1,
+        cxRightWidth: -1,
+        cyTopHeight: -1,
+        cyBottomHeight: -1,
+    };
+    if unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }.is_ok() {
+        true
+    } else {
+        disable_backdrop(hwnd)
+    }
+}
+
+fn disable_backdrop(hwnd: HWND) -> bool {
+    let backdrop = DWMSBT_NONE;
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            std::ptr::from_ref(&backdrop).cast(),
+            std::mem::size_of_val(&backdrop) as u32,
+        )
+    };
+    let margins = MARGINS::default();
+    let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
+    false
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShowTiming {
@@ -537,11 +593,7 @@ impl OverlayWindow {
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(
-                    WS_EX_LAYERED.0
-                        | WS_EX_TOPMOST.0
-                        | WS_EX_TOOLWINDOW.0
-                        | WS_EX_NOACTIVATE.0
-                        | WS_EX_TRANSPARENT.0,
+                    WS_EX_TOPMOST.0 | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TRANSPARENT.0,
                 ),
                 PCWSTR(HSTRING::from(CLASS_NAME).as_ptr()),
                 PCWSTR(HSTRING::from("WinShort status").as_ptr()),
@@ -568,6 +620,9 @@ impl OverlayWindow {
     }
 
     pub fn hide(&self) {
+        if let Some(cell) = unsafe { win::state_cell::<OverlayState>(self.hwnd) } {
+            cell.borrow_mut().phase = Phase::Hidden;
+        }
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_ID);
             let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -615,11 +670,12 @@ enum Phase {
 
 struct OverlayState {
     graphics: OverlayGraphics,
-    surface: Option<LayeredSurface>,
+    surface: Option<OverlaySurface>,
     model: OverlayModel,
     config: OverlayCfg,
     preferences: SystemVisualPreferences,
     palette: OverlayPalette,
+    backdrop_enabled: bool,
     motion: MotionPolicy,
     base_position: POINT,
     phase: Phase,
@@ -640,6 +696,7 @@ impl OverlayState {
         Self {
             graphics,
             surface: None,
+            backdrop_enabled: false,
             model: OverlayModel::default(),
             palette: palette_for(config.appearance, preferences),
             config,
@@ -664,6 +721,7 @@ impl OverlayState {
         self.preferences = SystemVisualPreferences::query();
         self.motion = motion_policy(self.preferences);
         self.config = config;
+        self.backdrop_enabled = configure_backdrop(hwnd, self.preferences);
         let now = Instant::now();
         let coalesce = self.phase != Phase::Hidden
             && now.duration_since(self.last_presented) <= Duration::from_millis(COALESCE_WINDOW_MS);
@@ -674,7 +732,7 @@ impl OverlayState {
         };
         self.last_presented = now;
         let monitor = select_monitor(self.config.monitor.clone());
-        self.rebuild_surface(monitor.as_ref())?;
+        self.rebuild_surface(hwnd, monitor.as_ref())?;
         let appearance_elapsed_ms = now
             .duration_since(self.phase_started)
             .as_millis()
@@ -691,15 +749,16 @@ impl OverlayState {
             self.phase_started = now;
         }
         self.hold_until = now + Duration::from_millis(timing.hold_after_now_ms);
+        let size = self.surface.as_ref().expect("surface").size;
         unsafe {
             let _ = SetWindowPos(
                 hwnd,
                 Some(HWND_TOPMOST),
                 self.base_position.x,
                 self.base_position.y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                size.cx,
+                size.cy,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
@@ -709,18 +768,27 @@ impl OverlayState {
 
     fn rebuild_surface(
         &mut self,
+        hwnd: HWND,
         monitor: Option<&crate::platform::monitor::MonitorGeometry>,
     ) -> Result<()> {
         self.dpi = crate::platform::dpi::effective_render_dpi(monitor.map(|value| value.dpi));
         self.last_target_monitor = monitor.map(|value| value.device_name.clone());
         self.last_render_dpi = Some(self.dpi);
         self.last_shown = Some(SystemTime::now());
-        self.palette = palette_for(self.config.appearance, self.preferences);
-        self.surface =
-            Some(
-                self.graphics
-                    .render(&self.model, self.dpi, self.config.scale, self.palette)?,
-            );
+        let mut palette = palette_for(self.config.appearance, self.preferences);
+        if !self.backdrop_enabled && !palette.opaque {
+            palette.surface = Color::rgb(palette.surface.r, palette.surface.g, palette.surface.b);
+            palette.shadow_enabled = false;
+            palette.opaque = true;
+        }
+        self.palette = palette;
+        self.surface = Some(self.graphics.create_surface(
+            hwnd,
+            self.dpi,
+            self.config.scale,
+            self.model.rows.len(),
+            self.palette.shadow_enabled,
+        )?);
         let size = self.surface.as_ref().expect("surface").size;
         self.base_position = position_for(
             monitor.map(|value| value.work).unwrap_or(RECT_FALLBACK),
@@ -728,6 +796,12 @@ impl OverlayState {
             self.config.position,
             self.dpi,
         );
+        Ok(())
+    }
+    fn resize_surface(&mut self, hwnd: HWND) -> Result<()> {
+        if let Some(surface) = &mut self.surface {
+            surface.resize_to_client(hwnd)?;
+        }
         Ok(())
     }
 
@@ -748,18 +822,33 @@ impl OverlayState {
     fn refresh_preferences(&mut self, hwnd: HWND) -> Result<()> {
         let preferences = SystemVisualPreferences::query();
         if preferences == self.preferences {
-            return Ok(());
+            return self.refresh_backdrop(hwnd);
         }
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
+        self.backdrop_enabled = configure_backdrop(hwnd, self.preferences);
         if self.phase != Phase::Hidden {
             let monitor = select_monitor(self.config.monitor.clone());
-            self.rebuild_surface(monitor.as_ref())?;
+            self.rebuild_surface(hwnd, monitor.as_ref())?;
             if self.motion == MotionPolicy::Reduced {
                 self.phase = Phase::Holding;
                 self.phase_started = Instant::now();
             }
             self.arm_timer(hwnd);
+            self.render_frame(hwnd)?;
+        }
+        Ok(())
+    }
+
+    fn refresh_backdrop(&mut self, hwnd: HWND) -> Result<()> {
+        let enabled = configure_backdrop(hwnd, self.preferences);
+        if enabled == self.backdrop_enabled {
+            return Ok(());
+        }
+        self.backdrop_enabled = enabled;
+        if self.phase != Phase::Hidden {
+            let monitor = select_monitor(self.config.monitor.clone());
+            self.rebuild_surface(hwnd, monitor.as_ref())?;
             self.render_frame(hwnd)?;
         }
         Ok(())
@@ -807,41 +896,70 @@ impl OverlayState {
         }
     }
 
+    fn frame_values(&self) -> (f32, f32) {
+        let elapsed = Instant::now()
+            .duration_since(self.phase_started)
+            .as_secs_f32();
+        if self.motion == MotionPolicy::Reduced {
+            return (1.0, 0.0);
+        }
+        match self.phase {
+            Phase::Appearing => {
+                let t = (elapsed / (APPEAR_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+                let eased = 1.0 - (1.0 - t).powi(3);
+                (eased, 12.0 * (1.0 - eased))
+            }
+            Phase::Holding => (1.0, 0.0),
+            Phase::Leaving => {
+                let t = (elapsed / (LEAVE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+                (1.0 - t * t, 8.0 * t)
+            }
+            Phase::Hidden => (0.0, 0.0),
+        }
+    }
+
+    fn render_surface(&self, alpha: f32) -> Result<()> {
+        let Some(surface) = &self.surface else {
+            return Ok(());
+        };
+        let content_alpha = alpha
+            * if self.palette.opaque {
+                1.0
+            } else {
+                self.config.opacity.clamp(0.3, 1.0)
+            };
+        surface.render(
+            &self.graphics.dwrite,
+            &self.model,
+            self.config.scale,
+            self.palette,
+            content_alpha,
+        )
+    }
+
+    fn repaint(&self) -> Result<()> {
+        let (alpha, _) = self.frame_values();
+        self.render_surface(alpha)
+    }
+
     fn render_frame(&self, hwnd: HWND) -> Result<()> {
         let Some(surface) = &self.surface else {
             return Ok(());
         };
-        let elapsed = Instant::now()
-            .duration_since(self.phase_started)
-            .as_secs_f32();
-        let (alpha, slide_dip) = if self.motion == MotionPolicy::Reduced {
-            (1.0, 0.0)
-        } else {
-            match self.phase {
-                Phase::Appearing => {
-                    let t = (elapsed / (APPEAR_MS as f32 / 1000.0)).clamp(0.0, 1.0);
-                    let eased = 1.0 - (1.0 - t).powi(3);
-                    (eased, 12.0 * (1.0 - eased))
-                }
-                Phase::Holding => (1.0, 0.0),
-                Phase::Leaving => {
-                    let t = (elapsed / (LEAVE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
-                    (1.0 - t * t, 8.0 * t)
-                }
-                Phase::Hidden => (0.0, 0.0),
-            }
-        };
-        let opacity = if self.palette.opaque {
-            255
-        } else {
-            (alpha * self.config.opacity.clamp(0.3, 1.0) * 255.0).round() as u8
-        };
+        let (alpha, slide_dip) = self.frame_values();
         let slide_px = (slide_dip * self.dpi as f32 / 96.0).round() as i32;
-        let destination = POINT {
-            x: self.base_position.x,
-            y: self.base_position.y + slide_px,
-        };
-        surface.present(hwnd, destination, opacity)
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                self.base_position.x,
+                self.base_position.y + slide_px,
+                surface.size.cx,
+                surface.size.cy,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+        self.render_surface(alpha)
     }
 }
 
@@ -852,53 +970,63 @@ const RECT_FALLBACK: windows::Win32::Foundation::RECT = windows::Win32::Foundati
     bottom: 1080,
 };
 
-struct LayeredSurface {
-    hdc: HDC,
-    bitmap: HBITMAP,
-    previous: HGDIOBJ,
+struct OverlaySurface {
+    target: ID2D1HwndRenderTarget,
     size: SIZE,
 }
 
-impl LayeredSurface {
-    fn present(&self, hwnd: HWND, destination: POINT, alpha: u8) -> Result<()> {
-        let source = POINT::default();
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: alpha,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
+impl OverlaySurface {
+    fn render(
+        &self,
+        dwrite: &IDWriteFactory,
+        model: &OverlayModel,
+        scale: f32,
+        palette: OverlayPalette,
+        alpha: f32,
+    ) -> Result<()> {
         unsafe {
-            UpdateLayeredWindow(
-                hwnd,
-                None,
-                Some(&destination),
-                Some(&self.size),
-                Some(self.hdc),
-                Some(&source),
-                COLORREF(0),
-                Some(&blend),
-                ULW_ALPHA,
-            )
-            .map_err(|e| Error::win("UpdateLayeredWindow", &e))
+            self.target.BeginDraw();
+            let clear = if palette.opaque {
+                palette.surface.d2d()
+            } else {
+                Color::rgba(0, 0, 0, 0).d2d()
+            };
+            self.target.Clear(Some(&clear));
+            draw_overlay(&self.target, dwrite, model, scale, palette, alpha)?;
+            self.target
+                .EndDraw(None, None)
+                .map_err(|e| Error::win("overlay EndDraw", &e))
         }
     }
-}
-
-impl Drop for LayeredSurface {
-    fn drop(&mut self) {
+    fn resize_to_client(&mut self, hwnd: HWND) -> Result<()> {
+        let mut client = windows::Win32::Foundation::RECT::default();
         unsafe {
-            let _ = SelectObject(self.hdc, self.previous);
-            let _ = DeleteObject(HGDIOBJ(self.bitmap.0));
-            let _ = DeleteDC(self.hdc);
+            let _ = GetClientRect(hwnd, &mut client);
         }
+        let width = (client.right - client.left).max(0) as u32;
+        let height = (client.bottom - client.top).max(0) as u32;
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+        if self.size.cx as u32 == width && self.size.cy as u32 == height {
+            return Ok(());
+        }
+        unsafe {
+            self.target
+                .Resize(&D2D_SIZE_U { width, height })
+                .map_err(|e| Error::win("ID2D1HwndRenderTarget::Resize(overlay)", &e))?;
+        }
+        self.size = SIZE {
+            cx: width as i32,
+            cy: height as i32,
+        };
+        Ok(())
     }
 }
 
 struct OverlayGraphics {
     factory: ID2D1Factory1,
     dwrite: IDWriteFactory,
-    wic: IWICImagingFactory,
 }
 
 impl OverlayGraphics {
@@ -911,97 +1039,47 @@ impl OverlayGraphics {
             .map_err(|e| Error::win("D2D1CreateFactory(overlay)", &e))?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
                 .map_err(|e| Error::win("DWriteCreateFactory(overlay)", &e))?;
-            let wic: IWICImagingFactory =
-                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|e| Error::win("CoCreateInstance(WIC overlay)", &e))?;
-            Ok(Self {
-                factory,
-                dwrite,
-                wic,
-            })
+            Ok(Self { factory, dwrite })
         }
     }
 
-    fn render(
+    fn create_surface(
         &self,
-        model: &OverlayModel,
+        hwnd: HWND,
         dpi: u32,
         scale: f32,
-        palette: OverlayPalette,
-    ) -> Result<LayeredSurface> {
+        row_count: usize,
+        shadow_enabled: bool,
+    ) -> Result<OverlaySurface> {
         let scale = scale.clamp(0.7, 1.6);
-        let geometry = surface_geometry(scale, model.rows.len(), palette.shadow_enabled);
+        let geometry = surface_geometry(scale, row_count, shadow_enabled);
         let size = geometry.pixel_size(dpi);
-        let width = size.cx as u32;
-        let height = size.cy as u32;
-
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: dpi as f32,
+            dpiY: dpi as f32,
+            ..Default::default()
+        };
+        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U {
+                width: size.cx.max(1) as u32,
+                height: size.cy.max(1) as u32,
+            },
+            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        };
         unsafe {
-            let bitmap: IWICBitmap = self
-                .wic
-                .CreateBitmap(
-                    width,
-                    height,
-                    &GUID_WICPixelFormat32bppPBGRA,
-                    WICBitmapCreateCacheOption(1),
-                )
-                .map_err(|e| Error::win("WIC CreateBitmap(overlay)", &e))?;
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: dpi as f32,
-                dpiY: dpi as f32,
-                ..Default::default()
-            };
-            let target: ID2D1RenderTarget = self
+            let target = self
                 .factory
-                .CreateWicBitmapRenderTarget(&bitmap, &props)
-                .map_err(|e| Error::win("CreateWicBitmapRenderTarget(overlay)", &e))?;
-            target.BeginDraw();
-            target.Clear(None);
-            draw_overlay(&target, &self.dwrite, model, scale, palette)?;
-            target
-                .EndDraw(None, None)
-                .map_err(|e| Error::win("overlay EndDraw", &e))?;
-
-            let stride = width * 4;
-            let mut pixels = vec![0u8; (stride * height) as usize];
-            bitmap
-                .CopyPixels(std::ptr::null(), stride, &mut pixels)
-                .map_err(|e| Error::win("overlay CopyPixels", &e))?;
-
-            let bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width as i32,
-                    biHeight: -(height as i32),
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            let mut bits = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-                .map_err(|e| Error::win("CreateDIBSection(overlay)", &e))?;
-            std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast(), pixels.len());
-            let hdc = CreateCompatibleDC(None);
-            if hdc.is_invalid() {
-                let _ = DeleteObject(HGDIOBJ(bitmap.0));
-                return Err(Error::os("CreateCompatibleDC(overlay)", 0));
-            }
-            let previous = SelectObject(hdc, HGDIOBJ(bitmap.0));
-            Ok(LayeredSurface {
-                hdc,
-                bitmap,
-                previous,
-                size: SIZE {
-                    cx: width as i32,
-                    cy: height as i32,
-                },
-            })
+                .CreateHwndRenderTarget(&props, &hwnd_props)
+                .map_err(|e| Error::win("CreateHwndRenderTarget(overlay)", &e))?;
+            target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            target.SetDpi(dpi as f32, dpi as f32);
+            Ok(OverlaySurface { target, size })
         }
     }
 }
@@ -1012,6 +1090,7 @@ fn draw_overlay(
     model: &OverlayModel,
     scale: f32,
     palette: OverlayPalette,
+    content_alpha: f32,
 ) -> Result<()> {
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
@@ -1024,14 +1103,16 @@ fn draw_overlay(
         };
         let left = geometry.body_left;
         let top = geometry.body_top;
-
         if palette.shadow_enabled {
-            for (spread, alpha) in [(8.0, 18u8), (5.0, 26u8), (2.0, 34u8)] {
-                let shadow = color(Color::rgba(
-                    palette.shadow.r,
-                    palette.shadow.g,
-                    palette.shadow.b,
-                    alpha,
+            for (spread, shadow_alpha) in [(8.0, 18u8), (5.0, 26u8), (2.0, 34u8)] {
+                let shadow = color(with_alpha(
+                    Color::rgba(
+                        palette.shadow.r,
+                        palette.shadow.g,
+                        palette.shadow.b,
+                        shadow_alpha,
+                    ),
+                    content_alpha,
                 ));
                 let brush = target.CreateSolidColorBrush(&shadow, None)?;
                 let rect = D2D_RECT_F {
@@ -1051,7 +1132,7 @@ fn draw_overlay(
             }
         }
 
-        let surface = color(palette.surface);
+        let surface = color(with_alpha(palette.surface, content_alpha));
         let surface_brush = target.CreateSolidColorBrush(&surface, None)?;
         target.FillRoundedRectangle(
             &D2D1_ROUNDED_RECT {
@@ -1062,7 +1143,7 @@ fn draw_overlay(
             &surface_brush,
         );
 
-        let border = color(palette.border);
+        let border = color(with_alpha(palette.border, content_alpha));
         let border_brush = target.CreateSolidColorBrush(&border, None)?;
         target.DrawRoundedRectangle(
             &D2D1_ROUNDED_RECT {
@@ -1077,11 +1158,11 @@ fn draw_overlay(
 
         let title_format = make_format(dwrite, 14.0 * scale, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let detail_format = make_format(dwrite, 12.0 * scale, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let text = color(palette.text);
-        let secondary = color(palette.secondary);
+        let text = color(with_alpha(palette.text, content_alpha));
+        let secondary = color(with_alpha(palette.secondary, content_alpha));
         let text_brush = target.CreateSolidColorBrush(&text, None)?;
         let secondary_brush = target.CreateSolidColorBrush(&secondary, None)?;
-        let unavailable_text = color(palette.unavailable_text);
+        let unavailable_text = color(with_alpha(palette.unavailable_text, content_alpha));
         let unavailable_brush = target.CreateSolidColorBrush(&unavailable_text, None)?;
 
         for (index, row) in model.rows.iter().enumerate() {
@@ -1107,14 +1188,14 @@ fn draw_overlay(
                 OverlayTone::Changed => palette.tone_changed,
                 OverlayTone::Unavailable => palette.tone_unavailable,
             };
-            let tone = color(tone_color);
+            let tone = color(with_alpha(tone_color, content_alpha));
             let tone_brush = target.CreateSolidColorBrush(&tone, None)?;
             let icon_color = if row.tone == OverlayTone::Changed {
                 palette.changed_icon
             } else {
                 palette.icon
             };
-            let icon_brush_color = color(icon_color);
+            let icon_brush_color = color(with_alpha(icon_color, content_alpha));
             let icon_brush = target.CreateSolidColorBrush(&icon_brush_color, None)?;
             let icon_center_x = left + 34.0 * scale;
             let icon_center_y = y + ROW_HEIGHT * scale * 0.5;
@@ -1236,7 +1317,7 @@ unsafe fn draw_icon(
                     &D2D1_ROUNDED_RECT {
                         rect: D2D_RECT_F {
                             left: cx - 4.0 * scale,
-                            top: cy - 9.0 * scale,
+                            top: cy - 10.0 * scale,
                             right: cx + 4.0 * scale,
                             bottom: cy + 4.0 * scale,
                         },
@@ -1247,45 +1328,30 @@ unsafe fn draw_icon(
                     w,
                     None,
                 );
-                target.DrawLine(
-                    windows_numerics::Vector2 {
-                        X: cx - 8.0 * scale,
-                        Y: cy,
-                    },
-                    windows_numerics::Vector2 {
-                        X: cx - 8.0 * scale,
-                        Y: cy + 1.0 * scale,
-                    },
-                    brush,
-                    w,
-                    None,
-                );
-                target.DrawLine(
-                    windows_numerics::Vector2 {
-                        X: cx - 8.0 * scale,
-                        Y: cy + 1.0 * scale,
-                    },
-                    windows_numerics::Vector2 {
-                        X: cx,
-                        Y: cy + 9.0 * scale,
-                    },
-                    brush,
-                    w,
-                    None,
-                );
-                target.DrawLine(
-                    windows_numerics::Vector2 {
-                        X: cx,
-                        Y: cy + 9.0 * scale,
-                    },
-                    windows_numerics::Vector2 {
-                        X: cx + 8.0 * scale,
-                        Y: cy + 1.0 * scale,
-                    },
-                    brush,
-                    w,
-                    None,
-                );
+                for (x1, y1, x2, y2) in [
+                    (-8.0, 1.0, -8.0, 3.0),
+                    (-8.0, 3.0, -6.0, 6.0),
+                    (-6.0, 6.0, 0.0, 8.0),
+                    (0.0, 8.0, 6.0, 6.0),
+                    (6.0, 6.0, 8.0, 3.0),
+                    (8.0, 3.0, 8.0, 1.0),
+                    (0.0, 8.0, 0.0, 11.0),
+                    (-4.0, 11.0, 4.0, 11.0),
+                ] {
+                    target.DrawLine(
+                        windows_numerics::Vector2 {
+                            X: cx + x1 * scale,
+                            Y: cy + y1 * scale,
+                        },
+                        windows_numerics::Vector2 {
+                            X: cx + x2 * scale,
+                            Y: cy + y2 * scale,
+                        },
+                        brush,
+                        w,
+                        None,
+                    );
+                }
             }
             OverlayIcon::Output => {
                 let points = [
@@ -1469,6 +1535,15 @@ unsafe fn draw_icon(
     }
 }
 
+fn with_alpha(value: Color, multiplier: f32) -> Color {
+    Color::rgba(
+        value.r,
+        value.g,
+        value.b,
+        (value.a as f32 * multiplier.clamp(0.0, 1.0)).round() as u8,
+    )
+}
+
 fn color(color: Color) -> D2D1_COLOR_F {
     color.d2d()
 }
@@ -1553,7 +1628,7 @@ unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         };
         match msg {
-            WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+            WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED | WM_DWMCOMPOSITIONCHANGED => {
                 if let Err(error) = cell.borrow_mut().refresh_preferences(hwnd) {
                     crate::warn_!("overlay visual preference refresh failed: {error}");
                 }
@@ -1563,14 +1638,39 @@ unsafe extern "system" fn overlay_wndproc(
                 cell.borrow_mut().tick(hwnd);
                 LRESULT(0)
             }
+            WM_PAINT => {
+                let mut paint = PAINTSTRUCT::default();
+                let _ = BeginPaint(hwnd, &mut paint);
+                let state = cell.borrow();
+                if state.phase != Phase::Hidden {
+                    if let Err(error) = state.repaint() {
+                        crate::warn_!("overlay paint failed: {error}");
+                    }
+                }
+                let _ = EndPaint(hwnd, &paint);
+                LRESULT(0)
+            }
+            WM_SIZE => {
+                if let Err(error) = cell.borrow_mut().resize_surface(hwnd) {
+                    crate::warn_!("overlay resize failed: {error}");
+                }
+                LRESULT(0)
+            }
             WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_ERASEBKGND => LRESULT(1),
-            // PMv2 (#49): deliberately ignored. UpdateLayeredWindow owns the
-            // window size/position and every show() re-renders at the target
-            // monitor's DPI before repositioning; applying the suggested rect
-            // here would fight that ownership.
-            WM_DPICHANGED => LRESULT(0),
+            WM_DPICHANGED => {
+                let new_dpi = ((wparam.0 >> 16) as u32).max(96);
+                let mut state = cell.borrow_mut();
+                state.dpi = new_dpi;
+                if let Some(surface) = &state.surface {
+                    surface.target.SetDpi(new_dpi as f32, new_dpi as f32);
+                }
+                if let Err(error) = state.resize_surface(hwnd) {
+                    crate::warn_!("overlay DPI resize failed: {error}");
+                }
+                LRESULT(0)
+            }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
@@ -1625,6 +1725,32 @@ mod tests {
         assert_eq!(palette.changed_icon, Color::rgb(1, 2, 3));
         assert!(!palette.shadow_enabled);
         assert!(palette.opaque);
+    }
+    #[test]
+    fn backdrop_policy_falls_back_for_accessibility_or_missing_api() {
+        let normal = SystemVisualPreferences::default();
+        assert_eq!(backdrop_mode(normal, true), BackdropMode::Acrylic);
+        assert_eq!(backdrop_mode(normal, false), BackdropMode::Opaque);
+        assert_eq!(
+            backdrop_mode(
+                SystemVisualPreferences {
+                    high_contrast: true,
+                    ..normal
+                },
+                true
+            ),
+            BackdropMode::Opaque
+        );
+        assert_eq!(
+            backdrop_mode(
+                SystemVisualPreferences {
+                    disable_overlapped_content: true,
+                    ..normal
+                },
+                true
+            ),
+            BackdropMode::Opaque
+        );
     }
 
     #[test]

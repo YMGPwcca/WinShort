@@ -40,6 +40,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Tightened the Overlay preview, aligned the app/navigation icon language with
   the packaged speaker mark, and corrected native picker font metrics so
   endpoint descenders remain visible.
+- Reworked the corrective Control Center pass: wheel scrolling now uses short
+  accumulated retargets, section dividers sit in shared breathing room, and
+  Workspaces no longer renders a desktop-switcher strip or standalone Special
+  Workspace status card.
+- Unified standard right-side control widths, canonicalized compact audio
+  endpoint names, and replaced the microphone/shortcut glyphs with recognizable
+  vector symbols.
+- Made the Overlay preview fit the selected monitor work-area aspect ratio and
+  refactored the runtime overlay to a non-layered Direct2D HWND using documented
+  DWM Desktop Acrylic with opaque accessibility fallbacks.
+- Added a native custom Control Center titlebar with supported resize hit
+  testing and UI Automation Invoke nodes for Minimize, Maximize/Restore, and
+  Close.
 - Associated every published config revision with its commit origin in one
   coherent live stamp, so audio preflight drift preserves DeviceCycle
   provenance and delayed ConfigChanged notifications remain stale-safe.
