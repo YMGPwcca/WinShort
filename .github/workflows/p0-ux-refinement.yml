@@ -11,7 +11,7 @@ defaults:
     shell: bash
 
 jobs:
-  materialize-validated-patch:
+  validate-pass-2:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -20,29 +20,20 @@ jobs:
           ref: wip/p0-ux-refinement
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - name: Correct pass 1 driver anchor
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('.github/scripts/p0_ux_pass1.py')
-          s = p.read_text(encoding='utf-8')
-          old = 'marker = "        if list.0.is_null() {\\n"'
-          new = 'marker = \'        .map_err(|error| Error::win("CreateWindowExW(settings picker list)", &error))?;\''
-          assert s.count(old) == 1, s.count(old)
-          p.write_text(s.replace(old, new), encoding='utf-8', newline='\n')
-          PY
-      - name: Materialize and validate UX pass 1
-        run: |
-          python .github/scripts/p0_ux_pass1.py
-          python .github/scripts/p0_ux_pass1_finalize.py
-          cargo fmt --all
-          cargo fmt --all -- --check
-          cargo test --all-features ui:: -- --nocapture
-          cargo clippy --all-targets --all-features -- -D warnings
-          cargo test --all-features
-          cargo build --release --all-features
-      - name: Commit validated UX pass 1
+          components: rustfmt,clippy
+      - name: Materialize per-shortcut controls
+        run: python .github/scripts/p0_ux_pass2.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Full tests
+        run: cargo test --all-features
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Release build
+        run: cargo build --release --all-features
+      - name: Commit validated pass 2
         env:
           BRANCH: wip/p0-ux-refinement
         run: |
@@ -50,5 +41,5 @@ jobs:
           git diff --cached --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "fix(ui): refine Control Center interaction surfaces"
+          git commit -m "feat(shortcuts): add per-binding controls"
           git push origin HEAD:"$BRANCH"
