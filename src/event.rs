@@ -219,11 +219,9 @@ pub enum AppEvent {
     // State published by workers / callbacks.
     MicrophoneStateChanged {
         state: AudioState,
-        origin: AudioEventOrigin,
     },
     OutputStateChanged {
         state: OutputState,
-        origin: AudioEventOrigin,
     },
     /// Transient "default output changed" presentation (#17b): the overlay
     /// shows a one-shot card; persistent state stays OutputState::Current.
