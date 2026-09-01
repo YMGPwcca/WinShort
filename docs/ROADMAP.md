@@ -1,7 +1,7 @@
 # WinShort Roadmap
 
 **Status:** canonical project work queue.  
-**Last audited:** 2026-09-01 against `main` at `ce51aae` (`docs(config): document all overlay positions (#97)`).
+**Last audited:** 2026-09-01 against `main` at `6fd150d` (`chore(deps): keep MSRV toolchain pin manual (#99)`).
 
 This file answers **what should be worked on next**. `docs/TEST_PLAN.md` remains the source of truth for how behavior is verified; architecture/design documents remain authoritative for their own invariants.
 
@@ -69,7 +69,7 @@ Handle dependency PRs individually; major upgrades are not auto-merge material.
 
 | PR | Change | Disposition / required evidence |
 |---|---|---|
-| #52 | `dtolnay/rust-toolchain` 1.85 → 1.100 | **Closed intentionally.** This is the MSRV test pin; bumping it would remove the Rust 1.85 gate. Add Dependabot protection so it does not recur. |
+| #52 | `dtolnay/rust-toolchain` 1.85 → 1.100 | **Closed intentionally.** This is the MSRV test pin; bumping it would remove the Rust 1.85 gate. Dependabot now ignores this pin via #99; any MSRV raise is manual and coordinated. |
 | #55 | `actions/checkout` 4 → 7 | Candidate. Require normal CI plus a release-workflow dry run because it also changes checkout in `release.yml`. |
 | #56 | `actions/upload-artifact` 4 → 7 | Candidate. Validate the release workflow dry-run and inspect produced ZIP artifacts. |
 | #54 | `actions/download-artifact` 4 → 8 | Candidate after/with artifact-upload validation. Dry run must reach checksum generation successfully. |
@@ -77,7 +77,7 @@ Handle dependency PRs individually; major upgrades are not auto-merge material.
 | #51 | `toml` 0.9 → 1.1 | Major library update. Require full CI and focused config load/save/migration/future-schema/unknown-field review. |
 | #94 | `zip` 6 → 8 | Major library update. Require full CI plus a real support-bundle ZIP opened in Explorer and sanitization/manifest inspection. |
 
-Preferred order: protect the MSRV pin → #55 → #56/#54 release artifact pipeline → #51/#94 library upgrades → #53 publish action.
+Preferred order: #55 → #56/#54 release artifact pipeline → #51/#94 library upgrades → #53 publish action.
 
 ## P2 — Release/CI hardening
 
