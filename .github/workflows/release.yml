@@ -32,7 +32,7 @@ jobs:
       matrix:
         target: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref_override || github.ref }}
 
@@ -93,7 +93,7 @@ jobs:
           }
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zip-${{ matrix.target }}
           path: dist/*.zip
@@ -105,7 +105,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
