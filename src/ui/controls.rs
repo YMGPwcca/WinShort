@@ -283,6 +283,15 @@ pub fn draw_button_style(
     }
     r.text_clipped(label, rect.d2d(), TextStyle::Button, text);
 }
+pub(crate) fn titlebar_glyph_bounds(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x + (rect.w - 12.0) * 0.5,
+        rect.y + (rect.h - 12.0) * 0.5,
+        12.0,
+        12.0,
+    )
+}
+
 pub fn draw_titlebar_button(
     r: &Renderer,
     element: &Element,
@@ -300,24 +309,17 @@ pub fn draw_titlebar_button(
         state_t: 0.0,
     });
     let close = element.id == crate::ui::layout::ElementId::WindowClose;
-    let background = match state {
-        InteractionState::Pressed => {
-            if close {
-                BrushRole::Danger
-            } else {
-                BrushRole::CardPressed
-            }
-        }
-        InteractionState::Hovered => {
+    if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
+        r.fill_rounded(
+            element.rect.d2d(),
+            4.0,
             if close {
                 BrushRole::Danger
             } else {
                 BrushRole::ControlHover
-            }
-        }
-        _ => BrushRole::Background,
-    };
-    r.fill_rounded(element.rect.d2d(), 4.0, background);
+            },
+        );
+    }
     if focused {
         r.stroke_rounded(element.rect.inset(-2.0).d2d(), 6.0, BrushRole::Focus, 1.5);
     }
@@ -326,61 +328,46 @@ pub fn draw_titlebar_button(
     } else {
         BrushRole::TextSecondary
     };
-    let rect = element.rect;
+    let glyph = titlebar_glyph_bounds(element.rect);
     match element.id {
         crate::ui::layout::ElementId::WindowMinimize => {
-            let y = rect.y + rect.h * 0.58;
-            r.line(rect.x + 14.0, y, rect.right() - 14.0, y, role, 1.5);
+            let y = glyph.bottom() - 2.0;
+            r.line(glyph.x + 1.0, y, glyph.right() - 1.0, y, role, 1.25);
         }
         crate::ui::layout::ElementId::WindowMaximize => {
             if maximized {
                 r.stroke_rounded(
-                    Rect::new(rect.x + 16.0, rect.y + 10.0, 12.0, 12.0).d2d(),
-                    1.0,
+                    Rect::new(glyph.x + 2.0, glyph.y, glyph.w - 2.0, glyph.h - 2.0).d2d(),
+                    1.5,
                     role,
-                    1.4,
+                    1.25,
                 );
-                r.line(
-                    rect.x + 13.0,
-                    rect.y + 13.0,
-                    rect.x + 13.0,
-                    rect.y + 21.0,
+                r.stroke_rounded(
+                    Rect::new(glyph.x, glyph.y + 3.0, glyph.w - 2.0, glyph.h - 2.0).d2d(),
+                    1.5,
                     role,
-                    1.4,
-                );
-                r.line(
-                    rect.x + 13.0,
-                    rect.y + 13.0,
-                    rect.x + 24.0,
-                    rect.y + 13.0,
-                    role,
-                    1.4,
+                    1.25,
                 );
             } else {
-                r.stroke_rounded(
-                    Rect::new(rect.x + 13.0, rect.y + 9.0, 18.0, 16.0).d2d(),
-                    1.5,
-                    role,
-                    1.5,
-                );
+                r.stroke_rounded(glyph.d2d(), 1.5, role, 1.25);
             }
         }
         crate::ui::layout::ElementId::WindowClose => {
             r.line(
-                rect.x + 14.0,
-                rect.y + 10.0,
-                rect.right() - 14.0,
-                rect.bottom() - 10.0,
+                glyph.x + 1.5,
+                glyph.y + 1.5,
+                glyph.right() - 1.5,
+                glyph.bottom() - 1.5,
                 role,
-                1.5,
+                1.25,
             );
             r.line(
-                rect.right() - 14.0,
-                rect.y + 10.0,
-                rect.x + 14.0,
-                rect.bottom() - 10.0,
+                glyph.right() - 1.5,
+                glyph.y + 1.5,
+                glyph.x + 1.5,
+                glyph.bottom() - 1.5,
                 role,
-                1.5,
+                1.25,
             );
         }
         _ => {}
@@ -519,43 +506,48 @@ pub fn draw_search_box(r: &Renderer, rect: Rect, text: &str, focused: bool, hove
     );
 }
 
+pub(crate) fn section_title_text_rect(rect: Rect) -> Rect {
+    Rect::new(rect.x + 12.0, rect.y + 20.0, (rect.w - 12.0).max(1.0), 28.0)
+}
+
+pub(crate) fn section_accent_rect(rect: Rect) -> Rect {
+    let title = section_title_text_rect(rect);
+    let height = 18.0;
+    Rect::new(rect.x, title.y + (title.h - height) * 0.5, 3.0, height)
+}
+
 pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &str) {
-    // The divider lives in the inter-section breathing room, not against the
-    // title. Layout reserves the matching gap before every non-page heading.
-    let divider_y = rect.y + 8.0;
+    // Keep the divider in the inter-section breathing room. The accent is
+    // centered from the title's actual text rectangle, not the whole block.
     r.line(
         rect.x,
-        divider_y,
+        rect.y + 8.0,
         rect.right(),
-        divider_y,
+        rect.y + 8.0,
         BrushRole::Border,
         1.0,
     );
-    r.fill_rounded(
-        Rect::new(rect.x, rect.y + 22.0, 3.0, 18.0).d2d(),
-        1.5,
-        BrushRole::Accent,
-    );
-    let text_x = rect.x + 12.0;
-    let text_width = (rect.w - 12.0).max(1.0);
-    r.text_clipped(
-        title,
-        Rect::new(text_x, rect.y + 20.0, text_width, 28.0).d2d(),
-        TextStyle::Section,
-        BrushRole::Text,
-    );
+    r.fill_rounded(section_accent_rect(rect).d2d(), 1.5, BrushRole::Accent);
+    let title_rect = section_title_text_rect(rect);
+    r.text_clipped(title, title_rect.d2d(), TextStyle::Section, BrushRole::Text);
     if !description.is_empty() {
         let description_height = r
             .text_height(
                 description,
                 TextStyle::SectionDescription,
-                text_width,
+                title_rect.w,
                 (rect.h - 54.0).max(20.0),
             )
             .clamp(20.0, (rect.h - 54.0).max(20.0));
         r.text_clipped(
             description,
-            Rect::new(text_x, rect.y + 54.0, text_width, description_height).d2d(),
+            Rect::new(
+                title_rect.x,
+                rect.y + 54.0,
+                title_rect.w,
+                description_height,
+            )
+            .d2d(),
             TextStyle::SectionDescription,
             BrushRole::TextSecondary,
         );
@@ -1939,13 +1931,48 @@ fn draw_microphone_icon(r: &Renderer, rect: Rect, role: BrushRole) {
     }
 }
 
-fn draw_shortcut_icon(r: &Renderer, rect: Rect, role: BrushRole) {
-    let outer = Rect::new(rect.x + 1.5, rect.y + 4.0, rect.w - 3.0, rect.h - 8.0);
-    r.stroke_rounded(outer.d2d(), 3.0, role, 1.6);
-    let key_y = rect.y + rect.h * 0.5 - 2.0;
-    for x in [rect.x + 5.0, rect.x + 10.0, rect.x + 15.0] {
-        r.fill_rounded(Rect::new(x, key_y, 2.5, 3.5).d2d(), 1.0, role);
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ShortcutIconGeometry {
+    pub outer: Rect,
+    pub upper_keys: [Rect; 4],
+    pub spacebar: Rect,
+}
+
+pub(crate) fn shortcut_icon_geometry(rect: Rect) -> ShortcutIconGeometry {
+    let outer = Rect::new(rect.x + 1.5, rect.y + 3.5, rect.w - 3.0, rect.h - 7.0);
+    let key_width = (rect.w * 0.11).max(1.5);
+    let key_left = rect.x + rect.w * 0.25;
+    let key_right = rect.right() - rect.w * 0.25;
+    let key_gap = ((key_right - key_left) - key_width * 4.0) / 3.0;
+    let upper_y = rect.y + rect.h * 0.43;
+    let upper_keys = std::array::from_fn(|index| {
+        Rect::new(
+            key_left + index as f32 * (key_width + key_gap),
+            upper_y,
+            key_width,
+            1.5,
+        )
+    });
+    let spacebar = Rect::new(
+        rect.x + rect.w * 0.30,
+        rect.y + rect.h * 0.70,
+        rect.w * 0.40,
+        1.5,
+    );
+    ShortcutIconGeometry {
+        outer,
+        upper_keys,
+        spacebar,
     }
+}
+
+fn draw_shortcut_icon(r: &Renderer, rect: Rect, role: BrushRole) {
+    let geometry = shortcut_icon_geometry(rect);
+    r.stroke_rounded(geometry.outer.d2d(), 3.0, role, 1.5);
+    for key in geometry.upper_keys {
+        r.fill_rounded(key.d2d(), 0.75, role);
+    }
+    r.fill_rounded(geometry.spacebar.d2d(), 0.75, role);
 }
 
 fn draw_audio_icon(r: &Renderer, rect: Rect, role: BrushRole) {
@@ -2039,7 +2066,8 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
 mod tests {
     use super::{
         device_value_rect, interaction_state, scroll_from_scrollbar_pointer, scrollbar_hit_rect,
-        scrollbar_thumb_rect, value_control_rect, value_text_rect, Interaction, InteractionState,
+        scrollbar_thumb_rect, section_accent_rect, section_title_text_rect, shortcut_icon_geometry,
+        titlebar_glyph_bounds, value_control_rect, value_text_rect, Interaction, InteractionState,
         CONTROL_WIDTH, VALUE_TEXT_PADDING,
     };
     use crate::ui::layout::{ElementKind, Rect};
@@ -2122,5 +2150,37 @@ mod tests {
         let hit = scrollbar_hit_rect(viewport);
         assert!(hit.contains(viewport.right() - 8.0, viewport.y + 20.0));
         assert!(!hit.contains(viewport.right() - 20.0, viewport.y + 20.0));
+    }
+    #[test]
+    fn shortcut_icon_geometry_has_keyboard_rows_and_spacebar() {
+        let geometry = shortcut_icon_geometry(Rect::new(0.0, 0.0, 20.0, 20.0));
+        assert!(geometry.outer.w > 14.0);
+        assert!(geometry.outer.h > 8.0);
+        assert!(geometry
+            .upper_keys
+            .iter()
+            .all(|key| key.w > key.h && key.w >= 1.5));
+        assert!(geometry.spacebar.w > geometry.upper_keys[0].w * 2.0);
+        assert!(geometry.spacebar.y > geometry.upper_keys[0].y);
+    }
+    #[test]
+    fn titlebar_glyph_bounds_are_compact_inside_full_hit_target() {
+        let button = Rect::new(900.0, 2.0, 44.0, 28.0);
+        let glyph = titlebar_glyph_bounds(button);
+        assert_eq!(glyph.w, 12.0);
+        assert_eq!(glyph.h, 12.0);
+        assert!(glyph.x > button.x);
+        assert!(glyph.right() < button.right());
+        assert!(glyph.y > button.y);
+        assert!(glyph.bottom() < button.bottom());
+    }
+    #[test]
+    fn section_accent_is_centered_on_title_text_geometry() {
+        let heading = Rect::new(40.0, 120.0, 620.0, 88.0);
+        let title = section_title_text_rect(heading);
+        let accent = section_accent_rect(heading);
+        assert_eq!(accent.x, heading.x);
+        assert_eq!(accent.y + accent.h * 0.5, title.y + title.h * 0.5);
+        assert!(heading.y + 8.0 < title.y);
     }
 }

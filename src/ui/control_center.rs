@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE,
     WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
     WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_CAPTION, WS_OVERLAPPEDWINDOW,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WS_CAPTION, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 
 use crate::config::model::{
@@ -47,8 +47,8 @@ use crate::ui::control_center_automation::{
 };
 use crate::ui::controls::{self, ControlValue, Interaction};
 use crate::ui::layout::{
-    overlay_preview_canvas_size, ElementId, ElementKind, HotkeySlot, LayoutContext, Rect as UiRect,
-    RegionKind, SettingsLayout,
+    overlay_placement_geometry, overlay_preview_canvas_rect, ElementId, ElementKind, HotkeySlot,
+    LayoutContext, Rect as UiRect, RegionKind, SettingsLayout,
 };
 use crate::ui::navigation::{search, Page};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
@@ -68,8 +68,6 @@ pub const DESIGN_HEIGHT: f32 = 660.0;
 const UI_TIMER: usize = 1;
 const UI_TIMER_MS: u32 = 16;
 const WHEEL_SCROLL_DIP: f32 = 80.0;
-const WHEEL_SCROLL_DURATION_MS: u64 = 80;
-const PAGE_SCROLL_DURATION_MS: u64 = 120;
 const APPLIED_STATUS: &str = "Changes applied";
 
 static REGISTERED: OnceLock<u16> = OnceLock::new();
@@ -217,7 +215,6 @@ pub struct SettingsUi {
     reset_confirm: bool,
     delete_profile_confirm: bool,
     scroll: f32,
-    scroll_target: f32,
     scroll_drag_offset: Option<f32>,
     motion: Motion,
     applied_until: Option<Instant>,
@@ -275,7 +272,6 @@ impl SettingsUi {
             reset_confirm: false,
             delete_profile_confirm: false,
             scroll: 0.0,
-            scroll_target: 0.0,
             scroll_drag_offset: None,
             motion: Motion::default(),
             applied_until: None,
@@ -329,44 +325,18 @@ impl SettingsUi {
             self.onboarding_step,
         );
         self.scroll = self.layout.scroll;
-        self.scroll_target = self.scroll_target.clamp(0.0, self.layout.max_scroll);
     }
 
-    fn current_scroll(&self) -> f32 {
-        self.motion
-            .value(ElementId::Search, MotionChannel::Scroll, self.scroll_target)
-    }
     fn visual_focus(&self, id: ElementId) -> bool {
         self.focus_visible && self.focused == Some(id)
     }
 
     fn reset_scroll(&mut self) {
-        self.motion.clear_channel(MotionChannel::Scroll);
         self.scroll = 0.0;
-        self.scroll_target = 0.0;
     }
 
-    fn animate_scroll_to(&mut self, hwnd: HWND, target: f32, duration_ms: u64) {
-        let target = target.clamp(0.0, self.layout.max_scroll);
-        let current = self.current_scroll().clamp(0.0, self.layout.max_scroll);
-        self.scroll_target = target;
-        self.scroll = current;
-        if (current - target).abs() < 0.001 {
-            self.motion.clear_channel(MotionChannel::Scroll);
-            self.scroll = target;
-        } else if SystemVisualPreferences::query().animations_enabled {
-            self.motion.animate_from(
-                ElementId::Search,
-                MotionChannel::Scroll,
-                current,
-                target,
-                duration_ms,
-            );
-            start_timer(hwnd);
-        } else {
-            self.motion.clear_channel(MotionChannel::Scroll);
-            self.scroll = target;
-        }
+    fn set_scroll(&mut self, target: f32, hwnd: HWND) {
+        self.scroll = target.clamp(0.0, self.layout.max_scroll);
         self.rebuild_layout(hwnd);
     }
 
@@ -835,18 +805,6 @@ impl SettingsUi {
             BrushRole::Border,
             1.0,
         );
-        renderer.text(
-            "Control Center",
-            UiRect::new(
-                self.layout.nav_width + 32.0,
-                7.0,
-                (self.layout.width - self.layout.nav_width - 180.0).max(120.0),
-                26.0,
-            )
-            .d2d(),
-            TextStyle::Section,
-            BrushRole::Text,
-        );
         controls::draw_search_box(
             renderer,
             self.layout.search_rect,
@@ -1281,74 +1239,90 @@ impl SettingsUi {
     }
 
     fn draw_current_app_audio(&self, renderer: &Renderer, rect: UiRect) {
-        let (state, role) = match self.runtime.foreground.aggregate {
+        let aggregate = self.runtime.foreground.aggregate;
+        let (state, role) = match aggregate {
             crate::audio::Aggregate::AllMuted => ("Muted", BrushRole::Warning),
             crate::audio::Aggregate::AllActive => ("Active", BrushRole::Success),
             crate::audio::Aggregate::Mixed => ("Mixed sessions", BrushRole::Accent),
             crate::audio::Aggregate::NoSession => ("No audio session", BrushRole::TextSecondary),
             crate::audio::Aggregate::NoExternalApp => {
-                ("No other app selected", BrushRole::TextSecondary)
+                ("No controllable app", BrushRole::TextSecondary)
             }
             crate::audio::Aggregate::Error => ("Audio unavailable", BrushRole::Danger),
         };
-        renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::BackgroundSubtle);
-        renderer.stroke_rounded(rect.d2d(), 10.0, role, 1.0);
+        let (primary, detail) = match aggregate {
+            crate::audio::Aggregate::NoExternalApp => (
+                "No controllable app".to_string(),
+                "Switch to another app to control its audio".to_string(),
+            ),
+            crate::audio::Aggregate::NoSession => (
+                self.runtime
+                    .foreground
+                    .app_name
+                    .as_deref()
+                    .map_or_else(|| state.to_string(), |app| format!("{app} · {state}")),
+                "The selected app has no active audio session".to_string(),
+            ),
+            _ => {
+                let app = self
+                    .runtime
+                    .foreground
+                    .app_name
+                    .as_deref()
+                    .unwrap_or("Current app");
+                (
+                    format!("{app} · {state}"),
+                    "Audio sessions from another app".to_string(),
+                )
+            }
+        };
+        renderer.fill_rounded(rect.d2d(), 8.0, BrushRole::BackgroundSubtle);
+        renderer.stroke_rounded(rect.d2d(), 8.0, role, 1.0);
         controls::draw_icon(
             renderer,
-            UiRect::new(rect.x + 18.0, rect.y + 28.0, 30.0, 30.0),
+            UiRect::new(rect.x + 16.0, rect.y + 18.0, 28.0, 28.0),
             Page::Audio,
             role,
         );
-        renderer.text(
-            "Current app audio",
-            UiRect::new(rect.x + 62.0, rect.y + 13.0, rect.w - 84.0, 22.0).d2d(),
+        renderer.text_clipped(
+            &primary,
+            UiRect::new(rect.x + 58.0, rect.y + 10.0, rect.w - 76.0, 22.0).d2d(),
             TextStyle::BodyStrong,
             BrushRole::Text,
         );
-        let display = if self.runtime.foreground.aggregate == crate::audio::Aggregate::NoExternalApp
-        {
-            "Switch to another app to control its audio".to_string()
-        } else {
-            let app = self
-                .runtime
-                .foreground
-                .app_name
-                .as_deref()
-                .unwrap_or("Current app");
-            format!("{app} · {state}")
-        };
         renderer.text_clipped(
-            &display,
-            UiRect::new(rect.x + 62.0, rect.y + 42.0, rect.w - 84.0, 22.0).d2d(),
-            TextStyle::SectionDescription,
+            &detail,
+            UiRect::new(rect.x + 58.0, rect.y + 34.0, rect.w - 76.0, 20.0).d2d(),
+            TextStyle::Caption,
             BrushRole::TextSecondary,
         );
     }
 
     fn draw_overlay_preview(&self, renderer: &Renderer, rect: UiRect) {
-        renderer.fill_rounded(rect.d2d(), 12.0, BrushRole::BackgroundSubtle);
-        renderer.stroke_rounded(rect.d2d(), 12.0, BrushRole::Border, 1.0);
+        let placement = overlay_placement_geometry(rect, self.overlay_preview_aspect);
+        let preview = placement.preview;
         renderer.text(
             "Preview",
-            UiRect::new(rect.x + 18.0, rect.y + 10.0, 120.0, 24.0).d2d(),
+            UiRect::new(preview.x, preview.y + 10.0, preview.w, 24.0).d2d(),
             TextStyle::Section,
             BrushRole::Text,
         );
-        renderer.text_clipped(
-            "Placement on selected monitor",
-            UiRect::new(rect.right() - 230.0, rect.y + 14.0, 212.0, 18.0).d2d(),
-            TextStyle::CaptionRight,
-            BrushRole::TextSecondary,
-        );
-        let available_width = (rect.w - 36.0).max(1.0);
-        let (canvas_width, canvas_height) =
-            overlay_preview_canvas_size(available_width, self.overlay_preview_aspect);
-        let canvas = UiRect::new(
-            rect.x + 18.0 + (available_width - canvas_width) * 0.5,
-            rect.y + 44.0,
-            canvas_width,
-            canvas_height,
-        );
+        if let Some(controls) = placement.controls {
+            renderer.text(
+                "Position",
+                UiRect::new(controls.x, controls.y + 8.0, controls.w, 24.0).d2d(),
+                TextStyle::Section,
+                BrushRole::Text,
+            );
+            renderer.text_clipped(
+                "Choose a location on the monitor work area.",
+                UiRect::new(controls.x, controls.y + 32.0, controls.w, 16.0).d2d(),
+                TextStyle::Caption,
+                BrushRole::TextSecondary,
+            );
+        }
+        let canvas = overlay_preview_canvas_rect(preview, self.overlay_preview_aspect);
+        renderer.fill_rounded(canvas.translated_y(2.0).d2d(), 8.0, BrushRole::Shadow);
         renderer.fill_rounded(canvas.d2d(), 8.0, BrushRole::Card);
         renderer.stroke_rounded(canvas.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
         let sample = overlay_preview_card_rect(
@@ -3855,7 +3829,7 @@ impl SettingsUi {
         }
         let top = self.layout.content_clip.y + 28.0;
         let bottom = self.layout.content_clip.bottom() - 12.0;
-        let current = self.current_scroll();
+        let current = self.scroll;
         let target = if element.rect.y < top {
             (current - (top - element.rect.y)).clamp(0.0, self.layout.max_scroll)
         } else if element.rect.bottom() > bottom {
@@ -3864,9 +3838,7 @@ impl SettingsUi {
             current
         };
         if (target - current).abs() >= 0.001 {
-            self.motion.clear_channel(MotionChannel::Scroll);
             self.scroll = target;
-            self.scroll_target = target;
         }
     }
 
@@ -4364,7 +4336,7 @@ impl ControlCenterWindow {
                 WINDOW_EX_STYLE::default(),
                 windows::core::PCWSTR(windows::core::HSTRING::from(CLASS_NAME).as_ptr()),
                 windows::core::PCWSTR(windows::core::HSTRING::from("WinShort").as_ptr()),
-                WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 & !WS_CAPTION.0),
+                WINDOW_STYLE((WS_OVERLAPPEDWINDOW.0 & !WS_CAPTION.0) | WS_CLIPCHILDREN.0),
                 x,
                 y,
                 w,
@@ -4624,7 +4596,7 @@ impl ControlCenterWindow {
                 ui.selected_display_route,
             )
         };
-        let anchor = screen_rect(self.hwnd, control_rect, dpi)?;
+        let anchor = client_rect_from_dip(control_rect, dpi);
         let (choices, current) = picker_choices(
             kind,
             &draft,
@@ -4637,18 +4609,7 @@ impl ControlCenterWindow {
         if choices.is_empty() {
             return Err(Error::config("no choices available"));
         }
-        let work =
-            crate::platform::monitor::info_for(crate::platform::monitor::from_window(self.hwnd))
-                .map(|monitor| {
-                    PopupRect::new(
-                        monitor.work.left,
-                        monitor.work.top,
-                        monitor.work.right,
-                        monitor.work.bottom,
-                    )
-                })
-                .unwrap_or(PopupRect::new(0, 0, 1920, 1080));
-        let anchor = PopupRect::new(anchor.left, anchor.top, anchor.right, anchor.bottom);
+        let work = client_work_rect(self.hwnd)?;
         let scale = dpi.max(96) as f32 / 96.0;
         let width = (picker_width_dip(control_rect.w, &choices) * scale).round() as i32;
         let height = picker_height_px(choices.len(), scale);
@@ -4935,29 +4896,28 @@ fn picker_element(kind: PickerKind) -> Option<ElementId> {
     })
 }
 
-fn screen_rect(hwnd: HWND, rect: UiRect, dpi: u32) -> Result<RECT> {
+fn client_rect_from_dip(rect: UiRect, dpi: u32) -> PopupRect {
     let scale = dpi.max(96) as f32 / 96.0;
-    let mut top_left = windows::Win32::Foundation::POINT {
-        x: (rect.x * scale) as i32,
-        y: (rect.y * scale) as i32,
-    };
-    let mut bottom_right = windows::Win32::Foundation::POINT {
-        x: (rect.right() * scale) as i32,
-        y: (rect.bottom() * scale) as i32,
-    };
+    PopupRect::new(
+        (rect.x * scale).round() as i32,
+        (rect.y * scale).round() as i32,
+        (rect.right() * scale).round() as i32,
+        (rect.bottom() * scale).round() as i32,
+    )
+}
+
+fn client_work_rect(hwnd: HWND) -> Result<PopupRect> {
+    let mut client = RECT::default();
     unsafe {
-        if !windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut top_left).as_bool()
-            || !windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut bottom_right).as_bool()
-        {
-            return Err(Error::config("settings picker anchor is unavailable"));
+        if windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client).is_err() {
+            return Err(Error::config("settings picker client area is unavailable"));
         }
     }
-    Ok(RECT {
-        left: top_left.x,
-        top: top_left.y,
-        right: bottom_right.x,
-        bottom: bottom_right.y,
-    })
+    let work = PopupRect::new(client.left, client.top, client.right, client.bottom);
+    if work.width() <= 0 || work.height() <= 0 {
+        return Err(Error::config("settings picker client area is empty"));
+    }
+    Ok(work)
 }
 fn picker_height_px(choice_count: usize, scale: f32) -> i32 {
     ((choice_count.min(10) as f32 * crate::ui::picker::ITEM_HEIGHT_DIP) * scale).round() as i32 + 2
@@ -5674,7 +5634,23 @@ unsafe extern "system" fn settings_wndproc(
             }
             WM_KILLFOCUS => {
                 let next = HWND(wparam.0 as *mut _);
-                cell.borrow_mut().on_window_focus(hwnd, false, next);
+                let picker_to_close = {
+                    let mut ui = cell.borrow_mut();
+                    ui.on_window_focus(hwnd, false, next);
+                    if ui.picker_hwnd.is_some_and(|picker| picker != next)
+                        && ui.picker_list_hwnd != Some(next)
+                    {
+                        ui.picker_hwnd
+                    } else {
+                        None
+                    }
+                };
+                if let Some(popup_hwnd) = picker_to_close {
+                    crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+                        popup_hwnd: popup_hwnd.0 as isize,
+                        restore_focus: false,
+                    });
+                }
                 LRESULT(0)
             }
             WM_CLOSE => {
@@ -5708,6 +5684,13 @@ unsafe extern "system" fn settings_wndproc(
             }
             WM_ERASEBKGND => LRESULT(1),
             WM_SIZE => {
+                let picker_hwnd = cell.borrow().picker_hwnd;
+                if let Some(popup_hwnd) = picker_hwnd {
+                    crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+                        popup_hwnd: popup_hwnd.0 as isize,
+                        restore_focus: false,
+                    });
+                }
                 let mut ui = cell.borrow_mut();
                 if let Some(renderer) = ui.renderer.as_mut() {
                     let _ = renderer.resize();
@@ -5718,6 +5701,13 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_DPICHANGED => {
+                let picker_hwnd = cell.borrow().picker_hwnd;
+                if let Some(popup_hwnd) = picker_hwnd {
+                    crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+                        popup_hwnd: popup_hwnd.0 as isize,
+                        restore_focus: false,
+                    });
+                }
                 // SetWindowPos below re-enters this proc with WM_SIZE; never hold
                 // the state borrow across it.
                 let new_dpi = ((wparam.0 >> 16) as u32).max(96);
@@ -5788,7 +5778,6 @@ unsafe extern "system" fn settings_wndproc(
                         offset,
                         ui.layout.max_scroll,
                     );
-                    ui.scroll_target = ui.scroll;
                     ui.rebuild_layout(hwnd);
                     ui.publish_automation_snapshot(hwnd);
                     invalidate(hwnd);
@@ -5814,6 +5803,14 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
+                let picker_hwnd = cell.borrow().picker_hwnd;
+                if let Some(popup_hwnd) = picker_hwnd {
+                    crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+                        popup_hwnd: popup_hwnd.0 as isize,
+                        restore_focus: true,
+                    });
+                    return LRESULT(0);
+                }
                 let (focus_requested, capture_requested) = {
                     let mut ui = cell.borrow_mut();
                     let (x, y) = mouse_point(lparam, ui.dpi);
@@ -5823,10 +5820,6 @@ unsafe extern "system" fn settings_wndproc(
                     let scrollbar_hit = ui.layout.max_scroll > 0.0
                         && controls::scrollbar_hit_rect(ui.layout.content_clip).contains(x, y);
                     if scrollbar_hit {
-                        let current_scroll = ui.current_scroll();
-                        ui.motion.clear_channel(MotionChannel::Scroll);
-                        ui.scroll = current_scroll;
-                        ui.scroll_target = current_scroll;
                         if let Some(thumb) = controls::scrollbar_thumb_rect(
                             ui.layout.content_clip,
                             ui.scroll,
@@ -5844,7 +5837,6 @@ unsafe extern "system" fn settings_wndproc(
                                 offset,
                                 ui.layout.max_scroll,
                             );
-                            ui.scroll_target = ui.scroll;
                             ui.rebuild_layout(hwnd);
                             capture_requested = true;
                             invalidate(hwnd);
@@ -5920,7 +5912,7 @@ unsafe extern "system" fn settings_wndproc(
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
                 let (picker_hwnd, scroll, max_scroll) = {
                     let ui = cell.borrow();
-                    (ui.picker_hwnd, ui.current_scroll(), ui.layout.max_scroll)
+                    (ui.picker_hwnd, ui.scroll, ui.layout.max_scroll)
                 };
                 match settings_wheel_action(picker_hwnd, scroll, delta, max_scroll) {
                     SettingsWheelAction::ClosePicker(popup_hwnd) => {
@@ -5931,7 +5923,7 @@ unsafe extern "system" fn settings_wndproc(
                     }
                     SettingsWheelAction::Scroll(scroll) => {
                         let mut ui = cell.borrow_mut();
-                        ui.animate_scroll_to(hwnd, scroll, wheel_scroll_duration_ms());
+                        ui.set_scroll(scroll, hwnd);
                         ui.publish_automation_snapshot(hwnd);
                         invalidate(hwnd);
                     }
@@ -5975,13 +5967,9 @@ unsafe extern "system" fn settings_wndproc(
                     0x21 | 0x22 => {
                         let mut ui = cell.borrow_mut();
                         let page = ui.layout.content_clip.h.max(64.0);
-                        let current = ui.current_scroll();
-                        let target = if vk == 0x21 {
-                            (current - page).max(0.0)
-                        } else {
-                            (current + page).min(ui.layout.max_scroll)
-                        };
-                        ui.animate_scroll_to(hwnd, target, page_scroll_duration_ms());
+                        let target =
+                            page_scroll_target(ui.scroll, page, ui.layout.max_scroll, vk == 0x22);
+                        ui.set_scroll(target, hwnd);
                         ui.publish_automation_snapshot(hwnd);
                         invalidate(hwnd);
                         LRESULT(0)
@@ -6031,12 +6019,6 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
                 let active = ui.motion.tick();
-                let scroll = ui.current_scroll();
-                if (scroll - ui.scroll).abs() >= 0.001 {
-                    ui.scroll = scroll;
-                    ui.rebuild_layout(hwnd);
-                    ui.publish_automation_snapshot(hwnd);
-                }
                 let applied = ui.applied_until.is_some_and(|until| Instant::now() < until);
                 invalidate(hwnd);
                 if !active && !applied && ui.recording.is_none() {
@@ -6086,12 +6068,12 @@ fn mouse_point(lparam: LPARAM, dpi: u32) -> (f32, f32) {
 fn scroll_after_wheel(scroll: f32, delta: f32, max_scroll: f32) -> f32 {
     (scroll - delta / 120.0 * WHEEL_SCROLL_DIP).clamp(0.0, max_scroll)
 }
-fn wheel_scroll_duration_ms() -> u64 {
-    WHEEL_SCROLL_DURATION_MS
-}
-
-fn page_scroll_duration_ms() -> u64 {
-    PAGE_SCROLL_DURATION_MS
+fn page_scroll_target(scroll: f32, page: f32, max_scroll: f32, forward: bool) -> f32 {
+    if forward {
+        (scroll + page).min(max_scroll)
+    } else {
+        (scroll - page).max(0.0)
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SettingsWheelAction {
@@ -6804,24 +6786,18 @@ mod interaction_tests {
         assert_eq!(theme.accent_text, Color::rgb(255, 255, 255));
     }
     #[test]
-    fn picker_anchor_uses_the_value_control_rect() {
+    fn picker_anchor_is_converted_to_control_center_client_pixels() {
         let row = UiRect::new(24.0, 300.0, 560.0, 58.0);
         let control = controls::value_control_rect(row, crate::ui::layout::ElementKind::Value);
-        assert!(control.x > row.x);
-        let anchor = PopupRect::new(
-            control.x as i32,
-            control.y as i32,
-            control.right() as i32,
-            control.bottom() as i32,
-        );
-        let popup = crate::ui::picker::place_popup(
-            anchor,
-            PopupRect::new(0, 0, 1200, 900),
-            anchor.width(),
-            180,
-        );
-        assert_eq!(popup.left, anchor.left);
-        assert_eq!(popup.top, anchor.bottom);
+        let anchor = client_rect_from_dip(control, 144);
+        assert_eq!(anchor.width(), 309);
+        assert_eq!(anchor.height(), 51);
+        let work = PopupRect::new(0, 0, 900, 600);
+        let popup = crate::ui::picker::place_popup(anchor, work, 400, 180);
+        assert_eq!(popup.right, anchor.right);
+        assert_eq!(popup.bottom, anchor.top);
+        assert!(popup.right <= work.right);
+        assert!(popup.bottom <= work.bottom);
     }
 
     #[test]
@@ -6959,8 +6935,8 @@ mod interaction_tests {
         let mut ui = empty_settings_ui();
         ui.install_automation(hwnd);
         ui.focused = Some(ElementId::InputDevice);
-        let picker_hwnd = HWND::default();
-        let picker_list_hwnd = HWND(std::ptr::dangling_mut());
+        let picker_hwnd = HWND(3usize as *mut _);
+        let picker_list_hwnd = HWND(4usize as *mut _);
         ui.set_picker_open(
             hwnd,
             ElementId::InputDevice,
@@ -7044,12 +7020,15 @@ mod interaction_tests {
     }
 
     #[test]
-    fn wheel_and_page_scroll_use_short_retarget_durations() {
-        let wheel = wheel_scroll_duration_ms();
-        let page = page_scroll_duration_ms();
-        assert!((60..=100).contains(&wheel));
-        assert!(page > wheel);
-        assert!(page <= 140);
+    fn wheel_and_page_scroll_are_immediate_and_accumulate_without_tween() {
+        let mut scroll = 128.0;
+        scroll = scroll_after_wheel(scroll, 120.0, 512.0);
+        assert_eq!(scroll, 48.0);
+        scroll = scroll_after_wheel(scroll, 240.0, 512.0);
+        assert_eq!(scroll, 0.0);
+        assert_eq!(page_scroll_target(128.0, 300.0, 512.0, true), 428.0);
+        assert_eq!(page_scroll_target(128.0, 300.0, 512.0, false), 0.0);
+        assert!(!Motion::default().has_active());
     }
 
     #[test]

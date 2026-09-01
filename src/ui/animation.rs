@@ -19,7 +19,6 @@ struct Tween {
 pub enum MotionChannel {
     Hover,
     ToggleState,
-    Scroll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,7 +51,6 @@ impl Motion {
             fallback
         }
     }
-
     pub fn animate_to(
         &mut self,
         id: ElementId,
@@ -60,18 +58,7 @@ impl Motion {
         target: f32,
         duration_ms: u64,
     ) {
-        let current = self.value(id, channel, 1.0 - target);
-        self.animate_from(id, channel, current, target, duration_ms);
-    }
-
-    pub(crate) fn animate_from(
-        &mut self,
-        id: ElementId,
-        channel: MotionChannel,
-        from: f32,
-        target: f32,
-        duration_ms: u64,
-    ) {
+        let from = self.value(id, channel, 1.0 - target);
         if (from - target).abs() < 0.001 {
             return;
         }
@@ -165,33 +152,6 @@ mod tests {
         assert_eq!(motion.value(id, MotionChannel::ToggleState, 1.0), 1.0);
         motion.animate_to(id, MotionChannel::Hover, 0.0, 140);
         assert_eq!(motion.value(id, MotionChannel::ToggleState, 1.0), 1.0);
-    }
-
-    #[test]
-    fn explicit_animation_starts_from_current_scroll_position() {
-        let mut motion = Motion::default();
-        motion.animate_from(ElementId::Search, MotionChannel::Scroll, 64.0, 320.0, 180);
-
-        let tween = motion
-            .tweens
-            .get(&key(ElementId::Search, MotionChannel::Scroll))
-            .expect("scroll tween");
-        assert_eq!(tween.from, 64.0);
-        assert_eq!(tween.to, 320.0);
-        assert_eq!(tween.value, 64.0);
-    }
-    #[test]
-    fn scroll_retarget_restarts_only_a_short_tween_from_latest_visual_value() {
-        let mut motion = Motion::default();
-        motion.animate_from(ElementId::Search, MotionChannel::Scroll, 0.0, 80.0, 80);
-        motion.animate_from(ElementId::Search, MotionChannel::Scroll, 18.0, 160.0, 80);
-        let tween = motion
-            .tweens
-            .get(&key(ElementId::Search, MotionChannel::Scroll))
-            .expect("scroll retarget");
-        assert_eq!(tween.from, 18.0);
-        assert_eq!(tween.to, 160.0);
-        assert_eq!(tween.duration, Duration::from_millis(80));
     }
 
     #[test]

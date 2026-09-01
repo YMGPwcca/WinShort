@@ -57,16 +57,16 @@ timezone mutation or production crash flag is used.
 
 Automated coverage:
 
-- Picker geometry chooses below/above placement and clamps to work areas, including negative
-  coordinates.
+- Picker geometry chooses below/above placement and clamps to the Control Center client
+  viewport, including DPI-scaled anchors.
 - Device pickers expose only active real endpoints; disconnected legacy explicit bindings remain configured but are not selectable system targets.
 - Endpoint roles are disabled when an explicit device is selected.
 - Reset requires two activations and changes draft state only.
 - Restored Control Center rectangles are fully contained in the selected work area and use
   target-DPI scaling.
 - Custom Control Center UIA snapshot nodes expose logical control types, names/help, bounds,
-  offscreen, enabled/focus state, toggle state, and slider range/value semantics without child
-  HWND creation.
+  offscreen, enabled/focus state, toggle state, and slider range/value semantics without
+  inventing child HWNDs for painted rows.
 - Direct provider ABI tests verify S_OK/null unsupported patterns, navigation boundaries, hosted
   root and child RuntimeIds, root-only host providers, truthful Button/Invoke mappings, read-only
   ValuePattern failure, and root/child/outside point queries.
@@ -75,10 +75,11 @@ Automated coverage:
   events to actual focus, toggle, slider value, enabled, offscreen, bounds, name, and displayed
   value changes.
 - UIA actions are queued to the Control Center HWND; UIA `SetFocus` publishes actual Control
-  Center focus after Win32 confirms it, while an open picker publishes native LISTBOX focus.
+  Center focus after Win32 confirms it, while an open child picker publishes native LISTBOX
+  focus without transferring top-level foreground ownership.
 - Native picker/listbox retains fixed-order keyboard navigation, generation-checked close, and
-  idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are
-  pure-tested.
+  idempotent commit/cancel behavior; picker typography, hover, client placement, child-host
+  style, and DPI policies are pure-tested.
 
 - UIA publication is two-phase: the Control Center UI `RefCell` may commit and queue state
   changes, but only the later borrow-free Control Center flush may simulate UIA delivery. Tests
@@ -88,8 +89,8 @@ Automated coverage:
   and normal Boolean pattern-availability properties. COM identity tests verify root-only
   FragmentRoot support, shared root identity, and stable child navigation.
 - Invoke event tests verify one deferred Invoked notification per accepted Button action; picker
-  construction tests verify HWND registration before activation and direct Control-Center-to-
-  Picker focus.
+  construction tests verify HWND registration, `WS_CHILD` hosting, no foreground transfer, and
+  direct focus into the real Control-Center-owned LISTBOX.
 
 - Direct provider HRESULT tests distinguish disabled (`UIA_E_ELEMENTNOTENABLED`), stale
   (`UIA_E_ELEMENTNOTAVAILABLE`), unsupported (`UIA_E_NOTSUPPORTED`), and invalid argument
@@ -97,17 +98,25 @@ Automated coverage:
 - The `nullable_provider_abi_regression` test calls each successful-null COM output path through
   its raw vtable and runs in both normal and release profiles; hosted Windows CI runs the
   release-profile case in the x86_64 release-build job.
-- Control Center regression seams verify parent-wheel picker dismissal, close ordering before
-  parent hide, pending activation blocking, and focus repair when a local mutation disables the
-  current control.
+- Control Center regression seams verify direct parent-wheel picker dismissal, outside-click and
+  focus-loss closure, close ordering before parent hide, pending activation blocking, and focus
+  repair when a local mutation disables the current control.
 - Managed shortcut coverage verifies assigned, disabled, re-enabled, changed-while-disabled,
   and unassigned chords; disabled chords stay out of the active binding table.
 - Bounded value rendering tests verify chevron reservation and DirectWrite trailing-character
   trimming; applied status text remains generic.
-- Control Center layout tests cover removal of the Workspaces desktop strip, Special Workspace hierarchy, stable shortcut-card gaps across scroll positions, shared right-side control widths, custom titlebar geometry, and multi-aspect-ratio overlay preview fitting.
-- Motion tests cover short wheel/page retarget policy and replacing a scroll target from the latest visual position without accumulating a long stale tween.
-- Overlay policy tests cover opaque fallback for High Contrast, disabled overlapped content, and unavailable DWM backdrop APIs.
-- Audio presentation tests cover canonical primary endpoint names with diagnostic-only adapter metadata.
+- Control Center layout tests cover removal of the Workspaces desktop strip, Special Workspace
+  hierarchy, stable shortcut-card gaps across scroll positions, shared right-side control widths,
+  compact/blank custom titlebar geometry, section accent alignment, one Current app audio
+  heading, and responsive two-column/stacked overlay placement.
+- Overlay geometry tests cover dynamic monitor aspect fitting, monitor-as-preview containment,
+  normalized position semantics, and the absence of a nested preview-container surface.
+- Motion tests cover hover/toggle channels only; wheel and Page Up/Down scroll update the model
+  directly without a Scroll channel, target, or timer tween.
+- Overlay policy tests cover opaque fallback for High Contrast, disabled overlapped content,
+  and unavailable DWM backdrop APIs.
+- Audio presentation tests cover canonical primary endpoint names with diagnostic-only adapter
+  metadata.
 - Navigation/search tests verify case-insensitive deterministic user-concept matching and reject
   internal configuration names from the normal search index.
 - Onboarding policy tests verify that a meaningful existing `config.toml` suppresses the
@@ -115,11 +124,11 @@ Automated coverage:
 
 Manual matrix:
 
-- Scroll behavior: wheel notches respond immediately, accumulate across rapid input, and settle
-  within a short native-feeling transition; Page Up/Down remain fast; scrollbar dragging is
-  direct and reduced-motion settings remove easing.
-- Section rhythm: each divider sits in balanced whitespace between the previous content and the
-  next heading; no accent rule touches a title.
+- Scroll behavior: wheel notches update the viewport immediately and accumulate across rapid
+  input with no queued/tweened motion; Page Up/Down update immediately; scrollbar dragging is
+  direct and reduced-motion settings do not alter scrolling.
+- Section rhythm: each divider sits in whitespace between sections, while every cyan accent is
+  vertically centered on its heading title line.
 - Workspaces page: no Normal desktops strip is present; numbered 1–9 shortcut configuration
   remains available; Special Workspace has one heading, description, and two evenly spaced
   shortcut cards.
@@ -127,20 +136,26 @@ Manual matrix:
   alignment; managed shortcut actions divide that same column.
 - Audio iconography: the microphone reads as a capsule microphone with stem/base, not a speaker,
   and the same glyph is used on Home, Audio navigation, and overlay surfaces.
-- Shortcut iconography: the navigation glyph reads as a keyboard/keycap symbol, not arbitrary
-  plus/hash marks.
+- Shortcut iconography: the navigation glyph reads as a rounded keyboard with upper-row key
+  marks and a lower spacebar line, not arbitrary plus/hash marks or a dot box.
 - Audio naming: speaker/microphone controls consistently show only canonical primary names such
   as GS25F2, SAMSUNG, and SIMGOT EW300 DSP; adapter metadata is absent from normal visible rows.
-- Overlay preview: Foreground, Primary, saved, disconnected, 16:9, 16:10, ultrawide, and
-  portrait targets use the correct work-area ratio without stretching; placement matches the
-  real overlay's normalized semantics.
+- Current app audio: the page has one section heading; the status row says `No controllable
+  app` when appropriate and does not repeat the heading inside a large card.
+- Overlay preview: on wide windows, the monitor preview sits beside Position and Monitor
+  controls; on narrow windows the same controls stack below it. Foreground, Primary, saved,
+  disconnected, 16:9, 16:10, ultrawide, and portrait targets use the correct work-area ratio
+  without stretching, and the monitor frame is the sole preview surface.
 - Overlay backdrop: with reduced opacity, content behind the overlay is visibly blurred by
   documented DWM Desktop Acrylic (`DWMWA_SYSTEMBACKDROP_TYPE` /
   `DWMSBT_TRANSIENTWINDOW`); High Contrast, disabled overlapped content, API failure, and
   transparency-disabled states use an opaque accessible surface.
-- Custom titlebar: Minimize, Maximize/Restore, and Close work; drag and all resize edges/corners
-  behave natively; DPI, dark/light/high-contrast themes, rounded corners, and maximize Snap
-  Layout hover remain intact.
+- Custom titlebar: the titlebar is blank except for restrained caption glyphs; Minimize,
+  Maximize/Restore, and Close work; drag and all resize edges/corners behave natively; DPI,
+  dark/light/high-contrast themes, rounded corners, and maximize Snap Layout hover remain intact.
+- Picker focus: opening a picker keeps the Control Center as the sole active top-level HWND;
+  the child host appears above D2D content, the real LISTBOX owns keyboard focus, arrows/Home/End/
+  PageUp/PageDown/Tab/Escape remain deterministic, and outside click/focus loss closes it.
 - Focus and automation: pointer clicks avoid a lingering heavy ring; Tab, Shift-Tab, keyboard
   activation, titlebar commands, and UIA focus remain truthful; UIA events arrive only after
   mutable SettingsUi borrows are released.

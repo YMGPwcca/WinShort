@@ -1,8 +1,8 @@
-//! Native, keyboard-accessible picker popups used by the Control Center.
+//! Native, keyboard-accessible picker controls used by the Control Center.
 //!
-//! A real LISTBOX is hosted in a small owner window rather than cycling values
-//! in a painted Control Center row. The native list supplies selection semantics
-//! to UI Automation/Narrator while the surrounding Control Center remains D2D.
+//! A real LISTBOX is hosted in a temporary child window above the owner-drawn
+//! Control Center content. The native list supplies selection semantics to UI
+//! Automation/Narrator without activating a second top-level window.
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     OnceLock,
@@ -24,11 +24,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, IsChild, PostMessageW, SetForegroundWindow, ShowWindow,
-    CREATESTRUCTW, MA_ACTIVATE, SW_SHOW, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
-    WM_LBUTTONUP, WM_MEASUREITEM, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY,
-    WM_PAINT, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VSCROLL,
+    CreateWindowExW, DestroyWindow, IsChild, PostMessageW, SetWindowPos, ShowWindow, CREATESTRUCTW,
+    HWND_TOP, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNA,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_DRAWITEM,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONUP, WM_MEASUREITEM, WM_MOUSEACTIVATE,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
 };
 
 use crate::config::model::{
@@ -41,6 +41,7 @@ use crate::platform::window as win;
 use crate::ui::presentation::AllowlistMode;
 use crate::ui::theme::{Color, Theme};
 
+const PICKER_HOST_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_CHILD.0);
 const CLASS_NAME: &str = "WinShort.ControlCenterPicker";
 const LB_ADDSTRING: u32 = 0x0180;
 const LB_SETCURSEL: u32 = 0x0186;
@@ -151,9 +152,9 @@ impl PopupRect {
     }
 }
 
-/// Place a popup below its anchor when possible, otherwise above it, then clamp
-/// the complete rectangle to the monitor work area. Pure geometry is kept out
-/// of Win32 calls so DPI/negative-coordinate behavior is testable.
+/// Place a child picker below its anchor when possible, otherwise above it,
+/// then clamp the complete rectangle to the Control Center client viewport.
+/// Pure geometry is kept out of Win32 calls so DPI and edge behavior are testable.
 pub fn place_popup(anchor: PopupRect, work: PopupRect, width: i32, height: i32) -> PopupRect {
     let width = width.min(work.width()).max(1);
     let height = height.min(work.height()).max(1);
@@ -175,7 +176,7 @@ pub fn place_popup(anchor: PopupRect, work: PopupRect, width: i32, height: i32) 
 }
 
 pub struct PickerPopup {
-    /// Popup owner HWND used for lifecycle and deferred close routing.
+    /// Child host HWND used for lifecycle and deferred close routing.
     pub hwnd: HWND,
     /// Native LISTBOX HWND that owns keyboard focus while open.
     pub list: HWND,
@@ -517,10 +518,10 @@ impl PickerPopup {
         });
         let hwnd = unsafe {
             CreateWindowExW(
-                WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0),
+                WINDOW_EX_STYLE::default(),
                 PCWSTR(HSTRING::from(CLASS_NAME).as_ptr()),
                 PCWSTR(HSTRING::from("").as_ptr()),
-                WINDOW_STYLE(WS_POPUP.0),
+                PICKER_HOST_STYLE,
                 geometry.left,
                 geometry.top,
                 geometry.width(),
@@ -635,9 +636,20 @@ impl PickerPopup {
 
     pub fn activate(&self) {
         unsafe {
+            // Keep the picker in the Control Center's child z-order. The
+            // owner remains the active top-level window while the real
+            // LISTBOX receives keyboard focus.
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
             let _ = ShowWindow(self.list, SW_SHOWNA);
-            let _ = ShowWindow(self.hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(self.hwnd);
+            let _ = ShowWindow(self.hwnd, SW_SHOWNA);
             let _ = SetFocus(Some(self.list));
         }
     }
@@ -921,7 +933,7 @@ unsafe extern "system" fn picker_wndproc(
                 let _ = InvalidateRect(Some(list), None, false);
                 LRESULT(0)
             }
-            WM_MOUSEACTIVATE => LRESULT(MA_ACTIVATE as isize),
+            WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_ERASEBKGND => {
                 let hdc = HDC(wparam.0 as *mut _);
                 draw_picker_surface(hwnd, hdc);
@@ -1278,6 +1290,10 @@ mod tests {
         assert_eq!(picker_font_height(144), -21);
         assert_eq!(PICKER_FONT_FAMILY, "Segoe UI Variable Text");
         assert_eq!(PICKER_FONT_FALLBACK, "Segoe UI");
+    }
+    #[test]
+    fn picker_host_is_a_control_center_child() {
+        assert_eq!(PICKER_HOST_STYLE.0, WS_CHILD.0);
     }
 }
 

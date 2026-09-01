@@ -12,7 +12,7 @@ WinShort remains a resident native Windows utility. The primary user-facing surf
 | Rendering | Direct2D `ID2D1HwndRenderTarget` with DirectWrite text |
 | Typography | Segoe UI Variable Text with Segoe UI fallback |
 | Overlay | DWM system backdrop via `DWMWA_SYSTEMBACKDROP_TYPE`/`DWMSBT_TRANSIENTWINDOW` with a Direct2D `ID2D1HwndRenderTarget`; opaque accessible fallback |
-| Pickers | Existing native LISTBOX popup with keyboard selection and generation-safe teardown |
+| Pickers | Temporary `WS_CHILD` host with a native LISTBOX, keyboard selection, and generation-safe teardown |
 | Accessibility | Custom UI Automation fragment provider with a snapshot/action boundary |
 | State | Cached event-driven runtime snapshot plus typed configuration draft for risky display work |
 
@@ -36,7 +36,7 @@ Control Center
 
 Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed navigation rail, custom titlebar, and top search bar remain visible while the selected page scrolls independently with short, accumulated wheel retargets and fast Page Up/Down motion. Scrollbar dragging stays direct. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
+The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed navigation rail, compact blank custom titlebar, and top search bar remain visible while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
 
 `src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, spaced section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, titlebar-button, slider-cluster, and icon vocabulary.
 
@@ -49,6 +49,7 @@ The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed naviga
 - 34 DIP status footer;
 - 32 DIP page margins;
 - 92 DIP page headers and 88 DIP section headers; non-page headings share one 20 DIP inter-section breathing-room token;
+- 32 DIP custom titlebar with 44 × 28 DIP caption hit targets and compact glyphs;
 - 58 DIP setting rows with an 8 DIP rhythm;
 - one shared 206 DIP right-side control column for dropdowns, keycaps, and equivalent value controls;
 - 32 DIP native picker rows with GDI-metric-sized text envelopes;
@@ -113,8 +114,11 @@ Output/topology edits remain local until Test and Keep. Moving between steps nev
 
 ### Overlay
 
-Overlay has a compact visual schematic preview and concise controls:
+Overlay has a responsive visual placement area:
 
+- on sufficiently wide windows, the monitor preview sits beside Position's 3×3 selector and Monitor target;
+- on narrow windows, the same preview and controls stack in one column;
+- the monitor frame itself is the preview surface; there is no outer preview card around it;
 - enabled;
 - System, Light, or Dark appearance;
 - a 3×3 position grid with accessible Top left through Bottom right cells;
@@ -204,11 +208,11 @@ The Control Center preserves the established custom provider rules:
 - actions are posted back to the Control Center HWND;
 - UIA event delivery is deferred until state borrows are released;
 - focus is repaired when a mutation disables the focused control;
-- native picker LISTBOX focus is distinct from logical shell focus;
-- popup teardown is idempotent and happens before the owner hides;
+- native picker LISTBOX focus is distinct from logical shell focus, while the child host remains under the active Control Center top-level window;
+- child picker teardown is idempotent and happens before the owner hides;
 - no child HWND is invented for painted Control Center rows.
 
-The owner window is PMv2-aware, uses a native custom frame with supported resize hit testing and DWM rounded corners, responds to `WM_DPICHANGED`, persists/restores reachable bounds, and stops its timer when motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; the DWM-backed overlay retains its reduced-motion policy and falls back to an opaque surface when acrylic is unavailable or disabled.
+The owner window is PMv2-aware, uses a native custom frame with a blank draggable titlebar, compact caption hit targets, supported resize hit testing, and DWM rounded corners, responds to `WM_DPICHANGED`, persists/restores reachable bounds, and stops its timer when hover/toggle motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; scrolling is always direct. The DWM-backed overlay retains its reduced-motion policy and falls back to an opaque surface when acrylic is unavailable or disabled.
 
 ## Diagnostics & Support
 

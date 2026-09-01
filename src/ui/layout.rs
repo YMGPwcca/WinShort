@@ -1646,7 +1646,7 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         "WinShort itself is not a target for these actions.",
         &mut y,
     );
-    add_region(layout, RegionKind::AudioCurrentApp, &mut y, 92.0);
+    add_region(layout, RegionKind::AudioCurrentApp, &mut y, 64.0);
     add_hotkey_grid(
         layout,
         &mut y,
@@ -2136,6 +2136,101 @@ const PREVIEW_CANVAS_MIN_HEIGHT: f32 = 118.0;
 const PREVIEW_CANVAS_MAX_HEIGHT: f32 = 220.0;
 const PREVIEW_TITLE_HEIGHT: f32 = 44.0;
 const PREVIEW_BOTTOM_INSET: f32 = 18.0;
+const OVERLAY_PLACEMENT_MIN_WIDTH: f32 = 760.0;
+const OVERLAY_PLACEMENT_GAP: f32 = 24.0;
+const OVERLAY_PLACEMENT_CONTROLS_WIDTH: f32 = 360.0;
+const OVERLAY_PLACEMENT_HEADER_HEIGHT: f32 = 44.0;
+const OVERLAY_POSITION_GRID_STEP: f32 = 44.0;
+const OVERLAY_POSITION_CELL_HEIGHT: f32 = 36.0;
+const OVERLAY_MONITOR_GAP: f32 = 12.0;
+const OVERLAY_MONITOR_HEIGHT: f32 = 58.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct OverlayPlacementGeometry {
+    pub region: Rect,
+    pub preview: Rect,
+    pub controls: Option<Rect>,
+}
+
+pub(crate) fn overlay_position_controls_height() -> f32 {
+    OVERLAY_PLACEMENT_HEADER_HEIGHT
+        + OVERLAY_POSITION_GRID_STEP * 3.0
+        + OVERLAY_MONITOR_GAP
+        + OVERLAY_MONITOR_HEIGHT
+}
+
+pub(crate) fn overlay_position_grid_rect(controls: Rect, index: usize) -> Rect {
+    let column = index % 3;
+    let row = index / 3;
+    let cell_width = (controls.w - 16.0).max(3.0) / 3.0;
+    Rect::new(
+        controls.x + column as f32 * (cell_width + 8.0),
+        controls.y + OVERLAY_PLACEMENT_HEADER_HEIGHT + row as f32 * OVERLAY_POSITION_GRID_STEP,
+        cell_width,
+        OVERLAY_POSITION_CELL_HEIGHT,
+    )
+}
+
+pub(crate) fn overlay_monitor_rect(controls: Rect) -> Rect {
+    Rect::new(
+        controls.x,
+        controls.y
+            + OVERLAY_PLACEMENT_HEADER_HEIGHT
+            + OVERLAY_POSITION_GRID_STEP * 3.0
+            + OVERLAY_MONITOR_GAP,
+        controls.w,
+        OVERLAY_MONITOR_HEIGHT,
+    )
+}
+
+pub(crate) fn overlay_placement_geometry(
+    origin: Rect,
+    aspect: (u32, u32),
+) -> OverlayPlacementGeometry {
+    let two_column = origin.w >= OVERLAY_PLACEMENT_MIN_WIDTH;
+    let controls = two_column.then(|| {
+        Rect::new(
+            origin.right() - OVERLAY_PLACEMENT_CONTROLS_WIDTH,
+            origin.y,
+            OVERLAY_PLACEMENT_CONTROLS_WIDTH,
+            overlay_position_controls_height(),
+        )
+    });
+    let preview_width = controls.map_or(origin.w, |controls| {
+        (controls.x - OVERLAY_PLACEMENT_GAP - origin.x).max(280.0)
+    });
+    let preview_height = overlay_preview_region_height(preview_width, aspect);
+    let region_height = controls.map_or(preview_height, |controls| preview_height.max(controls.h));
+    OverlayPlacementGeometry {
+        region: Rect::new(origin.x, origin.y, origin.w, region_height),
+        preview: Rect::new(origin.x, origin.y, preview_width, region_height),
+        controls,
+    }
+}
+
+fn add_overlay_position_elements(layout: &mut SettingsLayout, controls: Rect) {
+    let mut end = controls.y;
+    for index in 0..9 {
+        add_element(
+            layout,
+            &mut end,
+            ElementId::OverlayPositionCell(index),
+            ElementKind::Choice,
+            "Overlay position",
+            "Choose this position",
+            overlay_position_grid_rect(controls, index as usize),
+        );
+    }
+    add_element(
+        layout,
+        &mut end,
+        ElementId::OverlayMonitor,
+        ElementKind::Value,
+        "Monitor",
+        "Choose where the status card appears",
+        overlay_monitor_rect(controls),
+    );
+}
 
 pub(crate) fn overlay_preview_canvas_size(available_width: f32, aspect: (u32, u32)) -> (f32, f32) {
     let ratio = if aspect.0 == 0 || aspect.1 == 0 {
@@ -2166,7 +2261,16 @@ pub(crate) fn overlay_preview_region_height(content_width: f32, aspect: (u32, u3
         overlay_preview_canvas_size((content_width - PREVIEW_SIDE_INSET * 2.0).max(1.0), aspect);
     PREVIEW_TITLE_HEIGHT + height + PREVIEW_BOTTOM_INSET
 }
-
+pub(crate) fn overlay_preview_canvas_rect(preview: Rect, aspect: (u32, u32)) -> Rect {
+    let available_width = (preview.w - PREVIEW_SIDE_INSET * 2.0).max(1.0);
+    let (width, height) = overlay_preview_canvas_size(available_width, aspect);
+    Rect::new(
+        preview.x + PREVIEW_SIDE_INSET + (available_width - width) * 0.5,
+        preview.y + PREVIEW_TITLE_HEIGHT,
+        width,
+        height,
+    )
+}
 fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
     let mut y = layout.content_column.y + 28.0;
     add_heading(
@@ -2176,9 +2280,34 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         &mut y,
     );
     y += UiTokens::GROUP_GAP;
-    let preview_height =
-        overlay_preview_region_height(layout.content_column.w, context.overlay_preview_aspect);
-    add_region(layout, RegionKind::OverlayPreview, &mut y, preview_height);
+    let placement = overlay_placement_geometry(
+        Rect::new(layout.content_column.x, y, layout.content_column.w, 0.0),
+        context.overlay_preview_aspect,
+    );
+    add_region(
+        layout,
+        RegionKind::OverlayPreview,
+        &mut y,
+        placement.region.h,
+    );
+    if let Some(controls) = placement.controls {
+        add_overlay_position_elements(layout, controls);
+    } else {
+        add_heading(
+            layout,
+            "Position",
+            "Choose a location on the monitor work area.",
+            &mut y,
+        );
+        let controls = Rect::new(
+            layout.content_column.x,
+            y,
+            layout.content_column.w,
+            overlay_position_controls_height(),
+        );
+        add_overlay_position_elements(layout, controls);
+        y = controls.bottom() + UiTokens::GROUP_GAP;
+    }
     add_row(
         layout,
         &mut y,
@@ -2200,41 +2329,6 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         ElementKind::Value,
         "Appearance",
         "Follow Windows, light, or dark",
-    );
-    add_heading(
-        layout,
-        "Position",
-        "Choose a location on the monitor work area.",
-        &mut y,
-    );
-    let grid_start = y;
-    for index in 0..9 {
-        let column = index % 3;
-        let row = index / 3;
-        add_element(
-            layout,
-            &mut y,
-            ElementId::OverlayPositionCell(index),
-            ElementKind::Choice,
-            "Overlay position",
-            "Choose this position",
-            Rect::new(
-                layout.content_column.x
-                    + column as f32 * ((layout.content_column.w - 16.0) / 3.0 + 8.0),
-                grid_start + row as f32 * 44.0,
-                (layout.content_column.w - 16.0) / 3.0,
-                36.0,
-            ),
-        );
-    }
-    y = grid_start + 3.0 * 44.0 + UiTokens::GROUP_GAP;
-    add_row(
-        layout,
-        &mut y,
-        ElementId::OverlayMonitor,
-        ElementKind::Value,
-        "Monitor",
-        "Choose where the status card appears",
     );
     add_heading(
         layout,
@@ -2585,7 +2679,8 @@ fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        overlay_preview_canvas_size, overlay_preview_region_height, ElementId, ElementKind,
+        overlay_monitor_rect, overlay_placement_geometry, overlay_position_grid_rect,
+        overlay_preview_canvas_rect, overlay_preview_canvas_size, ElementId, ElementKind,
         HotkeySlot, RegionKind, SettingsLayout,
     };
     use crate::ui::navigation::Page;
@@ -3096,11 +3191,12 @@ mod tests {
     fn overlay_layout_has_no_duplicate_windows_audio_toggle() {
         let layout = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Overlay, "", 0, None);
         assert!(layout.element(ElementId::OverlayExternalChanges).is_none());
+        assert!(layout.element(ElementId::OverlayPosition).is_none());
     }
 
     #[test]
-    fn overlay_preview_region_expands_beyond_the_old_compact_surface() {
-        let layout = SettingsLayout::build_shell_with_context(
+    fn overlay_placement_is_responsive_and_uses_monitor_surface_as_preview() {
+        let wide = SettingsLayout::build_shell_with_context(
             1200.0,
             900.0,
             0.0,
@@ -3112,16 +3208,108 @@ mod tests {
             },
             None,
         );
-        let preview = layout
+        let wide_region = wide
             .regions
             .iter()
             .find(|region| region.kind == RegionKind::OverlayPreview)
-            .expect("overlay preview");
-        assert_eq!(
-            preview.rect.h,
-            overlay_preview_region_height(layout.content_column.w, (16, 9))
+            .expect("wide overlay placement");
+        let wide_geometry = overlay_placement_geometry(
+            super::Rect::new(
+                wide.content_column.x,
+                wide_region.rect.y,
+                wide.content_column.w,
+                0.0,
+            ),
+            (16, 9),
         );
-        assert!(preview.rect.h > 164.0);
+        assert_eq!(wide_region.rect, wide_geometry.region);
+        let controls = wide_geometry.controls.expect("wide placement controls");
+        assert!(wide_geometry.preview.w < wide_geometry.region.w);
+        assert_eq!(
+            wide_geometry.preview.right() + super::OVERLAY_PLACEMENT_GAP,
+            controls.x
+        );
+        assert_eq!(
+            wide.element(ElementId::OverlayPositionCell(0))
+                .expect("wide position cell")
+                .rect,
+            overlay_position_grid_rect(controls, 0)
+        );
+        assert_eq!(
+            wide.element(ElementId::OverlayMonitor)
+                .expect("wide monitor selector")
+                .rect,
+            overlay_monitor_rect(controls)
+        );
+        let canvas = overlay_preview_canvas_rect(wide_geometry.preview, (16, 9));
+        assert!(canvas.x >= wide_geometry.preview.x);
+        assert!(canvas.y >= wide_geometry.preview.y);
+        assert!(canvas.right() <= wide_geometry.preview.right());
+        assert!(canvas.bottom() <= wide_geometry.preview.bottom());
+        assert_ne!(canvas, wide_geometry.region);
+
+        let narrow = SettingsLayout::build_shell_with_context(
+            960.0,
+            900.0,
+            0.0,
+            Page::Overlay,
+            "",
+            super::LayoutContext {
+                overlay_preview_aspect: (16, 9),
+                ..Default::default()
+            },
+            None,
+        );
+        let narrow_region = narrow
+            .regions
+            .iter()
+            .find(|region| region.kind == RegionKind::OverlayPreview)
+            .expect("narrow overlay preview");
+        let narrow_geometry = overlay_placement_geometry(
+            super::Rect::new(
+                narrow.content_column.x,
+                narrow_region.rect.y,
+                narrow.content_column.w,
+                0.0,
+            ),
+            (16, 9),
+        );
+        assert!(narrow_geometry.controls.is_none());
+        let position = narrow
+            .sections
+            .iter()
+            .find(|section| section.title == "Position")
+            .expect("stacked position heading");
+        assert!(position.y > narrow_region.rect.bottom());
+        assert_eq!(
+            narrow
+                .element(ElementId::OverlayPositionCell(0))
+                .expect("narrow position cell")
+                .rect
+                .x,
+            narrow.content_column.x
+        );
+        assert_eq!(narrow_region.rect, narrow_geometry.region);
+    }
+
+    #[test]
+    fn current_app_audio_has_one_heading_and_compact_status_row() {
+        let layout = SettingsLayout::build_shell(1200.0, 900.0, 0.0, Page::Audio, "", 0, None);
+        assert_eq!(
+            layout
+                .sections
+                .iter()
+                .filter(|section| section.title == "Current app audio")
+                .count(),
+            1
+        );
+        let status = layout
+            .regions
+            .iter()
+            .find(|region| region.kind == RegionKind::AudioCurrentApp)
+            .expect("current app status");
+        assert_eq!(status.rect.h, 64.0);
+        assert!(status.rect.h < super::UiTokens::CARD_HEIGHT);
     }
 
     #[test]
@@ -3163,7 +3351,11 @@ mod tests {
             super::UiTokens::TITLEBAR_BUTTON_GAP
         );
         assert!(layout.search_rect.right() <= minimize.rect.x);
-        assert!(layout.search_rect.y >= super::UiTokens::TITLEBAR_HEIGHT);
+        assert_eq!(layout.search_rect.y, super::UiTokens::TITLEBAR_HEIGHT + 4.0);
+        assert!(layout
+            .sections
+            .iter()
+            .all(|section| section.title != "Control Center"));
     }
 
     #[test]

@@ -45,11 +45,11 @@ impl UiTokens {
     pub const FOOTER_HEIGHT: f32 = 34.0;
     pub const PAGE_MARGIN: f32 = 32.0;
     pub const VIEWPORT_TOP_INSET: f32 = 8.0;
-    pub const TITLEBAR_HEIGHT: f32 = 40.0;
+    pub const TITLEBAR_HEIGHT: f32 = 32.0;
     pub const TITLEBAR_BUTTON_WIDTH: f32 = 44.0;
-    pub const TITLEBAR_BUTTON_HEIGHT: f32 = 32.0;
-    pub const TITLEBAR_BUTTON_TOP: f32 = 4.0;
-    pub const TITLEBAR_BUTTON_GAP: f32 = 2.0;
+    pub const TITLEBAR_BUTTON_HEIGHT: f32 = 28.0;
+    pub const TITLEBAR_BUTTON_TOP: f32 = 2.0;
+    pub const TITLEBAR_BUTTON_GAP: f32 = 0.0;
     pub const TITLEBAR_BUTTON_RIGHT: f32 = 8.0;
     pub const ROW_HEIGHT: f32 = 58.0;
     pub const ROW_GAP: f32 = 8.0;

@@ -7,6 +7,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Corrected the failed Control Center acceptance pass: Settings scrolling is immediate
+  with no scroll tween state, the Shortcuts icon is an unmistakable keyboard, Current
+  app audio is a compact single-heading status row, and the custom titlebar is blank
+  with restrained caption glyphs.
+- Reworked Overlay placement into one responsive preview/control layout with a
+  monitor-as-preview surface, and moved the native LISTBOX picker host inside the
+  active Control Center child hierarchy without foreground transfer.
 
 - Hardened the custom Settings UI Automation provider: unsupported patterns,
   navigation boundaries, outside point queries, and logical child host providers
@@ -35,13 +42,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Simplified the Control Center shell hierarchy: page titles no longer repeat in
   the top bar, section groups have stronger separation, and workspace/Special
   surfaces use compact single-purpose layouts.
-- Added eased Settings scrolling and keyboard-visible-only focus rings; pointer
-  focus remains available to UI Automation and keyboard navigation.
+- Replaced eased Settings scrolling with immediate wheel and Page Up/Down updates;
+  pointer focus remains available to UI Automation and keyboard navigation.
 - Tightened the Overlay preview, aligned the app/navigation icon language with
   the packaged speaker mark, and corrected native picker font metrics so
   endpoint descenders remain visible.
-- Reworked the corrective Control Center pass: wheel scrolling now uses short
-  accumulated retargets, section dividers sit in shared breathing room, and
+- Reworked the corrective Control Center pass: wheel scrolling is direct with no
+  queued target/tween state, section dividers sit in shared breathing room, and
   Workspaces no longer renders a desktop-switcher strip or standalone Special
   Workspace status card.
 - Unified standard right-side control widths, canonicalized compact audio
