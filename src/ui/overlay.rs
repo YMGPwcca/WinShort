@@ -11,8 +11,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory1, ID2D1RenderTarget, D2D1_FACTORY_OPTIONS,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1CreateFactory, ID2D1Factory1, ID2D1RenderTarget, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_FACTORY_OPTIONS, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
@@ -360,7 +360,7 @@ pub fn output_row(state: &crate::audio::OutputState) -> OverlayRow {
             title: if *muted {
                 "Speaker muted".into()
             } else {
-                device.name.clone()
+                concise(&device.name)
             },
             detail: if *muted {
                 "Speaker output is muted".into()
@@ -515,16 +515,6 @@ pub fn application_volume_row(state: &crate::audio::AppVolumeState) -> OverlayRo
         } else {
             detail
         },
-    }
-}
-
-/// Transient "speaker changed" card (#17b).
-pub fn output_changed_row(device: &crate::audio::state::DeviceId) -> OverlayRow {
-    OverlayRow {
-        icon: OverlayIcon::Output,
-        tone: OverlayTone::Changed,
-        title: "Speaker changed".into(),
-        detail: concise(&device.name),
     }
 }
 
@@ -1223,7 +1213,7 @@ unsafe fn draw_text(
             format,
             &rect,
             brush,
-            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP,
             DWRITE_MEASURING_MODE_NATURAL,
         );
     }

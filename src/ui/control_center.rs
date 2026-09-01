@@ -203,6 +203,7 @@ pub struct SettingsUi {
     reset_confirm: bool,
     delete_profile_confirm: bool,
     scroll: f32,
+    scroll_drag_offset: Option<f32>,
     motion: Motion,
     applied_until: Option<Instant>,
     closing: bool,
@@ -257,6 +258,7 @@ impl SettingsUi {
             reset_confirm: false,
             delete_profile_confirm: false,
             scroll: 0.0,
+            scroll_drag_offset: None,
             motion: Motion::default(),
             applied_until: None,
             closing: false,
@@ -1236,9 +1238,9 @@ impl SettingsUi {
             crate::desktop::BackendAvailability::Available
         ) {
             (
-                "Ready",
+                "",
                 "A dedicated place for windows kept out of the way.",
-                BrushRole::Success,
+                BrushRole::Border,
             )
         } else {
             (
@@ -1249,24 +1251,32 @@ impl SettingsUi {
         };
         renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::BackgroundSubtle);
         renderer.stroke_rounded(rect.d2d(), 10.0, role, 1.0);
+        let text_width = if status.is_empty() {
+            rect.w - 32.0
+        } else {
+            rect.w - 180.0
+        };
+        let stack_top = rect.y + (rect.h - 40.0) * 0.5;
         renderer.text(
             "Special Workspace",
-            UiRect::new(rect.x + 16.0, rect.y + 12.0, rect.w - 180.0, 22.0).d2d(),
+            UiRect::new(rect.x + 16.0, stack_top, text_width, 20.0).d2d(),
             TextStyle::BodyStrong,
             BrushRole::Text,
         );
         renderer.text_clipped(
             detail,
-            UiRect::new(rect.x + 16.0, rect.y + 40.0, rect.w - 180.0, 22.0).d2d(),
+            UiRect::new(rect.x + 16.0, stack_top + 22.0, text_width, 18.0).d2d(),
             TextStyle::Caption,
             BrushRole::TextSecondary,
         );
-        renderer.text(
-            status,
-            UiRect::new(rect.right() - 150.0, rect.y + 28.0, 134.0, 22.0).d2d(),
-            TextStyle::BodyStrong,
-            role,
-        );
+        if !status.is_empty() {
+            renderer.text(
+                status,
+                UiRect::new(rect.right() - 150.0, rect.y + 28.0, 134.0, 22.0).d2d(),
+                TextStyle::BodyStrong,
+                role,
+            );
+        }
     }
 
     fn draw_current_app_audio(&self, renderer: &Renderer, rect: UiRect) {
@@ -4479,7 +4489,7 @@ impl ControlCenterWindow {
         let anchor = PopupRect::new(anchor.left, anchor.top, anchor.right, anchor.bottom);
         let scale = dpi.max(96) as f32 / 96.0;
         let width = (picker_width_dip(control_rect.w, &choices) * scale).round() as i32;
-        let height = ((choices.len().min(10) as f32 * 30.0 + 8.0) * scale).round() as i32;
+        let height = ((choices.len().min(10) as f32 * 30.0) * scale).round() as i32 + 2;
         let geometry = crate::ui::picker::place_popup(anchor, work, width, height);
         let owner =
             picker_element(kind).ok_or_else(|| Error::internal("settings picker row missing"))?;
@@ -5437,6 +5447,18 @@ unsafe extern "system" fn settings_wndproc(
                     cell.borrow_mut().mouse_tracking = true;
                 }
                 let mut ui = cell.borrow_mut();
+                if let Some(offset) = ui.scroll_drag_offset {
+                    ui.scroll = controls::scroll_from_scrollbar_pointer(
+                        ui.layout.content_clip,
+                        y,
+                        offset,
+                        ui.layout.max_scroll,
+                    );
+                    ui.rebuild_layout(hwnd);
+                    ui.publish_automation_snapshot(hwnd);
+                    invalidate(hwnd);
+                    return LRESULT(0);
+                }
                 ui.update_hover(hwnd, x, y);
                 if let Some(
                     id @ (ElementId::OverlayDuration
@@ -5463,7 +5485,31 @@ unsafe extern "system" fn settings_wndproc(
                     ui.rebuild_layout(hwnd);
                     let mut focus_requested = false;
                     let mut capture_requested = false;
-                    if let Some(id) = ui.layout.hit_test(x, y) {
+                    let scrollbar_hit = ui.layout.max_scroll > 0.0
+                        && controls::scrollbar_hit_rect(ui.layout.content_clip).contains(x, y);
+                    if scrollbar_hit {
+                        if let Some(thumb) = controls::scrollbar_thumb_rect(
+                            ui.layout.content_clip,
+                            ui.scroll,
+                            ui.layout.max_scroll,
+                        ) {
+                            let offset = if thumb.contains(x, y) {
+                                y - thumb.y
+                            } else {
+                                thumb.h * 0.5
+                            };
+                            ui.scroll_drag_offset = Some(offset);
+                            ui.scroll = controls::scroll_from_scrollbar_pointer(
+                                ui.layout.content_clip,
+                                y,
+                                offset,
+                                ui.layout.max_scroll,
+                            );
+                            ui.rebuild_layout(hwnd);
+                            capture_requested = true;
+                            invalidate(hwnd);
+                        }
+                    } else if let Some(id) = ui.layout.hit_test(x, y) {
                         if !ui.is_disabled(id) {
                             focus_requested = true;
                             capture_requested = true;
@@ -5494,6 +5540,11 @@ unsafe extern "system" fn settings_wndproc(
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
+                if cell.borrow_mut().scroll_drag_offset.take().is_some() {
+                    let _ = ReleaseCapture();
+                    invalidate(hwnd);
+                    return LRESULT(0);
+                }
                 let (slider, activate_id) = {
                     let mut ui = cell.borrow_mut();
                     let (x, y) = mouse_point(lparam, ui.dpi);
@@ -6105,10 +6156,7 @@ mod interaction_tests {
 
         assert_eq!(choices.len(), 1);
         assert_eq!(selected, 0);
-        assert_eq!(
-            choices[0].label,
-            "Current microphone · Currently Windows default"
-        );
+        assert_eq!(choices[0].label, "Current microphone");
         assert_eq!(
             choices[0].value,
             PickerValue::Device(DeviceSelection::Endpoint("current-endpoint".into()))
@@ -6311,7 +6359,13 @@ mod interaction_tests {
                 endpoint: "output".into(),
                 name: "Cached speakers".into(),
             }],
-            input_defaults: Default::default(),
+            input_defaults: crate::audio::devices::DefaultDevices {
+                console: Some(crate::audio::DeviceId {
+                    endpoint: "input".into(),
+                    name: "Cached microphone".into(),
+                }),
+                ..Default::default()
+            },
             output_defaults: Default::default(),
             warnings: Vec::new(),
         };

@@ -2095,14 +2095,6 @@ fn add_overlay(layout: &mut SettingsLayout) {
         "Monitor",
         "Choose where the status card appears",
     );
-    add_row(
-        layout,
-        &mut y,
-        ElementId::OverlayExternalChanges,
-        ElementKind::Toggle,
-        "Show Windows audio changes",
-        "Keep the status card in sync with Windows audio",
-    );
     add_heading(
         layout,
         "Size and timing",
