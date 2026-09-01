@@ -963,7 +963,6 @@ impl App {
                         .unwrap_or_else(|| "audio subsystem unavailable".into());
                     self.route_event(AppEvent::MicrophoneStateChanged {
                         state: crate::audio::AudioState::Unavailable { reason },
-                        origin: AudioEventOrigin::WinShortAction(request_id),
                     });
                 }
             }
@@ -977,7 +976,6 @@ impl App {
                         .unwrap_or_else(|| "audio subsystem unavailable".into());
                     self.route_event(AppEvent::OutputStateChanged {
                         state: crate::audio::OutputState::Unavailable { reason },
-                        origin: AudioEventOrigin::WinShortAction(request_id),
                     });
                 }
             }
@@ -1270,16 +1268,6 @@ impl App {
         let config = crate::app::config();
         self.show_overlay_model_with_config(model, config.overlay.clone());
     }
-    fn show_microphone_overlay(&mut self) {
-        let row = crate::ui::overlay::microphone_row(&self.microphone_state);
-        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
-    }
-
-    fn show_output_overlay(&mut self) {
-        let row = crate::ui::overlay::output_row(&self.output_state);
-        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
-    }
-
     fn show_preview_overlay(&mut self, config: crate::config::model::OverlayCfg) {
         let state = crate::audio::AudioState::Active { volume_pct: 50 };
         let model =
@@ -1524,36 +1512,14 @@ impl App {
             AppEvent::DeviceCycleResolved { request_id, result } => {
                 self.handle_device_cycle_result(request_id, result);
             }
-            AppEvent::MicrophoneStateChanged { state, origin } => {
-                let changed = self.microphone_state != state;
-                let should_show = Self::should_show_audio_overlay(
-                    origin,
-                    self.microphone_seen,
-                    changed,
-                    false,
-                    false,
-                );
+            AppEvent::MicrophoneStateChanged { state } => {
                 self.microphone_state = state;
                 self.microphone_seen = true;
-                if should_show {
-                    self.show_microphone_overlay();
-                }
                 self.refresh_settings_runtime();
             }
-            AppEvent::OutputStateChanged { state, origin } => {
-                let changed = self.output_state != state;
-                let should_show = Self::should_show_audio_overlay(
-                    origin,
-                    self.output_seen,
-                    changed,
-                    false,
-                    false,
-                );
+            AppEvent::OutputStateChanged { state } => {
                 self.output_state = state;
                 self.output_seen = true;
-                if should_show {
-                    self.show_output_overlay();
-                }
                 self.refresh_settings_runtime();
             }
             AppEvent::DefaultOutputChanged(_device) => {}

@@ -139,15 +139,16 @@ pub fn draw_row(
         BrushRole::TextSecondary
     };
     let text_width = (rect.w - 260.0).max(110.0);
+    let stack_top = rect.y + (rect.h - 40.0) * 0.5;
     r.text_clipped(
         &element.label,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 8.0, text_width, 22.0).d2d(),
+        Rect::new(rect.x + BODY_LEFT, stack_top, text_width, 20.0).d2d(),
         TextStyle::BodyStrong,
         label_role,
     );
     r.text_clipped(
         &element.description,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 31.0, text_width, 18.0).d2d(),
+        Rect::new(rect.x + BODY_LEFT, stack_top + 22.0, text_width, 18.0).d2d(),
         TextStyle::Caption,
         secondary_role,
     );

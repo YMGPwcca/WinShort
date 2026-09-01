@@ -735,7 +735,7 @@ impl AudioController {
         self.publish(flow, origin);
     }
 
-    fn publish(&self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
+    fn publish(&self, flow: EndpointFlow, _origin: crate::event::AudioEventOrigin) {
         match flow {
             EndpointFlow::Capture => {
                 let state = self
@@ -746,7 +746,7 @@ impl AudioController {
                     .unwrap_or_else(|e| AudioState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::MicrophoneStateChanged { state, origin });
+                self.post(AppEvent::MicrophoneStateChanged { state });
             }
             EndpointFlow::Render => {
                 let state = self
@@ -757,7 +757,7 @@ impl AudioController {
                     .unwrap_or_else(|e| OutputState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::OutputStateChanged { state, origin });
+                self.post(AppEvent::OutputStateChanged { state });
             }
         }
     }
