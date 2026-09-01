@@ -21,6 +21,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Correct pass 1 driver anchor
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/p0_ux_pass1.py')
+          s = p.read_text(encoding='utf-8')
+          old = 'marker = "        if list.0.is_null() {\\n"'
+          new = 'marker = \'        .map_err(|error| Error::win("CreateWindowExW(settings picker list)", &error))?;\''
+          assert s.count(old) == 1, s.count(old)
+          s = s.replace(old, new)
+          old = '            let _ = SetWindowTheme(list, PCWSTR(theme_name.as_ptr()), PCWSTR::null());'
+          new = '            let _ = unsafe { SetWindowTheme(list, PCWSTR(theme_name.as_ptr()), PCWSTR::null()) };'
+          assert s.count(old) == 1, s.count(old)
+          p.write_text(s, encoding='utf-8', newline='\n')
+          PY
       - name: Materialize and validate UX pass 1
         run: |
           python .github/scripts/p0_ux_pass1.py
