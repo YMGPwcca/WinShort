@@ -10,7 +10,7 @@ use crate::keyboard::binding::{numbered_desktop_family, Hotkey, ModifierMask};
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 9;
+pub const CURRENT_SCHEMA_VERSION: u8 = 10;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +59,12 @@ pub struct DisplayProfileHotkey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisabledHotkey {
+    pub action: String,
+    pub hotkey: Hotkey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotkeysCfg {
     pub toggle_microphone: Option<Hotkey>,
     pub toggle_output: Option<Hotkey>,
@@ -68,6 +74,40 @@ pub struct HotkeysCfg {
     pub foreground_volume_up: Option<Hotkey>,
     pub foreground_volume_down: Option<Hotkey>,
     pub display_profiles: Vec<DisplayProfileHotkey>,
+    pub disabled: Vec<DisabledHotkey>,
+}
+
+impl HotkeysCfg {
+    pub fn disabled_hotkey(&self, action: &str) -> Option<Hotkey> {
+        self.disabled
+            .iter()
+            .find(|binding| binding.action == action)
+            .map(|binding| binding.hotkey)
+    }
+
+    pub fn set_disabled_hotkey(&mut self, action: String, hotkey: Hotkey) {
+        if let Some(binding) = self
+            .disabled
+            .iter_mut()
+            .find(|binding| binding.action == action)
+        {
+            binding.hotkey = hotkey;
+        } else {
+            self.disabled.push(DisabledHotkey { action, hotkey });
+        }
+    }
+
+    pub fn take_disabled_hotkey(&mut self, action: &str) -> Option<Hotkey> {
+        let index = self
+            .disabled
+            .iter()
+            .position(|binding| binding.action == action)?;
+        Some(self.disabled.remove(index).hotkey)
+    }
+
+    pub fn clear_disabled_hotkey(&mut self, action: &str) {
+        self.disabled.retain(|binding| binding.action != action);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +351,7 @@ impl Default for Config {
                 foreground_volume_up: None,
                 foreground_volume_down: None,
                 display_profiles: Vec::new(),
+                disabled: Vec::new(),
             },
             virtual_desktops: VdCfg {
                 enabled: true,
@@ -455,6 +496,12 @@ pub struct DisplayProfileHotkeyToml {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DisabledHotkeyToml {
+    pub action: String,
+    pub hotkey: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct HotkeysToml {
     #[serde(default = "default_mic")]
     pub toggle_microphone: String,
@@ -472,6 +519,8 @@ pub struct HotkeysToml {
     pub foreground_volume_down: String,
     #[serde(default)]
     pub display_profiles: Vec<DisplayProfileHotkeyToml>,
+    #[serde(default)]
+    pub disabled: Vec<DisabledHotkeyToml>,
 }
 
 impl Default for HotkeysToml {
@@ -485,6 +534,7 @@ impl Default for HotkeysToml {
             foreground_volume_up: String::new(),
             foreground_volume_down: String::new(),
             display_profiles: Vec::new(),
+            disabled: Vec::new(),
         }
     }
 }
@@ -681,6 +731,15 @@ impl Config {
                         hotkey: binding.hotkey.to_string(),
                     })
                     .collect(),
+                disabled: self
+                    .hotkeys
+                    .disabled
+                    .iter()
+                    .map(|binding| DisabledHotkeyToml {
+                        action: binding.action.clone(),
+                        hotkey: binding.hotkey.to_string(),
+                    })
+                    .collect(),
             },
             virtual_desktops: VdToml {
                 enabled: self.virtual_desktops.enabled,
@@ -855,6 +914,20 @@ impl Config {
             }
         }
 
+        for (index, binding) in t.hotkeys.disabled.iter().enumerate() {
+            let action = binding.action.trim();
+            if action.is_empty() {
+                warnings.push(format!(
+                    "hotkeys.disabled[{index}].action: must not be empty"
+                ));
+                continue;
+            }
+            match Hotkey::parse(&binding.hotkey) {
+                Ok(hotkey) => c.hotkeys.set_disabled_hotkey(action.to_string(), hotkey),
+                Err(error) => warnings.push(format!("hotkeys.disabled[{index}].hotkey: {error}")),
+            }
+        }
+
         c.virtual_desktops.enabled = t.virtual_desktops.enabled;
         c.virtual_desktops.win_number_switching = t.virtual_desktops.win_number_switching;
         c.virtual_desktops.number_modifier = parse_modifier(
@@ -943,6 +1016,7 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "foreground_volume_up",
             "foreground_volume_down",
             "display_profiles",
+            "disabled",
         ]),
         "virtual_desktops" => Some(&[
             "enabled",

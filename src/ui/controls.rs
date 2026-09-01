@@ -805,6 +805,63 @@ pub fn draw_device_row(
     r.line(x, y + 1.0, x + 3.0, y - 2.0, chevron, 1.25);
 }
 
+pub fn draw_hotkey_card(r: &Renderer, element: &Element, enabled: bool) {
+    let rect = element.rect.inset(1.0);
+    draw_surface(r, rect, BrushRole::Card, InteractionState::Idle, 10.0);
+    let text_width = (rect.w - 222.0).max(120.0);
+    let stack_top = rect.y + (rect.h - 40.0) * 0.5;
+    r.text_clipped(
+        &element.label,
+        Rect::new(rect.x + BODY_LEFT, stack_top, text_width, 20.0).d2d(),
+        TextStyle::BodyStrong,
+        if enabled {
+            BrushRole::Text
+        } else {
+            BrushRole::TextSecondary
+        },
+    );
+    r.text_clipped(
+        &element.description,
+        Rect::new(rect.x + BODY_LEFT, stack_top + 22.0, text_width, 18.0).d2d(),
+        TextStyle::Caption,
+        BrushRole::TextSecondary,
+    );
+}
+
+pub fn draw_hotkey_keycap(r: &Renderer, element: &Element, value: &str, interaction: Interaction) {
+    let rect = element.rect.inset(1.0);
+    let state = interaction_state(interaction);
+    r.fill_rounded(
+        rect.d2d(),
+        CONTROL_RADIUS,
+        if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
+            BrushRole::ControlHover
+        } else {
+            BrushRole::BackgroundSubtle
+        },
+    );
+    r.stroke_rounded(
+        rect.d2d(),
+        CONTROL_RADIUS,
+        if interaction.focused {
+            BrushRole::Focus
+        } else {
+            BrushRole::BorderStrong
+        },
+        if interaction.focused { 1.5 } else { 1.0 },
+    );
+    r.text_clipped(
+        value,
+        rect.d2d(),
+        TextStyle::Button,
+        if value.starts_with("Press") {
+            BrushRole::Accent
+        } else {
+            BrushRole::Text
+        },
+    );
+}
+
 pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interaction: Interaction) {
     let rect = element.rect.inset(1.0);
     let state = interaction_state(Interaction {

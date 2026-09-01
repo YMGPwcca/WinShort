@@ -83,7 +83,7 @@ Shortcuts are grouped by actions:
 - Workspaces: Desktop 1–9, Previous desktop, Move window to Special, and Open / close Special;
 - Display profiles: shortcut for the selected profile.
 
-Selecting a shortcut enters the existing global capture mode. Captured chords are validated against the canonical conflict and reserved-family rules, persisted through the atomic config path, and published as one coherent runtime change. Escape cancels capture. A failed save restores the previous draft and reports a human recovery message; the hook is not reinstalled.
+Each shortcut card exposes its keycap, an Enable/Disable action, and an explicit Unassign action. Selecting the keycap enters the existing global capture mode. Disabled shortcuts keep their chord so they can be re-enabled without recording again. Captured chords are validated against the canonical conflict and reserved-family rules, persisted through the atomic config path, and published as one coherent runtime change. Escape cancels capture. A failed save restores the previous draft and reports a human recovery message; the hook is not reinstalled.
 
 ### Audio
 
