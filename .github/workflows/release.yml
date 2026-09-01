@@ -32,7 +32,7 @@ jobs:
       matrix:
         target: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref_override || github.ref }}
 
