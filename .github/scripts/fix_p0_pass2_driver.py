@@ -21,5 +21,99 @@ for old, new, label in replacements:
         raise SystemExit(f'pass2 {label} patch mismatch: {s.count(old)}')
     s = s.replace(old, new)
 
+start = '# Recording writes through the new slot helper, preserving disabled state.\n'
+end = '# ---------------------------------------------------------------------------\n# Docs: schema and UX contract.\n'
+a = s.index(start)
+b = s.index(end, a)
+record_patch = r'''# Recording writes through the new slot helper, preserving disabled state.
+record_key_old = ''' + "'''" + r'''        match id {
+            ElementId::MicHotkey => self.draft.hotkeys.toggle_microphone = Some(hotkey),
+            ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
+            ElementId::ForegroundHotkey => {
+                self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
+            }
+            ElementId::CycleInputHotkey => self.draft.hotkeys.cycle_input_device = Some(hotkey),
+            ElementId::CycleOutputHotkey => self.draft.hotkeys.cycle_output_device = Some(hotkey),
+            ElementId::ForegroundVolumeUpHotkey => {
+                self.draft.hotkeys.foreground_volume_up = Some(hotkey)
+            }
+            ElementId::ForegroundVolumeDownHotkey => {
+                self.draft.hotkeys.foreground_volume_down = Some(hotkey)
+            }
+            ElementId::PreviousDesktopHotkey => {
+                self.draft.virtual_desktops.previous_desktop = Some(hotkey)
+            }
+            ElementId::AssignScratchpadHotkey => {
+                self.draft.virtual_desktops.scratchpad_assign = Some(hotkey)
+            }
+            ElementId::ToggleScratchpadHotkey => {
+                self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
+            }
+            ElementId::DisplayProfileHotkey => self.set_active_profile_hotkey(Some(hotkey)),
+            _ => {}
+        }
+''' + "'''" + r'''
+record_key_new = ''' + "'''" + r'''        if let Some(slot) = HotkeySlot::from_capture_id(id) {
+            self.set_recorded_hotkey(slot, hotkey);
+        }
+''' + "'''" + r'''
+replace("src/ui/control_center.rs", record_key_old, record_key_new)
+
+finish_old = ''' + "'''" + r'''                    match id {
+                        ElementId::MicHotkey => self.draft.hotkeys.toggle_microphone = Some(hotkey),
+                        ElementId::OutputHotkey => self.draft.hotkeys.toggle_output = Some(hotkey),
+                        ElementId::ForegroundHotkey => {
+                            self.draft.hotkeys.toggle_foreground_audio = Some(hotkey)
+                        }
+                        ElementId::CycleInputHotkey => {
+                            self.draft.hotkeys.cycle_input_device = Some(hotkey)
+                        }
+                        ElementId::CycleOutputHotkey => {
+                            self.draft.hotkeys.cycle_output_device = Some(hotkey)
+                        }
+                        ElementId::ForegroundVolumeUpHotkey => {
+                            self.draft.hotkeys.foreground_volume_up = Some(hotkey)
+                        }
+                        ElementId::ForegroundVolumeDownHotkey => {
+                            self.draft.hotkeys.foreground_volume_down = Some(hotkey)
+                        }
+                        ElementId::PreviousDesktopHotkey => {
+                            self.draft.virtual_desktops.previous_desktop = Some(hotkey)
+                        }
+                        ElementId::AssignScratchpadHotkey => {
+                            self.draft.virtual_desktops.scratchpad_assign = Some(hotkey)
+                        }
+                        ElementId::ToggleScratchpadHotkey => {
+                            self.draft.virtual_desktops.scratchpad_toggle = Some(hotkey)
+                        }
+                        ElementId::DisplayProfileHotkey => {
+                            if key == VirtualKey(0x2E) && chord.modifiers.is_empty() {
+                                self.set_active_profile_hotkey(None);
+                            } else {
+                                self.set_active_profile_hotkey(Some(hotkey));
+                            }
+                        }
+                        _ => {}
+                    }
+''' + "'''" + r'''
+finish_new = ''' + "'''" + r'''                    if let Some(slot) = HotkeySlot::from_capture_id(id) {
+                        if slot == HotkeySlot::DisplayProfile
+                            && key == VirtualKey(0x2E)
+                            && chord.modifiers.is_empty()
+                        {
+                            self.set_active_hotkey(slot, None);
+                            if let Some(action) = self.hotkey_action(slot) {
+                                self.draft.hotkeys.clear_disabled_hotkey(&action);
+                            }
+                        } else {
+                            self.set_recorded_hotkey(slot, hotkey);
+                        }
+                    }
+''' + "'''" + r'''
+replace("src/ui/control_center.rs", finish_old, finish_new)
+
+'''
+s = s[:a] + record_patch + s[b:]
+
 p.write_text(s, encoding='utf-8', newline='\n')
-print('pass2 paint and activation markers scoped')
+print('pass2 paint, activation, and record paths scoped')
