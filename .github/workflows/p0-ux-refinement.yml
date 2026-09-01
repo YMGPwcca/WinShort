@@ -22,7 +22,9 @@ jobs:
         with:
           components: rustfmt,clippy
       - name: Materialize final UX cleanup
-        run: python .github/scripts/p0_ux_pass3.py
+        run: |
+          python .github/scripts/p0_ux_pass3.py
+          python .github/scripts/p0_ux_pass3_finalize.py
       - name: Format
         run: cargo fmt --all
       - name: Format check
