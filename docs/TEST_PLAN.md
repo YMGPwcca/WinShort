@@ -111,21 +111,24 @@ Automated coverage:
 
 Manual matrix:
 
-- Input/output picker: lists only active real endpoints; choosing one changes the Windows default
-  for Console, Multimedia, and Communications, and the selected default is reflected immediately.
-- Hover/focus non-obvious controls and verify delayed native help text closes on pointer/focus
-  change.
-- Role rows remain coherent for legacy explicit bindings and announce the reason when disabled.
-- Overlay position and monitor picker: Foreground, Primary, each configured monitor, disconnected
-  configured monitor, long labels, popup above/below, and DPI changes.
-- Mouse and keyboard: Tab/Shift-Tab, Enter, Space, Escape, arrows, Home/End, Page Up/Down,
-  picker focus loss, hotkey recorder transitions, local commit/cancel, and reset confirmation.
-- Control Center restore after restart, removed monitor, negative coordinates, 100/125/150/200%
-  DPI.
-- Narrator or Accessibility Insights: Control Center navigation, page headings, toggle names/
-  values, picker selection, disabled role help, slider range/value, local action feedback, and
-  sensible focus order.
-- Dark/light themes, large DPI, focus visibility, and disconnected-device presentation.
+- Workspace page: the desktop strip reads as one compact control with no redundant helper text;
+  Special Workspace has one visible heading and coherent Open/Enable wording.
+- Page shell: each page presents one content title rather than repeating the same title in the
+  top bar, and section separators make functional groups distinct.
+- Overlay page: the preview is compact, remains legible at every position/scale, and does not
+  overwhelm the controls below.
+- Pointer and keyboard focus: pointer clicks keep semantic focus without a heavy ring; Tab,
+  Shift-Tab, UIA focus, and keyboard activation retain a visible focus cue.
+- Settings scrolling: wheel, Page Up/Down, focus-into-view, and scrollbar drag remain usable;
+  wheel and page movement ease instead of jumping.
+- Native picker text: long endpoint/driver names retain descenders, use trailing ellipsis only
+  when necessary, and remain readable at 100/125/150/200% DPI.
+- Audio naming: speaker and microphone cards, picker rows, and cycling choices use the same
+  friendly primary/detail normalization without endpoint IDs or default-status badges.
+- Home actions: device cards say Choose; navigation cards say Open; Special Workspace says
+  Enable only when disabled and Open otherwise.
+- Iconography: the Control Center mark and navigation glyphs remain crisp and visually coherent
+  with the packaged speaker icon in light, dark, and high-contrast themes.
 
 If an interactive desktop is unavailable, GUI and Narrator results remain unverified; automated
 geometry/state tests must not be described as live accessibility evidence.

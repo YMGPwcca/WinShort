@@ -36,7 +36,7 @@ Control Center
 
 Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed navigation rail and top search bar remain visible while the selected page scrolls independently. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; vector line icons are secondary scanning aids.
+The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed navigation rail and top search bar remain visible while the selected page scrolls independently with eased wheel and Page Up/Down motion. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio-speaker motif.
 
 `src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, desktop-strip, slider-cluster, and icon vocabulary.
 
@@ -48,15 +48,16 @@ The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed naviga
 - 80 DIP top bar;
 - 34 DIP status footer;
 - 32 DIP page margins;
-- 92 DIP page headers and 72 DIP section headers with independent line boxes;
+- 92 DIP page headers and 72 DIP section headers with independent line boxes and separators;
 - 58 DIP setting rows with an 8 DIP rhythm;
 - 7–12 DIP control/card radii;
 - 184 DIP shortcut keycaps and 206 DIP picker controls;
+- 32 DIP native picker rows with GDI-metric-sized text envelopes;
 - compact slider tracks sized from the content column rather than the window edge.
 
 All coordinates are 96-DPI logical units. The renderer retargets Direct2D/DirectWrite to the window's current PMv2 DPI. The visual system uses the existing light/dark semantic theme pairs and high-contrast system pairs.
 
-Every shared interactive control has idle, hover, pressed, focus, and disabled treatment. Focus is a visible outline rather than a color-only state. Shadows are disabled automatically in high contrast.
+Every shared interactive control has idle, hover, pressed, keyboard-visible focus, and disabled treatment. Pointer focus remains available to UI Automation and keyboard navigation but does not add a heavy painted ring. Shadows are disabled automatically in high contrast.
 
 ## Page experience
 
@@ -73,6 +74,8 @@ Home answers “What is WinShort doing right now?” with real cached runtime st
 - shortcut count and conflict health;
 - degraded subsystem notice with a Details route to Diagnostics.
 
+Home actions use `Choose` only for cards that open a device picker and `Open` for navigation; Special Workspace uses `Enable` only when its master switch is off.
+
 The page does not display endpoint identifiers, roles, GUIDs, HRESULTs, or backend names.
 
 ### Shortcuts
@@ -87,7 +90,7 @@ Each shortcut card exposes its keycap, an Enable/Disable action, and an explicit
 
 ### Audio
 
-Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. The speaker and microphone pickers expose only active real endpoints; selecting one changes the Windows system default through the audio worker. The selected row itself identifies the current endpoint, so the Control Center does not add redundant default/explicit badges. System speaker/microphone mute and volume feedback is left to Windows instead of stacking a duplicate WinShort OSD. Opaque endpoint strings and the internal follow-default binding stay out of the picker.
+Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. All endpoint names use the same friendly primary/detail normalization in cards and pickers. The speaker and microphone pickers expose only active real endpoints; selecting one changes the Windows system default through the audio worker. The selected row itself identifies the current endpoint, so the Control Center does not add redundant default/explicit badges. System speaker/microphone mute and volume feedback is left to Windows instead of stacking a duplicate WinShort OSD. Opaque endpoint strings and the internal follow-default binding stay out of the picker.
 
 Next speaker and Next microphone use three mutually exclusive modes: all available devices, selected devices, or don't cycle. Selecting the middle mode progressively reveals a real device checkbox list. The native LISTBOX fallback uses the same mode model and preserves `None`, explicit endpoint sets, and `Some(empty)` semantics.
 
@@ -95,7 +98,7 @@ Current app audio explains that WinShort itself is excluded: users switch to ano
 
 ### Workspaces
 
-The page starts with a compact visual strip of the runtime normal desktops when the backend provides a count. Each item is an ordinal status/switch target; Special Workspace is never included. One master Workspace shortcuts switch owns the dependent desktop and Special actions. When it is off, the page explains the dependency and exposes the master switch rather than dimming a wall of dead rows. Special Workspace has its own readiness surface and keeps its configured action keycaps nearby.
+The page starts with a compact segmented strip of runtime normal desktops when the backend provides a count. Its header carries only the strip title and desktop count; each item is an ordinal status/switch target, and Special Workspace is never included. One master Workspace shortcuts switch owns the dependent desktop and Special actions. When it is off, the page explains the dependency and exposes the master switch rather than dimming a wall of dead rows. The Special Workspace surface owns its single visible heading and keeps its configured action keycaps nearby.
 
 ### Displays
 
@@ -112,7 +115,7 @@ Output/topology edits remain local until Test and Keep. Moving between steps nev
 
 ### Overlay
 
-Overlay has a visual schematic preview and concise controls:
+Overlay has a compact visual schematic preview and concise controls:
 
 - enabled;
 - System, Light, or Dark appearance;
@@ -123,7 +126,7 @@ Overlay has a visual schematic preview and concise controls:
 - Short/Normal/Long duration;
 - Show on screen.
 
-The schematic preview moves and scales the draft card with position, size, appearance, and opacity. `Show on screen` sends the edited `OverlayCfg` to the existing layered overlay without persisting or replacing the live `ConfigHandle`; exact slider ranges remain available through truthful UI Automation RangeValue semantics.
+The preview is intentionally compact: it shows placement on the selected monitor and a bounded sample card without competing with the controls below. The schematic preview moves and scales the draft card with position, size, appearance, and opacity. `Show on screen` sends the edited `OverlayCfg` to the existing layered overlay without persisting or replacing the live `ConfigHandle`; exact slider ranges remain available through truthful UI Automation RangeValue semantics. Native backdrop blur and a custom titlebar remain deferred because they would add risk to the layered-window and focus lifecycle without improving the P0 task.
 
 ### System
 

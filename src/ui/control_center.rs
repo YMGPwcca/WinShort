@@ -194,6 +194,10 @@ pub struct SettingsUi {
     pressed: Option<ElementId>,
     recording_modifiers: ModifierMask,
     focused: Option<ElementId>,
+    /// Whether focus was established by keyboard or automation and should be
+    /// rendered as keyboard-visible focus. Pointer focus remains semantically
+    /// active without drawing a heavy ring.
+    focus_visible: bool,
     focus_owner: AutomationFocusOwner,
     picker_owner: Option<ElementId>,
     picker_hwnd: Option<HWND>,
@@ -203,6 +207,7 @@ pub struct SettingsUi {
     reset_confirm: bool,
     delete_profile_confirm: bool,
     scroll: f32,
+    scroll_target: f32,
     scroll_drag_offset: Option<f32>,
     motion: Motion,
     applied_until: Option<Instant>,
@@ -249,6 +254,7 @@ impl SettingsUi {
             pressed: None,
             recording_modifiers: ModifierMask::NONE,
             focused: None,
+            focus_visible: false,
             focus_owner: AutomationFocusOwner::Outside,
             picker_list_hwnd: None,
             picker_owner: None,
@@ -258,6 +264,7 @@ impl SettingsUi {
             reset_confirm: false,
             delete_profile_confirm: false,
             scroll: 0.0,
+            scroll_target: 0.0,
             scroll_drag_offset: None,
             motion: Motion::default(),
             applied_until: None,
@@ -309,6 +316,44 @@ impl SettingsUi {
             self.onboarding_step,
         );
         self.scroll = self.layout.scroll;
+        self.scroll_target = self.scroll_target.clamp(0.0, self.layout.max_scroll);
+    }
+
+    fn current_scroll(&self) -> f32 {
+        self.motion
+            .value(ElementId::Search, MotionChannel::Scroll, self.scroll_target)
+    }
+    fn visual_focus(&self, id: ElementId) -> bool {
+        self.focus_visible && self.focused == Some(id)
+    }
+
+    fn reset_scroll(&mut self) {
+        self.motion.clear_channel(MotionChannel::Scroll);
+        self.scroll = 0.0;
+        self.scroll_target = 0.0;
+    }
+
+    fn animate_scroll_to(&mut self, hwnd: HWND, target: f32) {
+        let target = target.clamp(0.0, self.layout.max_scroll);
+        let current = self.current_scroll().clamp(0.0, self.layout.max_scroll);
+        self.scroll_target = target;
+        if (current - target).abs() < 0.001 {
+            self.motion.clear_channel(MotionChannel::Scroll);
+            self.scroll = target;
+        } else if SystemVisualPreferences::query().animations_enabled {
+            self.motion.animate_from(
+                ElementId::Search,
+                MotionChannel::Scroll,
+                current,
+                target,
+                180,
+            );
+            start_timer(hwnd);
+        } else {
+            self.motion.clear_channel(MotionChannel::Scroll);
+            self.scroll = target;
+        }
+        self.rebuild_layout(hwnd);
     }
 
     fn dirty(&self) -> bool {
@@ -346,7 +391,7 @@ impl SettingsUi {
         }
         self.page = page;
         self.search_query.clear();
-        self.scroll = 0.0;
+        self.reset_scroll();
         self.validation.clear();
     }
 
@@ -408,7 +453,7 @@ impl SettingsUi {
             }
             _ => return false,
         };
-        self.scroll = 0.0;
+        self.reset_scroll();
         self.rebuild_layout(hwnd);
         invalidate(hwnd);
         self.publish_automation_snapshot(hwnd);
@@ -422,7 +467,7 @@ impl SettingsUi {
         if let Some(character) = char::from_u32(u32::from(ch)) {
             if !character.is_control() && self.search_query.chars().count() < 256 {
                 self.search_query.push(character);
-                self.scroll = 0.0;
+                self.reset_scroll();
                 self.rebuild_layout(hwnd);
                 invalidate(hwnd);
                 self.publish_automation_snapshot(hwnd);
@@ -693,7 +738,7 @@ impl SettingsUi {
                     self.page,
                     self.hovered == Some(element.id),
                     self.pressed == Some(element.id),
-                    self.focused == Some(element.id),
+                    self.visual_focus(element.id),
                 );
                 if page == Page::Advanced {
                     renderer.line(
@@ -752,7 +797,6 @@ impl SettingsUi {
         // viewport clip is still authoritative; this final layer also makes
         // the shell visually non-scrollable if a backend render call overdraws.
         self.draw_top_bar(&renderer);
-
         renderer.fill_rect(self.layout.footer.d2d(), BrushRole::BackgroundSubtle);
         renderer.line(
             0.0,
@@ -763,7 +807,6 @@ impl SettingsUi {
             1.0,
         );
         self.draw_footer(&renderer);
-
         let result = renderer.end();
         if result.is_ok() {
             self.renderer = Some(renderer);
@@ -785,24 +828,8 @@ impl SettingsUi {
             renderer,
             self.layout.search_rect,
             &self.search_query,
-            self.focused == Some(ElementId::Search),
+            self.visual_focus(ElementId::Search),
             self.hovered == Some(ElementId::Search),
-        );
-        renderer.text_clipped(
-            if self.search_query.trim().is_empty() {
-                self.page.label()
-            } else {
-                "Search"
-            },
-            UiRect::new(
-                self.layout.search_rect.right() + 24.0,
-                25.0,
-                (self.layout.top_bar.right() - self.layout.search_rect.right() - 40.0).max(0.0),
-                28.0,
-            )
-            .d2d(),
-            TextStyle::BodyStrong,
-            BrushRole::TextSecondary,
         );
     }
 
@@ -830,7 +857,7 @@ impl SettingsUi {
                         "Speakers",
                         &self.current_output_name(),
                         &detail,
-                        "Change",
+                        "Choose",
                         Page::Audio,
                         interaction,
                     );
@@ -853,7 +880,7 @@ impl SettingsUi {
                         "Microphone",
                         &self.current_input_name(),
                         &detail,
-                        "Change",
+                        "Choose",
                         Page::Audio,
                         interaction,
                     );
@@ -869,7 +896,7 @@ impl SettingsUi {
                         "Current desktop",
                         &value,
                         "Normal workspace",
-                        "View",
+                        "Open",
                         Page::Workspaces,
                         interaction,
                     );
@@ -901,7 +928,7 @@ impl SettingsUi {
                         if self.draft.display_profiles.profiles.is_empty() {
                             "Set up"
                         } else {
-                            "View"
+                            "Open"
                         },
                         Page::Displays,
                         interaction,
@@ -928,7 +955,7 @@ impl SettingsUi {
                         &title,
                         &value,
                         &detail,
-                        "View details",
+                        "Open",
                         Page::System,
                         interaction,
                     );
@@ -1192,11 +1219,11 @@ impl SettingsUi {
     }
 
     fn draw_workspace_status(&self, renderer: &Renderer, rect: UiRect) {
-        renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::BackgroundSubtle);
+        renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::Card);
         renderer.stroke_rounded(rect.d2d(), 10.0, BrushRole::Border, 1.0);
         renderer.text(
-            "Desktops",
-            UiRect::new(rect.x + 16.0, rect.y + 10.0, rect.w * 0.4, 20.0).d2d(),
+            "Normal desktops",
+            UiRect::new(rect.x + 16.0, rect.y + 7.0, rect.w - 220.0, 20.0).d2d(),
             TextStyle::BodyStrong,
             BrushRole::Text,
         );
@@ -1210,17 +1237,7 @@ impl SettingsUi {
         };
         renderer.text_clipped(
             &summary,
-            UiRect::new(rect.x + 16.0, rect.y + 28.0, rect.w - 32.0, 18.0).d2d(),
-            TextStyle::Caption,
-            BrushRole::TextSecondary,
-        );
-        renderer.text_clipped(
-            if self.draft.virtual_desktops.enabled {
-                "Select a normal desktop"
-            } else {
-                "WinShort switching is off"
-            },
-            UiRect::new(rect.right() - 190.0, rect.y + 16.0, 174.0, 18.0).d2d(),
+            UiRect::new(rect.right() - 190.0, rect.y + 8.0, 174.0, 18.0).d2d(),
             TextStyle::CaptionRight,
             BrushRole::TextSecondary,
         );
@@ -1363,17 +1380,17 @@ impl SettingsUi {
         renderer.stroke_rounded(rect.d2d(), 12.0, BrushRole::Border, 1.0);
         renderer.text(
             "Preview",
-            UiRect::new(rect.x + 18.0, rect.y + 14.0, rect.w - 36.0, 24.0).d2d(),
+            UiRect::new(rect.x + 18.0, rect.y + 10.0, 120.0, 24.0).d2d(),
             TextStyle::Section,
             BrushRole::Text,
         );
-        renderer.text(
-            "Schematic monitor view — placement is relative to the work area.",
-            UiRect::new(rect.x + 18.0, rect.y + 40.0, rect.w - 36.0, 20.0).d2d(),
-            TextStyle::Caption,
+        renderer.text_clipped(
+            "Placement on selected monitor",
+            UiRect::new(rect.right() - 230.0, rect.y + 14.0, 212.0, 18.0).d2d(),
+            TextStyle::CaptionRight,
             BrushRole::TextSecondary,
         );
-        let canvas = UiRect::new(rect.x + 18.0, rect.y + 68.0, rect.w - 36.0, rect.h - 84.0);
+        let canvas = UiRect::new(rect.x + 18.0, rect.y + 44.0, rect.w - 36.0, rect.h - 56.0);
         renderer.fill_rounded(canvas.d2d(), 8.0, BrushRole::Card);
         renderer.stroke_rounded(canvas.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
         let sample = overlay_preview_card_rect(
@@ -1846,7 +1863,7 @@ impl SettingsUi {
                         DeviceSelection::Default => None,
                     })
                     .unwrap_or_else(|| "Windows default microphone".into());
-                friendly_device_name(&raw, AudioDeviceKind::Microphone).primary
+                friendly_device_name(&raw, AudioDeviceKind::Microphone).compact()
             }
         }
     }
@@ -1854,7 +1871,7 @@ impl SettingsUi {
     fn current_output_name(&self) -> String {
         match &self.runtime.output {
             crate::audio::OutputState::Current { device, .. } => {
-                friendly_device(device, AudioDeviceKind::Speaker).primary
+                friendly_device(device, AudioDeviceKind::Speaker).compact()
             }
             crate::audio::OutputState::Unavailable { .. } => "Speakers unavailable".into(),
         }
@@ -1892,13 +1909,13 @@ impl SettingsUi {
             (
                 "Available".into(),
                 "A dedicated workspace for windows kept out of the way".into(),
-                "Open Special".into(),
+                "Open".into(),
             )
         } else {
             (
                 "Unavailable".into(),
                 "Windows workspace service is unavailable".into(),
-                "View".into(),
+                "Open".into(),
             )
         }
     }
@@ -2010,19 +2027,19 @@ impl SettingsUi {
             (
                 "Shortcuts paused".into(),
                 format!("{active} configured"),
-                "Manage".into(),
+                "Open".into(),
             )
         } else if conflicts > 0 {
             (
                 format!("{conflicts} need attention"),
                 format!("{active} configured"),
-                "Review".into(),
+                "Open".into(),
             )
         } else {
             (
                 format!("{active} active"),
                 "No conflicts".into(),
-                "Manage".into(),
+                "Open".into(),
             )
         }
     }
@@ -2109,7 +2126,7 @@ impl SettingsUi {
             ElementId::Nav(page) => ControlValue::Action(Cow::Borrowed(page.label())),
             ElementId::SearchResult(index) => {
                 if search(&self.search_query).get(index as usize).is_some() {
-                    ControlValue::Action(Cow::Borrowed("View"))
+                    ControlValue::Action(Cow::Borrowed("Open"))
                 } else {
                     ControlValue::Action(Cow::Borrowed(""))
                 }
@@ -2132,7 +2149,7 @@ impl SettingsUi {
             ElementId::HomeShortcutHealth => {
                 ControlValue::Text(Cow::Owned(self.shortcut_health_copy().0))
             }
-            ElementId::HomeDiagnostics => ControlValue::Action(Cow::Borrowed("View details")),
+            ElementId::HomeDiagnostics => ControlValue::Action(Cow::Borrowed("Open")),
             ElementId::DisplayProfileCard(index) => ControlValue::Text(Cow::Owned(
                 self.draft
                     .display_profiles
@@ -2322,7 +2339,7 @@ impl SettingsUi {
             ElementId::DebugLogging => {
                 ControlValue::Toggle(crate::diagnostics::logging::debug_logging_enabled())
             }
-            ElementId::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("View")),
+            ElementId::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("Open")),
             ElementId::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
             ElementId::ResetSettings => {
                 ControlValue::Action(Cow::Borrowed(if self.reset_confirm {
@@ -2548,7 +2565,7 @@ impl SettingsUi {
         Interaction {
             hovered: self.hovered == Some(id),
             pressed: self.pressed == Some(id),
-            focused: self.focused == Some(id),
+            focused: self.visual_focus(id),
             disabled,
             hover_t: self.motion.value(
                 id,
@@ -3022,7 +3039,7 @@ impl SettingsUi {
             ElementId::DisplayWizardCancel => self.cancel_display_editor(),
             ElementId::OnboardingContinue => {
                 self.onboarding_step = Some(2);
-                self.scroll = 0.0;
+                self.reset_scroll();
             }
             ElementId::OnboardingOpen => {
                 if crate::ui::first_run::mark_completed(&crate::config::data_dir()).is_err() {
@@ -3338,7 +3355,7 @@ impl SettingsUi {
         };
         if let Some(step) = next {
             editor.step = step;
-            self.scroll = 0.0;
+            self.reset_scroll();
             self.validation.clear();
         }
     }
@@ -3862,6 +3879,7 @@ impl SettingsUi {
             self.focused = None;
             return;
         }
+        self.focus_visible = true;
         let next = Self::next_focus_index(&order, self.focused, reverse, |id| self.is_disabled(id));
         self.scroll_focus_into_view(next);
         self.rebuild_layout(hwnd);
@@ -3878,11 +3896,18 @@ impl SettingsUi {
         }
         let top = self.layout.content_clip.y + 28.0;
         let bottom = self.layout.content_clip.bottom() - 12.0;
-        if element.rect.y < top {
-            self.scroll = (self.scroll - (top - element.rect.y)).clamp(0.0, self.layout.max_scroll);
+        let current = self.current_scroll();
+        let target = if element.rect.y < top {
+            (current - (top - element.rect.y)).clamp(0.0, self.layout.max_scroll)
         } else if element.rect.bottom() > bottom {
-            self.scroll =
-                (self.scroll + (element.rect.bottom() - bottom)).clamp(0.0, self.layout.max_scroll);
+            (current + (element.rect.bottom() - bottom)).clamp(0.0, self.layout.max_scroll)
+        } else {
+            current
+        };
+        if (target - current).abs() >= 0.001 {
+            self.motion.clear_channel(MotionChannel::Scroll);
+            self.scroll = target;
+            self.scroll_target = target;
         }
     }
 
@@ -4294,10 +4319,12 @@ impl SettingsUi {
         for action in actions {
             match action {
                 SettingsAutomationAction::Invoke(id) | SettingsAutomationAction::Toggle(id) => {
+                    self.focus_visible = true;
                     self.focused = Some(id);
                     self.activate(hwnd, id);
                 }
                 SettingsAutomationAction::SetSlider { id, value } => {
+                    self.focus_visible = true;
                     let before = self.draft.clone();
                     if !self.is_disabled(id)
                         && self.set_slider_from_value(id, value)
@@ -4308,8 +4335,9 @@ impl SettingsUi {
                     }
                 }
                 SettingsAutomationAction::SetSearch(value) => {
+                    self.focus_visible = true;
                     self.search_query = value;
-                    self.scroll = 0.0;
+                    self.reset_scroll();
                     self.focused = Some(ElementId::Search);
                     self.rebuild_layout(hwnd);
                     invalidate(hwnd);
@@ -4319,6 +4347,7 @@ impl SettingsUi {
                 }
                 SettingsAutomationAction::SetFocus(id) => {
                     if self.layout.element(id).is_some() && !self.is_disabled(id) {
+                        self.focus_visible = true;
                         self.focused = Some(id);
                         self.scroll_focus_into_view(id);
                         self.rebuild_layout(hwnd);
@@ -4956,7 +4985,7 @@ fn screen_rect(hwnd: HWND, rect: UiRect, dpi: u32) -> Result<RECT> {
     })
 }
 fn picker_height_px(choice_count: usize, scale: f32) -> i32 {
-    ((choice_count.min(10) as f32 * 30.0) * scale).round() as i32 + 2
+    ((choice_count.min(10) as f32 * crate::ui::picker::ITEM_HEIGHT_DIP) * scale).round() as i32 + 2
 }
 
 fn picker_width_dip(control_width: f32, choices: &[PickerChoice]) -> f32 {
@@ -5616,6 +5645,7 @@ unsafe extern "system" fn settings_wndproc(
                         offset,
                         ui.layout.max_scroll,
                     );
+                    ui.scroll_target = ui.scroll;
                     ui.rebuild_layout(hwnd);
                     ui.publish_automation_snapshot(hwnd);
                     invalidate(hwnd);
@@ -5650,6 +5680,10 @@ unsafe extern "system" fn settings_wndproc(
                     let scrollbar_hit = ui.layout.max_scroll > 0.0
                         && controls::scrollbar_hit_rect(ui.layout.content_clip).contains(x, y);
                     if scrollbar_hit {
+                        let current_scroll = ui.current_scroll();
+                        ui.motion.clear_channel(MotionChannel::Scroll);
+                        ui.scroll = current_scroll;
+                        ui.scroll_target = current_scroll;
                         if let Some(thumb) = controls::scrollbar_thumb_rect(
                             ui.layout.content_clip,
                             ui.scroll,
@@ -5667,6 +5701,7 @@ unsafe extern "system" fn settings_wndproc(
                                 offset,
                                 ui.layout.max_scroll,
                             );
+                            ui.scroll_target = ui.scroll;
                             ui.rebuild_layout(hwnd);
                             capture_requested = true;
                             invalidate(hwnd);
@@ -5676,6 +5711,7 @@ unsafe extern "system" fn settings_wndproc(
                             focus_requested = true;
                             capture_requested = true;
                             ui.pressed = Some(id);
+                            ui.focus_visible = false;
                             ui.focused = Some(id);
                             if matches!(
                                 id,
@@ -5741,7 +5777,7 @@ unsafe extern "system" fn settings_wndproc(
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
                 let (picker_hwnd, scroll, max_scroll) = {
                     let ui = cell.borrow();
-                    (ui.picker_hwnd, ui.scroll, ui.layout.max_scroll)
+                    (ui.picker_hwnd, ui.current_scroll(), ui.layout.max_scroll)
                 };
                 match settings_wheel_action(picker_hwnd, scroll, delta, max_scroll) {
                     SettingsWheelAction::ClosePicker(popup_hwnd) => {
@@ -5752,8 +5788,7 @@ unsafe extern "system" fn settings_wndproc(
                     }
                     SettingsWheelAction::Scroll(scroll) => {
                         let mut ui = cell.borrow_mut();
-                        ui.scroll = scroll;
-                        ui.rebuild_layout(hwnd);
+                        ui.animate_scroll_to(hwnd, scroll);
                         ui.publish_automation_snapshot(hwnd);
                         invalidate(hwnd);
                     }
@@ -5764,6 +5799,7 @@ unsafe extern "system" fn settings_wndproc(
                 let vk = wparam.0 as u16;
                 {
                     let mut ui = cell.borrow_mut();
+                    ui.focus_visible = true;
                     if ui.handle_search_key(hwnd, vk) {
                         return LRESULT(0);
                     }
@@ -5796,12 +5832,13 @@ unsafe extern "system" fn settings_wndproc(
                     0x21 | 0x22 => {
                         let mut ui = cell.borrow_mut();
                         let page = ui.layout.content_clip.h.max(64.0);
-                        ui.scroll = if vk == 0x21 {
-                            (ui.scroll - page).max(0.0)
+                        let current = ui.current_scroll();
+                        let target = if vk == 0x21 {
+                            (current - page).max(0.0)
                         } else {
-                            (ui.scroll + page).min(ui.layout.max_scroll)
+                            (current + page).min(ui.layout.max_scroll)
                         };
-                        ui.rebuild_layout(hwnd);
+                        ui.animate_scroll_to(hwnd, target);
                         ui.publish_automation_snapshot(hwnd);
                         invalidate(hwnd);
                         LRESULT(0)
@@ -5851,6 +5888,12 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
                 let active = ui.motion.tick();
+                let scroll = ui.current_scroll();
+                if (scroll - ui.scroll).abs() >= 0.001 {
+                    ui.scroll = scroll;
+                    ui.rebuild_layout(hwnd);
+                    ui.publish_automation_snapshot(hwnd);
+                }
                 let applied = ui.applied_until.is_some_and(|until| Instant::now() < until);
                 invalidate(hwnd);
                 if !active && !applied && ui.recording.is_none() {
@@ -6435,6 +6478,18 @@ mod interaction_tests {
         );
     }
     #[test]
+    fn pointer_focus_stays_semantic_without_painting_a_focus_ring() {
+        let id = ElementId::OverlayEnabled;
+        let mut ui = empty_settings_ui();
+        ui.focused = Some(id);
+        ui.focus_visible = false;
+        assert!(!ui.interaction(id, false).focused);
+
+        ui.focus_visible = true;
+        assert!(ui.interaction(id, false).focused);
+    }
+
+    #[test]
     fn focus_policy_skips_disabled_and_wraps_both_directions() {
         let order = [
             ElementId::StartWithWindows,
@@ -6608,9 +6663,23 @@ mod interaction_tests {
     #[test]
     fn picker_height_has_only_list_rows_and_border_allowance() {
         assert_eq!(picker_height_px(0, 1.0), 2);
-        assert_eq!(picker_height_px(3, 1.0), 92);
-        assert_eq!(picker_height_px(12, 1.0), 302);
-        assert_eq!(picker_height_px(3, 1.5), 137);
+        assert_eq!(picker_height_px(3, 1.0), 98);
+        assert_eq!(picker_height_px(12, 1.0), 322);
+        assert_eq!(picker_height_px(3, 1.5), 146);
+    }
+
+    #[test]
+    fn compact_overlay_preview_keeps_sample_inside_canvas() {
+        let canvas = UiRect::new(0.0, 0.0, 444.0, 108.0);
+        for position in OverlayPosition::ALL {
+            for scale in [0.7, 1.0, 1.6] {
+                let sample = overlay_preview_card_rect(canvas, position, scale);
+                assert!(sample.x >= canvas.x);
+                assert!(sample.y >= canvas.y);
+                assert!(sample.right() <= canvas.right());
+                assert!(sample.bottom() <= canvas.bottom());
+            }
+        }
     }
 
     fn empty_settings_ui() -> SettingsUi {
@@ -7126,7 +7195,7 @@ mod interaction_tests {
 
         assert_eq!(status, "Available");
         assert!(!detail.is_empty());
-        assert_eq!(action, "Open Special");
+        assert_eq!(action, "Open");
     }
 
     #[test]
@@ -7165,6 +7234,21 @@ mod interaction_tests {
             .validation
             .iter()
             .any(|violation| violation.message.contains("conflicts")));
+    }
+
+    #[test]
+    fn home_navigation_copy_uses_coherent_open_actions() {
+        let ui = empty_settings_ui();
+        assert_eq!(ui.special_workspace_summary().2, "Open");
+        assert_eq!(ui.shortcut_health_copy().2, "Open");
+        match ui.value_for(ElementId::HomeDiagnostics) {
+            ControlValue::Action(value) => assert_eq!(value, "Open"),
+            _ => panic!("expected Home diagnostics action"),
+        }
+        match ui.value_for(ElementId::DiagnosticsStatus) {
+            ControlValue::Action(value) => assert_eq!(value, "Open"),
+            _ => panic!("expected diagnostics action"),
+        }
     }
 
     #[test]
@@ -7259,7 +7343,7 @@ mod interaction_tests {
         let (status, detail, action) = ui.special_workspace_summary();
         assert_eq!(status, "Unavailable");
         assert!(detail.contains("service"));
-        assert_eq!(action, "View");
+        assert_eq!(action, "Open");
         ui.draft.virtual_desktops.enabled = false;
         assert_eq!(ui.special_workspace_summary().0, "Off");
     }

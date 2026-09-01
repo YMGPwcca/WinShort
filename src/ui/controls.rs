@@ -411,12 +411,26 @@ pub fn draw_search_box(r: &Renderer, rect: Rect, text: &str, focused: bool, hove
 }
 
 pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &str) {
-    // Title and description have independent line boxes. The description uses
-    // DirectWrite wrapping, so localized copy grows inside the reserved block
-    // instead of colliding with the next group.
+    // A quiet rule and accent marker separate functional groups without
+    // turning every setting row into another nested card.
+    r.line(
+        rect.x,
+        rect.y + 2.0,
+        rect.right(),
+        rect.y + 2.0,
+        BrushRole::Border,
+        1.0,
+    );
+    r.fill_rounded(
+        Rect::new(rect.x, rect.y + 12.0, 3.0, 18.0).d2d(),
+        1.5,
+        BrushRole::Accent,
+    );
+    let text_x = rect.x + 12.0;
+    let text_width = (rect.w - 12.0).max(1.0);
     r.text_clipped(
         title,
-        Rect::new(rect.x, rect.y, rect.w, 28.0).d2d(),
+        Rect::new(text_x, rect.y, text_width, 28.0).d2d(),
         TextStyle::Section,
         BrushRole::Text,
     );
@@ -425,13 +439,13 @@ pub fn draw_section_header(r: &Renderer, rect: Rect, title: &str, description: &
             .text_height(
                 description,
                 TextStyle::SectionDescription,
-                rect.w,
+                text_width,
                 (rect.h - 34.0).max(24.0),
             )
             .clamp(20.0, (rect.h - 34.0).max(24.0));
         r.text_clipped(
             description,
-            Rect::new(rect.x, rect.y + 34.0, rect.w, description_height).d2d(),
+            Rect::new(text_x, rect.y + 34.0, text_width, description_height).d2d(),
             TextStyle::SectionDescription,
             BrushRole::TextSecondary,
         );
@@ -1419,22 +1433,58 @@ pub fn draw_app_mark(r: &Renderer, rect: Rect) {
     r.fill_rounded(rect.d2d(), 9.0, BrushRole::Accent);
     let cx = rect.x + rect.w * 0.5;
     let cy = rect.y + rect.h * 0.5;
-    r.line(
-        cx - 7.0,
-        cy + 5.0,
-        cx - 7.0,
-        cy - 3.0,
+    r.fill_rounded(
+        Rect::new(cx - 10.0, cy - 3.0, 5.0, 6.0).d2d(),
+        1.5,
         BrushRole::AccentText,
-        2.0,
     );
-    r.line(cx, cy + 5.0, cx, cy - 7.0, BrushRole::AccentText, 2.0);
+    r.line(
+        cx - 5.0,
+        cy - 3.0,
+        cx + 2.0,
+        cy - 9.0,
+        BrushRole::AccentText,
+        2.5,
+    );
+    r.line(
+        cx - 5.0,
+        cy + 3.0,
+        cx + 2.0,
+        cy + 9.0,
+        BrushRole::AccentText,
+        2.5,
+    );
+    r.line(
+        cx + 2.0,
+        cy - 9.0,
+        cx + 2.0,
+        cy + 9.0,
+        BrushRole::AccentText,
+        2.5,
+    );
     r.line(
         cx + 7.0,
-        cy + 5.0,
-        cx + 7.0,
-        cy + 1.0,
+        cy - 5.0,
+        cx + 10.0,
+        cy - 2.0,
         BrushRole::AccentText,
-        2.0,
+        1.8,
+    );
+    r.line(
+        cx + 10.0,
+        cy - 2.0,
+        cx + 10.0,
+        cy + 2.0,
+        BrushRole::AccentText,
+        1.8,
+    );
+    r.line(
+        cx + 10.0,
+        cy + 2.0,
+        cx + 7.0,
+        cy + 5.0,
+        BrushRole::AccentText,
+        1.8,
     );
 }
 
@@ -1804,58 +1854,87 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
             );
         }
         Page::Audio => {
-            r.line(rect.x + 4.0, cy - 3.0, rect.x + 9.0, cy - 3.0, role, 1.8);
+            let speaker_x = rect.x + 3.0;
+            r.fill_rounded(Rect::new(speaker_x, cy - 2.5, 3.5, 5.0).d2d(), 1.0, role);
             r.line(
-                rect.x + 9.0,
-                cy - 3.0,
-                rect.x + 14.0,
-                rect.y + 5.0,
+                speaker_x + 3.0,
+                cy - 2.5,
+                speaker_x + 8.0,
+                cy - 6.5,
                 role,
-                1.8,
+                1.7,
             );
             r.line(
-                rect.x + 14.0,
-                rect.y + 5.0,
-                rect.x + 14.0,
-                rect.bottom() - 5.0,
+                speaker_x + 3.0,
+                cy + 2.5,
+                speaker_x + 8.0,
+                cy + 6.5,
                 role,
-                1.8,
+                1.7,
             );
             r.line(
-                rect.x + 14.0,
-                rect.bottom() - 5.0,
-                rect.x + 9.0,
-                cy + 3.0,
+                speaker_x + 8.0,
+                cy - 6.5,
+                speaker_x + 8.0,
+                cy + 6.5,
                 role,
-                1.8,
+                1.7,
             );
-            r.line(rect.x + 9.0, cy + 3.0, rect.x + 4.0, cy + 3.0, role, 1.8);
             r.line(
-                rect.right() - 5.0,
+                speaker_x + 12.0,
                 cy - 4.0,
-                rect.right() - 2.0,
-                cy - 1.0,
+                speaker_x + 15.0,
+                cy - 1.5,
                 role,
                 1.4,
             );
             r.line(
-                rect.right() - 2.0,
-                cy - 1.0,
-                rect.right() - 5.0,
-                cy + 2.0,
+                speaker_x + 15.0,
+                cy - 1.5,
+                speaker_x + 15.0,
+                cy + 1.5,
+                role,
+                1.4,
+            );
+            r.line(
+                speaker_x + 15.0,
+                cy + 1.5,
+                speaker_x + 12.0,
+                cy + 4.0,
                 role,
                 1.4,
             );
         }
-        Page::Workspaces | Page::Displays => {
+        Page::Workspaces => {
             r.stroke_rounded(
-                Rect::new(rect.x + 3.0, rect.y + 4.0, rect.w - 6.0, rect.h - 8.0).d2d(),
+                Rect::new(rect.x + 3.0, rect.y + 3.0, rect.w - 6.0, 7.0).d2d(),
                 2.0,
                 role,
                 1.5,
             );
-            r.line(cx, rect.y + 5.0, cx, rect.bottom() - 5.0, role, 1.1);
-            r.line(rect.x + 4.0, cy, rect.right() - 4.0, cy, role, 1.1);
+            r.stroke_rounded(
+                Rect::new(rect.x + 3.0, rect.y + 10.0, rect.w - 6.0, 7.0).d2d(),
+                2.0,
+                role,
+                1.5,
+            );
+        }
+        Page::Displays => {
+            r.stroke_rounded(
+                Rect::new(rect.x + 3.0, rect.y + 3.0, rect.w - 6.0, rect.h - 9.0).d2d(),
+                2.0,
+                role,
+                1.5,
+            );
+            r.line(cx, rect.bottom() - 6.0, cx, rect.bottom() - 2.0, role, 1.5);
+            r.line(
+                rect.x + 6.0,
+                rect.bottom() - 2.0,
+                rect.right() - 6.0,
+                rect.bottom() - 2.0,
+                role,
+                1.5,
+            );
         }
         Page::Overlay => {
             r.stroke_rounded(

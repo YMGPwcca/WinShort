@@ -32,6 +32,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Bounded Settings value text uses DirectWrite character trimming and reserves
   the dropdown chevron area; the applied footer uses generic "Changes applied"
   status copy.
+- Simplified the Control Center shell hierarchy: page titles no longer repeat in
+  the top bar, section groups have stronger separation, and workspace/Special
+  surfaces use compact single-purpose layouts.
+- Added eased Settings scrolling and keyboard-visible-only focus rings; pointer
+  focus remains available to UI Automation and keyboard navigation.
+- Tightened the Overlay preview, aligned the app/navigation icon language with
+  the packaged speaker mark, and corrected native picker font metrics so
+  endpoint descenders remain visible.
 - Associated every published config revision with its commit origin in one
   coherent live stamp, so audio preflight drift preserves DeviceCycle
   provenance and delayed ConfigChanged notifications remain stale-safe.

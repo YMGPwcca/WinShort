@@ -11,10 +11,10 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, FrameRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, BACKGROUND_MODE,
-    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_END_ELLIPSIS,
-    DT_LEFT, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_NORMAL, HDC, HFONT, HGDIOBJ,
-    OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
+    FillRect, FrameRect, GetTextMetricsW, InvalidateRect, SelectObject, SetBkMode, SetTextColor,
+    BACKGROUND_MODE, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, FF_DONTCARE, FW_NORMAL, HDC, HFONT,
+    HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, TEXTMETRICW,
 };
 use windows::Win32::UI::Controls::{
     SetWindowTheme, DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
@@ -219,9 +219,15 @@ impl Drop for PickerUi {
 const PICKER_FONT_SIZE_DIP: f32 = 14.0;
 const PICKER_FONT_FAMILY: &str = "Segoe UI Variable Text";
 const PICKER_FONT_FALLBACK: &str = "Segoe UI";
+pub const ITEM_HEIGHT_DIP: f32 = 32.0;
 
 fn picker_font_height(dpi: u32) -> i32 {
     -((PICKER_FONT_SIZE_DIP * dpi.max(96) as f32 / 96.0).round() as i32).max(1)
+}
+fn picker_item_height_px(dpi: u32) -> u32 {
+    (ITEM_HEIGHT_DIP * dpi.max(96) as f32 / 96.0)
+        .ceil()
+        .max(1.0) as u32
 }
 
 fn create_picker_font(dpi: u32) -> HFONT {
@@ -461,11 +467,20 @@ unsafe fn draw_picker_item(
     unsafe {
         let _ = SetBkMode(item.hDC, BACKGROUND_MODE(1));
         let _ = SetTextColor(item.hDC, to_colorref(colors.foreground));
+        let mut metrics = TEXTMETRICW::default();
+        let item_height = (item.rcItem.bottom - item.rcItem.top).max(1);
+        let measured_height = if GetTextMetricsW(item.hDC, &mut metrics).as_bool() {
+            metrics.tmHeight.max(1).min(item_height)
+        } else {
+            item_height
+        };
+        text_rect.top = item.rcItem.top + (item_height - measured_height) / 2;
+        text_rect.bottom = text_rect.top + measured_height;
         let _ = DrawTextW(
             item.hDC,
             &mut text,
             &mut text_rect,
-            DT_END_ELLIPSIS | DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            DT_END_ELLIPSIS | DT_LEFT | DT_NOPREFIX | DT_SINGLELINE,
         );
         if focus || hovered {
             let _ = FrameRect(item.hDC, &item.rcItem, border);
@@ -923,7 +938,7 @@ unsafe extern "system" fn picker_wndproc(
                 let measure = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
                 if measure.CtlType == ODT_LISTBOX {
                     let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96);
-                    measure.itemHeight = (30 * dpi).div_ceil(96).max(1);
+                    measure.itemHeight = picker_item_height_px(dpi);
                     LRESULT(1)
                 } else {
                     win::def_proc(hwnd, msg, wparam, lparam)
@@ -1250,6 +1265,13 @@ mod tests {
         assert_eq!(colors.foreground, Color::rgb(240, 200, 160));
         assert_eq!(colors.border, colors.foreground);
     }
+    #[test]
+    fn picker_item_height_scales_with_dpi() {
+        assert_eq!(picker_item_height_px(96), 32);
+        assert_eq!(picker_item_height_px(144), 48);
+        assert_eq!(picker_item_height_px(192), 64);
+    }
+
     #[test]
     fn picker_font_policy_is_dpi_scaled_and_explicit() {
         assert_eq!(picker_font_height(96), -14);

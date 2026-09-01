@@ -511,7 +511,7 @@ impl SettingsLayout {
     }
 
     fn add_chrome(&mut self) {
-        let search_width = (self.width - self.nav_width - 240.0).clamp(260.0, 440.0);
+        let search_width = (self.width - self.nav_width - 64.0).clamp(260.0, 440.0);
         self.search_rect.w = search_width;
         self.elements.push(Element {
             id: ElementId::Search,
@@ -1213,7 +1213,7 @@ fn add_desktop_strip(layout: &mut SettingsLayout, y: &mut f32, context: &LayoutC
         layout,
         RegionKind::WorkspaceStrip,
         y,
-        54.0 + rows as f32 * 40.0,
+        42.0 + rows as f32 * 36.0,
     );
     if count == 0 {
         return;
@@ -1236,9 +1236,9 @@ fn add_desktop_strip(layout: &mut SettingsLayout, y: &mut f32, context: &LayoutC
             "Switch to this normal desktop",
             Rect::new(
                 rect.x + column as f32 * (item_w + gap),
-                rect.y + 42.0 + row as f32 * 40.0,
+                rect.y + 32.0 + row as f32 * 36.0,
                 item_w,
-                32.0,
+                30.0,
             ),
         );
     }
@@ -1687,12 +1687,6 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
     );
     if !context.workspace_enabled {
         add_region(layout, RegionKind::WorkspaceNotice, &mut y, 76.0);
-        add_heading(
-            layout,
-            "Special Workspace",
-            "Available after Workspace shortcuts are enabled.",
-            &mut y,
-        );
         add_region(layout, RegionKind::SpecialWorkspace, &mut y, 86.0);
         return;
     }
@@ -1742,12 +1736,6 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
             "Previous desktop",
             "Return to the last normal desktop",
         )],
-    );
-    add_heading(
-        layout,
-        "Special Workspace",
-        "A dedicated place for windows you want nearby but out of the way.",
-        &mut y,
     );
     add_region(layout, RegionKind::SpecialWorkspace, &mut y, 86.0);
     add_hotkey_grid(
@@ -2115,7 +2103,7 @@ fn add_overlay(layout: &mut SettingsLayout) {
         &mut y,
     );
     y += 12.0;
-    add_region(layout, RegionKind::OverlayPreview, &mut y, 218.0);
+    add_region(layout, RegionKind::OverlayPreview, &mut y, 164.0);
     add_row(
         layout,
         &mut y,
@@ -2569,10 +2557,10 @@ mod tests {
     }
 
     #[test]
-    fn compact_shell_reserves_space_for_the_current_page_label() {
+    fn compact_shell_keeps_search_clear_of_window_edge() {
         let layout = SettingsLayout::build_shell(760.0, 660.0, 0.0, Page::System, "", 0, None);
-        let page_label_width = layout.top_bar.right() - layout.search_rect.right() - 40.0;
-        assert!(page_label_width >= 80.0);
+        let right_gap = layout.top_bar.right() - layout.search_rect.right();
+        assert!(right_gap >= 64.0);
     }
 
     #[test]
@@ -2777,6 +2765,63 @@ mod tests {
     }
 
     #[test]
+    fn workspace_strip_uses_a_compact_single_line_header() {
+        let layout = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Workspaces,
+            "",
+            super::LayoutContext {
+                desktop_count: Some(9),
+                current_desktop: Some(2),
+                ..Default::default()
+            },
+            None,
+        );
+        let strip = layout
+            .regions
+            .iter()
+            .find(|region| region.kind == RegionKind::WorkspaceStrip)
+            .expect("workspace strip");
+        assert_eq!(strip.rect.h, 78.0);
+        let desktop = layout
+            .element(ElementId::DesktopStripItem(0))
+            .expect("desktop item");
+        assert_eq!(desktop.rect.h, 30.0);
+        assert!((desktop.rect.y - strip.rect.y - 32.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn special_workspace_region_owns_its_only_header() {
+        let layout = SettingsLayout::build_shell_with_context(
+            960.0,
+            900.0,
+            0.0,
+            Page::Workspaces,
+            "",
+            Default::default(),
+            None,
+        );
+        assert_eq!(
+            layout
+                .sections
+                .iter()
+                .filter(|section| section.title == "Special Workspace")
+                .count(),
+            0
+        );
+        assert_eq!(
+            layout
+                .regions
+                .iter()
+                .filter(|region| region.kind == RegionKind::SpecialWorkspace)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn workspace_strip_uses_runtime_count_and_excludes_special() {
         let context = super::LayoutContext {
             desktop_count: Some(9),
@@ -2971,6 +3016,17 @@ mod tests {
     fn overlay_layout_has_no_duplicate_windows_audio_toggle() {
         let layout = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Overlay, "", 0, None);
         assert!(layout.element(ElementId::OverlayExternalChanges).is_none());
+    }
+
+    #[test]
+    fn overlay_preview_region_is_compact_enough_for_the_page() {
+        let layout = SettingsLayout::build_shell(1200.0, 900.0, 0.0, Page::Overlay, "", 0, None);
+        let preview = layout
+            .regions
+            .iter()
+            .find(|region| region.kind == RegionKind::OverlayPreview)
+            .expect("overlay preview");
+        assert_eq!(preview.rect.h, 164.0);
     }
 
     #[test]

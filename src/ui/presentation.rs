@@ -96,26 +96,39 @@ pub fn allowlist_mode_label(mode: AllowlistMode, kind: AudioDeviceKind) -> &'sta
 pub fn friendly_device_name(name: &str, kind: AudioDeviceKind) -> FriendlyLabel {
     let original = name.trim();
     let (without_prefix, _) = strip_index_wrapper(original);
-    let (without_suffix, detail) = strip_index_suffix(without_prefix);
+    let (without_suffix, mut detail) = strip_index_suffix(without_prefix);
     let mut primary = without_suffix.trim().to_string();
-
-    let category = match kind {
-        AudioDeviceKind::Speaker => "speaker",
-        AudioDeviceKind::Microphone => "microphone",
+    let fallback = primary.clone();
+    let categories = match kind {
+        AudioDeviceKind::Speaker => ["speakers", "speaker"],
+        AudioDeviceKind::Microphone => ["microphones", "microphone"],
     };
-    let category_prefix = format!("{category} ");
-    if primary
-        .get(..category_prefix.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&category_prefix))
-    {
-        primary = primary[category_prefix.len()..].trim().to_string();
+    for category in categories {
+        if primary.eq_ignore_ascii_case(category) {
+            primary.clear();
+            break;
+        }
+        let Some(prefix) = primary.get(..category.len()) else {
+            continue;
+        };
+        let rest = &primary[category.len()..];
+        if !prefix.eq_ignore_ascii_case(category)
+            || !rest.chars().next().is_some_and(char::is_whitespace)
+        {
+            continue;
+        }
+        primary = rest.trim().to_string();
         if primary.starts_with('(') && primary.ends_with(')') && primary.len() > 2 {
             primary = primary[1..primary.len() - 1].trim().to_string();
         }
+        break;
     }
-
     if primary.is_empty() {
-        primary = original.to_string();
+        primary = detail
+            .take()
+            .filter(|value| !value.is_empty())
+            .or_else(|| (!fallback.is_empty()).then_some(fallback))
+            .unwrap_or_else(|| "Unknown device".into());
     }
     FriendlyLabel {
         primary,
@@ -154,7 +167,7 @@ pub fn device_choice_label(
     _default: Option<&DeviceId>,
     kind: AudioDeviceKind,
 ) -> String {
-    friendly_device(device, kind).primary
+    friendly_device(device, kind).compact()
 }
 pub fn device_choice_label_at(
     devices: &[DeviceId],
@@ -468,8 +481,23 @@ mod tests {
         }
         assert_eq!(
             device_choice_label(&named, Some(&named), AudioDeviceKind::Speaker),
-            "SAMSUNG"
+            "SAMSUNG · AMD High Definition Audio Device"
         );
+    }
+
+    #[test]
+    fn device_names_normalize_singular_and_plural_category_wrappers() {
+        let microphone = friendly_device_name(
+            "2 - Microphone (3- AMD High Definition Audio Device)",
+            AudioDeviceKind::Microphone,
+        );
+        assert_eq!(microphone.primary, "AMD High Definition Audio Device");
+        assert!(microphone.detail.is_none());
+
+        let speakers =
+            friendly_device_name("Speakers (Realtek USB Audio)", AudioDeviceKind::Speaker);
+        assert_eq!(speakers.primary, "Realtek USB Audio");
+        assert!(speakers.detail.is_none());
     }
 
     #[test]
