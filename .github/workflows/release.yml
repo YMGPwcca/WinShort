@@ -93,7 +93,7 @@ jobs:
           }
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zip-${{ matrix.target }}
           path: dist/*.zip
