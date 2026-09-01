@@ -1,7 +1,7 @@
 # WinShort Roadmap
 
 **Status:** canonical project work queue.  
-**Last audited:** 2026-09-01 against `main` at `6fd150d` (`chore(deps): keep MSRV toolchain pin manual (#99)`).
+**Last audited:** 2026-09-01 against `main` at `a2fb594` (`chore(deps): bump toml to 1.1.4 (#51)`).
 
 This file answers **what should be worked on next**. `docs/TEST_PLAN.md` remains the source of truth for how behavior is verified; architecture/design documents remain authoritative for their own invariants.
 
@@ -27,8 +27,10 @@ The following is implemented on `main` and is maintenance/release-validation wor
 - Monitor-aware status overlay with draft preview, appearance/position/scale/opacity/duration controls, including the full 3x3 position set.
 - Diagnostics/logging/support bundle, startup control, single-instance/tray lifecycle, and sanitized support export.
 - Hosted CI gates for formatting, clippy, tests, x86_64 release build + manifest/icon + release UIA ABI regression, i686/aarch64 checks, Rust 1.85 MSRV, and cargo-deny.
+- GitHub Actions checkout/artifact pipeline updated to the Node 24-era majors and validated end-to-end through release packaging/checksum aggregation.
+- `toml` 1.1.4 is the current config parser/serializer dependency and passes the full config-heavy CI suite at Rust 1.85.
 
-There are currently **no open product issues**. Remaining open PRs are dependency-maintenance PRs.
+There are currently **no open product issues**. The only remaining open dependency PR is the deferred tag-publish action upgrade (#53).
 
 ## P0 — Release acceptance on real Windows
 
@@ -65,27 +67,26 @@ Goal: turn implemented behavior into current release evidence. Use the exact pro
 
 ## P1 — Dependency and CI maintenance
 
-Handle dependency PRs individually; major upgrades are not auto-merge material.
+Major upgrades are accepted only with evidence for the paths they actually affect.
 
-| PR | Change | Disposition / required evidence |
+| PR | Change | Disposition / evidence |
 |---|---|---|
-| #52 | `dtolnay/rust-toolchain` 1.85 → 1.100 | **Closed intentionally.** This is the MSRV test pin; bumping it would remove the Rust 1.85 gate. Dependabot now ignores this pin via #99; any MSRV raise is manual and coordinated. |
-| #55 | `actions/checkout` 4 → 7 | Candidate. Require normal CI plus a release-workflow dry run because it also changes checkout in `release.yml`. |
-| #56 | `actions/upload-artifact` 4 → 7 | Candidate. Validate the release workflow dry-run and inspect produced ZIP artifacts. |
-| #54 | `actions/download-artifact` 4 → 8 | Candidate after/with artifact-upload validation. Dry run must reach checksum generation successfully. |
-| #53 | `softprops/action-gh-release` 2 → 3 | Defer until release-publish compatibility is deliberately validated; the normal dry-run does not execute the tag-only publish step. |
-| #51 | `toml` 0.9 → 1.1 | Major library update. Require full CI and focused config load/save/migration/future-schema/unknown-field review. |
-| #94 | `zip` 6 → 8 | Major library update. Require full CI plus a real support-bundle ZIP opened in Explorer and sanitization/manifest inspection. |
+| #52 / #99 | `dtolnay/rust-toolchain` MSRV pin | **Resolved.** #52 was closed because bumping the CI pin would remove the Rust 1.85 MSRV gate. #99 makes Dependabot ignore this intentional pin. |
+| #55 / #56 / #54 → #101 | checkout 4→7, upload-artifact 4→7, download-artifact 4→8 | **Merged as #101.** Temporary #100 exercised the real release workflow: both Windows matrix builds/tests/packages passed; upload v7 passed; download v8 passed with digest mismatch = error; checksums were generated; downloaded release ZIPs contained exactly `winshort.exe`, `README.md`, and `LICENSE`. Normal #101 CI also passed 8/8. |
+| #51 | `toml` 0.9 → 1.1.4 | **Merged.** Fresh post-#101 CI passed 8/8, including Rust 1.85 MSRV, the config-heavy test suite, cross-target checks, release build, and UIA ABI regression. |
+| #94 | `zip` 6 → 8.6 | **Rejected / major ignored.** Fresh CI proved `zip@8.6.0 requires rustc 1.88`, incompatible with the intentional Rust 1.85 MSRV. |
+| #53 | `softprops/action-gh-release` 2 → 3 | **Deferred.** This action runs only on the tag-publish path. Normal CI and safe release dry-runs do not execute it, so v3 needs a deliberately disposable publish test or controlled real release before merge. |
 
-Preferred order: #55 → #56/#54 release artifact pipeline → #51/#94 library upgrades → #53 publish action.
+**P1 remaining work:** #53 only. Do not treat a normal green PR CI run as proof of tag-publish compatibility.
 
 ## P2 — Release/CI hardening
 
-- Keep the dry-run `release.yml` path working for both x86_64 and i686 packaging/checksums before changing release actions.
+- Keep the validated release dry-run path working for both x86_64 and i686 packaging/checksums after future workflow changes.
 - Screenshot-driven UI QA remains **planned, not implemented**; do not claim a screenshot automation gate exists.
 - Authenticode signing remains an explicit future hook unless signing secrets/certificates are actually configured and validated.
 - aarch64 remains compile-check-only until a real artifact/support decision is made.
 - Consider protecting `main` with required CI checks after the maintenance flow is stable; repository policy should prevent accidental direct history mutation without blocking intentional maintainer recovery.
+- Reconcile the `workflow_dispatch.publish` input before relying on it for manual publishing: the current publish step is intentionally/actually tag-gated, so a dispatch dry-run does not exercise release creation.
 
 ## P3 — Repository hygiene
 
@@ -94,7 +95,7 @@ Existing non-Dependabot branches must be audited before deletion:
 - merged/fix branches such as `fix/ci-onboarding-test-fixture`, `fix/scratchpad-scope-cleanup`, and `fix/display-profile-ux`;
 - obsolete Scratchpad WIP branches;
 - `wip/special-workspace-build` intermediate history;
-- temporary documentation branches after their PRs merge.
+- temporary maintenance/documentation branches after their PRs merge.
 
 Deletion is a separate maintenance action: compare each branch against `main`, preserve anything uniquely useful, then delete only with explicit authorization.
 
