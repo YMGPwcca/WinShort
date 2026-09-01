@@ -734,15 +734,16 @@ pub fn draw_device_row(
     } else {
         BrushRole::TextSecondary
     };
+    let stack_top = rect.y + (rect.h - 40.0) * 0.5;
     r.text_clipped(
         &element.label,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 8.0, text_width, 20.0).d2d(),
+        Rect::new(rect.x + BODY_LEFT, stack_top, text_width, 20.0).d2d(),
         TextStyle::BodyStrong,
         text_role,
     );
     r.text_clipped(
         &element.description,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 31.0, text_width, 18.0).d2d(),
+        Rect::new(rect.x + BODY_LEFT, stack_top + 22.0, text_width, 18.0).d2d(),
         TextStyle::Caption,
         secondary_role,
     );
@@ -769,32 +770,26 @@ pub fn draw_device_row(
         (value_rect.w - 32.0).max(1.0),
         (value_rect.h - 10.0).max(1.0),
     );
-    r.text_clipped(
-        &presentation.primary,
-        Rect::new(inner.x, inner.y, inner.w, 18.0).d2d(),
-        TextStyle::Value,
-        text_role,
-    );
-    let mut line_y = inner.y + 17.0;
     if let Some(secondary) = presentation.secondary.as_deref() {
+        let top = inner.y + (inner.h - 31.0) * 0.5;
+        r.text_clipped(
+            &presentation.primary,
+            Rect::new(inner.x, top, inner.w, 18.0).d2d(),
+            TextStyle::Value,
+            text_role,
+        );
         r.text_clipped(
             secondary,
-            Rect::new(inner.x, line_y, inner.w, 13.0).d2d(),
+            Rect::new(inner.x, top + 18.0, inner.w, 13.0).d2d(),
             TextStyle::Caption,
             secondary_role,
         );
-        line_y += 13.0;
-    }
-    if let Some(status) = presentation.status.as_deref() {
+    } else {
         r.text_clipped(
-            status,
-            Rect::new(inner.x, line_y, inner.w, 13.0).d2d(),
-            TextStyle::Caption,
-            if interaction.disabled {
-                BrushRole::TextDisabled
-            } else {
-                BrushRole::Accent
-            },
+            &presentation.primary,
+            inner.d2d(),
+            TextStyle::Value,
+            text_role,
         );
     }
     let x = value_rect.right() - 14.0;
@@ -823,7 +818,12 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
         InteractionState::Focused | InteractionState::Idle => BrushRole::Card,
     };
     draw_surface(r, rect, surface, state, 10.0);
-    let keycap = Rect::new(rect.right() - 174.0, rect.y + 12.0, 156.0, 32.0);
+    let keycap = Rect::new(
+        rect.right() - 174.0,
+        rect.y + (rect.h - 32.0) * 0.5,
+        156.0,
+        32.0,
+    );
     let keycap_role = if interaction.disabled {
         BrushRole::CardPressed
     } else {
@@ -842,7 +842,13 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
     );
     r.text_clipped(
         &element.label,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 12.0, rect.w - 204.0, 20.0).d2d(),
+        Rect::new(
+            rect.x + BODY_LEFT,
+            rect.y + (rect.h - 40.0) * 0.5,
+            rect.w - 204.0,
+            20.0,
+        )
+        .d2d(),
         TextStyle::BodyStrong,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -852,7 +858,13 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
     );
     r.text_clipped(
         &element.description,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 36.0, rect.w - 204.0, 18.0).d2d(),
+        Rect::new(
+            rect.x + BODY_LEFT,
+            rect.y + (rect.h - 40.0) * 0.5 + 22.0,
+            rect.w - 204.0,
+            18.0,
+        )
+        .d2d(),
         TextStyle::Caption,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -870,16 +882,6 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
             BrushRole::Accent
         } else {
             BrushRole::Text
-        },
-    );
-    r.text(
-        "Change",
-        Rect::new(rect.right() - 174.0, rect.y + 48.0, 156.0, 16.0).d2d(),
-        TextStyle::CaptionRight,
-        if interaction.disabled {
-            BrushRole::TextDisabled
-        } else {
-            BrushRole::Accent
         },
     );
     if interaction.focused {
@@ -1019,7 +1021,7 @@ pub fn draw_desktop_item(
     r.text(
         &(index + 1).to_string(),
         rect.d2d(),
-        TextStyle::BodyStrong,
+        TextStyle::Button,
         if active_current {
             BrushRole::AccentText
         } else if current {
@@ -1323,7 +1325,7 @@ pub fn draw_position_cell(
     r.text(
         label,
         rect.d2d(),
-        TextStyle::Caption,
+        TextStyle::ButtonSmall,
         if selected {
             BrushRole::AccentText
         } else {
@@ -1378,19 +1380,48 @@ pub fn draw_app_mark(r: &Renderer, rect: Rect) {
     );
 }
 
-pub fn draw_scrollbar(r: &Renderer, viewport: Rect, scroll: f32, max_scroll: f32) {
-    if max_scroll <= 0.0 {
-        return;
+pub(crate) fn scrollbar_thumb_rect(viewport: Rect, scroll: f32, max_scroll: f32) -> Option<Rect> {
+    if max_scroll <= 0.0 || viewport.h <= 0.0 {
+        return None;
     }
     let total = viewport.h + max_scroll;
-    let thumb_h = (viewport.h * viewport.h / total).max(36.0);
-    let travel = viewport.h - thumb_h - 8.0;
-    let y = viewport.y + 4.0 + travel * (scroll / max_scroll);
-    r.fill_rounded(
-        Rect::new(viewport.right() - 7.0, y, 3.0, thumb_h).d2d(),
-        1.5,
-        BrushRole::BorderStrong,
-    );
+    let thumb_h = (viewport.h * viewport.h / total).clamp(40.0, viewport.h - 8.0);
+    let travel = (viewport.h - thumb_h - 8.0).max(0.0);
+    let ratio = (scroll / max_scroll).clamp(0.0, 1.0);
+    Some(Rect::new(
+        viewport.right() - 10.0,
+        viewport.y + 4.0 + travel * ratio,
+        6.0,
+        thumb_h,
+    ))
+}
+
+pub(crate) fn scrollbar_hit_rect(viewport: Rect) -> Rect {
+    Rect::new(viewport.right() - 16.0, viewport.y, 16.0, viewport.h)
+}
+
+pub(crate) fn scroll_from_scrollbar_pointer(
+    viewport: Rect,
+    pointer_y: f32,
+    pointer_offset: f32,
+    max_scroll: f32,
+) -> f32 {
+    let Some(thumb) = scrollbar_thumb_rect(viewport, 0.0, max_scroll) else {
+        return 0.0;
+    };
+    let travel = (viewport.h - thumb.h - 8.0).max(0.0);
+    if travel <= f32::EPSILON {
+        return 0.0;
+    }
+    let top = (pointer_y - pointer_offset).clamp(viewport.y + 4.0, viewport.y + 4.0 + travel);
+    ((top - viewport.y - 4.0) / travel * max_scroll).clamp(0.0, max_scroll)
+}
+
+pub fn draw_scrollbar(r: &Renderer, viewport: Rect, scroll: f32, max_scroll: f32) {
+    let Some(thumb) = scrollbar_thumb_rect(viewport, scroll, max_scroll) else {
+        return;
+    };
+    r.fill_rounded(thumb.d2d(), 3.0, BrushRole::BorderStrong);
 }
 
 fn control_rect(row: Rect, width: f32) -> Rect {
@@ -1552,14 +1583,14 @@ fn draw_value_box(
 
 pub(crate) fn slider_track_rect(row: Rect) -> Rect {
     let rect = row.inset(1.0);
-    let label_end = (rect.x + rect.w * 0.36).clamp(rect.x + 120.0, rect.x + 220.0);
-    let value_width = 88.0;
-    let right = rect.right() - 16.0 - value_width;
+    let label_end = (rect.x + rect.w * 0.34).clamp(rect.x + 150.0, rect.x + 230.0);
+    let value_width = 74.0;
+    let right = rect.right() - 18.0 - value_width;
     Rect::new(
         label_end,
-        rect.y + rect.h * 0.5 - 2.0,
-        (right - label_end).max(80.0),
-        4.0,
+        rect.y + rect.h * 0.5 - 3.0,
+        (right - label_end - 14.0).max(100.0),
+        6.0,
     )
 }
 
@@ -1586,9 +1617,10 @@ fn draw_slider_cluster(
         state,
         ROW_RADIUS,
     );
+    let stack_top = rect.y + (rect.h - 40.0) * 0.5;
     r.text_clipped(
         &element.label,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 7.0, 132.0, 20.0).d2d(),
+        Rect::new(rect.x + BODY_LEFT, stack_top, 150.0, 20.0).d2d(),
         TextStyle::BodyStrong,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -1598,7 +1630,7 @@ fn draw_slider_cluster(
     );
     r.text_clipped(
         &element.description,
-        Rect::new(rect.x + BODY_LEFT, rect.y + 29.0, 132.0, 18.0).d2d(),
+        Rect::new(rect.x + BODY_LEFT, stack_top + 22.0, 150.0, 18.0).d2d(),
         TextStyle::Caption,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -1609,18 +1641,18 @@ fn draw_slider_cluster(
     let track = slider_track_rect(element.rect);
     r.fill_rounded(
         track.d2d(),
-        2.0,
+        3.0,
         if interaction.disabled {
             BrushRole::Border
         } else {
             BrushRole::BorderStrong
         },
     );
-    let filled = Rect::new(track.x, track.y, track.w * ratio, track.h);
+    let filled = Rect::new(track.x, track.y, track.w * ratio.clamp(0.0, 1.0), track.h);
     if filled.w > 0.0 {
         r.fill_rounded(
             filled.d2d(),
-            2.0,
+            3.0,
             if interaction.disabled {
                 BrushRole::BorderStrong
             } else if matches!(state, InteractionState::Pressed) {
@@ -1630,20 +1662,17 @@ fn draw_slider_cluster(
             },
         );
     }
-    let knob_x = track.x + track.w * ratio;
+    let knob_x = track.x + track.w * ratio.clamp(0.0, 1.0);
+    let radius = if matches!(state, InteractionState::Pressed) {
+        8.0
+    } else {
+        7.0
+    };
     r.ellipse(
         knob_x,
-        track.y + 2.0,
-        if matches!(state, InteractionState::Pressed) {
-            7.0
-        } else {
-            6.0
-        },
-        if matches!(state, InteractionState::Pressed) {
-            7.0
-        } else {
-            6.0
-        },
+        track.y + track.h * 0.5,
+        radius,
+        radius,
         if interaction.disabled {
             BrushRole::TextDisabled
         } else {
@@ -1652,22 +1681,11 @@ fn draw_slider_cluster(
         true,
         0.0,
     );
-    let value = Rect::new(rect.right() - 104.0, rect.y + 12.0, 88.0, 32.0);
-    r.fill_rounded(value.d2d(), CONTROL_RADIUS, BrushRole::BackgroundSubtle);
-    r.stroke_rounded(
-        value.d2d(),
-        CONTROL_RADIUS,
-        if interaction.focused {
-            BrushRole::Focus
-        } else {
-            BrushRole::Border
-        },
-        if interaction.focused { 1.5 } else { 1.0 },
-    );
+    let value_rect = Rect::new(rect.right() - 88.0, rect.y, 70.0, rect.h);
     r.text_clipped(
         label,
-        value.d2d(),
-        TextStyle::Value,
+        value_rect.d2d(),
+        TextStyle::CaptionRight,
         if interaction.disabled {
             BrushRole::TextDisabled
         } else {
@@ -1676,8 +1694,8 @@ fn draw_slider_cluster(
     );
     if interaction.focused {
         r.stroke_rounded(
-            value.inset(-3.0).d2d(),
-            CONTROL_RADIUS + 2.0,
+            rect.inset(-2.0).d2d(),
+            ROW_RADIUS + 2.0,
             BrushRole::Focus,
             1.5,
         );

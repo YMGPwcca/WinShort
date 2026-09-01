@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Gdi::{
     OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
 };
 use windows::Win32::UI::Controls::{
-    DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
+    SetWindowTheme, DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
@@ -545,6 +545,14 @@ impl PickerPopup {
         }
         .map_err(|error| Error::win("CreateWindowExW(settings picker list)", &error))?;
 
+        if !SystemVisualPreferences::query().high_contrast {
+            let theme_name = if Theme::current().mode == crate::ui::theme::ThemeMode::Dark {
+                HSTRING::from("DarkMode_Explorer")
+            } else {
+                HSTRING::from("Explorer")
+            };
+            let _ = unsafe { SetWindowTheme(list, PCWSTR(theme_name.as_ptr()), PCWSTR::null()) };
+        }
         let font =
             create_picker_font(unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96));
         let (labels, selected) = {

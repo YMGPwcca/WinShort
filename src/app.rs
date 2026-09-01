@@ -1526,12 +1526,11 @@ impl App {
             }
             AppEvent::MicrophoneStateChanged { state, origin } => {
                 let changed = self.microphone_state != state;
-                let config = crate::app::config();
                 let should_show = Self::should_show_audio_overlay(
                     origin,
                     self.microphone_seen,
                     changed,
-                    config.overlay.show_external_audio_changes,
+                    false,
                     false,
                 );
                 self.microphone_state = state;
@@ -1543,12 +1542,11 @@ impl App {
             }
             AppEvent::OutputStateChanged { state, origin } => {
                 let changed = self.output_state != state;
-                let config = crate::app::config();
                 let should_show = Self::should_show_audio_overlay(
                     origin,
                     self.output_seen,
                     changed,
-                    config.overlay.show_external_audio_changes,
+                    false,
                     false,
                 );
                 self.output_state = state;
@@ -1558,10 +1556,7 @@ impl App {
                 }
                 self.refresh_settings_runtime();
             }
-            AppEvent::DefaultOutputChanged(device) => {
-                let row = crate::ui::overlay::output_changed_row(&device);
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
-            }
+            AppEvent::DefaultOutputChanged(_device) => {}
             AppEvent::DevicesChanged => {
                 let devices = self.audio_devices();
                 if let Some(settings) = &mut self.settings {
@@ -1571,7 +1566,6 @@ impl App {
             }
             AppEvent::ForegroundAudioChanged { state, origin } => {
                 let changed = self.foreground_state != state;
-                let config = crate::app::config();
                 let is_status_request = matches!(origin, AudioEventOrigin::StatusRequest(_));
                 let status_request_matches = match origin {
                     AudioEventOrigin::StatusRequest(request_id) => {
@@ -1587,7 +1581,7 @@ impl App {
                     origin,
                     self.foreground_seen,
                     changed,
-                    config.overlay.show_external_audio_changes,
+                    false,
                     status_request_matches,
                 );
                 self.foreground_state = state;
