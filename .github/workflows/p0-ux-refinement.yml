@@ -30,74 +30,18 @@ jobs:
           old = 'marker = "        if list.0.is_null() {\\n"'
           new = 'marker = \'        .map_err(|error| Error::win("CreateWindowExW(settings picker list)", &error))?;\''
           assert s.count(old) == 1, s.count(old)
-          s = s.replace(old, new)
-          p.write_text(s, encoding='utf-8', newline='\n')
+          p.write_text(s.replace(old, new), encoding='utf-8', newline='\n')
           PY
-      - name: Materialize UX pass 1
-        run: python .github/scripts/p0_ux_pass1.py
-      - name: Apply compile and interaction corrections
+      - name: Materialize and validate UX pass 1
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          def read(path):
-              return Path(path).read_text(encoding='utf-8')
-
-          def write(path, text):
-              Path(path).write_text(text, encoding='utf-8', newline='\n')
-
-          def replace_once(path, old, new):
-              s = read(path)
-              assert s.count(old) == 1, (path, s.count(old), old[:100])
-              write(path, s.replace(old, new))
-
-          def scoped_replace(path, start, end, old, new):
-              s = read(path)
-              a = s.index(start)
-              b = s.index(end, a)
-              chunk = s[a:b]
-              assert chunk.count(old) == 1, (path, start, chunk.count(old))
-              write(path, s[:a] + chunk.replace(old, new) + s[b:])
-
-          replace_once(
-              'src/ui/picker.rs',
-              '            let _ = SetWindowTheme(list, PCWSTR(theme_name.as_ptr()), PCWSTR::null());',
-              '            let _ = unsafe { SetWindowTheme(list, PCWSTR(theme_name.as_ptr()), PCWSTR::null()) };',
-          )
-
-          for start, end in [
-              ('            AppEvent::MicrophoneStateChanged { state, origin } => {', '            AppEvent::OutputStateChanged { state, origin } => {'),
-              ('            AppEvent::OutputStateChanged { state, origin } => {', '            AppEvent::DefaultOutputChanged('),
-              ('            AppEvent::ForegroundAudioChanged { state, origin } => {', '            AppEvent::ForegroundVolumeChanged {'),
-          ]:
-              scoped_replace(
-                  'src/app.rs', start, end,
-                  '                let config = crate::app::config();\n',
-                  '',
-              )
-
-          replace_once(
-              'src/app.rs',
-              '''            AppEvent::DefaultOutputChanged(device) => {\n                let row = crate::ui::overlay::output_changed_row(&device);\n                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));\n            }\n''',
-              '''            AppEvent::DefaultOutputChanged(_device) => {}\n''',
-          )
-
-          replace_once(
-              'src/ui/control_center.rs',
-              '''        renderer.text(\n            "Special Workspace",\n            UiRect::new(rect.x + 16.0, rect.y + 12.0, rect.w - 180.0, 22.0).d2d(),\n            TextStyle::BodyStrong,\n            BrushRole::Text,\n        );\n        renderer.text_clipped(\n            detail,\n            UiRect::new(rect.x + 16.0, rect.y + 40.0, rect.w - 180.0, 22.0).d2d(),\n            TextStyle::Caption,\n            BrushRole::TextSecondary,\n        );\n''',
-              '''        let text_width = if status.is_empty() { rect.w - 32.0 } else { rect.w - 180.0 };\n        let stack_top = rect.y + (rect.h - 40.0) * 0.5;\n        renderer.text(\n            "Special Workspace",\n            UiRect::new(rect.x + 16.0, stack_top, text_width, 20.0).d2d(),\n            TextStyle::BodyStrong,\n            BrushRole::Text,\n        );\n        renderer.text_clipped(\n            detail,\n            UiRect::new(rect.x + 16.0, stack_top + 22.0, text_width, 18.0).d2d(),\n            TextStyle::Caption,\n            BrushRole::TextSecondary,\n        );\n''',
-          )
-          PY
-      - name: Format
-        run: cargo fmt --all
-      - name: Targeted UI tests
-        run: cargo test --all-features ui:: -- --nocapture
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Full tests
-        run: cargo test --all-features
-      - name: Release build
-        run: cargo build --release --all-features
+          python .github/scripts/p0_ux_pass1.py
+          python .github/scripts/p0_ux_pass1_finalize.py
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --all-features ui:: -- --nocapture
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
+          cargo build --release --all-features
       - name: Commit validated UX pass 1
         env:
           BRANCH: wip/p0-ux-refinement
