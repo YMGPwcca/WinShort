@@ -6420,6 +6420,7 @@ mod interaction_tests {
                 warnings: Vec::new(),
             },
         );
+        ui.onboarding_step = None;
         ui.layout = SettingsLayout::build(DESIGN_WIDTH, DESIGN_HEIGHT, 0.0);
         ui
     }
