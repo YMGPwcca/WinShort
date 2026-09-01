@@ -21,6 +21,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
+      - name: Scope pass 2 paint marker
+        run: python .github/scripts/fix_p0_pass2_driver.py
       - name: Materialize per-shortcut controls
         run: python .github/scripts/p0_ux_pass2.py
       - name: Format
