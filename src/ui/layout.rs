@@ -52,11 +52,11 @@ impl Rect {
         Self::new(self.x, self.y + dy, self.w, self.h)
     }
 
-    pub fn contains_rect(self, other: Rect) -> bool {
-        other.x >= self.x
-            && other.right() <= self.right()
-            && other.y >= self.y
-            && other.bottom() <= self.bottom()
+    pub fn intersects(self, other: Rect) -> bool {
+        self.x < other.right()
+            && self.right() > other.x
+            && self.y < other.bottom()
+            && self.bottom() > other.y
     }
 }
 
@@ -545,7 +545,7 @@ impl SettingsLayout {
             .rev()
             .find(|element| {
                 element.rect.contains(x, y)
-                    && (!element.scrolls || self.content_clip.contains_rect(element.rect))
+                    && (!element.scrolls || self.content_clip.contains(x, y))
             })
             .map(|element| element.id)
     }
@@ -1503,14 +1503,14 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
     add_heading(
         layout,
         "Audio",
-        "Choose what WinShort controls and how Next speaker or microphone cycles.",
+        "Choose Windows default devices and how Next speaker or microphone cycles.",
         &mut y,
     );
     y += 12.0;
     add_heading(
         layout,
         "Speakers",
-        "Choose the playback device and cycling mode.",
+        "Choose the Windows playback device and cycling mode.",
         &mut y,
     );
     add_row(
@@ -1518,8 +1518,8 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         &mut y,
         ElementId::OutputDevice,
         ElementKind::Value,
-        "Playback device",
-        "Follow Windows default or pin one speaker",
+        "Windows playback device",
+        "Choose the system default speaker",
     );
     add_audio_mode_group(
         layout,
@@ -1531,7 +1531,7 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
     add_heading(
         layout,
         "Microphones",
-        "Choose the recording device and cycling mode.",
+        "Choose the Windows recording device and cycling mode.",
         &mut y,
     );
     add_row(
@@ -1539,8 +1539,8 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         &mut y,
         ElementId::InputDevice,
         ElementKind::Value,
-        "Recording device",
-        "Follow Windows default or pin one microphone",
+        "Windows recording device",
+        "Choose the system default microphone",
     );
     add_audio_mode_group(
         layout,
@@ -2265,7 +2265,7 @@ fn add_advanced(layout: &mut SettingsLayout) {
         ElementId::InputRole,
         ElementKind::Value,
         "Microphone device role",
-        "Used only when following the Windows default",
+        "Role used for mute and status tracking",
     );
     add_row(
         layout,
@@ -2273,7 +2273,7 @@ fn add_advanced(layout: &mut SettingsLayout) {
         ElementId::OutputRole,
         ElementKind::Value,
         "Speaker device role",
-        "Used only when following the Windows default",
+        "Role used for mute and status tracking",
     );
     add_heading(
         layout,
@@ -2523,6 +2523,16 @@ mod tests {
             .iter()
             .filter(|element| element.scrolls)
             .all(|element| { !element.rect.contains(0.0, 0.0) }));
+    }
+
+    #[test]
+    fn partially_visible_content_intersects_the_viewport() {
+        let viewport = super::Rect::new(0.0, 100.0, 400.0, 300.0);
+
+        assert!(viewport.intersects(super::Rect::new(20.0, 80.0, 120.0, 40.0)));
+        assert!(viewport.intersects(super::Rect::new(20.0, 390.0, 120.0, 40.0)));
+        assert!(!viewport.intersects(super::Rect::new(20.0, 20.0, 120.0, 40.0)));
+        assert!(!viewport.intersects(super::Rect::new(20.0, 400.0, 120.0, 40.0)));
     }
 
     #[test]

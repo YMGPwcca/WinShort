@@ -731,6 +731,49 @@ impl App {
         kind: crate::ui::picker::PickerKind,
         value: crate::ui::picker::PickerValue,
     ) {
+        let system_target = match (&kind, &value) {
+            (
+                crate::ui::picker::PickerKind::InputDevice,
+                crate::ui::picker::PickerValue::Device(
+                    crate::config::model::DeviceSelection::Endpoint(endpoint),
+                ),
+            ) => Some((crate::audio::DeviceCycleFlow::Input, endpoint.clone())),
+            (
+                crate::ui::picker::PickerKind::OutputDevice,
+                crate::ui::picker::PickerValue::Device(
+                    crate::config::model::DeviceSelection::Endpoint(endpoint),
+                ),
+            ) => Some((crate::audio::DeviceCycleFlow::Output, endpoint.clone())),
+            _ => None,
+        };
+
+        if let Some((flow, endpoint)) = system_target {
+            if let Some(settings) = &mut self.settings {
+                settings.commit_picker(
+                    kind,
+                    crate::ui::picker::PickerValue::Device(
+                        crate::config::model::DeviceSelection::Default,
+                    ),
+                );
+            }
+            let live = crate::app::config();
+            let follows_system_default = match flow {
+                crate::audio::DeviceCycleFlow::Input => matches!(
+                    &live.audio.input_device,
+                    crate::config::model::DeviceSelection::Default
+                ),
+                crate::audio::DeviceCycleFlow::Output => matches!(
+                    &live.audio.output_device,
+                    crate::config::model::DeviceSelection::Default
+                ),
+            };
+            drop(live);
+            if follows_system_default {
+                self.dispatch_default_device_selection(flow, endpoint);
+            }
+            return;
+        }
+
         if let Some(settings) = &mut self.settings {
             settings.commit_picker(kind, value);
         }
@@ -1110,6 +1153,34 @@ impl App {
             action: action.into(),
             reason: reason.into(),
         });
+    }
+
+    fn dispatch_default_device_selection(
+        &mut self,
+        flow: crate::audio::DeviceCycleFlow,
+        endpoint: String,
+    ) {
+        let request_id = self.next_audio_request_id();
+        if let Some(audio) = &self.audio {
+            audio.send(crate::audio::AudioCommand::SetDefaultDevice {
+                flow,
+                endpoint,
+                request_id,
+            });
+            return;
+        }
+        let error = self
+            .degraded_reason("audio")
+            .unwrap_or_else(|| "audio subsystem unavailable".into());
+        self.handle_device_cycle_result(
+            request_id,
+            crate::audio::DeviceCycleResult::Failed {
+                flow,
+                previous: None,
+                target: None,
+                error,
+            },
+        );
     }
 
     fn dispatch_device_cycle(&mut self, flow: crate::audio::DeviceCycleFlow) {

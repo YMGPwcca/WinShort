@@ -59,7 +59,7 @@ Automated coverage:
 
 - Picker geometry chooses below/above placement and clamps to work areas, including negative
   coordinates.
-- Explicit unavailable devices remain in picker choices; their opaque selection is not rewritten.
+- Device pickers expose only active real endpoints; disconnected legacy explicit bindings remain configured but are not selectable system targets.
 - Endpoint roles are disabled when an explicit device is selected.
 - Reset requires two activations and changes draft state only.
 - Restored Control Center rectangles are fully contained in the selected work area and use
@@ -109,11 +109,11 @@ Automated coverage:
 
 Manual matrix:
 
-- Input/output picker: follow Windows default, available explicit device, disconnected explicit
-  device.
+- Input/output picker: lists only active real endpoints; choosing one changes the Windows default
+  for Console, Multimedia, and Communications, and the selected default is reflected immediately.
 - Hover/focus non-obvious controls and verify delayed native help text closes on pointer/focus
   change.
-- Role rows enable only for Follow Windows default and announce the reason when disabled.
+- Role rows remain coherent for legacy explicit bindings and announce the reason when disabled.
 - Overlay position and monitor picker: Foreground, Primary, each configured monitor, disconnected
   configured monitor, long labels, popup above/below, and DPI changes.
 - Mouse and keyboard: Tab/Shift-Tab, Enter, Space, Escape, arrows, Home/End, Page Up/Down,

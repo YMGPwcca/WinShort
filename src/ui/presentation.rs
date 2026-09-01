@@ -140,11 +140,11 @@ pub fn device_selection_presentation(
                 DeviceSelectionPresentation {
                     primary: label.primary,
                     secondary: label.detail,
-                    status: Some("Following Windows default".into()),
+                    status: Some("Windows system default".into()),
                 }
             } else {
                 DeviceSelectionPresentation {
-                    primary: "Follow Windows default".into(),
+                    primary: "Windows default unavailable".into(),
                     secondary: Some("Current device unavailable".into()),
                     status: None,
                 }
@@ -460,10 +460,7 @@ mod tests {
         );
         assert_eq!(following.primary, "current");
         assert_eq!(following.secondary, None);
-        assert_eq!(
-            following.status.as_deref(),
-            Some("Following Windows default")
-        );
+        assert_eq!(following.status.as_deref(), Some("Windows system default"));
 
         let explicit = device_selection_presentation(
             &DeviceSelection::Endpoint("current".into()),
@@ -496,10 +493,7 @@ mod tests {
             following.secondary.as_deref(),
             Some("AMD High Definition Audio Device")
         );
-        assert_eq!(
-            following.status.as_deref(),
-            Some("Following Windows default")
-        );
+        assert_eq!(following.status.as_deref(), Some("Windows system default"));
 
         let explicit = device_selection_presentation(
             &DeviceSelection::Endpoint(named.endpoint.clone()),

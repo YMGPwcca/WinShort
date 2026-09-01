@@ -713,7 +713,7 @@ impl SettingsUi {
                 self.layout.content_column.w,
                 section.height,
             );
-            if self.layout.content_clip.contains_rect(section_rect) {
+            if self.layout.content_clip.intersects(section_rect) {
                 if section.page_header {
                     controls::draw_page_header(
                         &renderer,
@@ -806,7 +806,7 @@ impl SettingsUi {
     fn draw_page(&self, renderer: &Renderer) {
         self.draw_visual_regions(renderer);
         for element in &self.layout.elements {
-            if !element.scrolls || !self.layout.content_clip.contains_rect(element.rect) {
+            if !element.scrolls || !self.layout.content_clip.intersects(element.rect) {
                 continue;
             }
             let interaction = self.interaction(element.id, self.is_disabled(element.id));
@@ -1106,7 +1106,7 @@ impl SettingsUi {
     fn draw_search_results(&self, renderer: &Renderer) {
         for element in &self.layout.elements {
             if !element.scrolls
-                || !self.layout.content_clip.contains_rect(element.rect)
+                || !self.layout.content_clip.intersects(element.rect)
                 || element.kind == ElementKind::Card
             {
                 continue;
@@ -1122,7 +1122,7 @@ impl SettingsUi {
 
     fn draw_onboarding(&self, renderer: &Renderer) {
         for element in &self.layout.elements {
-            if !element.scrolls || !self.layout.content_clip.contains_rect(element.rect) {
+            if !element.scrolls || !self.layout.content_clip.intersects(element.rect) {
                 continue;
             }
             controls::draw_row(
@@ -1136,7 +1136,7 @@ impl SettingsUi {
 
     fn draw_visual_regions(&self, renderer: &Renderer) {
         for region in &self.layout.regions {
-            if !self.layout.content_clip.contains_rect(region.rect) {
+            if !self.layout.content_clip.intersects(region.rect) {
                 continue;
             }
             match region.kind {
@@ -4815,7 +4815,6 @@ fn picker_choices(
                 devices.input_defaults.for_role(draft.audio.input_role),
                 AudioDeviceKind::Microphone,
             ));
-            add_missing_device_choice(&mut choices, &draft.audio.input_device);
         }
         PickerKind::OutputDevice => {
             choices.extend(device_choices(
@@ -4823,7 +4822,6 @@ fn picker_choices(
                 devices.output_defaults.for_role(draft.audio.output_role),
                 AudioDeviceKind::Speaker,
             ));
-            add_missing_device_choice(&mut choices, &draft.audio.output_device);
         }
         PickerKind::InputAllowlist => {
             choices.extend(allowlist_choices(
@@ -5172,54 +5170,36 @@ fn device_choices(
     default: Option<&crate::audio::DeviceId>,
     kind: AudioDeviceKind,
 ) -> Vec<PickerChoice> {
-    let mut choices = vec![PickerChoice {
-        label: "Follow Windows default".into(),
-        value: PickerValue::Device(DeviceSelection::Default),
-    }];
-    choices.extend(devices.iter().enumerate().map(|(index, device)| {
-        PickerChoice {
+    devices
+        .iter()
+        .enumerate()
+        .map(|(index, device)| PickerChoice {
             label: crate::ui::presentation::device_choice_label_at(devices, index, default, kind)
                 .unwrap_or_else(|| "Device unavailable".into()),
             value: PickerValue::Device(DeviceSelection::Endpoint(device.endpoint.clone())),
-        }
-    }));
-    choices
-}
-fn add_missing_device_choice(choices: &mut Vec<PickerChoice>, selection: &DeviceSelection) {
-    let DeviceSelection::Endpoint(endpoint) = selection else {
-        return;
-    };
-    if choices.iter().any(|choice| {
-        matches!(
-            &choice.value,
-            PickerValue::Device(DeviceSelection::Endpoint(id)) if id == endpoint
-        )
-    }) {
-        return;
-    }
-    choices.push(PickerChoice {
-        label: "Saved device unavailable — reconnect it to use it".into(),
-        value: PickerValue::Device(DeviceSelection::Endpoint(endpoint.clone())),
-    });
+        })
+        .collect()
 }
 
 fn current_device_index(
     selection: &DeviceSelection,
-    _default: Option<&crate::audio::DeviceId>,
+    default: Option<&crate::audio::DeviceId>,
     choices: &[PickerChoice],
 ) -> usize {
-    match selection {
-        DeviceSelection::Default => 0,
-        DeviceSelection::Endpoint(endpoint) => choices
-            .iter()
-            .position(|choice| {
+    let endpoint = match selection {
+        DeviceSelection::Default => default.map(|device| device.endpoint.as_str()),
+        DeviceSelection::Endpoint(endpoint) => Some(endpoint.as_str()),
+    };
+    endpoint
+        .and_then(|endpoint| {
+            choices.iter().position(|choice| {
                 matches!(
                     &choice.value,
                     PickerValue::Device(DeviceSelection::Endpoint(id)) if id == endpoint
                 )
             })
-            .unwrap_or(0),
-    }
+        })
+        .unwrap_or(0)
 }
 
 fn current_picker_value(
@@ -6072,7 +6052,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn explicit_unavailable_device_is_preserved_as_a_recoverable_choice() {
+    fn unavailable_explicit_device_is_not_exposed_as_a_system_target() {
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("missing-endpoint".into());
         let devices = crate::audio::devices::DeviceLists {
@@ -6085,17 +6065,16 @@ mod interaction_tests {
             output_defaults: Default::default(),
             warnings: Vec::new(),
         };
+
         let (choices, current) =
             picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], 0);
-        assert_eq!(choices.len(), 3);
-        assert_eq!(current, 2);
+
+        assert_eq!(choices.len(), 1);
+        assert_eq!(current, 0);
+        assert_eq!(choices[0].label, "Current microphone");
         assert_eq!(
-            choices[current].label,
-            "Saved device unavailable — reconnect it to use it"
-        );
-        assert_eq!(
-            choices[current].value,
-            PickerValue::Device(DeviceSelection::Endpoint("missing-endpoint".into()))
+            choices[0].value,
+            PickerValue::Device(DeviceSelection::Endpoint("current-endpoint".into()))
         );
         assert_eq!(
             config.audio.input_device,
@@ -6104,7 +6083,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn device_picker_exposes_follow_windows_mode_and_marks_system_default() {
+    fn device_picker_exposes_only_real_endpoints_and_marks_system_default() {
         let current = crate::audio::DeviceId {
             endpoint: "current-endpoint".into(),
             name: "Current microphone".into(),
@@ -6113,32 +6092,33 @@ mod interaction_tests {
             inputs: vec![current.clone()],
             outputs: Vec::new(),
             input_defaults: crate::audio::devices::DefaultDevices {
-                console: Some(current.clone()),
+                console: Some(current),
                 ..Default::default()
             },
             output_defaults: Default::default(),
             warnings: Vec::new(),
         };
+
         let config = Config::default();
         let (choices, selected) =
             picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], 0);
-        assert_eq!(choices.len(), 2);
+
+        assert_eq!(choices.len(), 1);
         assert_eq!(selected, 0);
-        assert_eq!(choices[0].label, "Follow Windows default");
         assert_eq!(
-            choices[1].label,
+            choices[0].label,
             "Current microphone · Currently Windows default"
         );
         assert_eq!(
-            choices[1].value,
+            choices[0].value,
             PickerValue::Device(DeviceSelection::Endpoint("current-endpoint".into()))
         );
-        let ui = SettingsUi::new(96, devices);
-        match ui.value_for(ElementId::InputDevice) {
-            ControlValue::Text(value) => assert_eq!(value, "Current microphone"),
-            _ => panic!("unexpected control value variant"),
-        }
+        assert_ne!(
+            choices[0].value,
+            PickerValue::Device(DeviceSelection::Default)
+        );
     }
+
     #[test]
     fn allowlist_picker_exposes_clear_controls_and_offline_selections() {
         let mut config = Config::default();

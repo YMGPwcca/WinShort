@@ -43,11 +43,13 @@ planning time, so a disconnected endpoint is skipped without deleting its config
 `RefreshAll` after a device notification rebuilds the inventory; a later reconnect makes the
 configured endpoint eligible again without polling or migration.
 
-The Control Center device picker contains only real active endpoints. A `Default`
-configuration selection remains a follow-the-system-default binding mode, but
-it is represented by current-default metadata rather than a selectable
-`Default device` pseudo-entry. Missing explicit bindings fall back to the
-current system default when rebuilding if that default is available.
+The Control Center device picker contains only real active endpoints. Selecting
+one sends an MTA-owned command that sets it as the Windows default for Console,
+Multimedia, and Communications; the UI thread never touches Core Audio COM. A
+`Default` configuration selection remains the internal follow-the-system-default
+binding mode and is represented by current-default metadata rather than a
+selectable pseudo-device. Missing explicit bindings remain readable for backward
+compatibility but are not exposed as system-switch targets while disconnected.
 
 ## Notifications (no polling)
 

@@ -11,7 +11,7 @@ This file answers **what should be worked on next**. `docs/TEST_PLAN.md` remains
 - Preserve the native Rust + Win32/COM + Direct2D/DirectWrite architecture. No Electron/WebView/framework rewrite.
 - Keep thread/COM ownership and UIA deferred-delivery invariants intact.
 - Do not resurrect removed Scratchpad hidden-window behavior. The supported model is the dedicated Special Workspace.
-- `DeviceSelection::Default` / `"default"` is a binding mode that follows the real Windows default endpoint, not a fake endpoint.
+- `DeviceSelection::Default` / `"default"` is an internal compatibility binding that tracks the real Windows default; the Control Center never exposes it as a selectable pseudo-device.
 - Rust **1.85 is the intentional MSRV** until the project explicitly decides to raise it.
 - Do not merge stale/WIP branches merely because they contain commits not reachable from `main`; compare behavior/tree first.
 

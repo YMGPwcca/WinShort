@@ -863,7 +863,7 @@ pub fn draw_shortcut_card(r: &Renderer, element: &Element, value: &str, interact
     r.text_clipped(
         value,
         keycap.d2d(),
-        TextStyle::Value,
+        TextStyle::Button,
         if interaction.disabled {
             BrushRole::TextDisabled
         } else if value.starts_with("Press") {

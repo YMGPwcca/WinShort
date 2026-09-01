@@ -87,7 +87,7 @@ Selecting a shortcut enters the existing global capture mode. Captured chords ar
 
 ### Audio
 
-Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. Device choices use a presentation-layer label: `Follow Windows default` is distinct from an explicit endpoint that happens to be the current default; opaque endpoint strings stay internal.
+Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. The speaker and microphone pickers expose only active real endpoints; selecting one changes the Windows system default through the audio worker, while opaque endpoint strings and the internal follow-default binding stay out of the picker.
 
 Next speaker and Next microphone use three mutually exclusive modes: all available devices, selected devices, or don't cycle. Selecting the middle mode progressively reveals a real device checkbox list. The native LISTBOX fallback uses the same mode model and preserves `None`, explicit endpoint sets, and `Some(empty)` semantics.
 
