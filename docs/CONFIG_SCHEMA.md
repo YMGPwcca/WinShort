@@ -17,7 +17,7 @@ start_with_windows = false      # LEGACY (#16): always false; registry owns star
 [overlay]
 enabled = true
 duration_ms = 1300              # valid 500..=10000
-position = "bottom-center"      # top-left|top-center|top-right|center|bottom-left|bottom-center|bottom-right
+position = "bottom-center"      # top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right
 monitor = "foreground"          # foreground | primary | "device:\\\\.\\DISPLAY1"
 scale = 1.0                     # valid 0.7..=1.6
 opacity = 1.0                   # valid 0.3..=1.0
@@ -79,7 +79,7 @@ Raw strings exist only at the TOML boundary (`config/load.rs`). After parsing:
 
 ```rust
 struct Hotkey { modifiers: ModifierMask /*u8 bitflags*/, key: VirtualKey }
-enum OverlayPosition { TopLeft, TopCenter, TopRight, Center, BottomLeft, BottomCenter, BottomRight }
+enum OverlayPosition { TopLeft, TopCenter, TopRight, CenterLeft, Center, CenterRight, BottomLeft, BottomCenter, BottomRight }
 enum OverlayAppearance { System, Dark, Light }
 enum MonitorChoice { Foreground, Primary, Device(String) }   // Device = stable monitor name "\\.\DISPLAYn" (#26)
 enum EndpointRole { Console, Multimedia, Communications }
