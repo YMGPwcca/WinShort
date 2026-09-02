@@ -14,6 +14,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Tightened Overlay placement: Position has no description, status and Monitor
   share an equal-width row, and monitor targets are Primary or Cursor position.
   The status-card appearance control remains clearly scoped to Overlay.
+- Fixed the overlay crash at its root cause by preparing an owned ShowPlan,
+  releasing OverlayState before reentrant HWND operations, and keeping WM_SIZE
+  D2D resizing active.
+- Stopped the top-chrome separator at the content boundary, removed fake preview
+  text in favor of a placement-only silhouette, and made the Monitor helper fully
+  readable in its compact half-row.
+- Search now clears editing focus on blank/control clicks and external focus loss;
+  keyboard handlers and caret visibility use the same real editing-focus predicate.
 - Corrected the fixed Control Center acceptance model: brand icon/text now share
   one row, Search and Close share one top-chrome row, and sibling card/row
   spacing uses named section-content, section, and ROW_GAP semantics.

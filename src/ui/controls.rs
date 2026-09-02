@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 
-use crate::ui::layout::{Element, ElementKind, Rect};
+use crate::ui::layout::{Element, ElementId, ElementKind, Rect};
 use crate::ui::navigation::Page;
 use crate::ui::presentation::DeviceSelectionPresentation;
 use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
@@ -76,7 +76,12 @@ pub(crate) fn interaction_state(interaction: Interaction) -> InteractionState {
     }
 }
 
-fn row_control_width(value: &ControlValue<'_>) -> f32 {
+const COMPACT_MONITOR_CONTROL_WIDTH: f32 = 136.0;
+
+fn row_control_width(element: &Element, value: &ControlValue<'_>) -> f32 {
+    if element.id == ElementId::OverlayMonitor && matches!(value, ControlValue::Text(_)) {
+        return COMPACT_MONITOR_CONTROL_WIDTH;
+    }
     match value {
         ControlValue::Toggle(_) => 48.0,
         ControlValue::Text(_) => CONTROL_WIDTH,
@@ -153,7 +158,7 @@ pub fn draw_row(
     } else {
         BrushRole::TextSecondary
     };
-    let control_width = row_control_width(&value);
+    let control_width = row_control_width(element, &value);
     let text_width = (rect.right() - 18.0 - control_width - rect.x - BODY_LEFT - 14.0).max(1.0);
     let stack_top = rect.y + (rect.h - 40.0) * 0.5;
     r.text_clipped(
@@ -171,7 +176,9 @@ pub fn draw_row(
 
     match value {
         ControlValue::Toggle(value) => draw_toggle(r, rect, value, interaction),
-        ControlValue::Text(text) => draw_value_box(r, rect, &text, element.kind, interaction),
+        ControlValue::Text(text) => {
+            draw_value_box(r, rect, &text, element.kind, control_width, interaction)
+        }
         ControlValue::Slider { ratio, label } => {
             draw_slider_cluster(r, element, ratio.clamp(0.0, 1.0), &label, interaction)
         }
@@ -1569,12 +1576,20 @@ fn control_rect(row: Rect, width: f32) -> Rect {
 pub(crate) fn value_control_rect(row: Rect, _kind: ElementKind) -> Rect {
     control_rect(row, CONTROL_WIDTH)
 }
+pub(crate) fn value_control_rect_for(row: Rect, id: ElementId, kind: ElementKind) -> Rect {
+    let width = if id == ElementId::OverlayMonitor && kind == ElementKind::Value {
+        COMPACT_MONITOR_CONTROL_WIDTH
+    } else {
+        CONTROL_WIDTH
+    };
+    control_rect(row, width)
+}
 
 const VALUE_TEXT_PADDING: f32 = 10.0;
 const VALUE_CHEVRON_RESERVE: f32 = 30.0;
 
-pub(crate) fn value_text_rect(row: Rect, kind: ElementKind) -> Rect {
-    let control = value_control_rect(row, kind);
+fn value_text_rect_for(row: Rect, kind: ElementKind, control_width: f32) -> Rect {
+    let control = control_rect(row, control_width);
     let left = control.x + VALUE_TEXT_PADDING;
     let top = control.y + VALUE_TEXT_PADDING;
     let right_padding = if kind == ElementKind::Value {
@@ -1585,6 +1600,11 @@ pub(crate) fn value_text_rect(row: Rect, kind: ElementKind) -> Rect {
     let right = (control.right() - right_padding).max(left);
     let bottom = (control.bottom() - VALUE_TEXT_PADDING).max(top);
     Rect::new(left, top, right - left, bottom - top)
+}
+
+#[cfg(test)]
+pub(crate) fn value_text_rect(row: Rect, kind: ElementKind) -> Rect {
+    value_text_rect_for(row, kind, CONTROL_WIDTH)
 }
 
 fn draw_toggle(r: &Renderer, row: Rect, value: bool, interaction: Interaction) {
@@ -1655,9 +1675,10 @@ fn draw_value_box(
     row: Rect,
     text: &str,
     kind: ElementKind,
+    control_width: f32,
     interaction: Interaction,
 ) {
-    let rect = value_control_rect(row, kind);
+    let rect = control_rect(row, control_width);
     let state = interaction_state(interaction);
     let bg = match state {
         InteractionState::Disabled | InteractionState::Pressed => BrushRole::CardPressed,
@@ -1691,7 +1712,7 @@ fn draw_value_box(
     };
     r.text_clipped(
         text,
-        value_text_rect(row, kind).d2d(),
+        value_text_rect_for(row, kind, control_width).d2d(),
         TextStyle::Value,
         role,
     );
@@ -2069,13 +2090,15 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
 #[cfg(test)]
 mod tests {
     use super::{
-        device_value_rect, interaction_state, scroll_from_scrollbar_pointer, scrollbar_hit_rect,
-        scrollbar_thumb_rect, search_caret_rect, search_text_rect, section_accent_rect,
-        section_divider_y, section_title_text_rect, shortcut_icon_geometry, titlebar_glyph_bounds,
-        value_control_rect, value_text_rect, Interaction, InteractionState, CONTROL_WIDTH,
-        VALUE_TEXT_PADDING,
+        device_value_rect, interaction_state, row_control_width, scroll_from_scrollbar_pointer,
+        scrollbar_hit_rect, scrollbar_thumb_rect, search_caret_rect, search_text_rect,
+        section_accent_rect, section_divider_y, section_title_text_rect, shortcut_icon_geometry,
+        titlebar_glyph_bounds, value_control_rect, value_control_rect_for, value_text_rect,
+        value_text_rect_for, ControlValue, Interaction, InteractionState,
+        COMPACT_MONITOR_CONTROL_WIDTH, CONTROL_WIDTH, VALUE_TEXT_PADDING,
     };
-    use crate::ui::layout::{ElementKind, Rect};
+    use crate::ui::layout::{Element, ElementId, ElementKind, Rect};
+    use std::borrow::Cow;
 
     fn interaction() -> Interaction {
         Interaction {
@@ -2135,6 +2158,29 @@ mod tests {
         let hotkey = value_control_rect(row, ElementKind::Hotkey);
         let hotkey_text = value_text_rect(row, ElementKind::Hotkey);
         assert_eq!(hotkey_text.right(), hotkey.right() - VALUE_TEXT_PADDING);
+    }
+
+    #[test]
+    fn compact_monitor_value_leaves_room_for_complete_helper_text() {
+        let element = Element {
+            id: ElementId::OverlayMonitor,
+            kind: ElementKind::Value,
+            rect: Rect::new(0.0, 0.0, 332.0, 58.0),
+            label: "Monitor".into(),
+            description: "Overlay location".into(),
+            scrolls: false,
+        };
+        let value = ControlValue::Text(Cow::Borrowed("Cursor position"));
+        let control_width = row_control_width(&element, &value);
+        let helper_width = element.rect.w - 18.0 - control_width - 14.0 - super::BODY_LEFT - 14.0;
+        let control = value_control_rect_for(element.rect, element.id, element.kind);
+        let value_text = value_text_rect_for(element.rect, element.kind, control_width);
+
+        assert_eq!(control_width, COMPACT_MONITOR_CONTROL_WIDTH);
+        assert!(helper_width >= 100.0);
+        assert_eq!(control.w, control_width);
+        assert!(value_text.w >= 90.0);
+        assert_eq!(element.description, "Overlay location");
     }
     #[test]
     fn scrollbar_drag_maps_thumb_centers_to_scroll_extremes() {

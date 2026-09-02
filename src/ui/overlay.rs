@@ -208,6 +208,34 @@ struct ShowTiming {
     restart_phase: bool,
     hold_after_now_ms: u64,
 }
+#[derive(Debug, Clone, Copy)]
+struct ShowPlan {
+    position: POINT,
+    size: SIZE,
+    alpha: f32,
+    timer_interval: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TickPlan {
+    Hide,
+    Frame(ShowPlan),
+}
+
+/// Return an owned plan before any caller performs HWND work.
+///
+/// Keeping this boundary in one helper makes it impossible for the state
+/// borrow used to prepare a plan to accidentally span a reentrant call.
+fn prepare_state_plan<State, Plan, Prepare>(
+    cell: &std::cell::RefCell<State>,
+    prepare: Prepare,
+) -> Plan
+where
+    Prepare: FnOnce(&mut State) -> Plan,
+{
+    let mut state = cell.borrow_mut();
+    prepare(&mut state)
+}
 
 fn timing_after_show(
     phase: Phase,
@@ -613,20 +641,31 @@ impl OverlayWindow {
     }
 
     pub fn show(&self, model: OverlayModel, config: OverlayCfg) -> Result<()> {
+        if model.rows.is_empty() || !config.enabled {
+            return Ok(());
+        }
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
             return Err(Error::internal("overlay state missing"));
         };
-        cell.borrow_mut().show(self.hwnd, model, config)
+        let preferences = SystemVisualPreferences::query();
+        let backdrop_enabled = configure_backdrop(self.hwnd, preferences);
+        let plan = prepare_state_plan(cell, |state| {
+            state.prepare_show(self.hwnd, model, config, preferences, backdrop_enabled)
+        })?;
+        let Some(plan) = plan else {
+            return Ok(());
+        };
+        apply_show_plan(self.hwnd, plan);
+        render_prepared_frame(cell, plan)
     }
 
     pub fn hide(&self) {
         if let Some(cell) = unsafe { win::state_cell::<OverlayState>(self.hwnd) } {
-            cell.borrow_mut().phase = Phase::Hidden;
+            {
+                cell.borrow_mut().phase = Phase::Hidden;
+            }
         }
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_ID);
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
-        }
+        apply_hide_window(self.hwnd);
     }
 }
 
@@ -658,6 +697,49 @@ impl OverlayWindow {
             last_shown: state.last_shown,
         }
     }
+}
+
+fn apply_show_plan(hwnd: HWND, plan: ShowPlan) {
+    apply_frame_plan(hwnd, plan);
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    set_timer(hwnd, plan.timer_interval);
+}
+
+fn set_timer(hwnd: HWND, interval: u32) {
+    unsafe {
+        let _ = SetTimer(Some(hwnd), TIMER_ID, interval, None);
+    }
+}
+
+fn apply_frame_plan(hwnd: HWND, plan: ShowPlan) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            plan.position.x,
+            plan.position.y,
+            plan.size.cx,
+            plan.size.cy,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+fn apply_hide_window(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_ID);
+        let _ = ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+fn render_prepared_frame(cell: &std::cell::RefCell<OverlayState>, plan: ShowPlan) -> Result<()> {
+    let state = cell.borrow();
+    if state.phase == Phase::Hidden {
+        return Ok(());
+    }
+    state.render_surface(plan.alpha)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -714,14 +796,21 @@ impl OverlayState {
         }
     }
 
-    fn show(&mut self, hwnd: HWND, model: OverlayModel, config: OverlayCfg) -> Result<()> {
+    fn prepare_show(
+        &mut self,
+        hwnd: HWND,
+        model: OverlayModel,
+        config: OverlayCfg,
+        preferences: SystemVisualPreferences,
+        backdrop_enabled: bool,
+    ) -> Result<Option<ShowPlan>> {
         if model.rows.is_empty() || !config.enabled {
-            return Ok(());
+            return Ok(None);
         }
-        self.preferences = SystemVisualPreferences::query();
+        self.preferences = preferences;
         self.motion = motion_policy(self.preferences);
         self.config = config;
-        self.backdrop_enabled = configure_backdrop(hwnd, self.preferences);
+        self.backdrop_enabled = backdrop_enabled;
         let now = Instant::now();
         let coalesce = self.phase != Phase::Hidden
             && now.duration_since(self.last_presented) <= Duration::from_millis(COALESCE_WINDOW_MS);
@@ -749,21 +838,35 @@ impl OverlayState {
             self.phase_started = now;
         }
         self.hold_until = now + Duration::from_millis(timing.hold_after_now_ms);
-        let size = self.surface.as_ref().expect("surface").size;
-        unsafe {
-            let _ = SetWindowPos(
-                hwnd,
-                Some(HWND_TOPMOST),
-                self.base_position.x,
-                self.base_position.y,
-                size.cx,
-                size.cy,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        self.frame_plan()
+            .map(Some)
+            .ok_or_else(|| Error::internal("overlay surface missing after show preparation"))
+    }
+
+    fn frame_plan(&self) -> Option<ShowPlan> {
+        let surface = self.surface.as_ref()?;
+        let (alpha, slide_dip) = self.frame_values();
+        let slide_px = (slide_dip * self.dpi as f32 / 96.0).round() as i32;
+        Some(ShowPlan {
+            position: POINT {
+                x: self.base_position.x,
+                y: self.base_position.y + slide_px,
+            },
+            size: surface.size,
+            alpha,
+            timer_interval: self.timer_interval(),
+        })
+    }
+
+    fn timer_interval(&self) -> u32 {
+        if self.motion == MotionPolicy::Reduced {
+            self.hold_until
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .clamp(1, u32::MAX as u128) as u32
+        } else {
+            TIMER_MS
         }
-        self.arm_timer(hwnd);
-        self.render_frame(hwnd)
     }
 
     fn rebuild_surface(
@@ -805,66 +908,40 @@ impl OverlayState {
         Ok(())
     }
 
-    fn arm_timer(&self, hwnd: HWND) {
-        let interval = if self.motion == MotionPolicy::Reduced {
-            self.hold_until
-                .saturating_duration_since(Instant::now())
-                .as_millis()
-                .clamp(1, u32::MAX as u128) as u32
-        } else {
-            TIMER_MS
-        };
-        unsafe {
-            let _ = SetTimer(Some(hwnd), TIMER_ID, interval, None);
-        }
-    }
-
-    fn refresh_preferences(&mut self, hwnd: HWND) -> Result<()> {
-        let preferences = SystemVisualPreferences::query();
-        if preferences == self.preferences {
-            return self.refresh_backdrop(hwnd);
+    fn prepare_visual_refresh(
+        &mut self,
+        hwnd: HWND,
+        preferences: SystemVisualPreferences,
+        backdrop_enabled: bool,
+    ) -> Result<Option<ShowPlan>> {
+        if preferences == self.preferences && backdrop_enabled == self.backdrop_enabled {
+            return Ok(None);
         }
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
-        self.backdrop_enabled = configure_backdrop(hwnd, self.preferences);
-        if self.phase != Phase::Hidden {
-            let monitor = select_monitor(self.config.monitor.clone());
-            self.rebuild_surface(hwnd, monitor.as_ref())?;
-            if self.motion == MotionPolicy::Reduced {
-                self.phase = Phase::Holding;
-                self.phase_started = Instant::now();
-            }
-            self.arm_timer(hwnd);
-            self.render_frame(hwnd)?;
+        self.backdrop_enabled = backdrop_enabled;
+        if self.phase == Phase::Hidden {
+            return Ok(None);
         }
-        Ok(())
+        let monitor = select_monitor(self.config.monitor.clone());
+        self.rebuild_surface(hwnd, monitor.as_ref())?;
+        if self.motion == MotionPolicy::Reduced {
+            self.phase = Phase::Holding;
+            self.phase_started = Instant::now();
+        }
+        self.frame_plan()
+            .map(Some)
+            .ok_or_else(|| Error::internal("overlay surface missing after visual refresh"))
     }
 
-    fn refresh_backdrop(&mut self, hwnd: HWND) -> Result<()> {
-        let enabled = configure_backdrop(hwnd, self.preferences);
-        if enabled == self.backdrop_enabled {
-            return Ok(());
-        }
-        self.backdrop_enabled = enabled;
-        if self.phase != Phase::Hidden {
-            let monitor = select_monitor(self.config.monitor.clone());
-            self.rebuild_surface(hwnd, monitor.as_ref())?;
-            self.render_frame(hwnd)?;
-        }
-        Ok(())
-    }
-
-    fn tick(&mut self, hwnd: HWND) {
+    fn prepare_tick(&mut self) -> Option<TickPlan> {
         let now = Instant::now();
         if self.motion == MotionPolicy::Reduced {
             if now >= self.hold_until {
                 self.phase = Phase::Hidden;
-                unsafe {
-                    let _ = KillTimer(Some(hwnd), TIMER_ID);
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
+                return Some(TickPlan::Hide);
             }
-            return;
+            return None;
         }
         match self.phase {
             Phase::Appearing => {
@@ -882,18 +959,12 @@ impl OverlayState {
             Phase::Leaving => {
                 if now.duration_since(self.phase_started) >= Duration::from_millis(LEAVE_MS) {
                     self.phase = Phase::Hidden;
-                    unsafe {
-                        let _ = KillTimer(Some(hwnd), TIMER_ID);
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                    }
-                    return;
+                    return Some(TickPlan::Hide);
                 }
             }
-            Phase::Hidden => return,
+            Phase::Hidden => return None,
         }
-        if let Err(error) = self.render_frame(hwnd) {
-            crate::warn_!("overlay frame failed: {error}");
-        }
+        self.frame_plan().map(TickPlan::Frame)
     }
 
     fn frame_values(&self) -> (f32, f32) {
@@ -939,26 +1010,6 @@ impl OverlayState {
 
     fn repaint(&self) -> Result<()> {
         let (alpha, _) = self.frame_values();
-        self.render_surface(alpha)
-    }
-
-    fn render_frame(&self, hwnd: HWND) -> Result<()> {
-        let Some(surface) = &self.surface else {
-            return Ok(());
-        };
-        let (alpha, slide_dip) = self.frame_values();
-        let slide_px = (slide_dip * self.dpi as f32 / 96.0).round() as i32;
-        unsafe {
-            let _ = SetWindowPos(
-                hwnd,
-                Some(HWND_TOPMOST),
-                self.base_position.x,
-                self.base_position.y + slide_px,
-                surface.size.cx,
-                surface.size.cy,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
-        }
         self.render_surface(alpha)
     }
 }
@@ -1620,23 +1671,51 @@ unsafe extern "system" fn overlay_wndproc(
         };
         match msg {
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED | WM_DWMCOMPOSITIONCHANGED => {
-                if let Err(error) = cell.borrow_mut().refresh_preferences(hwnd) {
-                    crate::warn_!("overlay visual preference refresh failed: {error}");
+                let preferences = SystemVisualPreferences::query();
+                let backdrop_enabled = configure_backdrop(hwnd, preferences);
+                let plan = prepare_state_plan(cell, |state| {
+                    state.prepare_visual_refresh(hwnd, preferences, backdrop_enabled)
+                });
+                match plan {
+                    Ok(Some(plan)) => {
+                        apply_frame_plan(hwnd, plan);
+                        set_timer(hwnd, plan.timer_interval);
+                        if let Err(error) = render_prepared_frame(cell, plan) {
+                            crate::warn_!("overlay visual refresh failed: {error}");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => crate::warn_!("overlay visual refresh failed: {error}"),
                 }
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == TIMER_ID => {
-                cell.borrow_mut().tick(hwnd);
+                let plan = prepare_state_plan(cell, |state| state.prepare_tick());
+                match plan {
+                    Some(TickPlan::Hide) => apply_hide_window(hwnd),
+                    Some(TickPlan::Frame(plan)) => {
+                        apply_frame_plan(hwnd, plan);
+                        if let Err(error) = render_prepared_frame(cell, plan) {
+                            crate::warn_!("overlay frame failed: {error}");
+                        }
+                    }
+                    None => {}
+                }
                 LRESULT(0)
             }
             WM_PAINT => {
                 let mut paint = PAINTSTRUCT::default();
                 let _ = BeginPaint(hwnd, &mut paint);
-                let state = cell.borrow();
-                if state.phase != Phase::Hidden {
-                    if let Err(error) = state.repaint() {
-                        crate::warn_!("overlay paint failed: {error}");
+                let result = {
+                    let state = cell.borrow();
+                    if state.phase != Phase::Hidden {
+                        state.repaint()
+                    } else {
+                        Ok(())
                     }
+                };
+                if let Err(error) = result {
+                    crate::warn_!("overlay paint failed: {error}");
                 }
                 let _ = EndPaint(hwnd, &paint);
                 LRESULT(0)
@@ -1828,6 +1907,28 @@ mod tests {
         assert_eq!(fresh.phase, Phase::Appearing);
         assert!(fresh.restart_phase);
         assert_eq!(fresh.hold_after_now_ms, 1440);
+    }
+
+    #[test]
+    fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
+        let cell = std::cell::RefCell::new(0_u8);
+        let plan = prepare_state_plan(&cell, |state| {
+            *state = 1;
+            ShowPlan {
+                position: POINT { x: 40, y: 80 },
+                size: SIZE { cx: 320, cy: 180 },
+                alpha: 1.0,
+                timer_interval: TIMER_MS,
+            }
+        });
+
+        assert_eq!(plan.position, POINT { x: 40, y: 80 });
+        assert_eq!(plan.size, SIZE { cx: 320, cy: 180 });
+        let mut reentrant = cell
+            .try_borrow_mut()
+            .expect("state borrow must end before window work");
+        *reentrant = 2;
+        assert_eq!(*reentrant, 2);
     }
 
     #[test]

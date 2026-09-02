@@ -45,8 +45,8 @@ use crate::ui::control_center_automation::{
 };
 use crate::ui::controls::{self, ControlValue, Interaction};
 use crate::ui::layout::{
-    overlay_placement_geometry, overlay_preview_canvas_rect, ElementId, ElementKind, HotkeySlot,
-    LayoutContext, Rect as UiRect, RegionKind, SettingsLayout,
+    overlay_placement_geometry, overlay_preview_canvas_rect, top_chrome_separator_rect, ElementId,
+    ElementKind, HotkeySlot, LayoutContext, Rect as UiRect, RegionKind, SettingsLayout,
 };
 use crate::ui::navigation::{search, Page};
 use crate::ui::picker::{PickerChoice, PickerKind, PickerPopup, PickerValue, PopupRect};
@@ -338,6 +338,22 @@ impl SettingsUi {
         self.focused == Some(ElementId::Search)
             && self.focus_owner == AutomationFocusOwner::Settings
     }
+    fn set_pointer_focus(&mut self, target: Option<ElementId>) {
+        self.focus_visible = false;
+        self.focused = target.filter(|id| {
+            let Some(element) = self.layout.element(*id) else {
+                return false;
+            };
+            !matches!(element.kind, ElementKind::Card | ElementKind::Info) && !self.is_disabled(*id)
+        });
+    }
+    fn clear_search_focus_without_settings_window(&mut self) {
+        if self.focus_owner != AutomationFocusOwner::Settings
+            && self.focused == Some(ElementId::Search)
+        {
+            self.focused = None;
+        }
+    }
 
     fn sync_search_caret(&mut self, hwnd: HWND) {
         if self.search_has_focus() {
@@ -470,7 +486,7 @@ impl SettingsUi {
     }
 
     fn handle_search_key(&mut self, hwnd: HWND, vk: u16) -> bool {
-        if self.focused != Some(ElementId::Search) {
+        if !self.search_has_focus() {
             return false;
         }
         match vk {
@@ -499,7 +515,7 @@ impl SettingsUi {
     }
 
     fn handle_search_char(&mut self, hwnd: HWND, ch: u16) -> bool {
-        if self.focused != Some(ElementId::Search) || ch < 0x20 {
+        if !self.search_has_focus() || ch < 0x20 {
             return false;
         }
         if let Some(character) = char::from_u32(u32::from(ch)) {
@@ -850,11 +866,12 @@ impl SettingsUi {
     }
     fn draw_top_bar(&self, renderer: &Renderer) {
         renderer.fill_rect(self.layout.top_bar.d2d(), BrushRole::Background);
+        let separator = top_chrome_separator_rect(self.layout.top_bar);
         renderer.line(
-            0.0,
-            self.layout.top_bar.bottom(),
-            self.layout.width,
-            self.layout.top_bar.bottom(),
+            separator.x,
+            separator.y,
+            separator.right(),
+            separator.y,
             BrushRole::Border,
             1.0,
         );
@@ -1380,45 +1397,9 @@ impl SettingsUi {
             OverlayAppearance::Light => BrushRole::BackgroundSubtle,
             OverlayAppearance::System => BrushRole::Card,
         };
+        renderer.fill_rounded(sample.translated_y(1.0).d2d(), 8.0, BrushRole::Shadow);
         renderer.fill_rounded(sample.d2d(), 8.0, sample_surface);
         renderer.stroke_rounded(sample.d2d(), 8.0, BrushRole::Accent, 1.0);
-        let title = "Microphone muted";
-        let title_height = renderer
-            .text_height(title, TextStyle::BodyStrong, sample.w - 24.0, 24.0)
-            .clamp(16.0, 22.0);
-        let metadata = format!(
-            "{} · {}%",
-            self.draft.overlay.position.label(),
-            (self.draft.overlay.opacity * 100.0).round() as u32
-        );
-        let metadata_height = renderer
-            .text_height(&metadata, TextStyle::Caption, sample.w - 24.0, 20.0)
-            .clamp(12.0, 16.0);
-        let title_rect = UiRect::new(
-            sample.x + 12.0,
-            sample.y + 8.0,
-            sample.w - 24.0,
-            title_height,
-        );
-        renderer.text_clipped(
-            title,
-            title_rect.d2d(),
-            TextStyle::BodyStrong,
-            BrushRole::Text,
-        );
-        let metadata_y = (sample.bottom() - metadata_height - 8.0).max(title_rect.bottom() + 4.0);
-        renderer.text_clipped(
-            &metadata,
-            UiRect::new(
-                sample.x + 12.0,
-                metadata_y,
-                sample.w - 24.0,
-                metadata_height,
-            )
-            .d2d(),
-            TextStyle::Caption,
-            BrushRole::TextSecondary,
-        );
     }
 
     fn draw_display_safety(&self, renderer: &Renderer, rect: UiRect) {
@@ -4199,6 +4180,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.clear_search_focus_without_settings_window();
         self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
@@ -4211,6 +4193,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.clear_search_focus_without_settings_window();
         self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
@@ -4234,6 +4217,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.clear_search_focus_without_settings_window();
         self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
@@ -4247,6 +4231,7 @@ impl SettingsUi {
             } else {
                 AutomationFocusOwner::Outside
             };
+        self.clear_search_focus_without_settings_window();
         self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
@@ -4263,6 +4248,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.clear_search_focus_without_settings_window();
         self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
@@ -4302,6 +4288,7 @@ impl SettingsUi {
                     self.focused = Some(ElementId::Search);
                     self.rebuild_layout(hwnd);
                     invalidate(hwnd);
+                    focus_requested = true;
                 }
                 SettingsAutomationAction::SetWindowFocus => {
                     focus_requested = true;
@@ -4605,7 +4592,7 @@ impl ControlCenterWindow {
             (
                 ui.draft.clone(),
                 ui.display_outputs.clone(),
-                controls::value_control_rect(element.rect, element.kind),
+                controls::value_control_rect_for(element.rect, element.id, element.kind),
                 ui.dpi,
                 ui.selected_display_route,
             )
@@ -5700,6 +5687,8 @@ unsafe extern "system" fn settings_wndproc(
                     let scrollbar_hit = ui.layout.max_scroll > 0.0
                         && controls::scrollbar_hit_rect(ui.layout.content_clip).contains(x, y);
                     if scrollbar_hit {
+                        ui.set_pointer_focus(None);
+                        ui.sync_search_caret(hwnd);
                         if let Some(thumb) = controls::scrollbar_thumb_rect(
                             ui.layout.content_clip,
                             ui.scroll,
@@ -5721,24 +5710,28 @@ unsafe extern "system" fn settings_wndproc(
                             capture_requested = true;
                             invalidate(hwnd);
                         }
-                    } else if let Some(id) = ui.layout.hit_test(x, y) {
-                        if !ui.is_disabled(id) {
-                            focus_requested = true;
-                            capture_requested = true;
-                            ui.pressed = Some(id);
-                            ui.focus_visible = false;
-                            ui.focused = Some(id);
-                            if matches!(
-                                id,
-                                ElementId::OverlayDuration
-                                    | ElementId::OverlayOpacity
-                                    | ElementId::OverlayScale
-                            ) {
-                                ui.set_slider_from_x(id, x);
+                    } else {
+                        let hit = ui.layout.hit_test(x, y);
+                        ui.set_pointer_focus(hit);
+                        ui.sync_search_caret(hwnd);
+                        if let Some(id) = hit {
+                            if !ui.is_disabled(id) {
+                                focus_requested = true;
+                                capture_requested = true;
+                                ui.pressed = Some(id);
+                                if matches!(
+                                    id,
+                                    ElementId::OverlayDuration
+                                        | ElementId::OverlayOpacity
+                                        | ElementId::OverlayScale
+                                ) {
+                                    ui.set_slider_from_x(id, x);
+                                }
+                                invalidate(hwnd);
                             }
-                            invalidate(hwnd);
                         }
                     }
+                    invalidate(hwnd);
                     ui.publish_automation_snapshot(hwnd);
                     (focus_requested, capture_requested)
                 };
@@ -6772,6 +6765,117 @@ mod interaction_tests {
         ui.onboarding_step = None;
         ui.layout = SettingsLayout::build(DESIGN_WIDTH, DESIGN_HEIGHT, 0.0);
         ui
+    }
+
+    fn search_settings_ui() -> SettingsUi {
+        let mut ui = empty_settings_ui();
+        ui.layout =
+            SettingsLayout::build_shell(DESIGN_WIDTH, DESIGN_HEIGHT, 0.0, Page::Home, "", 0, None);
+        ui.focus_owner = AutomationFocusOwner::Settings;
+        ui
+    }
+
+    #[test]
+    fn search_pointer_focus_clears_on_blank_client_click() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = search_settings_ui();
+        ui.set_pointer_focus(Some(ElementId::Search));
+        ui.sync_search_caret(hwnd);
+        assert!(ui.search_has_focus());
+
+        let blank = ui
+            .layout
+            .hit_test(ui.layout.top_bar.x + 8.0, ui.layout.top_bar.y + 2.0);
+        assert_eq!(blank, None);
+        ui.set_pointer_focus(blank);
+        ui.sync_search_caret(hwnd);
+
+        assert_eq!(ui.focused, None);
+        assert!(!ui.search_has_focus());
+        assert!(!ui.search_caret_visible);
+    }
+
+    #[test]
+    fn search_pointer_focus_transfers_to_another_control() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = search_settings_ui();
+        ui.set_pointer_focus(Some(ElementId::Search));
+        ui.sync_search_caret(hwnd);
+
+        let audio = ui
+            .layout
+            .element(ElementId::Nav(Page::Audio))
+            .expect("audio navigation")
+            .rect;
+        let target = ui
+            .layout
+            .hit_test(audio.x + audio.w * 0.5, audio.y + audio.h * 0.5);
+        assert_eq!(target, Some(ElementId::Nav(Page::Audio)));
+        ui.set_pointer_focus(target);
+        ui.sync_search_caret(hwnd);
+
+        assert_eq!(ui.focused, target);
+        assert!(!ui.search_has_focus());
+        assert!(!ui.search_caret_visible);
+    }
+
+    #[test]
+    fn search_external_focus_loss_clears_editing_and_character_handling() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let outside = HWND(17usize as *mut _);
+        let mut ui = search_settings_ui();
+        ui.set_pointer_focus(Some(ElementId::Search));
+        ui.sync_search_caret(hwnd);
+        assert!(ui.handle_search_char(hwnd, 'a' as u16));
+        assert_eq!(ui.search_query, "a");
+
+        ui.on_window_focus(hwnd, false, outside);
+
+        assert_eq!(ui.focused, None);
+        assert!(!ui.search_has_focus());
+        assert!(!ui.search_caret_visible);
+        assert!(!ui.handle_search_char(hwnd, 'b' as u16));
+        assert!(!ui.handle_search_key(hwnd, 0x08));
+        assert_eq!(ui.search_query, "a");
+    }
+
+    #[test]
+    fn stale_search_element_does_not_consume_input_without_settings_focus() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = search_settings_ui();
+        ui.focused = Some(ElementId::Search);
+        ui.focus_owner = AutomationFocusOwner::Outside;
+        ui.search_query = "keep".into();
+        ui.search_caret_visible = true;
+
+        assert!(!ui.handle_search_char(hwnd, 'x' as u16));
+        assert!(!ui.handle_search_key(hwnd, 0x08));
+        ui.sync_search_caret(hwnd);
+        assert_eq!(ui.search_query, "keep");
+        assert!(!ui.search_caret_visible);
+        assert!(!ui.search_has_focus());
+    }
+
+    #[test]
+    fn search_caret_visibility_uses_the_editing_focus_predicate() {
+        let hwnd = HWND(std::ptr::dangling_mut());
+        let mut ui = search_settings_ui();
+        ui.focused = Some(ElementId::Search);
+        ui.focus_owner = AutomationFocusOwner::Outside;
+        ui.search_caret_visible = true;
+        ui.sync_search_caret(hwnd);
+        assert!(!ui.search_caret_visible);
+
+        ui.focus_owner = AutomationFocusOwner::Settings;
+        ui.sync_search_caret(hwnd);
+        assert!(ui.search_has_focus());
+        assert!(ui.search_caret_visible);
+        assert!(ui.search_caret_deadline.is_some());
+
+        ui.focused = Some(ElementId::Nav(Page::Audio));
+        ui.sync_search_caret(hwnd);
+        assert!(!ui.search_caret_visible);
+        assert!(ui.search_caret_deadline.is_none());
     }
     #[test]
     fn snapshot_publication_defers_uia_delivery_past_settings_borrow() {

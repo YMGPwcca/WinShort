@@ -113,6 +113,16 @@ Automated coverage:
 - Search caret geometry tests cover a visible empty-field caret and a text-end caret;
   renderer palette tests cover complete dark/light brush tables and transactional theme
   replacement.
+- Overlay show-plan coverage verifies mutable overlay state is released before
+  reentrant SetWindowPos/ShowWindow work; WM_SIZE remains the D2D resize path.
+- Top-chrome separator geometry starts at the content boundary and never intersects
+  the sidebar brand row.
+- Overlay preview coverage keeps the monitor frame content-free except for the
+  normalized status-card silhouette; Position moves only that silhouette.
+- Compact Monitor-row coverage verifies complete `Overlay location` helper text,
+  aligned picker geometry, and readable Primary/Cursor values.
+- Search focus coverage verifies blank-click clearing, transfer to another control,
+  external focus loss, stale Search guards, and caret/predicate agreement.
 - Overlay monitor picker tests expose exactly Primary and Cursor position; legacy foreground
   config values parse to Cursor and serialize as `cursor`.
 - Overlay geometry tests cover dynamic monitor aspect fitting, monitor-as-preview containment,

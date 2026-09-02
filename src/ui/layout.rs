@@ -370,6 +370,9 @@ pub(crate) fn top_chrome_geometry(width: f32, nav_width: f32) -> TopChromeGeomet
         caption,
     }
 }
+pub(crate) fn top_chrome_separator_rect(top_bar: Rect) -> Rect {
+    Rect::new(top_bar.x, top_bar.bottom(), top_bar.w, 1.0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutContext {
@@ -2350,7 +2353,7 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         ElementId::OverlayMonitor,
         ElementKind::Value,
         "Monitor",
-        "Choose where the status card appears",
+        "Overlay location",
         monitor_rect,
     );
     add_row(
@@ -2722,7 +2725,8 @@ mod tests {
     use super::{
         brand_row_geometry, overlay_placement_geometry, overlay_position_grid_rect,
         overlay_preview_canvas_rect, overlay_preview_canvas_size, overlay_status_row_rects,
-        top_chrome_geometry, ElementId, ElementKind, HotkeySlot, RegionKind, SettingsLayout,
+        top_chrome_geometry, top_chrome_separator_rect, ElementId, ElementKind, HotkeySlot,
+        RegionKind, SettingsLayout,
     };
     use crate::ui::navigation::Page;
     use crate::ui::presentation::{AllowlistMode, DisplayWizardStep};
@@ -2751,6 +2755,19 @@ mod tests {
                 .y,
             super::UiTokens::NAV_FIRST_ITEM_TOP
         );
+    }
+
+    #[test]
+    fn top_chrome_separator_starts_at_content_boundary() {
+        let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
+        let separator = top_chrome_separator_rect(layout.top_bar);
+
+        assert_eq!(separator.x, layout.nav_width);
+        assert_eq!(separator.x, layout.brand.row.right());
+        assert_eq!(separator.y, layout.top_bar.bottom());
+        assert!(!separator.intersects(layout.brand.row));
+        assert!(!separator.intersects(layout.brand.icon));
+        assert!(!separator.intersects(layout.brand.text));
     }
 
     #[test]
@@ -3361,6 +3378,13 @@ mod tests {
                 .element(ElementId::OverlayMonitor)
                 .expect("monitor selector")
                 .rect;
+            assert_eq!(
+                layout
+                    .element(ElementId::OverlayMonitor)
+                    .expect("monitor selector")
+                    .description,
+                "Overlay location"
+            );
             let (expected_enabled, expected_monitor) = overlay_status_row_rects(super::Rect::new(
                 layout.content_column.x,
                 enabled.y,
