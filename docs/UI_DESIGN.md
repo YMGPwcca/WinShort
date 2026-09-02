@@ -36,7 +36,7 @@ Control Center
 
 Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dimensions. A fixed navigation rail, an 80 DIP sidebar brand row, a single custom top-chrome row, and page content remain stable while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. Navigation begins at the original 98 DIP position below the brand row without an extra title band. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
+The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dimensions. A fixed navigation rail, an 80 DIP sidebar brand row, a single custom top-chrome row, and page content remain stable while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. Navigation begins 8 DIP below the brand row without an extra title band. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
 
 `src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, spaced section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, Close-button, slider-cluster, and icon vocabulary.
 
@@ -51,7 +51,7 @@ The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dime
 - 92 DIP page headers and 88 DIP section headers; non-page headings share one 20 DIP inter-section breathing-room token;
 - 12 DIP section-content gap before a section's first control and 8 DIP ROW_GAP between sibling rows/cards;
 - 58 DIP setting rows with an 8 DIP rhythm;
-- one shared 206 DIP right-side control column for dropdowns, keycaps, and equivalent value controls;
+- one shared 206 DIP right-side control column for dropdowns, keycaps, and equivalent value controls, with a compact 136 DIP Monitor variant for the split Overlay status row;
 - 32 DIP native picker rows with GDI-metric-sized text envelopes;
 - compact slider tracks sized from the content column rather than the window edge.
 

@@ -55,7 +55,7 @@ impl UiTokens {
     pub const BRAND_TEXT_GAP: f32 = 12.0;
     pub const BRAND_TEXT_HEIGHT: f32 = 45.0;
     pub const BRAND_ROW_RIGHT: f32 = 16.0;
-    pub const NAV_FIRST_ITEM_TOP: f32 = 98.0;
+    pub const NAV_FIRST_ITEM_TOP: f32 = Self::BRAND_ROW_HEIGHT + Self::ROW_GAP;
     pub const TOP_CHROME_SEARCH_GAP: f32 = 24.0;
     pub const ROW_HEIGHT: f32 = 58.0;
     pub const ROW_GAP: f32 = 8.0;

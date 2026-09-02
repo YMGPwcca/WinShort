@@ -2200,7 +2200,7 @@ const PREVIEW_CANVAS_MAX_HEIGHT: f32 = 220.0;
 const PREVIEW_TITLE_HEIGHT: f32 = 44.0;
 const PREVIEW_BOTTOM_INSET: f32 = 18.0;
 const OVERLAY_PLACEMENT_GAP: f32 = 16.0;
-const OVERLAY_PLACEMENT_CONTROLS_WIDTH: f32 = 360.0;
+const OVERLAY_PLACEMENT_CONTROLS_WIDTH: f32 = 400.0;
 const OVERLAY_PLACEMENT_HEADER_HEIGHT: f32 = 44.0;
 const OVERLAY_POSITION_GRID_STEP: f32 = 44.0;
 const OVERLAY_POSITION_CELL_HEIGHT: f32 = 36.0;
@@ -2754,6 +2754,13 @@ mod tests {
                 .rect
                 .y,
             super::UiTokens::NAV_FIRST_ITEM_TOP
+        );
+        let home_nav = layout
+            .element(ElementId::Nav(Page::Home))
+            .expect("home navigation");
+        assert_eq!(
+            home_nav.rect.y - layout.brand.row.bottom(),
+            super::UiTokens::ROW_GAP
         );
     }
 
@@ -3363,6 +3370,11 @@ mod tests {
                 geometry.controls.x
             );
             assert_eq!(geometry.controls.right(), layout.content_column.right());
+            if width == 960.0 {
+                assert_eq!(geometry.controls.w, super::OVERLAY_PLACEMENT_CONTROLS_WIDTH);
+                assert!(geometry.controls.w > geometry.preview.w);
+                assert!(overlay_position_grid_rect(geometry.controls, 0).w >= 120.0);
+            }
             assert_eq!(
                 layout
                     .element(ElementId::OverlayPositionCell(0))

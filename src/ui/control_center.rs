@@ -4914,20 +4914,26 @@ fn client_work_rect(hwnd: HWND) -> Result<PopupRect> {
     }
     Ok(work)
 }
+const PICKER_MIN_WIDTH_DIP: f32 = 320.0;
+const PICKER_MAX_WIDTH_DIP: f32 = 400.0;
+
 fn picker_height_px(choice_count: usize, scale: f32) -> i32 {
     ((choice_count.min(10) as f32 * crate::ui::picker::ITEM_HEIGHT_DIP) * scale).round() as i32 + 2
 }
 
 fn picker_width_dip(control_width: f32, choices: &[PickerChoice]) -> f32 {
     // The native list uses a single-line GDI item renderer. Reserve a
-    // conservative text envelope for the longest concise label, then clamp
-    // it to a stable range that can still be placed beside the anchor.
+    // conservative text envelope for the longest concise label, then keep
+    // the popup compact enough to remain a bounded child surface.
     let longest = choices
         .iter()
         .map(|choice| choice.label.encode_utf16().count() as f32)
         .fold(0.0, f32::max);
     let content_width = 64.0 + longest * 7.2;
-    control_width.max(400.0).max(content_width).min(520.0)
+    control_width
+        .max(PICKER_MIN_WIDTH_DIP)
+        .max(content_width)
+        .min(PICKER_MAX_WIDTH_DIP)
 }
 
 fn picker_choices(
@@ -6716,7 +6722,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn picker_width_reserves_reasonable_label_content() {
+    fn picker_width_is_compact_and_bounded() {
         let short = vec![PickerChoice {
             label: "Top Left".into(),
             value: PickerValue::Position(OverlayPosition::TopLeft),
@@ -6725,9 +6731,9 @@ mod interaction_tests {
             label: "A deliberately long endpoint name for the default device".into(),
             value: PickerValue::Position(OverlayPosition::TopLeft),
         }];
-        assert_eq!(picker_width_dip(190.0, &short), 400.0);
-        assert!(picker_width_dip(190.0, &long) > 400.0);
-        assert_eq!(picker_width_dip(900.0, &long), 520.0);
+        assert_eq!(picker_width_dip(190.0, &short), 320.0);
+        assert_eq!(picker_width_dip(190.0, &long), 400.0);
+        assert_eq!(picker_width_dip(900.0, &long), 400.0);
     }
     #[test]
     fn picker_height_has_only_list_rows_and_border_allowance() {

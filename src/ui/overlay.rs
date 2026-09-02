@@ -54,7 +54,6 @@ const LEAVE_MS: u64 = 180;
 const BASE_WIDTH: f32 = 372.0;
 const ROW_HEIGHT: f32 = 62.0;
 const PAD: f32 = 16.0;
-const SHADOW_PAD: f32 = 14.0;
 const BORDER_PAD: f32 = 1.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,19 +76,17 @@ impl SurfaceGeometry {
     }
 }
 
-fn surface_geometry(scale: f32, row_count: usize, shadow_enabled: bool) -> SurfaceGeometry {
+fn surface_geometry(scale: f32, row_count: usize) -> SurfaceGeometry {
     let scale = scale.clamp(0.7, 1.6);
     let body_width = BASE_WIDTH * scale;
     let body_height = (PAD * 2.0 + ROW_HEIGHT * row_count as f32) * scale;
-    let shadow_padding = if shadow_enabled { SHADOW_PAD } else { 0.0 };
-    let edge_padding = shadow_padding + BORDER_PAD;
     SurfaceGeometry {
-        width: body_width + edge_padding * 2.0,
-        height: body_height + edge_padding * 2.0,
-        body_left: edge_padding,
-        body_top: edge_padding,
-        body_right: edge_padding + body_width,
-        body_bottom: edge_padding + body_height,
+        width: body_width + BORDER_PAD * 2.0,
+        height: body_height + BORDER_PAD * 2.0,
+        body_left: BORDER_PAD,
+        body_top: BORDER_PAD,
+        body_right: BORDER_PAD + body_width,
+        body_bottom: BORDER_PAD + body_height,
     }
 }
 
@@ -126,8 +123,6 @@ struct OverlayPalette {
     border: Color,
     text: Color,
     secondary: Color,
-    shadow: Color,
-    shadow_enabled: bool,
     opaque: bool,
     icon: Color,
     changed_icon: Color,
@@ -293,8 +288,6 @@ fn palette_for(
             border: foreground,
             text: foreground,
             secondary: foreground,
-            shadow: Color::rgba(0, 0, 0, 0),
-            shadow_enabled: false,
             opaque: true,
             icon: foreground,
             changed_icon: highlight_foreground,
@@ -324,8 +317,6 @@ fn palette_for(
         border: theme.border_strong,
         text: theme.text,
         secondary: theme.text_secondary,
-        shadow: theme.shadow,
-        shadow_enabled: !simple,
         opaque: simple,
         icon: surface,
         changed_icon: surface,
@@ -881,7 +872,6 @@ impl OverlayState {
         let mut palette = palette_for(self.config.appearance, self.preferences);
         if !self.backdrop_enabled && !palette.opaque {
             palette.surface = Color::rgb(palette.surface.r, palette.surface.g, palette.surface.b);
-            palette.shadow_enabled = false;
             palette.opaque = true;
         }
         self.palette = palette;
@@ -890,7 +880,6 @@ impl OverlayState {
             self.dpi,
             self.config.scale,
             self.model.rows.len(),
-            self.palette.shadow_enabled,
         )?);
         let size = self.surface.as_ref().expect("surface").size;
         self.base_position = position_for(
@@ -1100,10 +1089,9 @@ impl OverlayGraphics {
         dpi: u32,
         scale: f32,
         row_count: usize,
-        shadow_enabled: bool,
     ) -> Result<OverlaySurface> {
         let scale = scale.clamp(0.7, 1.6);
-        let geometry = surface_geometry(scale, row_count, shadow_enabled);
+        let geometry = surface_geometry(scale, row_count);
         let size = geometry.pixel_size(dpi);
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -1145,7 +1133,7 @@ fn draw_overlay(
 ) -> Result<()> {
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
-        let geometry = surface_geometry(scale, model.rows.len(), palette.shadow_enabled);
+        let geometry = surface_geometry(scale, model.rows.len());
         let body = D2D_RECT_F {
             left: geometry.body_left,
             top: geometry.body_top,
@@ -1154,34 +1142,6 @@ fn draw_overlay(
         };
         let left = geometry.body_left;
         let top = geometry.body_top;
-        if palette.shadow_enabled {
-            for (spread, shadow_alpha) in [(8.0, 18u8), (5.0, 26u8), (2.0, 34u8)] {
-                let shadow = color(with_alpha(
-                    Color::rgba(
-                        palette.shadow.r,
-                        palette.shadow.g,
-                        palette.shadow.b,
-                        shadow_alpha,
-                    ),
-                    content_alpha,
-                ));
-                let brush = target.CreateSolidColorBrush(&shadow, None)?;
-                let rect = D2D_RECT_F {
-                    left: body.left - spread,
-                    top: body.top + 5.0 - spread,
-                    right: body.right + spread,
-                    bottom: body.bottom + 5.0 + spread,
-                };
-                target.FillRoundedRectangle(
-                    &D2D1_ROUNDED_RECT {
-                        rect,
-                        radiusX: 16.0 + spread,
-                        radiusY: 16.0 + spread,
-                    },
-                    &brush,
-                );
-            }
-        }
 
         let surface = color(with_alpha(palette.surface, content_alpha));
         let surface_brush = target.CreateSolidColorBrush(&surface, None)?;
@@ -1793,7 +1753,6 @@ mod tests {
         assert_eq!(palette.tone_changed, Color::rgb(50, 100, 150));
         assert_eq!(palette.icon, Color::rgb(240, 200, 160));
         assert_eq!(palette.changed_icon, Color::rgb(1, 2, 3));
-        assert!(!palette.shadow_enabled);
         assert!(palette.opaque);
     }
     #[test]
@@ -1935,28 +1894,20 @@ mod tests {
     fn surface_geometry_keeps_body_inside_final_surface() {
         for scale in [0.7, 1.0, 1.6] {
             for dpi in [96, 144, 192] {
-                for shadow_enabled in [false, true] {
-                    let geometry = surface_geometry(scale, 3, shadow_enabled);
-                    let right_padding = geometry.width - geometry.body_right;
-                    let bottom_padding = geometry.height - geometry.body_bottom;
-                    assert!(geometry.body_left >= 0.0);
-                    assert!(geometry.body_top >= 0.0);
-                    assert!(geometry.body_right <= geometry.width);
-                    assert!(geometry.body_bottom <= geometry.height);
-                    assert!((geometry.body_left - right_padding).abs() < f32::EPSILON);
-                    assert!((geometry.body_top - bottom_padding).abs() < f32::EPSILON);
-                    if shadow_enabled {
-                        assert!(
-                            (geometry.body_left - (SHADOW_PAD + BORDER_PAD)).abs() < f32::EPSILON
-                        );
-                    } else {
-                        assert!((geometry.body_left - BORDER_PAD).abs() < f32::EPSILON);
-                    }
-                    let pixels = geometry.pixel_size(dpi);
-                    let dpi_scale = dpi as f32 / 96.0;
-                    assert!(geometry.body_right * dpi_scale <= pixels.cx as f32);
-                    assert!(geometry.body_bottom * dpi_scale <= pixels.cy as f32);
-                }
+                let geometry = surface_geometry(scale, 3);
+                let right_padding = geometry.width - geometry.body_right;
+                let bottom_padding = geometry.height - geometry.body_bottom;
+                assert!(geometry.body_left >= 0.0);
+                assert!(geometry.body_top >= 0.0);
+                assert!(geometry.body_right <= geometry.width);
+                assert!(geometry.body_bottom <= geometry.height);
+                assert!((geometry.body_left - right_padding).abs() < f32::EPSILON);
+                assert!((geometry.body_top - bottom_padding).abs() < f32::EPSILON);
+                assert!((geometry.body_left - BORDER_PAD).abs() < f32::EPSILON);
+                let pixels = geometry.pixel_size(dpi);
+                let dpi_scale = dpi as f32 / 96.0;
+                assert!(geometry.body_right * dpi_scale <= pixels.cx as f32);
+                assert!(geometry.body_bottom * dpi_scale <= pixels.cy as f32);
             }
         }
     }

@@ -169,6 +169,8 @@ Manual matrix:
   The status row splits Show status overlay and Monitor into equal halves. Primary and Cursor
   position targets use the correct work-area ratio without stretching, and the monitor frame
   is the sole preview surface.
+- Overlay card styles: System, Dark, and Light each render one status card only,
+  with no outer slab, halo, or duplicate shadow.
 - Custom titlebar: the fixed-size window has one blank draggable top region and one compact Close
   button. Minimize, Maximize/Restore, resize edges/corners, double-click maximize, and Snap
   Layout are unavailable; DPI, dark/light/high-contrast themes, and rounded corners remain

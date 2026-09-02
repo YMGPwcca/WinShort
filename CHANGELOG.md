@@ -22,6 +22,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   readable in its compact half-row.
 - Search now clears editing focus on blank/control clicks and external focus loss;
   keyboard handlers and caret visibility use the same real editing-focus predicate.
+- Simplified the runtime overlay to one card surface with no outer halo or
+  custom shadow stack across System, Dark, and Light styles.
+- Tightened the sidebar brand-to-navigation gap to the shared row rhythm,
+  enlarged the Overlay Position column, and bounded native picker widths to
+  compact 320–400 DIP limits.
 - Corrected the fixed Control Center acceptance model: brand icon/text now share
   one row, Search and Close share one top-chrome row, and sibling card/row
   spacing uses named section-content, section, and ROW_GAP semantics.
