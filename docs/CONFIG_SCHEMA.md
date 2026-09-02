@@ -58,8 +58,8 @@ number_modifier = "Win"         # one modifier family for 1..9
 move_follow_modifier = ""       # optional modifier family
 move_silent_modifier = ""       # optional modifier family
 previous_desktop = ""           # optional ordinary hotkey
-scratchpad_assign = ""          # optional hotkey; legacy wire name: send foreground window to Special Workspace
-scratchpad_toggle = ""           # optional hotkey; legacy wire name: toggle Special Workspace / return desktop
+scratchpad_assign = ""          # optional hotkey; legacy wire name: send foreground window to Special Desktop
+scratchpad_toggle = ""          # optional hotkey; legacy wire name: toggle Special Desktop / return desktop
 
 [display_profiles]
 enabled = true
@@ -112,10 +112,10 @@ letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no m
 `VdCfg` stores the numbered modifier family, optional move/follow and silent
 modifier families, an optional previous-desktop hotkey, and the two legacy-named
 `scratchpad_*` hotkeys. Those wire names are retained for schema compatibility, but
-the actions now send the foreground window to a dedicated Special Workspace and
-toggle that Virtual Desktop. Neither workspace identity nor return-desktop identity
+the actions now send the foreground window to a dedicated Special Desktop and
+toggle that Virtual Desktop. Neither desktop identity nor return-desktop identity
 is serialized into `config.toml`: the return GUID is process-only, while the exact
-Special Workspace GUID is stored separately as operational recovery state in
+Special Desktop GUID is stored separately as operational recovery state in
 `%LOCALAPPDATA%\WinShort\special-workspace.guid` so a surviving workspace can be
 reclaimed after a hard kill or Windows reboot. Legacy schema-v6 `routing_rules`
 tables are accepted only at the TOML boundary, ignored with a warning, and omitted
@@ -223,7 +223,7 @@ Center or the tray writes/deletes immediately — it does **not** wait for a glo
 | cycle and foreground-volume hotkeys | unassigned |
 | display profiles | enabled, no active profile, no stored profiles; profile hotkeys empty |
 | `start_hotkeys_enabled` | true |
-| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/Special Workspace hotkeys unassigned |
+| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/Special Desktop hotkeys unassigned |
 
 Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 

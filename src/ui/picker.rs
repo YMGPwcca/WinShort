@@ -10,15 +10,17 @@ use std::sync::{
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, FrameRect, GetTextMetricsW, InvalidateRect, SelectObject, SetBkMode, SetTextColor,
-    BACKGROUND_MODE, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
-    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, FF_DONTCARE, FW_NORMAL, HDC, HFONT,
-    HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, TEXTMETRICW,
+    BeginPaint, CreateFontW, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject,
+    DrawTextW, EndPaint, FillRect, FrameRect, GetTextMetricsW, InvalidateRect, RoundRect,
+    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, BACKGROUND_MODE, CLEARTYPE_QUALITY,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_SINGLELINE, FF_DONTCARE, FW_NORMAL, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+    PS_SOLID, TEXTMETRICW,
 };
 use windows::Win32::UI::Controls::{
     SetWindowTheme, DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX,
 };
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
@@ -28,7 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HWND_TOP, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNA,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_DRAWITEM,
     WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONUP, WM_MEASUREITEM, WM_MOUSEACTIVATE,
-    WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WS_CHILD, WS_CLIPCHILDREN, WS_TABSTOP,
+    WS_VSCROLL,
 };
 
 use crate::config::model::{
@@ -39,9 +42,9 @@ use crate::error::{Error, Result};
 use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
 use crate::ui::presentation::AllowlistMode;
-use crate::ui::theme::{Color, Theme};
+use crate::ui::theme::{Color, Theme, UiTokens};
 
-const PICKER_HOST_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_CHILD.0);
+const PICKER_HOST_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_CHILD.0 | WS_CLIPCHILDREN.0);
 const CLASS_NAME: &str = "WinShort.ControlCenterPicker";
 const LB_ADDSTRING: u32 = 0x0180;
 const LB_SETCURSEL: u32 = 0x0186;
@@ -368,6 +371,35 @@ fn picker_colors_for_state(
 fn to_colorref(color: Color) -> COLORREF {
     COLORREF(color.r as u32 | (color.g as u32) << 8 | (color.b as u32) << 16)
 }
+fn scaled_dip_px(value: f32, dpi: u32) -> i32 {
+    (value * dpi.max(96) as f32 / 96.0).round().max(1.0) as i32
+}
+
+fn picker_inset_px(dpi: u32) -> i32 {
+    scaled_dip_px(UiTokens::PICKER_INSET, dpi)
+}
+
+fn picker_corner_diameter_px(dpi: u32) -> i32 {
+    scaled_dip_px(UiTokens::PICKER_RADIUS * 2.0, dpi)
+}
+
+fn picker_list_rect(geometry: PopupRect, dpi: u32) -> PopupRect {
+    let inset = picker_inset_px(dpi);
+    let width = (geometry.width() - inset * 2).max(1);
+    let height = (geometry.height() - inset * 2).max(1);
+    PopupRect::new(inset, inset, inset + width, inset + height)
+}
+
+unsafe fn clip_window_to_round_rect(hwnd: HWND, width: i32, height: i32, diameter: i32) {
+    let region =
+        unsafe { CreateRoundRectRgn(0, 0, width.max(1), height.max(1), diameter, diameter) };
+    if region.is_invalid() {
+        return;
+    }
+    if unsafe { SetWindowRgn(hwnd, Some(region), true) } == 0 {
+        let _ = unsafe { DeleteObject(HGDIOBJ(region.0)) };
+    }
+}
 
 unsafe fn draw_picker_surface(hwnd: HWND, hdc: HDC) {
     let mut rect = RECT::default();
@@ -375,9 +407,22 @@ unsafe fn draw_picker_surface(hwnd: HWND, hdc: HDC) {
         let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
         let colors = picker_colors(false);
         let background = CreateSolidBrush(to_colorref(colors.background));
-        let border = CreateSolidBrush(to_colorref(colors.border));
-        let _ = FillRect(hdc, &rect, background);
-        let _ = FrameRect(hdc, &rect, border);
+        let border = CreatePen(PS_SOLID, 1, to_colorref(colors.border));
+        let old_brush = SelectObject(hdc, background.into());
+        let old_pen = SelectObject(hdc, border.into());
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let diameter = picker_corner_diameter_px(dpi);
+        let _ = RoundRect(
+            hdc,
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            diameter,
+            diameter,
+        );
+        let _ = SelectObject(hdc, old_brush);
+        let _ = SelectObject(hdc, old_pen);
         let _ = DeleteObject(HGDIOBJ(background.0));
         let _ = DeleteObject(HGDIOBJ(border.0));
     }
@@ -533,6 +578,16 @@ impl PickerPopup {
             )
         }
         .map_err(|error| Error::win("CreateWindowExW(settings picker)", &error))?;
+        let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        let list_rect = picker_list_rect(geometry, dpi);
+        unsafe {
+            clip_window_to_round_rect(
+                hwnd,
+                geometry.width(),
+                geometry.height(),
+                picker_corner_diameter_px(dpi),
+            );
+        }
 
         let list_style = WINDOW_STYLE(
             WS_CHILD.0
@@ -549,10 +604,10 @@ impl PickerPopup {
                 PCWSTR(HSTRING::from("LISTBOX").as_ptr()),
                 PCWSTR(HSTRING::from("").as_ptr()),
                 list_style,
-                1,
-                1,
-                geometry.width() - 2,
-                geometry.height() - 2,
+                list_rect.left,
+                list_rect.top,
+                list_rect.width(),
+                list_rect.height(),
                 Some(hwnd),
                 None,
                 None,
@@ -560,6 +615,14 @@ impl PickerPopup {
             )
         }
         .map_err(|error| Error::win("CreateWindowExW(settings picker list)", &error))?;
+        unsafe {
+            clip_window_to_round_rect(
+                list,
+                list_rect.width(),
+                list_rect.height(),
+                (picker_corner_diameter_px(dpi) - picker_inset_px(dpi) * 2).max(2),
+            );
+        }
 
         if !SystemVisualPreferences::query().high_contrast {
             let theme_name = if Theme::current().mode == crate::ui::theme::ThemeMode::Dark {
@@ -569,8 +632,7 @@ impl PickerPopup {
             };
             let _ = unsafe { SetWindowTheme(list, PCWSTR(theme_name.as_ptr()), PCWSTR::null()) };
         }
-        let font =
-            create_picker_font(unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96));
+        let font = create_picker_font(dpi);
         let (labels, selected) = {
             let Some(cell) = (unsafe { win::state_cell::<PickerUi>(hwnd) }) else {
                 if !font.is_invalid() {
@@ -1180,8 +1242,10 @@ mod tests {
             let selected = picker_colors_for(true, visual, theme);
             assert_eq!(normal.background, theme.card);
             assert_eq!(normal.foreground, theme.text);
+            assert_eq!(normal.border, theme.border_strong);
             assert_eq!(selected.background, theme.bg_subtle);
             assert_eq!(selected.foreground, theme.text);
+            assert_eq!(selected.border, theme.accent);
         }
     }
 
@@ -1292,8 +1356,16 @@ mod tests {
         assert_eq!(PICKER_FONT_FALLBACK, "Segoe UI");
     }
     #[test]
-    fn picker_host_is_a_control_center_child() {
-        assert_eq!(PICKER_HOST_STYLE.0, WS_CHILD.0);
+    fn picker_host_is_a_control_center_child_with_shared_clipping() {
+        assert_ne!(PICKER_HOST_STYLE.0 & WS_CHILD.0, 0);
+        assert_ne!(PICKER_HOST_STYLE.0 & WS_CLIPCHILDREN.0, 0);
+        let geometry = PopupRect::new(0, 0, 320, 200);
+        assert_eq!(
+            picker_list_rect(geometry, 96),
+            PopupRect::new(4, 4, 316, 196)
+        );
+        assert_eq!(picker_corner_diameter_px(96), 14);
+        assert_eq!(picker_corner_diameter_px(144), 21);
     }
 }
 

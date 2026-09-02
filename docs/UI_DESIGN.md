@@ -68,13 +68,13 @@ Home answers “What is WinShort doing right now?” with real cached runtime st
 - current speaker name and mute/volume status;
 - current microphone name and mute/input-volume status;
 - current normal desktop when the native backend can resolve it;
-- Special Workspace state (`Available`, `Off`, or `Unavailable`; normal content is centered without a redundant status badge);
-- previous-desktop and Special quick actions;
+- Special Desktop state (`Available`, `Off`, or `Unavailable`; normal content is centered without a redundant status badge);
+- previous-desktop and Special Desktop quick actions;
 - selected display profile summary without claiming that it matches the active topology;
 - shortcut count and conflict health;
 - degraded subsystem notice with a Details route to Diagnostics.
 
-Home actions use `Choose` only for cards that open a device picker and `Open` for navigation; Special Workspace uses `Enable` only when its master switch is off.
+Home actions use `Choose` only for cards that open a device picker and `Open` for navigation; Special Desktop uses `Enable` only when its master switch is off.
 
 The page does not display endpoint identifiers, roles, GUIDs, HRESULTs, or backend names.
 
@@ -83,7 +83,7 @@ The page does not display endpoint identifiers, roles, GUIDs, HRESULTs, or backe
 Shortcuts are grouped by actions:
 
 - Audio: Mute microphone, Mute speakers, Next microphone, Next speaker, Mute current app, and current-app volume up/down;
-- Workspaces: Desktop 1–9, Previous desktop, Move window to Special, and Open / close Special;
+- Workspaces: Desktop 1–9, Previous desktop, Move window to Special Desktop, and Open / close Special Desktop;
 - Display profiles: shortcut for the selected profile.
 
 Each shortcut card exposes its keycap, an Enable/Disable action, and an explicit Unassign action. Selecting the keycap enters the existing global capture mode. Disabled shortcuts keep their chord so they can be re-enabled without recording again. Captured chords are validated against the canonical conflict and reserved-family rules, persisted through the atomic config path, and published as one coherent runtime change. Escape cancels capture. A failed save restores the previous draft and reports a human recovery message; the hook is not reinstalled.
@@ -93,11 +93,11 @@ Each shortcut card exposes its keycap, an Enable/Disable action, and an explicit
 Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. Every normal control uses one canonical primary endpoint name (`GS25F2`, `SAMSUNG`, `SIMGOT EW300 DSP`); adapter/driver suffixes remain available only through accessibility/diagnostic detail. The speaker and microphone pickers expose only active real endpoints; selecting one changes the Windows system default through the audio worker. The selected row itself identifies the current endpoint, so the Control Center does not add redundant default/explicit badges. System speaker/microphone mute and volume feedback is left to Windows instead of stacking a duplicate WinShort OSD. Opaque endpoint strings and the internal follow-default binding stay out of the picker.
 Next speaker and Next microphone use three mutually exclusive modes: all available devices, selected devices, or don't cycle. Selecting the middle mode progressively reveals a real device checkbox list. The native LISTBOX fallback uses the same mode model and preserves `None`, explicit endpoint sets, and `Some(empty)` semantics.
 
-Current app audio explains that WinShort itself is excluded: users switch to another app before controlling its sessions. Windows default roles remain available in Advanced and are enabled only while the corresponding direction follows the Windows default.
+Current app audio explains that WinShort itself is excluded: users switch to another app before controlling its sessions. When no external target is available, the page keeps the current-app shortcut controls without rendering a large empty status card. Windows default roles remain available in Advanced and are enabled only while the corresponding direction follows the Windows default.
 
 ### Workspaces
 
-The page configures workspace behavior only. Numbered desktop switching remains available through the configured 1–9 shortcut family, while Home may show the current normal desktop. One master Workspace shortcuts switch owns the dependent desktop and Special actions. When it is off, the page explains the dependency and exposes disabled Special shortcut cards. Special Workspace is a normal heading with its description followed by the Move window to Special and Open / close Special cards; no desktop switcher strip or standalone status card is rendered.
+The page configures workspace behavior only. Numbered desktop switching remains available through the configured 1–9 shortcut family, while Home may show the current normal desktop. One master Workspace shortcuts switch owns the dependent desktop and Special actions. When it is off, the page explains the dependency and exposes disabled Special shortcut cards. Special Desktop is a normal heading with its description followed by the Move window to Special Desktop and Open / close Special Desktop cards; no desktop switcher strip or standalone status card is rendered.
 
 ### Displays
 
@@ -117,6 +117,7 @@ Output/topology edits remain local until Test and Keep. Moving between steps nev
 Overlay uses one fixed side-by-side placement area at the supported Control Center size:
 
 - the monitor preview sits beside Position's 3×3 selector;
+- Preview and Position use the same column width, height, top edge, and bottom edge;
 - the Position heading is compact, with no explanatory description beneath it;
 - the monitor frame itself is the preview surface; there is no outer preview card around it;
 - a same-row, equal-width pair for Show status overlay and Monitor;

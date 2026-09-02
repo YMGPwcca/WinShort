@@ -391,6 +391,7 @@ pub struct LayoutContext {
     pub output_cycle_mode: AllowlistMode,
     pub input_device_count: usize,
     pub output_device_count: usize,
+    pub current_app_audio_available: bool,
     pub overlay_preview_aspect: (u32, u32),
 }
 
@@ -412,6 +413,7 @@ impl Default for LayoutContext {
             output_cycle_mode: AllowlistMode::All,
             input_device_count: 0,
             output_device_count: 0,
+            current_app_audio_available: false,
             overlay_preview_aspect: (16, 9),
         }
     }
@@ -902,13 +904,13 @@ fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'static str)> {
         (
             ElementId::AssignScratchpadHotkey,
             ElementKind::Hotkey,
-            "Move window to Special",
+            "Move window to Special Desktop",
             "Move",
         ),
         (
             ElementId::ToggleScratchpadHotkey,
             ElementKind::Hotkey,
-            "Open Special",
+            "Open Special Desktop",
             "Open",
         ),
         (
@@ -1432,7 +1434,7 @@ fn add_home(layout: &mut SettingsLayout) {
         ),
         (
             ElementId::HomeSpecial,
-            "Special Workspace",
+            "Special Desktop",
             "Keep windows you want to bring back quickly",
         ),
     );
@@ -1563,9 +1565,9 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
         ElementKind::Toggle,
         "Workspace shortcuts",
         if context.workspace_enabled {
-            "Desktop and Special actions are enabled"
+            "Desktop and Special Desktop actions are enabled"
         } else {
-            "Turn this on to enable desktop and Special actions"
+            "Turn this on to enable desktop and Special Desktop actions"
         },
     );
     if context.workspace_enabled {
@@ -1580,13 +1582,13 @@ fn add_shortcuts(layout: &mut SettingsLayout, context: &LayoutContext) {
                 ),
                 (
                     ElementId::AssignScratchpadHotkey,
-                    "Move window to Special",
+                    "Move window to Special Desktop",
                     "Keep the current window out of the way",
                 ),
                 (
                     ElementId::ToggleScratchpadHotkey,
-                    "Open / close Special",
-                    "Open Special Workspace or return",
+                    "Open / close Special Desktop",
+                    "Open Special Desktop or return",
                 ),
             ],
         );
@@ -1688,14 +1690,16 @@ fn add_audio(layout: &mut SettingsLayout, context: &LayoutContext) {
         context.input_cycle_mode,
         context.input_device_count,
     );
-    add_heading(
-        layout,
-        "Current app audio",
-        "WinShort itself is not a target for these actions.",
-        &mut y,
-    );
+    let current_app_description = if context.current_app_audio_available {
+        "WinShort itself is not a target for these actions."
+    } else {
+        "Available when another app has audio."
+    };
+    add_heading(layout, "Current app audio", current_app_description, &mut y);
     add_section_content_gap(&mut y);
-    add_region(layout, RegionKind::AudioCurrentApp, &mut y, 64.0);
+    if context.current_app_audio_available {
+        add_region(layout, RegionKind::AudioCurrentApp, &mut y, 64.0);
+    }
     add_hotkey_grid(
         layout,
         &mut y,
@@ -1723,13 +1727,13 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
     add_heading(
         layout,
         "Workspaces",
-        "Configure desktop and Special Workspace shortcuts.",
+        "Configure desktop and Special Desktop shortcuts.",
         &mut y,
     );
     add_heading(
         layout,
         "Workspace shortcuts",
-        "One master switch controls desktop and Special actions.",
+        "One master switch controls desktop and Special Desktop actions.",
         &mut y,
     );
     add_section_content_gap(&mut y);
@@ -1740,7 +1744,7 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         ElementKind::Toggle,
         "Workspace shortcuts",
         if context.workspace_enabled {
-            "Desktop and Special actions are enabled"
+            "Desktop and Special Desktop actions are enabled"
         } else {
             "Turn this on to use the controls below"
         },
@@ -1749,7 +1753,7 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         add_region(layout, RegionKind::WorkspaceNotice, &mut y, 76.0);
         add_heading(
             layout,
-            "Special Workspace",
+            "Special Desktop",
             "A dedicated place for windows you want nearby but out of the way.",
             &mut y,
         );
@@ -1759,13 +1763,13 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
             &[
                 (
                     ElementId::AssignScratchpadHotkey,
-                    "Move window to Special",
-                    "Send the current window to Special Workspace",
+                    "Move window to Special Desktop",
+                    "Send the current window to Special Desktop",
                 ),
                 (
                     ElementId::ToggleScratchpadHotkey,
-                    "Open / close Special",
-                    "Open Special Workspace or return",
+                    "Open / close Special Desktop",
+                    "Open Special Desktop or return",
                 ),
             ],
         );
@@ -1821,7 +1825,7 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
     );
     add_heading(
         layout,
-        "Special Workspace",
+        "Special Desktop",
         "A dedicated place for windows you want nearby but out of the way.",
         &mut y,
     );
@@ -1832,13 +1836,13 @@ fn add_workspaces(layout: &mut SettingsLayout, context: &LayoutContext) {
         &[
             (
                 ElementId::AssignScratchpadHotkey,
-                "Move window to Special",
-                "Send the current window to Special Workspace",
+                "Move window to Special Desktop",
+                "Send the current window to Special Desktop",
             ),
             (
                 ElementId::ToggleScratchpadHotkey,
-                "Open / close Special",
-                "Open Special Workspace or return",
+                "Open / close Special Desktop",
+                "Open Special Desktop or return",
             ),
         ],
     );
@@ -2200,10 +2204,9 @@ const PREVIEW_CANVAS_MAX_HEIGHT: f32 = 220.0;
 const PREVIEW_TITLE_HEIGHT: f32 = 44.0;
 const PREVIEW_BOTTOM_INSET: f32 = 18.0;
 const OVERLAY_PLACEMENT_GAP: f32 = 16.0;
-const OVERLAY_PLACEMENT_CONTROLS_WIDTH: f32 = 400.0;
 const OVERLAY_PLACEMENT_HEADER_HEIGHT: f32 = 44.0;
-const OVERLAY_POSITION_GRID_STEP: f32 = 44.0;
-const OVERLAY_POSITION_CELL_HEIGHT: f32 = 36.0;
+const OVERLAY_POSITION_GRID_GAP: f32 = 8.0;
+const OVERLAY_POSITION_GRID_MIN_STEP: f32 = 44.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OverlayPlacementGeometry {
@@ -2213,18 +2216,21 @@ pub(crate) struct OverlayPlacementGeometry {
 }
 
 pub(crate) fn overlay_position_controls_height() -> f32 {
-    OVERLAY_PLACEMENT_HEADER_HEIGHT + OVERLAY_POSITION_GRID_STEP * 3.0
+    OVERLAY_PLACEMENT_HEADER_HEIGHT + OVERLAY_POSITION_GRID_MIN_STEP * 3.0
 }
 
 pub(crate) fn overlay_position_grid_rect(controls: Rect, index: usize) -> Rect {
     let column = index % 3;
     let row = index / 3;
-    let cell_width = (controls.w - 16.0).max(3.0) / 3.0;
+    let cell_width = (controls.w - OVERLAY_POSITION_GRID_GAP * 2.0).max(3.0) / 3.0;
+    let grid_height = (controls.h - OVERLAY_PLACEMENT_HEADER_HEIGHT).max(3.0);
+    let row_step = grid_height / 3.0;
+    let cell_height = (row_step - OVERLAY_POSITION_GRID_GAP).max(1.0);
     Rect::new(
-        controls.x + column as f32 * (cell_width + 8.0),
-        controls.y + OVERLAY_PLACEMENT_HEADER_HEIGHT + row as f32 * OVERLAY_POSITION_GRID_STEP,
+        controls.x + column as f32 * (cell_width + OVERLAY_POSITION_GRID_GAP),
+        controls.y + OVERLAY_PLACEMENT_HEADER_HEIGHT + row as f32 * row_step,
         cell_width,
-        OVERLAY_POSITION_CELL_HEIGHT,
+        cell_height,
     )
 }
 pub(crate) fn overlay_status_row_rects(row: Rect) -> (Rect, Rect) {
@@ -2239,21 +2245,19 @@ pub(crate) fn overlay_placement_geometry(
     origin: Rect,
     aspect: (u32, u32),
 ) -> OverlayPlacementGeometry {
-    let controls_width =
-        OVERLAY_PLACEMENT_CONTROLS_WIDTH.min((origin.w - OVERLAY_PLACEMENT_GAP - 240.0).max(1.0));
-    let controls = Rect::new(
-        origin.right() - controls_width,
+    let column_width = ((origin.w - OVERLAY_PLACEMENT_GAP).max(2.0)) * 0.5;
+    let preview = Rect::new(origin.x, origin.y, column_width, 0.0);
+    let position = Rect::new(
+        preview.right() + OVERLAY_PLACEMENT_GAP,
         origin.y,
-        controls_width,
+        column_width,
         overlay_position_controls_height(),
     );
-    let preview_width = (controls.x - OVERLAY_PLACEMENT_GAP - origin.x).max(1.0);
-    let preview_height = overlay_preview_region_height(preview_width, aspect);
-    let region_height = preview_height.max(controls.h);
+    let height = overlay_preview_region_height(column_width, aspect).max(position.h);
     OverlayPlacementGeometry {
-        region: Rect::new(origin.x, origin.y, origin.w, region_height),
-        preview: Rect::new(origin.x, origin.y, preview_width, region_height),
-        controls,
+        region: Rect::new(origin.x, origin.y, origin.w, height),
+        preview: Rect::new(preview.x, preview.y, preview.w, height),
+        controls: Rect::new(position.x, position.y, position.w, height),
     }
 }
 
@@ -3049,7 +3053,18 @@ mod tests {
 
     #[test]
     fn sibling_cards_and_rows_use_named_row_gap() {
-        let audio = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Audio, "", 0, None);
+        let audio = SettingsLayout::build_shell_with_context(
+            960.0,
+            900.0,
+            0.0,
+            Page::Audio,
+            "",
+            super::LayoutContext {
+                current_app_audio_available: true,
+                ..Default::default()
+            },
+            None,
+        );
         let speakers = audio
             .sections
             .iter()
@@ -3106,8 +3121,8 @@ mod tests {
         let special = layout
             .sections
             .iter()
-            .find(|section| section.title == "Special Workspace")
-            .expect("special workspace heading");
+            .find(|section| section.title == "Special Desktop")
+            .expect("special desktop heading");
         assert_eq!(
             special.description,
             "A dedicated place for windows you want nearby but out of the way."
@@ -3173,7 +3188,7 @@ mod tests {
         assert!(layout
             .sections
             .iter()
-            .any(|section| section.title == "Special Workspace"));
+            .any(|section| section.title == "Special Desktop"));
         assert!(layout
             .element(ElementId::HotkeyCard(HotkeySlot::AssignSpecial))
             .is_some());
@@ -3335,7 +3350,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_overlay_placement_is_always_side_by_side() {
+    fn overlay_placement_columns_are_equal_and_side_by_side() {
         for width in [960.0, 1200.0, 1920.0] {
             let layout = SettingsLayout::build_shell_with_context(
                 width,
@@ -3365,16 +3380,21 @@ mod tests {
             );
             assert_eq!(region.rect, geometry.region);
             assert!(geometry.preview.w > 0.0);
+            assert_eq!(geometry.preview.w, geometry.controls.w);
+            assert_eq!(geometry.preview.h, geometry.controls.h);
+            assert_eq!(geometry.preview.y, geometry.controls.y);
+            assert_eq!(geometry.preview.bottom(), geometry.controls.bottom());
             assert_eq!(
                 geometry.preview.right() + super::OVERLAY_PLACEMENT_GAP,
                 geometry.controls.x
             );
             assert_eq!(geometry.controls.right(), layout.content_column.right());
-            if width == 960.0 {
-                assert_eq!(geometry.controls.w, super::OVERLAY_PLACEMENT_CONTROLS_WIDTH);
-                assert!(geometry.controls.w > geometry.preview.w);
-                assert!(overlay_position_grid_rect(geometry.controls, 0).w >= 120.0);
-            }
+            let first_cell = overlay_position_grid_rect(geometry.controls, 0);
+            let last_cell = overlay_position_grid_rect(geometry.controls, 8);
+            assert!(first_cell.w > 0.0);
+            assert!(first_cell.h > 0.0);
+            assert!(last_cell.right() <= geometry.controls.right());
+            assert!(last_cell.bottom() < geometry.controls.bottom());
             assert_eq!(
                 layout
                     .element(ElementId::OverlayPositionCell(0))
@@ -3428,17 +3448,38 @@ mod tests {
     }
 
     #[test]
-    fn current_app_audio_has_one_heading_and_compact_status_row() {
-        let layout = SettingsLayout::build_shell(1200.0, 900.0, 0.0, Page::Audio, "", 0, None);
+    fn current_app_audio_omits_empty_status_but_keeps_shortcuts() {
+        let empty = SettingsLayout::build_shell(1200.0, 900.0, 0.0, Page::Audio, "", 0, None);
         assert_eq!(
-            layout
+            empty
                 .sections
                 .iter()
-                .filter(|section| section.title == "Current app audio")
-                .count(),
-            1
+                .find(|section| section.title == "Current app audio")
+                .expect("current app heading")
+                .description,
+            "Available when another app has audio."
         );
-        let status = layout
+        assert!(empty
+            .regions
+            .iter()
+            .all(|region| region.kind != RegionKind::AudioCurrentApp));
+        assert!(empty
+            .element(ElementId::HotkeyCard(super::HotkeySlot::Foreground))
+            .is_some());
+
+        let meaningful = SettingsLayout::build_shell_with_context(
+            1200.0,
+            900.0,
+            0.0,
+            Page::Audio,
+            "",
+            super::LayoutContext {
+                current_app_audio_available: true,
+                ..Default::default()
+            },
+            None,
+        );
+        let status = meaningful
             .regions
             .iter()
             .find(|region| region.kind == RegionKind::AudioCurrentApp)

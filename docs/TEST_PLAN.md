@@ -16,6 +16,20 @@ Current verified hosted baseline: Windows runners execute fmt, clippy `-D warnin
 embedded-manifest byte-check, i686 and aarch64 compile checks, an MSRV 1.85 job, and cargo-deny.
 See `.github/workflows/ci.yml`.
 
+## Local Windows UI acceptance harness
+
+Run the isolated release-path Control Center acceptance loop with one command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ui_acceptance.ps1
+```
+
+The harness refuses to run beside an existing `winshort.exe`, uses
+`WINSHORT_DATA_DIR` for an isolated configuration root, exercises the real
+second-instance Control Center activation and Win32 overlay path, captures
+Control Center/picker/runtime-overlay PNGs, and writes a JSON summary below
+`target/ui-acceptance-results/`.
+
 ## Diagnostics & support (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
 
 Automated coverage (`src/diagnostics/support.rs`) verifies:
@@ -105,11 +119,12 @@ Automated coverage:
   and unassigned chords; disabled chords stay out of the active binding table.
 - Bounded value rendering tests verify chevron reservation and DirectWrite trailing-character
   trimming; applied status text remains generic.
-- Control Center layout tests cover removal of the Workspaces desktop strip, Special Workspace
+- Control Center layout tests cover removal of the Workspaces desktop strip, Special Desktop
   hierarchy, exact sibling ROW_GAP/SECTION_CONTENT_GAP geometry across Audio, Home, and
   Workspaces, shared right-side control widths, the separate 80 DIP sidebar brand row,
   one-row Search/Close chrome, one Close action, fixed-window capability geometry, the
-  fixed side-by-side Overlay placement, and the equal-width Overlay status row.
+  side-by-side Overlay placement with equal Preview/Position dimensions, and the
+  equal-width Overlay status row.
 - Search caret geometry tests cover a visible empty-field caret and a text-end caret;
   renderer palette tests cover complete dark/light brush tables and transactional theme
   replacement.
@@ -125,8 +140,9 @@ Automated coverage:
   external focus loss, stale Search guards, and caret/predicate agreement.
 - Overlay monitor picker tests expose exactly Primary and Cursor position; legacy foreground
   config values parse to Cursor and serialize as `cursor`.
-- Overlay geometry tests cover dynamic monitor aspect fitting, monitor-as-preview containment,
-  normalized position semantics, and the absence of a nested preview-container surface.
+- Overlay geometry tests cover equal Preview/Position columns, dynamic monitor aspect fitting,
+  monitor-as-preview containment, normalized position semantics, and the absence of a nested
+  preview-container surface.
 - Motion tests cover hover/toggle channels only; wheel and Page Up/Down scroll update the model
   directly without a Scroll channel, target, or timer tween.
 - Fixed-window tests cover a DPI-scaled constant size, blocked minimize/maximize/resize system
@@ -153,7 +169,7 @@ Manual matrix:
 - Section rhythm: each divider sits in whitespace between sections, every cyan accent is
   vertically centered on its title line, and sibling cards/rows use exact ROW_GAP.
 - Workspaces page: no Normal desktops strip is present; numbered 1–9 shortcut configuration
-  remains available; Special Workspace has one heading, description, and two evenly spaced
+  remains available; Special Desktop has one heading, description, and two evenly spaced
   shortcut cards.
 - Control widths: dropdowns, keycaps, and value controls share the same right-side width and
   alignment; managed shortcut actions divide that same column.
@@ -163,8 +179,8 @@ Manual matrix:
   marks and a lower spacebar line, not arbitrary plus/hash marks or a dot box.
 - Audio naming: speaker/microphone controls consistently show only canonical primary names such
   as GS25F2, SAMSUNG, and SIMGOT EW300 DSP; adapter metadata is absent from normal visible rows.
-- Current app audio: the page has one section heading; the status row says `No controllable
-  app` when appropriate and does not repeat the heading inside a large card.
+- Current app audio: the section keeps its shortcut controls available but omits
+  a large empty status card when no external target is available.
 - Overlay preview: the fixed-size window always places the monitor preview beside Position.
   The status row splits Show status overlay and Monitor into equal halves. Primary and Cursor
   position targets use the correct work-area ratio without stretching, and the monitor frame
@@ -344,15 +360,15 @@ fuzz campaign is claimed or running.
 - Silent foreground move leaves the source desktop active
 - Per-desktop last-focused HWND tracking excludes WinShort, shell, invisible, stale, and cloaked windows
 - Previous-desktop toggles back and forth and clears deleted identities
-- Send foreground window → Special Workspace moves it off the current normal desktop without hiding it
-- Multiple sent windows coexist on the same dedicated Special Workspace
-- Toggle from a normal desktop → Special Workspace → toggle again returns to that exact normal desktop
-- Focus another application before entering the Special Workspace; the real desktop switch exposes usable workspace windows without hide/show focus hacks
-- Numbered Desktop 1..9 ordinals exclude the Special Workspace, including missing-normal-desktop creation
-- Previous Desktop history is not polluted by entering/leaving the Special Workspace
-- Disable the feature or exit cleanly removes the Special Workspace and Shell relocates its windows to a normal fallback desktop
-- External deletion of the Special Workspace clears stale runtime identity and the next use creates a fresh workspace
-- Unsupported/native-failed builds report Special Workspace unavailable; keyboard fallback never simulates its create/move/toggle semantics
+- Send foreground window → Special Desktop moves it off the current normal desktop without hiding it
+- Multiple sent windows coexist on the same dedicated Special Desktop
+- Toggle from a normal desktop → Special Desktop → toggle again returns to that exact normal desktop
+- Focus another application before entering the Special Desktop; the real desktop switch exposes usable workspace windows without hide/show focus hacks
+- Numbered Desktop 1..9 ordinals exclude the Special Desktop, including missing-normal-desktop creation
+- Previous Desktop history is not polluted by entering/leaving the Special Desktop
+- Disable the feature or exit cleanly removes the Special Desktop and Shell relocates its windows to a normal fallback desktop
+- External deletion of the Special Desktop clears stale runtime identity and the next use creates a fresh workspace
+- Unsupported/native-failed builds report Special Desktop unavailable; keyboard fallback never simulates its create/move/toggle semantics
 - Hard process termination or Windows reboot may leave the dedicated VD alive; relaunch must reclaim the exact persisted GUID without creating a duplicate, while a missing GUID is treated as external deletion
 
 ### Display profiles

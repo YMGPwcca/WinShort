@@ -604,7 +604,11 @@ impl App {
                 .as_ref()
                 .and_then(|audio| audio.runtime_snapshot().capture.map(|device| device.name)),
             output: self.output_state.clone(),
-            foreground: self.foreground_state.clone(),
+            foreground: if std::env::var_os("WINSHORT_UI_ACCEPTANCE_NO_EXTERNAL").is_some() {
+                crate::audio::AppAudioState::no_external()
+            } else {
+                self.foreground_state.clone()
+            },
             desktop: self.desktop_status.clone(),
             degraded: self
                 .degraded
@@ -1071,15 +1075,12 @@ impl App {
     }
     fn dispatch_assign_scratchpad(&mut self) {
         let Some(desktop) = &self.desktop else {
-            self.report_desktop_failure(
-                "send to special workspace",
-                "desktop subsystem unavailable",
-            );
+            self.report_desktop_failure("send to Special Desktop", "desktop subsystem unavailable");
             return;
         };
         let Some(hwnd) = crate::platform::foreground::current_external_hwnd() else {
             self.report_desktop_failure(
-                "send to special workspace",
+                "send to Special Desktop",
                 "no eligible foreground application window",
             );
             return;
@@ -1091,10 +1092,7 @@ impl App {
         if let Some(desktop) = &self.desktop {
             desktop.toggle_scratchpad();
         } else {
-            self.report_desktop_failure(
-                "toggle special workspace",
-                "desktop subsystem unavailable",
-            );
+            self.report_desktop_failure("toggle Special Desktop", "desktop subsystem unavailable");
         }
     }
 
@@ -1335,7 +1333,7 @@ impl App {
                         crate::ui::overlay::OverlayRow {
                             icon: crate::ui::overlay::OverlayIcon::Info,
                             tone: crate::ui::overlay::OverlayTone::Unavailable,
-                            title: "Special Workspace unavailable".into(),
+                            title: "Special Desktop unavailable".into(),
                             detail: "Workspace service is not available right now".into(),
                         },
                     ));
@@ -1465,13 +1463,13 @@ impl App {
                         ("Previous desktop", "Returned to the last normal desktop")
                     }
                     crate::event::DesktopActionKind::SentToSpecial => {
-                        ("Special Workspace", "Window moved")
+                        ("Special Desktop", "Window moved")
                     }
                     crate::event::DesktopActionKind::EnteredSpecial => {
-                        ("Special Workspace", "Workspace opened")
+                        ("Special Desktop", "Desktop opened")
                     }
                     crate::event::DesktopActionKind::LeftSpecial => {
-                        ("Special Workspace", "Returned to the previous desktop")
+                        ("Special Desktop", "Returned to the previous desktop")
                     }
                 };
                 self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
@@ -2068,6 +2066,13 @@ unsafe extern "system" fn main_wndproc(
             }
             if let Some(action) = HotkeyAction::unpack(wparam.0) {
                 with_app(|app| app.dispatch_action(action));
+            }
+            LRESULT(0)
+        }
+
+        event::WM_APP_UI_ACCEPTANCE_SHOW => {
+            if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
+                with_app(|app| app.route_event(AppEvent::ShowStatusOverlay));
             }
             LRESULT(0)
         }

@@ -25,8 +25,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Simplified the runtime overlay to one card surface with no outer halo or
   custom shadow stack across System, Dark, and Light styles.
 - Tightened the sidebar brand-to-navigation gap to the shared row rhythm,
-  enlarged the Overlay Position column, and bounded native picker widths to
-  compact 320–400 DIP limits.
+  made the Overlay Preview and Position columns equal in width and height, and
+  bounded native picker widths to compact 320–400 DIP limits.
+- Removed the large empty Current app audio status card while retaining its
+  actionable shortcut controls.
+- Renamed the user-facing dedicated desktop to Special Desktop while retaining
+  scratchpad compatibility keys and GUID storage.
+- Added the isolated release Windows UI acceptance harness with themed picker
+  captures and runtime overlay surface checks.
 - Corrected the fixed Control Center acceptance model: brand icon/text now share
   one row, Search and Close share one top-chrome row, and sibling card/row
   spacing uses named section-content, section, and ROW_GAP semantics.
@@ -101,8 +107,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Removed the unreleased executable-to-desktop routing experiment from active product scope;
   legacy routing tables are parse-compatible, ignored, and omitted on the next Save.
 - Replaced hidden-window Scratchpad ownership with a dedicated native Virtual Desktop:
-  Special Workspace actions no longer hide/show or force-focus application HWNDs, numbered 1–9
-  excludes the workspace, the workspace is named and re-pinned to the tail of Shell ordering,
+  Special Desktop actions no longer hide/show or force-focus application HWNDs, numbered 1–9
+  excludes the desktop, the desktop is named and re-pinned to the tail of Shell ordering,
   its exact GUID is persisted for crash/reboot reclaim, and graceful disable/shutdown removes it
   through Shell with a normal fallback.
 
@@ -115,12 +121,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
   stealing existing hotkey slots. Explicit Settings endpoint selections remain
   persistently saved; desktop workflow hotkeys remain unassigned by default.
 - Schema v5's optional `scratchpad_assign` / `scratchpad_toggle` wire names remain compatible;
-  their current behavior sends windows to and toggles the dedicated Special Workspace. The
-  workspace GUID is operational recovery state stored outside `config.toml`; the return desktop
+  their current behavior sends windows to and toggles the dedicated Special Desktop. The
+  desktop GUID is operational recovery state stored outside `config.toml`; the return desktop
   remains process-only.
 - Numbered Virtual Desktop switching now ensures missing normal desktops through the
   native Shell backend; move/follow, silent move, previous-desktop navigation,
-  per-desktop foreground restoration, and the dedicated Special Workspace are available
+  per-desktop foreground restoration, and the dedicated Special Desktop are available
   as conservative configurable actions.
 - Schema v7 adds independent input/output endpoint allowlists for device cycling.
   Omitted means all active endpoints, while an explicit empty list disables that

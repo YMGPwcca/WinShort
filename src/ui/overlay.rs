@@ -24,10 +24,13 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dwm::{
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW,
+    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMSBT_NONE,
+    DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY,
     DWMWA_SYSTEMBACKDROP_TYPE,
 };
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, CreateRoundRectRgn, DeleteObject, EndPaint, SetWindowRgn, HGDIOBJ, PAINTSTRUCT,
+};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetClientRect, KillTimer, SetTimer, SetWindowPos, ShowWindow,
@@ -54,8 +57,7 @@ const LEAVE_MS: u64 = 180;
 const BASE_WIDTH: f32 = 372.0;
 const ROW_HEIGHT: f32 = 62.0;
 const PAD: f32 = 16.0;
-const BORDER_PAD: f32 = 1.0;
-
+const CARD_CORNER_RADIUS_DIP: f32 = 14.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SurfaceGeometry {
     width: f32,
@@ -81,12 +83,21 @@ fn surface_geometry(scale: f32, row_count: usize) -> SurfaceGeometry {
     let body_width = BASE_WIDTH * scale;
     let body_height = (PAD * 2.0 + ROW_HEIGHT * row_count as f32) * scale;
     SurfaceGeometry {
-        width: body_width + BORDER_PAD * 2.0,
-        height: body_height + BORDER_PAD * 2.0,
-        body_left: BORDER_PAD,
-        body_top: BORDER_PAD,
-        body_right: BORDER_PAD + body_width,
-        body_bottom: BORDER_PAD + body_height,
+        width: body_width,
+        height: body_height,
+        body_left: 0.0,
+        body_top: 0.0,
+        body_right: body_width,
+        body_bottom: body_height,
+    }
+}
+fn window_region_for(size: SIZE, dpi: u32) -> WindowRegion {
+    let scale = dpi.max(96) as f32 / 96.0;
+    WindowRegion {
+        width: size.cx,
+        height: size.cy,
+        inset: 0,
+        corner_diameter: (CARD_CORNER_RADIUS_DIP * 2.0 * scale).round().max(2.0) as i32,
     }
 }
 
@@ -154,6 +165,8 @@ fn backdrop_mode(preferences: SystemVisualPreferences, api_available: bool) -> B
 }
 
 fn configure_backdrop(hwnd: HWND, preferences: SystemVisualPreferences) -> bool {
+    suppress_dwm_nonclient(hwnd);
+    disable_dwm_border(hwnd);
     if backdrop_mode(preferences, true) == BackdropMode::Opaque {
         return disable_backdrop(hwnd);
     }
@@ -184,6 +197,7 @@ fn configure_backdrop(hwnd: HWND, preferences: SystemVisualPreferences) -> bool 
 }
 
 fn disable_backdrop(hwnd: HWND) -> bool {
+    disable_dwm_border(hwnd);
     let backdrop = DWMSBT_NONE;
     let _ = unsafe {
         DwmSetWindowAttribute(
@@ -197,6 +211,30 @@ fn disable_backdrop(hwnd: HWND) -> bool {
     let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
     false
 }
+
+fn suppress_dwm_nonclient(hwnd: HWND) {
+    let policy = DWMNCRP_DISABLED;
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            std::ptr::from_ref(&policy).cast(),
+            std::mem::size_of_val(&policy) as u32,
+        )
+    };
+}
+
+fn disable_dwm_border(hwnd: HWND) {
+    let border = DWMWA_COLOR_NONE;
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            std::ptr::from_ref(&border).cast(),
+            std::mem::size_of_val(&border) as u32,
+        )
+    };
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShowTiming {
     phase: Phase,
@@ -207,8 +245,16 @@ struct ShowTiming {
 struct ShowPlan {
     position: POINT,
     size: SIZE,
+    region: WindowRegion,
     alpha: f32,
     timer_interval: u32,
+}
+#[derive(Debug, Clone, Copy)]
+struct WindowRegion {
+    width: i32,
+    height: i32,
+    inset: i32,
+    corner_diameter: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -691,7 +737,7 @@ impl OverlayWindow {
 }
 
 fn apply_show_plan(hwnd: HWND, plan: ShowPlan) {
-    apply_frame_plan(hwnd, plan);
+    apply_frame_plan(hwnd, plan, true);
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
@@ -703,8 +749,31 @@ fn set_timer(hwnd: HWND, interval: u32) {
         let _ = SetTimer(Some(hwnd), TIMER_ID, interval, None);
     }
 }
+fn apply_window_region(hwnd: HWND, region: WindowRegion) {
+    let handle = unsafe {
+        CreateRoundRectRgn(
+            region.inset,
+            region.inset,
+            (region.width - region.inset).max(region.inset + 1),
+            (region.height - region.inset).max(region.inset + 1),
+            region.corner_diameter,
+            region.corner_diameter,
+        )
+    };
+    if handle.is_invalid() {
+        return;
+    }
+    if unsafe { SetWindowRgn(hwnd, Some(handle), true) } == 0 {
+        let _ = unsafe { DeleteObject(HGDIOBJ(handle.0)) };
+    } else {
+        disable_dwm_border(hwnd);
+    }
+}
 
-fn apply_frame_plan(hwnd: HWND, plan: ShowPlan) {
+fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) {
+    if apply_region {
+        apply_window_region(hwnd, plan.region);
+    }
     unsafe {
         let _ = SetWindowPos(
             hwnd,
@@ -844,6 +913,7 @@ impl OverlayState {
                 y: self.base_position.y + slide_px,
             },
             size: surface.size,
+            region: window_region_for(surface.size, self.dpi),
             alpha,
             timer_interval: self.timer_interval(),
         })
@@ -1148,8 +1218,8 @@ fn draw_overlay(
         target.FillRoundedRectangle(
             &D2D1_ROUNDED_RECT {
                 rect: body,
-                radiusX: 14.0,
-                radiusY: 14.0,
+                radiusX: CARD_CORNER_RADIUS_DIP,
+                radiusY: CARD_CORNER_RADIUS_DIP,
             },
             &surface_brush,
         );
@@ -1159,8 +1229,8 @@ fn draw_overlay(
         target.DrawRoundedRectangle(
             &D2D1_ROUNDED_RECT {
                 rect: body,
-                radiusX: 14.0,
-                radiusY: 14.0,
+                radiusX: CARD_CORNER_RADIUS_DIP,
+                radiusY: CARD_CORNER_RADIUS_DIP,
             },
             &border_brush,
             1.0,
@@ -1630,6 +1700,15 @@ unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         };
         match msg {
+            crate::event::WM_APP_UI_ACCEPTANCE_HIDE_OVERLAY
+                if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() =>
+            {
+                {
+                    cell.borrow_mut().phase = Phase::Hidden;
+                }
+                apply_hide_window(hwnd);
+                LRESULT(0)
+            }
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED | WM_DWMCOMPOSITIONCHANGED => {
                 let preferences = SystemVisualPreferences::query();
                 let backdrop_enabled = configure_backdrop(hwnd, preferences);
@@ -1638,7 +1717,7 @@ unsafe extern "system" fn overlay_wndproc(
                 });
                 match plan {
                     Ok(Some(plan)) => {
-                        apply_frame_plan(hwnd, plan);
+                        apply_frame_plan(hwnd, plan, true);
                         set_timer(hwnd, plan.timer_interval);
                         if let Err(error) = render_prepared_frame(cell, plan) {
                             crate::warn_!("overlay visual refresh failed: {error}");
@@ -1654,7 +1733,7 @@ unsafe extern "system" fn overlay_wndproc(
                 match plan {
                     Some(TickPlan::Hide) => apply_hide_window(hwnd),
                     Some(TickPlan::Frame(plan)) => {
-                        apply_frame_plan(hwnd, plan);
+                        apply_frame_plan(hwnd, plan, false);
                         if let Err(error) = render_prepared_frame(cell, plan) {
                             crate::warn_!("overlay frame failed: {error}");
                         }
@@ -1876,6 +1955,12 @@ mod tests {
             ShowPlan {
                 position: POINT { x: 40, y: 80 },
                 size: SIZE { cx: 320, cy: 180 },
+                region: WindowRegion {
+                    width: 320,
+                    height: 180,
+                    inset: 0,
+                    corner_diameter: 28,
+                },
                 alpha: 1.0,
                 timer_interval: TIMER_MS,
             }
@@ -1903,7 +1988,7 @@ mod tests {
                 assert!(geometry.body_bottom <= geometry.height);
                 assert!((geometry.body_left - right_padding).abs() < f32::EPSILON);
                 assert!((geometry.body_top - bottom_padding).abs() < f32::EPSILON);
-                assert!((geometry.body_left - BORDER_PAD).abs() < f32::EPSILON);
+                assert!(geometry.body_left.abs() < f32::EPSILON);
                 let pixels = geometry.pixel_size(dpi);
                 let dpi_scale = dpi as f32 / 96.0;
                 assert!(geometry.body_right * dpi_scale <= pixels.cx as f32);

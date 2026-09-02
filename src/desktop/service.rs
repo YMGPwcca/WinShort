@@ -22,7 +22,7 @@ use crate::desktop::workspace_state;
 use crate::error::{Error, Result};
 use crate::event::{AppEvent, DesktopActionKind};
 
-const SPECIAL_WORKSPACE_NAME: &str = "WinShort Special Workspace";
+const SPECIAL_WORKSPACE_NAME: &str = "WinShort Special Desktop";
 
 pub enum DesktopCommand {
     SwitchTo(usize),
@@ -137,15 +137,15 @@ struct DesktopController {
     last_served: Option<BackendKind>,
     /// Process-lifetime focus and previous-desktop identity state.
     history: DesktopHistory,
-    /// Whether the currently applied config owns Special Workspace behavior.
+    /// Whether the currently applied config owns Special Desktop behavior.
     /// This survives a transient Shell-proxy outage so a later rebuild cannot
-    /// accidentally reclaim a workspace after the feature was disabled.
+    /// accidentally reclaim a desktop after the feature was disabled.
     special_managed: bool,
-    /// Durable identity of WinShort's dedicated special workspace when Shell
-    /// still exposes that GUID. Persisting it prevents duplicate workspaces
+    /// Durable identity of WinShort's dedicated Special Desktop when Shell
+    /// still exposes that GUID. Persisting it prevents duplicate desktops
     /// after a hard process kill or Windows reboot.
     special_workspace: Option<GUID>,
-    /// Normal desktop to return to when leaving the special workspace.
+    /// Normal desktop to return to when leaving the Special Desktop.
     special_return: Option<GUID>,
 }
 
@@ -353,7 +353,7 @@ impl DesktopController {
                     choose_special_return_target(self.special_return, self.history.current(), &ids)
                         .ok_or_else(|| {
                             DesktopError::NavigationUnavailable(
-                                "no normal desktop is available to leave the special workspace"
+                                "no normal desktop is available to leave the Special Desktop"
                                     .into(),
                             )
                         })?;
@@ -456,7 +456,7 @@ impl DesktopController {
             return;
         }
         if let Err(error) = self.release_special_workspace() {
-            self.publish_failure("release special workspace", error);
+            self.publish_failure("release Special Desktop", error);
         }
     }
 
@@ -467,12 +467,12 @@ impl DesktopController {
         {
             let removed = self.special_workspace.take().expect("checked above");
             crate::info!(
-                "special workspace was removed outside WinShort; clearing persisted identity"
+                "Special Desktop was removed outside WinShort; clearing persisted identity"
             );
             self.special_return = None;
             self.history.forget_desktop(removed);
             if let Err(error) = workspace_state::clear() {
-                crate::warn_!("failed to clear stale special workspace identity: {error}");
+                crate::warn_!("failed to clear stale Special Desktop identity: {error}");
             }
         }
         if self.special_return.is_some_and(|return_to| {
@@ -513,7 +513,7 @@ impl DesktopController {
             Ok(ids) if ids.contains(&workspace) => ids,
             Ok(_) => return,
             Err(error) => {
-                crate::warn_!("cannot normalize special workspace ordering/name: {error}");
+                crate::warn_!("cannot normalize Special Desktop ordering/name: {error}");
                 return;
             }
         };
@@ -524,16 +524,16 @@ impl DesktopController {
         match native.desktop_name(workspace) {
             Ok(name) if name == SPECIAL_WORKSPACE_NAME => {}
             Ok(_) => match native.set_desktop_name(workspace, SPECIAL_WORKSPACE_NAME) {
-                Ok(()) => crate::info!("named special workspace '{SPECIAL_WORKSPACE_NAME}'"),
-                Err(error) => crate::warn_!("failed to name special workspace: {error}"),
+                Ok(()) => crate::info!("named Special Desktop '{SPECIAL_WORKSPACE_NAME}'"),
+                Err(error) => crate::warn_!("failed to name Special Desktop: {error}"),
             },
-            Err(error) => crate::warn_!("failed to read special workspace name: {error}"),
+            Err(error) => crate::warn_!("failed to read Special Desktop name: {error}"),
         }
 
         if ids.last().copied() != Some(workspace) {
             match native.move_desktop_id(workspace, ids.len() - 1) {
-                Ok(()) => crate::info!("moved special workspace to the end of Shell ordering"),
-                Err(error) => crate::warn_!("failed to move special workspace to the end: {error}"),
+                Ok(()) => crate::info!("moved Special Desktop to the end of Shell ordering"),
+                Err(error) => crate::warn_!("failed to move Special Desktop to the end: {error}"),
             }
         }
     }
@@ -546,32 +546,32 @@ impl DesktopController {
         }
         if ids.len() >= 256 {
             return Err(DesktopError::CreationUnavailable(
-                "cannot create special workspace because Windows already has 256 desktops".into(),
+                "cannot create Special Desktop because Windows already has 256 desktops".into(),
             ));
         }
         let workspace = self
             .native
             .as_ref()
-            .ok_or_else(|| self.native_unavailable_error("special workspace creation"))?
+            .ok_or_else(|| self.native_unavailable_error("Special Desktop creation"))?
             .create_desktop()?;
         if let Err(error) = workspace_state::store(workspace) {
             if let Some(fallback) = ids.first().copied() {
                 if let Some(native) = self.native.as_ref() {
                     if let Err(cleanup_error) = native.remove_desktop_id(workspace, fallback) {
                         crate::warn_!(
-                            "failed to remove unpersisted special workspace after state error: {cleanup_error}"
+                            "failed to remove unpersisted Special Desktop after state error: {cleanup_error}"
                         );
                     }
                 }
             }
             return Err(DesktopError::CreationUnavailable(format!(
-                "created special workspace but could not persist its GUID: {error}"
+                "created Special Desktop but could not persist its GUID: {error}"
             )));
         }
         self.special_workspace = Some(workspace);
         self.special_return = None;
         self.known_count = Some(ids.len());
-        crate::info!("created dedicated special workspace {workspace:?}");
+        crate::info!("created dedicated Special Desktop {workspace:?}");
         self.normalize_special_workspace(workspace);
         Ok(workspace)
     }
@@ -587,7 +587,7 @@ impl DesktopController {
             self.special_return = None;
             self.history.forget_desktop(workspace);
             if let Err(error) = workspace_state::clear() {
-                crate::warn_!("failed to clear removed special workspace identity: {error}");
+                crate::warn_!("failed to clear removed Special Desktop identity: {error}");
             }
             return Ok(());
         }
@@ -596,7 +596,7 @@ impl DesktopController {
             choose_special_return_target(self.special_return, self.history.current(), &normal)
                 .ok_or_else(|| {
                     DesktopError::NavigationUnavailable(
-                        "no normal desktop is available for special workspace cleanup".into(),
+                        "no normal desktop is available for Special Desktop cleanup".into(),
                     )
                 })?;
         let current = self
@@ -616,9 +616,9 @@ impl DesktopController {
         self.special_return = None;
         self.known_count = Some(normal.len());
         if let Err(error) = workspace_state::clear() {
-            crate::warn_!("failed to clear released special workspace identity: {error}");
+            crate::warn_!("failed to clear released Special Desktop identity: {error}");
         }
-        crate::info!("removed dedicated special workspace");
+        crate::info!("removed dedicated Special Desktop");
         Ok(())
     }
 
@@ -626,7 +626,7 @@ impl DesktopController {
         let hwnd = raw_hwnd(hwnd_raw);
         if !eligible_window(hwnd) {
             self.publish_failure(
-                "send to special workspace",
+                "send to Special Desktop",
                 DesktopError::WindowUnavailable("foreground HWND is not eligible".into()),
             );
             return;
@@ -636,7 +636,7 @@ impl DesktopController {
             let workspace = self.ensure_special_workspace()?;
             let native = self.native.as_ref().ok_or_else(|| {
                 DesktopError::MoveUnavailable(
-                    "special workspace requires the native desktop backend".into(),
+                    "Special Desktop requires the native desktop backend".into(),
                 )
             })?;
             if native.window_desktop_id(hwnd)? != workspace {
@@ -650,9 +650,9 @@ impl DesktopController {
                 self.last_served = Some(BackendKind::NativeShell);
                 self.publish_completed(DesktopActionKind::SentToSpecial);
                 self.publish_status();
-                crate::info!("moved foreground window into the special workspace");
+                crate::info!("moved foreground window into the Special Desktop");
             }
-            Err(error) => self.publish_failure("send to special workspace", error),
+            Err(error) => self.publish_failure("send to Special Desktop", error),
         }
     }
 
@@ -665,7 +665,7 @@ impl DesktopController {
                 .as_ref()
                 .ok_or_else(|| {
                     DesktopError::NavigationUnavailable(
-                        "special workspace requires the native desktop backend".into(),
+                        "Special Desktop requires the native desktop backend".into(),
                     )
                 })?
                 .current_desktop_id()?;
@@ -675,7 +675,7 @@ impl DesktopController {
                     choose_special_return_target(self.special_return, self.history.current(), &ids)
                         .ok_or_else(|| {
                             DesktopError::NavigationUnavailable(
-                                "no normal desktop is available to leave the special workspace"
+                                "no normal desktop is available to leave the Special Desktop"
                                     .into(),
                             )
                         })?;
@@ -708,11 +708,11 @@ impl DesktopController {
                 });
                 self.publish_status();
                 crate::info!(
-                    "{} special workspace",
+                    "{} Special Desktop",
                     if entering { "entered" } else { "left" }
                 );
             }
-            Err(error) => self.publish_failure("toggle special workspace", error),
+            Err(error) => self.publish_failure("toggle Special Desktop", error),
         }
     }
 
@@ -760,7 +760,7 @@ impl DesktopController {
         let reserved = usize::from(self.special_workspace.is_some());
         if target_count.saturating_add(reserved) > 256 {
             return Err(DesktopError::CreationUnavailable(format!(
-                "requested {target_count} normal desktops plus the special workspace exceeds the 256-desktop safety limit"
+                "requested {target_count} normal desktops plus the Special Desktop exceeds the 256-desktop safety limit"
             )));
         }
         let missing = missing_normal_desktops(current.len(), target_count);
@@ -916,11 +916,9 @@ fn reclaim_persisted_special_workspace(native: Option<&InternalBackend>) -> Opti
     let persisted = match workspace_state::load() {
         Ok(persisted) => persisted,
         Err(error) => {
-            crate::warn_!("discarding unreadable special workspace identity: {error}");
+            crate::warn_!("discarding unreadable Special Desktop identity: {error}");
             if let Err(clear_error) = workspace_state::clear() {
-                crate::warn_!(
-                    "failed to clear unreadable special workspace identity: {clear_error}"
-                );
+                crate::warn_!("failed to clear unreadable Special Desktop identity: {clear_error}");
             }
             None
         }
@@ -932,20 +930,20 @@ fn reclaim_persisted_special_workspace(native: Option<&InternalBackend>) -> Opti
     };
     match native.desktop_ids() {
         Ok(ids) if ids.contains(&persisted) => {
-            crate::info!("reclaimed persisted special workspace {persisted:?}");
+            crate::info!("reclaimed persisted Special Desktop {persisted:?}");
             Some(persisted)
         }
         Ok(_) => {
             crate::info!(
-                "persisted special workspace no longer exists in Shell ordering; forgetting it"
+                "persisted Special Desktop no longer exists in Shell ordering; forgetting it"
             );
             if let Err(error) = workspace_state::clear() {
-                crate::warn_!("failed to clear missing special workspace identity: {error}");
+                crate::warn_!("failed to clear missing Special Desktop identity: {error}");
             }
             None
         }
         Err(error) => {
-            crate::warn_!("could not verify persisted special workspace identity: {error}");
+            crate::warn_!("could not verify persisted Special Desktop identity: {error}");
             None
         }
     }
@@ -1129,7 +1127,7 @@ fn desktop_thread(
     // is crash/reboot recovery: if teardown never runs, the next process can
     // reclaim the surviving desktop instead of creating a duplicate.
     if let Err(error) = controller.release_special_workspace() {
-        crate::error_!("failed to remove special workspace during shutdown: {error}");
+        crate::error_!("failed to remove Special Desktop during shutdown: {error}");
     }
     drop(controller);
     drop(com);

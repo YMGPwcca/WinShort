@@ -66,6 +66,8 @@ impl UiTokens {
     pub const CARD_RADIUS: f32 = 12.0;
     pub const CONTROL_RADIUS: f32 = 7.0;
     pub const NAV_RADIUS: f32 = 8.0;
+    pub const PICKER_INSET: f32 = 4.0;
+    pub const PICKER_RADIUS: f32 = Self::CONTROL_RADIUS;
     pub const CONTROL_WIDTH: f32 = 206.0;
     pub const CARD_HEIGHT: f32 = 104.0;
     pub const CARD_COLUMN_GAP: f32 = 16.0;
@@ -113,7 +115,7 @@ pub struct Theme {
 
 impl Theme {
     pub fn current() -> Self {
-        match system_theme_mode() {
+        match acceptance_theme_mode().unwrap_or_else(system_theme_mode) {
             ThemeMode::Light => Self::light(),
             ThemeMode::Dark => Self::dark(),
         }
@@ -174,6 +176,16 @@ impl Theme {
     }
 }
 
+/// Process-local theme override used only by the isolated Windows acceptance
+/// harness; ordinary launches continue to read the Windows Personalize value.
+fn acceptance_theme_mode() -> Option<ThemeMode> {
+    let value = std::env::var_os("WINSHORT_UI_ACCEPTANCE_THEME")?;
+    match value.to_string_lossy().as_ref() {
+        "light" => Some(ThemeMode::Light),
+        "dark" => Some(ThemeMode::Dark),
+        _ => None,
+    }
+}
 /// System app theme from the documented Personalize registry value. Missing
 /// value defaults to dark because WinShort's launch scene is the tray at night.
 pub fn system_theme_mode() -> ThemeMode {

@@ -58,7 +58,7 @@ use crate::ui::presentation::{
 };
 use crate::ui::prompt::{PromptAction, TextPrompt};
 use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
-use crate::ui::theme::{Color, Theme, ThemeMode};
+use crate::ui::theme::{Color, Theme, ThemeMode, UiTokens};
 
 pub const CLASS_NAME: &str = "WinShort.ControlCenter";
 pub const DESIGN_WIDTH: f32 = 960.0;
@@ -302,6 +302,10 @@ impl SettingsUi {
                 || !self.display_inventory_loaded,
             workspace_enabled: self.draft.virtual_desktops.enabled,
             paused: !self.draft.general.start_hotkeys_enabled,
+            current_app_audio_available: !matches!(
+                self.runtime.foreground.aggregate,
+                crate::audio::Aggregate::NoExternalApp
+            ),
             input_cycle_mode: allowlist_mode(self.draft.audio.cycle_input_allowlist.as_deref()),
             output_cycle_mode: allowlist_mode(self.draft.audio.cycle_output_allowlist.as_deref()),
             input_device_count: self.devices.inputs.len(),
@@ -972,7 +976,7 @@ impl SettingsUi {
                     controls::draw_home_card(
                         renderer,
                         element.rect,
-                        "Special Workspace",
+                        "Special Desktop",
                         &value,
                         &detail,
                         &action,
@@ -4033,7 +4037,7 @@ impl SettingsUi {
                 match node.id {
                     ElementId::HomeSpecial => {
                         let (status, detail, action) = self.special_workspace_summary();
-                        node.name = format!("Special Workspace: {status}");
+                        node.name = format!("Special Desktop: {status}");
                         node.value = action;
                         node.help_text = detail;
                     }
@@ -4918,7 +4922,10 @@ const PICKER_MIN_WIDTH_DIP: f32 = 320.0;
 const PICKER_MAX_WIDTH_DIP: f32 = 400.0;
 
 fn picker_height_px(choice_count: usize, scale: f32) -> i32 {
-    ((choice_count.min(10) as f32 * crate::ui::picker::ITEM_HEIGHT_DIP) * scale).round() as i32 + 2
+    let items =
+        (choice_count.min(10) as f32 * crate::ui::picker::ITEM_HEIGHT_DIP * scale).round() as i32;
+    let inset = (UiTokens::PICKER_INSET * scale).round().max(1.0) as i32;
+    items + inset * 2 + 2
 }
 
 fn picker_width_dip(control_width: f32, choices: &[PickerChoice]) -> f32 {
@@ -6674,6 +6681,20 @@ mod interaction_tests {
             _ => panic!("unexpected control value variant"),
         }
     }
+
+    #[test]
+    fn current_app_layout_flag_tracks_external_runtime_target() {
+        let mut ui = empty_settings_ui();
+        assert!(!ui.layout_context().current_app_audio_available);
+
+        ui.runtime.foreground = crate::audio::AppAudioState {
+            app_name: Some("Player".into()),
+            aggregate: crate::audio::Aggregate::AllActive,
+            sessions: 1,
+            error: None,
+        };
+        assert!(ui.layout_context().current_app_audio_available);
+    }
     #[test]
     fn high_contrast_settings_theme_uses_system_pairs_for_hover_and_focus() {
         let visual = SystemVisualPreferences {
@@ -6736,11 +6757,11 @@ mod interaction_tests {
         assert_eq!(picker_width_dip(900.0, &long), 400.0);
     }
     #[test]
-    fn picker_height_has_only_list_rows_and_border_allowance() {
-        assert_eq!(picker_height_px(0, 1.0), 2);
-        assert_eq!(picker_height_px(3, 1.0), 98);
-        assert_eq!(picker_height_px(12, 1.0), 322);
-        assert_eq!(picker_height_px(3, 1.5), 146);
+    fn picker_height_includes_shared_host_inset() {
+        assert_eq!(picker_height_px(0, 1.0), 10);
+        assert_eq!(picker_height_px(3, 1.0), 106);
+        assert_eq!(picker_height_px(12, 1.0), 330);
+        assert_eq!(picker_height_px(3, 1.5), 158);
     }
 
     #[test]

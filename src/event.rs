@@ -12,6 +12,10 @@ use std::sync::Mutex;
 pub const WM_APP_TRAY: u32 = 0x8000; // WM_APP + 0: tray callback notifications
 pub const WM_APP_ACTION: u32 = 0x8001; // keyboard hook recognized a binding
 pub const WM_APP_EVENT: u32 = 0x8002; // wake-only; payload lives in [`EVENTS`]
+/// Harness-only messages used to exercise the real UI paths in an isolated
+/// release-process acceptance run.
+pub const WM_APP_UI_ACCEPTANCE_SHOW: u32 = 0x8003;
+pub const WM_APP_UI_ACCEPTANCE_HIDE_OVERLAY: u32 = 0x8004;
 
 /// Actions produced by the keyboard engine. Small enough to pack into a WPARAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
