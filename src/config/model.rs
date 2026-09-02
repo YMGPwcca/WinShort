@@ -250,8 +250,8 @@ impl OverlayPosition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonitorChoice {
-    /// Monitor containing the foreground window.
-    Foreground,
+    /// Monitor containing the pointer.
+    Cursor,
     Primary,
     /// Stable device identity, e.g. "\\\\.\\DISPLAY1" (#26). Enumeration
     /// indices change with topology; device names survive reboots.
@@ -263,15 +263,15 @@ impl MonitorChoice {
     #[allow(dead_code)]
     pub fn label(&self) -> String {
         match self {
-            MonitorChoice::Foreground => "Foreground window's monitor".into(),
-            MonitorChoice::Primary => "Primary monitor".into(),
+            MonitorChoice::Cursor => "Cursor position".into(),
+            MonitorChoice::Primary => "Primary".into(),
             MonitorChoice::Device(name) => format!("Monitor {name}"),
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
-            "foreground" => MonitorChoice::Foreground,
+            "cursor" | "foreground" => MonitorChoice::Cursor,
             "primary" => MonitorChoice::Primary,
             other => {
                 // Legacy `index:N` migrates to Primary (best effort, #26):
@@ -290,7 +290,7 @@ impl MonitorChoice {
 
     pub fn as_str(&self) -> String {
         match self {
-            MonitorChoice::Foreground => "foreground".into(),
+            MonitorChoice::Cursor => "cursor".into(),
             MonitorChoice::Primary => "primary".into(),
             // Legacy `index:N` configs migrate to Primary on load (#26).
             MonitorChoice::Device(name) => format!("device:{name}"),
@@ -349,7 +349,7 @@ impl Default for Config {
                 enabled: true,
                 duration_ms: 1300,
                 position: OverlayPosition::BottomCenter,
-                monitor: MonitorChoice::Foreground,
+                monitor: MonitorChoice::Cursor,
                 scale: 1.0,
                 opacity: 1.0,
                 appearance: OverlayAppearance::System,
@@ -619,7 +619,7 @@ fn default_position() -> String {
     "bottom-center".into()
 }
 fn default_monitor() -> String {
-    "foreground".into()
+    "cursor".into()
 }
 fn default_scale() -> f32 {
     1.0
@@ -1425,6 +1425,23 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
         assert!(config.hotkeys.cycle_output_device.is_none());
         assert!(config.hotkeys.foreground_volume_up.is_none());
         assert!(config.hotkeys.foreground_volume_down.is_none());
+    }
+
+    #[test]
+    fn monitor_selector_defaults_to_cursor_and_migrates_legacy_foreground() {
+        assert_eq!(Config::default().overlay.monitor, MonitorChoice::Cursor);
+
+        let raw = r#"
+schema_version = 10
+
+[overlay]
+monitor = "foreground"
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.overlay.monitor, MonitorChoice::Cursor);
+        assert_eq!(config.to_toml().overlay.monitor, "cursor");
     }
 
     #[test]

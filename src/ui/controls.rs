@@ -76,6 +76,15 @@ pub(crate) fn interaction_state(interaction: Interaction) -> InteractionState {
     }
 }
 
+fn row_control_width(value: &ControlValue<'_>) -> f32 {
+    match value {
+        ControlValue::Toggle(_) => 48.0,
+        ControlValue::Text(_) => CONTROL_WIDTH,
+        ControlValue::Slider { .. } => 70.0,
+        ControlValue::Action(_) => 136.0,
+    }
+}
+
 pub fn draw_row(
     r: &Renderer,
     element: &Element,
@@ -144,7 +153,8 @@ pub fn draw_row(
     } else {
         BrushRole::TextSecondary
     };
-    let text_width = (rect.w - 260.0).max(110.0);
+    let control_width = row_control_width(&value);
+    let text_width = (rect.right() - 18.0 - control_width - rect.x - BODY_LEFT - 14.0).max(1.0);
     let stack_top = rect.y + (rect.h - 40.0) * 0.5;
     r.text_clipped(
         &element.label,
@@ -405,7 +415,24 @@ pub fn draw_nav_item(
     );
 }
 
-pub fn draw_search_box(r: &Renderer, rect: Rect, text: &str, focused: bool, hovered: bool) {
+pub(crate) fn search_text_rect(rect: Rect) -> Rect {
+    Rect::new(rect.x + 36.0, rect.y + 2.0, rect.w - 48.0, rect.h - 4.0)
+}
+
+pub(crate) fn search_caret_rect(rect: Rect, text_width: f32) -> Rect {
+    let text = search_text_rect(rect);
+    let x = (text.x + text_width).clamp(text.x, (text.right() - 1.0).max(text.x));
+    Rect::new(x, rect.y + 7.0, 1.25, (rect.h - 14.0).max(1.0))
+}
+
+pub fn draw_search_box(
+    r: &Renderer,
+    rect: Rect,
+    text: &str,
+    focused: bool,
+    hovered: bool,
+    caret_visible: bool,
+) {
     let state = interaction_state(Interaction {
         hovered,
         pressed: false,
@@ -459,7 +486,7 @@ pub fn draw_search_box(r: &Renderer, rect: Rect, text: &str, focused: bool, hove
     };
     r.text_clipped(
         shown,
-        Rect::new(rect.x + 36.0, rect.y + 2.0, rect.w - 48.0, rect.h - 4.0).d2d(),
+        search_text_rect(rect).d2d(),
         TextStyle::Body,
         if text.is_empty() {
             BrushRole::TextSecondary
@@ -467,6 +494,17 @@ pub fn draw_search_box(r: &Renderer, rect: Rect, text: &str, focused: bool, hove
             BrushRole::Text
         },
     );
+    if focused && caret_visible {
+        let caret = search_caret_rect(rect, r.text_width(text, TextStyle::Body, rect.w - 48.0));
+        r.line(
+            caret.x,
+            caret.y,
+            caret.x,
+            caret.bottom(),
+            BrushRole::Accent,
+            caret.w,
+        );
+    }
 }
 
 pub(crate) fn section_title_text_rect(rect: Rect) -> Rect {
@@ -2032,9 +2070,10 @@ fn draw_page_icon(r: &Renderer, rect: Rect, page: Page, role: BrushRole) {
 mod tests {
     use super::{
         device_value_rect, interaction_state, scroll_from_scrollbar_pointer, scrollbar_hit_rect,
-        scrollbar_thumb_rect, section_accent_rect, section_divider_y, section_title_text_rect,
-        shortcut_icon_geometry, titlebar_glyph_bounds, value_control_rect, value_text_rect,
-        Interaction, InteractionState, CONTROL_WIDTH, VALUE_TEXT_PADDING,
+        scrollbar_thumb_rect, search_caret_rect, search_text_rect, section_accent_rect,
+        section_divider_y, section_title_text_rect, shortcut_icon_geometry, titlebar_glyph_bounds,
+        value_control_rect, value_text_rect, Interaction, InteractionState, CONTROL_WIDTH,
+        VALUE_TEXT_PADDING,
     };
     use crate::ui::layout::{ElementKind, Rect};
 
@@ -2116,6 +2155,20 @@ mod tests {
         let hit = scrollbar_hit_rect(viewport);
         assert!(hit.contains(viewport.right() - 8.0, viewport.y + 20.0));
         assert!(!hit.contains(viewport.right() - 20.0, viewport.y + 20.0));
+    }
+    #[test]
+    fn search_caret_geometry_is_visible_at_text_end_and_empty_start() {
+        let field = Rect::new(100.0, 4.0, 400.0, 32.0);
+        let text = search_text_rect(field);
+        let empty = search_caret_rect(field, 0.0);
+        let typed = search_caret_rect(field, 96.0);
+        assert_eq!(empty.x, text.x);
+        assert!(typed.x > empty.x);
+        assert!(typed.x < text.right());
+        assert!(typed.y > field.y);
+        assert!(typed.bottom() < field.bottom());
+        assert!(typed.w > 0.0);
+        assert!(typed.h > 0.0);
     }
     #[test]
     fn shortcut_icon_geometry_has_keyboard_rows_and_spacebar() {

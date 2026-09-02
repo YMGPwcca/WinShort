@@ -155,8 +155,10 @@ impl Renderer {
     }
 
     pub fn set_theme(&mut self, theme: Theme) -> Result<()> {
+        let brushes = self.build_brushes(theme)?;
         self.theme = theme;
-        self.rebuild_brushes()
+        self.brushes = brushes;
+        Ok(())
     }
 
     pub fn set_dpi(&mut self, dpi: u32) -> Result<()> {
@@ -305,6 +307,21 @@ impl Renderer {
             0.0
         }
     }
+    pub fn text_width(&self, text: &str, style: TextStyle, max_width: f32) -> f32 {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let Ok(layout) = (unsafe {
+            self.dwrite
+                .CreateTextLayout(&wide, self.format(style), max_width.max(1.0), 64.0)
+        }) else {
+            return 0.0;
+        };
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        if unsafe { layout.GetMetrics(&mut metrics) }.is_ok() {
+            metrics.width
+        } else {
+            0.0
+        }
+    }
 
     fn draw_text(
         &self,
@@ -335,17 +352,23 @@ impl Renderer {
         self.formats.get(&style).expect("text format")
     }
 
-    fn rebuild_brushes(&mut self) -> Result<()> {
-        self.brushes.clear();
-        for (role, color) in brush_colors(self.theme) {
+    fn build_brushes(&self, theme: Theme) -> Result<HashMap<BrushRole, ID2D1SolidColorBrush>> {
+        let colors = brush_colors(theme);
+        let mut brushes = HashMap::with_capacity(colors.len());
+        for (role, color) in colors {
             let raw = color.d2d();
             let brush = unsafe {
                 self.target
                     .CreateSolidColorBrush(std::ptr::from_ref(&raw), None)
                     .map_err(|e| Error::win("CreateSolidColorBrush", &e))?
             };
-            self.brushes.insert(role, brush);
+            brushes.insert(role, brush);
         }
+        Ok(brushes)
+    }
+
+    fn rebuild_brushes(&mut self) -> Result<()> {
+        self.brushes = self.build_brushes(self.theme)?;
         Ok(())
     }
 
@@ -541,7 +564,9 @@ pub fn rect(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
 
 #[cfg(test)]
 mod tests {
-    use super::{trimming_for, TextStyle, DWRITE_TRIMMING_GRANULARITY_CHARACTER};
+    use super::{
+        brush_colors, trimming_for, BrushRole, TextStyle, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    };
 
     #[test]
     fn value_text_uses_directwrite_trailing_character_trimming() {
@@ -550,5 +575,30 @@ mod tests {
         assert_eq!(trimming.delimiter, 0);
         assert_eq!(trimming.delimiterCount, 0);
         assert!(trimming_for(TextStyle::Body).is_some());
+    }
+    #[test]
+    fn dark_and_light_themes_supply_a_complete_brush_palette() {
+        for theme in [
+            crate::ui::theme::Theme::dark(),
+            crate::ui::theme::Theme::light(),
+        ] {
+            let colors = brush_colors(theme);
+            assert_eq!(colors.len(), 21);
+            assert!(colors.iter().all(|(_, color)| color.a > 0));
+            assert_eq!(
+                colors
+                    .iter()
+                    .filter(|(role, _)| *role == BrushRole::Background)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                colors
+                    .iter()
+                    .filter(|(role, _)| *role == BrushRole::Shadow)
+                    .count(),
+                1
+            );
+        }
     }
 }

@@ -1551,6 +1551,7 @@ fn color(color: Color) -> D2D1_COLOR_F {
 fn select_monitor(choice: MonitorChoice) -> Option<crate::platform::monitor::MonitorGeometry> {
     match choice {
         MonitorChoice::Primary => crate::platform::monitor::primary(),
+        MonitorChoice::Cursor => crate::platform::monitor::cursor(),
         // Stable identity (#26): device names survive topology changes;
         // fall back to primary with a warning when absent.
         MonitorChoice::Device(name) => {
@@ -1561,16 +1562,6 @@ fn select_monitor(choice: MonitorChoice) -> Option<crate::platform::monitor::Mon
                 crate::warn_!("overlay monitor {name} not present; using primary");
             }
             found.or_else(crate::platform::monitor::primary)
-        }
-        // Tray-triggered overlays must target the LAST external window's
-        // monitor — the true foreground is WinShort itself (#26).
-        MonitorChoice::Foreground => {
-            let target =
-                crate::platform::foreground::last_external_hwnd().unwrap_or_else(|| unsafe {
-                    windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                });
-            crate::platform::monitor::info_for(crate::platform::monitor::from_window(target))
-                .or_else(crate::platform::monitor::primary)
         }
     }
 }

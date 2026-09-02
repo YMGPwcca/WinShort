@@ -18,7 +18,7 @@ start_with_windows = false      # LEGACY (#16): always false; registry owns star
 enabled = true
 duration_ms = 1300              # valid 500..=10000
 position = "bottom-center"      # top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right
-monitor = "foreground"          # foreground | primary | "device:\\\\.\\DISPLAY1"
+monitor = "cursor"              # cursor | primary (legacy device selectors remain readable)
 scale = 1.0                     # valid 0.7..=1.6
 opacity = 1.0                   # valid 0.3..=1.0
 appearance = "system"           # system | dark | light
@@ -216,7 +216,7 @@ Center or the tray writes/deletes immediately — it does **not** wait for a glo
 ## Defaults (as coded)
 
 | Field | Default |
-| overlay | enabled, 1300 ms, bottom-center, foreground monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
+| overlay | enabled, 1300 ms, bottom-center, cursor-position monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
 | audio roles / devices | console / console, default devices |
 | audio cycle allowlists | omitted (`None`, all active endpoints) |
 | existing toggle hotkeys | Ctrl+Alt+M / Ctrl+Alt+O / Ctrl+Alt+P |

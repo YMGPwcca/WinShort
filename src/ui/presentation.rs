@@ -228,8 +228,8 @@ pub fn display_output_label(
 
 pub fn monitor_choice_label(choice: &MonitorChoice) -> String {
     match choice {
-        MonitorChoice::Foreground => "App's monitor".into(),
-        MonitorChoice::Primary => "Primary monitor".into(),
+        MonitorChoice::Cursor => "Cursor position".into(),
+        MonitorChoice::Primary => "Primary".into(),
         MonitorChoice::Device(_) => "Saved monitor".into(),
     }
 }

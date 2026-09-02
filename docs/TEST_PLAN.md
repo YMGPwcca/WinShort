@@ -107,8 +107,14 @@ Automated coverage:
   trimming; applied status text remains generic.
 - Control Center layout tests cover removal of the Workspaces desktop strip, Special Workspace
   hierarchy, exact sibling ROW_GAP/SECTION_CONTENT_GAP geometry across Audio, Home, and
-  Workspaces, shared right-side control widths, one-row brand/search/Close chrome, one Close
-  action, fixed-window capability geometry, and fixed side-by-side Overlay placement.
+  Workspaces, shared right-side control widths, the separate 80 DIP sidebar brand row,
+  one-row Search/Close chrome, one Close action, fixed-window capability geometry, the
+  fixed side-by-side Overlay placement, and the equal-width Overlay status row.
+- Search caret geometry tests cover a visible empty-field caret and a text-end caret;
+  renderer palette tests cover complete dark/light brush tables and transactional theme
+  replacement.
+- Overlay monitor picker tests expose exactly Primary and Cursor position; legacy foreground
+  config values parse to Cursor and serialize as `cursor`.
 - Overlay geometry tests cover dynamic monitor aspect fitting, monitor-as-preview containment,
   normalized position semantics, and the absence of a nested preview-container surface.
 - Motion tests cover hover/toggle channels only; wheel and Page Up/Down scroll update the model
@@ -149,13 +155,14 @@ Manual matrix:
   as GS25F2, SAMSUNG, and SIMGOT EW300 DSP; adapter metadata is absent from normal visible rows.
 - Current app audio: the page has one section heading; the status row says `No controllable
   app` when appropriate and does not repeat the heading inside a large card.
-- Overlay preview: the fixed-size window always places the monitor preview beside Position and
-  Monitor controls. Foreground, Primary, saved, disconnected, 16:9, 16:10, ultrawide, and
-  portrait targets use the correct work-area ratio without stretching, and the monitor frame is
-  the sole preview surface.
+- Overlay preview: the fixed-size window always places the monitor preview beside Position.
+  The status row splits Show status overlay and Monitor into equal halves. Primary and Cursor
+  position targets use the correct work-area ratio without stretching, and the monitor frame
+  is the sole preview surface.
 - Custom titlebar: the fixed-size window has one blank draggable top region and one compact Close
   button. Minimize, Maximize/Restore, resize edges/corners, double-click maximize, and Snap
-  Layout are unavailable; DPI, dark/light/high-contrast themes, and rounded corners remain intact.
+  Layout are unavailable; DPI, dark/light/high-contrast themes, and rounded corners remain
+  intact. Switching between dark and light must leave the Control Center alive.
 - Close lifecycle: clicking Close cancels any picker first, discards only the uncommitted UI draft
   under existing policy, hides Control Center with SW_HIDE, preserves the process/tray, and
   allows the tray Open action to show the same fixed-size window again.
@@ -166,9 +173,10 @@ Manual matrix:
 - Picker focus: opening a picker keeps the Control Center as the sole active top-level HWND;
   the child host appears above D2D content, the real LISTBOX owns keyboard focus, arrows/Home/End/
   PageUp/PageDown/Tab/Escape remain deterministic, and outside click/focus loss closes it.
-- Focus and automation: pointer clicks avoid a lingering heavy ring; Tab, Shift-Tab, keyboard
-  activation, titlebar commands, and UIA focus remain truthful; UIA events arrive only after
-  mutable SettingsUi borrows are released.
+- Focus and automation: pointer clicks avoid a lingering heavy ring; clicking Search shows a
+  visible caret and reports editable focus truthfully; Tab, Shift-Tab, keyboard activation,
+  titlebar commands, and UIA focus remain truthful; UIA events arrive only after mutable
+  SettingsUi borrows are released.
 
 If an interactive desktop is unavailable, GUI, blur, titlebar, and Narrator results remain
 unverified; automated geometry/state tests must not be described as live accessibility evidence.

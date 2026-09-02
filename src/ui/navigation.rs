@@ -173,10 +173,10 @@ static SEARCH_ITEMS: &[SearchItem] = &[
         target: ElementId::NewDisplayProfile,
     },
     SearchItem {
-        title: "Overlay appearance",
-        keywords: "status card toast hud light dark system",
+        title: "Overlay style",
+        keywords: "status card toast hud light dark system appearance",
         page: Page::Overlay,
-        section: "Appearance",
+        section: "Overlay",
         target: ElementId::OverlayAppearance,
     },
     SearchItem {

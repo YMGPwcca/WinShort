@@ -36,7 +36,7 @@ Control Center
 
 Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dimensions. A fixed navigation rail, single custom top-chrome row, and page content remain stable while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. The navigation rail begins below the brand row without an extra title band. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
+The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dimensions. A fixed navigation rail, an 80 DIP sidebar brand row, a single custom top-chrome row, and page content remain stable while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. Navigation begins at the original 98 DIP position below the brand row without an extra title band. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
 
 `src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, spaced section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, Close-button, slider-cluster, and icon vocabulary.
 
@@ -47,7 +47,7 @@ The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dime
 - 216 DIP navigation rail;
 - 34 DIP status footer;
 - 32 DIP page margins;
-- 40 DIP single top-chrome row with one 44 × 32 DIP Close hit target and a blank draggable caption gap;
+- 40 DIP single top-chrome row with one 44 × 32 DIP Close hit target and a blank draggable caption gap; the sidebar brand remains in its separate 80 DIP row;
 - 92 DIP page headers and 88 DIP section headers; non-page headings share one 20 DIP inter-section breathing-room token;
 - 12 DIP section-content gap before a section's first control and 8 DIP ROW_GAP between sibling rows/cards;
 - 58 DIP setting rows with an 8 DIP rhythm;
@@ -116,18 +116,18 @@ Output/topology edits remain local until Test and Keep. Moving between steps nev
 
 Overlay uses one fixed side-by-side placement area at the supported Control Center size:
 
-- the monitor preview sits beside Position's 3×3 selector and Monitor target;
+- the monitor preview sits beside Position's 3×3 selector;
+- the Position heading is compact, with no explanatory description beneath it;
 - the monitor frame itself is the preview surface; there is no outer preview card around it;
-- enabled;
-- System, Light, or Dark appearance;
+- a same-row, equal-width pair for Show status overlay and Monitor;
 - a 3×3 position grid with accessible Top left through Bottom right cells;
-- monitor;
+- Overlay style: Follow Windows, Light, or Dark for the status card;
 - Small/Normal/Large size;
 - Low/Normal/High opacity;
 - Short/Normal/Long duration;
 - Show on screen.
 
-The preview derives its simulated monitor ratio from the selected work area: the applicable foreground monitor, Primary, or an available saved monitor. Missing or disconnected targets use a 16:9 fallback. The monitor is fit inside bounded content geometry without stretching, and the sample card uses the same normalized left/center/right and top/center/bottom placement semantics as the real overlay. `Show on screen` sends the edited `OverlayCfg` without saving it.
+Monitor targeting exposes only Primary and Cursor position. The preview derives its simulated monitor ratio from the selected work area, using the monitor containing the pointer for Cursor position. Missing monitor information uses a 16:9 fallback. The monitor is fit inside bounded content geometry without stretching, and the sample card uses the same normalized left/center/right and top/center/bottom placement semantics as the real overlay. `Show on screen` sends the edited `OverlayCfg` without saving it.
 
 The runtime overlay is a non-layered, click-through HWND rendered through Direct2D and backed by documented DWM Desktop Acrylic: `DwmSetWindowAttribute` with `DWMWA_SYSTEMBACKDROP_TYPE` and `DWMSBT_TRANSIENTWINDOW`, plus `DwmExtendFrameIntoClientArea` for the client surface. Overlay opacity scales the drawn card over the blurred DWM material. Windows 10/API failure, High Contrast, and `SPI_GETDISABLEOVERLAPPEDCONTENT` fall back to a fully opaque accessible surface. Topmost, no-activate, tool-window, monitor placement, DPI, and bounded event-driven animation remain intact.
 
@@ -159,7 +159,7 @@ It is not a dump of runtime diagnostics. Dense implementation state remains in D
 
 The shell search box is a local, case-insensitive deterministic index in `src/ui/navigation.rs`. Descriptors contain human titles, keywords, page, section, and target control. Search results rank exact/title matches before keyword matches, prefer common user destinations, and are capped to a small result set.
 
-Typing is handled by the owner-drawn shell; UI Automation exposes the search control as an editable Edit/ValuePattern node. Enter opens the first result, while selecting a result navigates to its page and stable target. No network, telemetry, or raw config-key labels are involved.
+Typing is handled by the owner-drawn shell; a focused Search field shows a real text caret that blinks while the Control Center owns editing focus. UI Automation exposes the search control as an editable Edit/ValuePattern node. Enter opens the first result, while selecting a result navigates to its page and stable target. No network, telemetry, or raw config-key labels are involved.
 
 ## First run
 

@@ -7,6 +7,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Restored the sidebar brand to its original 80 DIP row and added a visible
+  blinking caret for focused Search editing.
+- Made dark/light theme swaps transactional so a failed brush rebuild cannot
+  leave the Control Center with an incomplete palette or crash on repaint.
+- Tightened Overlay placement: Position has no description, status and Monitor
+  share an equal-width row, and monitor targets are Primary or Cursor position.
+  The status-card appearance control remains clearly scoped to Overlay.
 - Corrected the fixed Control Center acceptance model: brand icon/text now share
   one row, Search and Close share one top-chrome row, and sibling card/row
   spacing uses named section-content, section, and ROW_GAP semantics.

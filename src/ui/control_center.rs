@@ -66,6 +66,7 @@ pub const DESIGN_HEIGHT: f32 = 660.0;
 const UI_TIMER: usize = 1;
 const UI_TIMER_MS: u32 = 16;
 const WHEEL_SCROLL_DIP: f32 = 80.0;
+const SEARCH_CARET_BLINK_MS: u64 = 530;
 const APPLIED_STATUS: &str = "Changes applied";
 const CONTROL_CENTER_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_POPUP.0 | WS_CLIPCHILDREN.0);
 
@@ -205,6 +206,8 @@ pub struct SettingsUi {
     /// rendered as keyboard-visible focus. Pointer focus remains semantically
     /// active without drawing a heavy ring.
     focus_visible: bool,
+    search_caret_visible: bool,
+    search_caret_deadline: Option<Instant>,
     focus_owner: AutomationFocusOwner,
     picker_owner: Option<ElementId>,
     picker_hwnd: Option<HWND>,
@@ -262,6 +265,8 @@ impl SettingsUi {
             recording_modifiers: ModifierMask::NONE,
             focused: None,
             focus_visible: false,
+            search_caret_visible: false,
+            search_caret_deadline: None,
             focus_owner: AutomationFocusOwner::Outside,
             picker_list_hwnd: None,
             picker_owner: None,
@@ -328,6 +333,52 @@ impl SettingsUi {
 
     fn visual_focus(&self, id: ElementId) -> bool {
         self.focus_visible && self.focused == Some(id)
+    }
+    fn search_has_focus(&self) -> bool {
+        self.focused == Some(ElementId::Search)
+            && self.focus_owner == AutomationFocusOwner::Settings
+    }
+
+    fn sync_search_caret(&mut self, hwnd: HWND) {
+        if self.search_has_focus() {
+            if self.search_caret_deadline.is_none() {
+                self.search_caret_visible = true;
+                self.search_caret_deadline =
+                    Some(Instant::now() + Duration::from_millis(SEARCH_CARET_BLINK_MS));
+            }
+            start_timer(hwnd);
+        } else {
+            self.search_caret_visible = false;
+            self.search_caret_deadline = None;
+        }
+    }
+
+    fn restart_search_caret(&mut self, hwnd: HWND) {
+        if self.search_has_focus() {
+            self.search_caret_visible = true;
+            self.search_caret_deadline =
+                Some(Instant::now() + Duration::from_millis(SEARCH_CARET_BLINK_MS));
+            start_timer(hwnd);
+        } else {
+            self.sync_search_caret(hwnd);
+        }
+    }
+
+    fn tick_search_caret(&mut self, now: Instant) -> bool {
+        if !self.search_has_focus() {
+            self.search_caret_visible = false;
+            self.search_caret_deadline = None;
+            return false;
+        }
+        let Some(deadline) = self.search_caret_deadline else {
+            return false;
+        };
+        if now < deadline {
+            return true;
+        }
+        self.search_caret_visible = !self.search_caret_visible;
+        self.search_caret_deadline = Some(now + Duration::from_millis(SEARCH_CARET_BLINK_MS));
+        true
     }
 
     fn reset_scroll(&mut self) {
@@ -439,6 +490,7 @@ impl SettingsUi {
             }
             _ => return false,
         };
+        self.restart_search_caret(hwnd);
         self.reset_scroll();
         self.rebuild_layout(hwnd);
         invalidate(hwnd);
@@ -453,6 +505,7 @@ impl SettingsUi {
         if let Some(character) = char::from_u32(u32::from(ch)) {
             if !character.is_control() && self.search_query.chars().count() < 256 {
                 self.search_query.push(character);
+                self.restart_search_caret(hwnd);
                 self.reset_scroll();
                 self.rebuild_layout(hwnd);
                 invalidate(hwnd);
@@ -809,8 +862,9 @@ impl SettingsUi {
             renderer,
             self.layout.search_rect,
             &self.search_query,
-            self.visual_focus(ElementId::Search),
+            self.search_has_focus(),
             self.hovered == Some(ElementId::Search),
+            self.search_caret_visible,
         );
         if let Some(element) = self
             .layout
@@ -1311,12 +1365,6 @@ impl SettingsUi {
             UiRect::new(controls.x, controls.y + 8.0, controls.w, 24.0).d2d(),
             TextStyle::Section,
             BrushRole::Text,
-        );
-        renderer.text_clipped(
-            "Choose a location on the monitor work area.",
-            UiRect::new(controls.x, controls.y + 32.0, controls.w, 16.0).d2d(),
-            TextStyle::Caption,
-            BrushRole::TextSecondary,
         );
         let canvas = overlay_preview_canvas_rect(preview, self.overlay_preview_aspect);
         renderer.fill_rounded(canvas.translated_y(2.0).d2d(), 8.0, BrushRole::Shadow);
@@ -2641,8 +2689,8 @@ impl SettingsUi {
             ElementId::DiscardDisplayEdits => !self.display_draft_dirty,
             ElementId::InputRole => !Self::endpoint_role_enabled(&self.draft.audio.input_device),
             ElementId::OutputRole => !Self::endpoint_role_enabled(&self.draft.audio.output_device),
-            ElementId::OverlayAppearance
-            | ElementId::OverlayExternalChanges
+            ElementId::OverlayAppearance => false,
+            ElementId::OverlayExternalChanges
             | ElementId::OverlayPosition
             | ElementId::OverlayMonitor
             | ElementId::OverlayPositionCell(_)
@@ -3801,6 +3849,7 @@ impl SettingsUi {
         self.scroll_focus_into_view(next);
         self.rebuild_layout(hwnd);
         self.focused = Some(next);
+        self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
 
@@ -4150,6 +4199,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
 
@@ -4161,6 +4211,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
 
@@ -4183,6 +4234,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
 
@@ -4195,6 +4247,7 @@ impl SettingsUi {
             } else {
                 AutomationFocusOwner::Outside
             };
+        self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
 
@@ -4210,6 +4263,7 @@ impl SettingsUi {
         } else {
             AutomationFocusOwner::Outside
         };
+        self.sync_search_caret(hwnd);
         self.publish_automation_snapshot(hwnd);
     }
 
@@ -4893,7 +4947,7 @@ fn picker_choices(
     kind: PickerKind,
     draft: &Config,
     devices: &crate::audio::devices::DeviceLists,
-    monitors: &[crate::platform::monitor::MonitorGeometry],
+    _monitors: &[crate::platform::monitor::MonitorGeometry],
     display_outputs: &[crate::display::DisplayOutput],
     selected_display_route: usize,
 ) -> (Vec<PickerChoice>, usize) {
@@ -5052,43 +5106,13 @@ fn picker_choices(
         }
         PickerKind::OverlayMonitor => {
             choices.push(PickerChoice {
-                label: "App's monitor".into(),
-                value: PickerValue::Monitor(MonitorChoice::Foreground),
-            });
-            choices.push(PickerChoice {
-                label: "Primary monitor".into(),
+                label: "Primary".into(),
                 value: PickerValue::Monitor(MonitorChoice::Primary),
             });
-            let primary = crate::platform::monitor::primary().map(|monitor| monitor.device_name);
-            for (index, monitor) in monitors.iter().enumerate() {
-                let size = format!(
-                    "{}×{}",
-                    monitor.work.right - monitor.work.left,
-                    monitor.work.bottom - monitor.work.top
-                );
-                let label = if primary
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(&monitor.device_name))
-                {
-                    format!("Primary monitor — {size}")
-                } else {
-                    format!("Monitor {} — {size}", index + 1)
-                };
-                choices.push(PickerChoice {
-                    label,
-                    value: PickerValue::Monitor(MonitorChoice::Device(monitor.device_name.clone())),
-                });
-            }
-            if let MonitorChoice::Device(name) = &draft.overlay.monitor {
-                if !choices.iter().any(|choice| {
-                    choice.value == PickerValue::Monitor(MonitorChoice::Device(name.clone()))
-                }) {
-                    choices.push(PickerChoice {
-                        label: "Saved monitor unavailable".into(),
-                        value: PickerValue::Monitor(MonitorChoice::Device(name.clone())),
-                    });
-                }
-            }
+            choices.push(PickerChoice {
+                label: "Cursor position".into(),
+                value: PickerValue::Monitor(MonitorChoice::Cursor),
+            });
         }
     }
     let current_index = match kind {
@@ -5579,13 +5603,23 @@ unsafe extern "system" fn settings_wndproc(
             }
             WM_SETTINGCHANGE => {
                 let theme = settings_theme();
-                {
+                let theme_applied = {
                     let mut ui = cell.borrow_mut();
                     if let Some(renderer) = ui.renderer.as_mut() {
-                        let _ = renderer.set_theme(theme);
+                        match renderer.set_theme(theme) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                crate::error_!("settings theme change failed: {error}");
+                                false
+                            }
+                        }
+                    } else {
+                        true
                     }
+                };
+                if theme_applied {
+                    apply_chrome(hwnd, theme);
                 }
-                apply_chrome(hwnd, theme);
                 invalidate(hwnd);
                 LRESULT(0)
             }
@@ -5865,9 +5899,10 @@ unsafe extern "system" fn settings_wndproc(
                     }
                 }
                 let active = ui.motion.tick();
+                let caret_active = ui.tick_search_caret(Instant::now());
                 let applied = ui.applied_until.is_some_and(|until| Instant::now() < until);
                 invalidate(hwnd);
-                if !active && !applied && ui.recording.is_none() {
+                if !active && !caret_active && !applied && ui.recording.is_none() {
                     let _ = KillTimer(Some(hwnd), UI_TIMER);
                 }
                 LRESULT(0)
@@ -6080,18 +6115,11 @@ fn work_area_aspect(work: Option<RECT>) -> (u32, u32) {
 fn overlay_preview_aspect(choice: &MonitorChoice) -> (u32, u32) {
     let work = match choice {
         MonitorChoice::Primary => crate::platform::monitor::primary().map(|monitor| monitor.work),
+        MonitorChoice::Cursor => crate::platform::monitor::cursor().map(|monitor| monitor.work),
         MonitorChoice::Device(name) => crate::platform::monitor::all()
             .into_iter()
             .find(|monitor| monitor.device_name.eq_ignore_ascii_case(name))
             .map(|monitor| monitor.work),
-        MonitorChoice::Foreground => {
-            let target =
-                crate::platform::foreground::last_external_hwnd().unwrap_or_else(|| unsafe {
-                    windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                });
-            crate::platform::monitor::info_for(crate::platform::monitor::from_window(target))
-                .map(|monitor| monitor.work)
-        }
     };
     work_area_aspect(work)
 }
@@ -6340,6 +6368,43 @@ mod interaction_tests {
             config.audio.input_device,
             DeviceSelection::Endpoint("missing-endpoint".into())
         );
+    }
+
+    #[test]
+    fn overlay_monitor_picker_exposes_only_primary_and_cursor_position() {
+        let mut config = Config::default();
+        let (choices, current) = picker_choices(
+            PickerKind::OverlayMonitor,
+            &config,
+            &Default::default(),
+            &[],
+            &[],
+            0,
+        );
+
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| choice.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Primary", "Cursor position"]
+        );
+        assert_eq!(current, 1);
+        assert_eq!(
+            choices[1].value,
+            PickerValue::Monitor(MonitorChoice::Cursor)
+        );
+
+        config.overlay.monitor = MonitorChoice::Primary;
+        let (_, current) = picker_choices(
+            PickerKind::OverlayMonitor,
+            &config,
+            &Default::default(),
+            &[],
+            &[],
+            0,
+        );
+        assert_eq!(current, 0);
     }
 
     #[test]

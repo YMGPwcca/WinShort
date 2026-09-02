@@ -315,7 +315,7 @@ pub(crate) struct BrandRowGeometry {
 }
 
 pub(crate) fn brand_row_geometry(nav_width: f32) -> BrandRowGeometry {
-    let row = Rect::new(0.0, 0.0, nav_width, UiTokens::TITLEBAR_HEIGHT);
+    let row = Rect::new(0.0, 0.0, nav_width, UiTokens::BRAND_ROW_HEIGHT);
     let icon = Rect::new(
         UiTokens::BRAND_ROW_LEFT,
         row.y + (row.h - UiTokens::BRAND_ICON_SIZE) * 0.5,
@@ -592,7 +592,7 @@ impl SettingsLayout {
             scrolls: false,
         });
 
-        let mut y = chrome.row.bottom() + 18.0;
+        let mut y = UiTokens::NAV_FIRST_ITEM_TOP;
         for page in Page::PRIMARY {
             self.elements.push(Element {
                 id: ElementId::Nav(page),
@@ -2201,8 +2201,6 @@ const OVERLAY_PLACEMENT_CONTROLS_WIDTH: f32 = 360.0;
 const OVERLAY_PLACEMENT_HEADER_HEIGHT: f32 = 44.0;
 const OVERLAY_POSITION_GRID_STEP: f32 = 44.0;
 const OVERLAY_POSITION_CELL_HEIGHT: f32 = 36.0;
-const OVERLAY_MONITOR_GAP: f32 = 12.0;
-const OVERLAY_MONITOR_HEIGHT: f32 = 58.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OverlayPlacementGeometry {
@@ -2212,10 +2210,7 @@ pub(crate) struct OverlayPlacementGeometry {
 }
 
 pub(crate) fn overlay_position_controls_height() -> f32 {
-    OVERLAY_PLACEMENT_HEADER_HEIGHT
-        + OVERLAY_POSITION_GRID_STEP * 3.0
-        + OVERLAY_MONITOR_GAP
-        + OVERLAY_MONITOR_HEIGHT
+    OVERLAY_PLACEMENT_HEADER_HEIGHT + OVERLAY_POSITION_GRID_STEP * 3.0
 }
 
 pub(crate) fn overlay_position_grid_rect(controls: Rect, index: usize) -> Rect {
@@ -2229,17 +2224,12 @@ pub(crate) fn overlay_position_grid_rect(controls: Rect, index: usize) -> Rect {
         OVERLAY_POSITION_CELL_HEIGHT,
     )
 }
-
-pub(crate) fn overlay_monitor_rect(controls: Rect) -> Rect {
-    Rect::new(
-        controls.x,
-        controls.y
-            + OVERLAY_PLACEMENT_HEADER_HEIGHT
-            + OVERLAY_POSITION_GRID_STEP * 3.0
-            + OVERLAY_MONITOR_GAP,
-        controls.w,
-        OVERLAY_MONITOR_HEIGHT,
-    )
+pub(crate) fn overlay_status_row_rects(row: Rect) -> (Rect, Rect) {
+    let gap = UiTokens::CARD_COLUMN_GAP;
+    let half = ((row.w - gap).max(2.0)) * 0.5;
+    let left = Rect::new(row.x, row.y, half, row.h);
+    let right = Rect::new(left.right() + gap, row.y, half, row.h);
+    (left, right)
 }
 
 pub(crate) fn overlay_placement_geometry(
@@ -2277,15 +2267,6 @@ fn add_overlay_position_elements(layout: &mut SettingsLayout, controls: Rect) {
             overlay_position_grid_rect(controls, index as usize),
         );
     }
-    add_element(
-        layout,
-        &mut end,
-        ElementId::OverlayMonitor,
-        ElementKind::Value,
-        "Monitor",
-        "Choose where the status card appears",
-        overlay_monitor_rect(controls),
-    );
 }
 
 pub(crate) fn overlay_preview_canvas_size(available_width: f32, aspect: (u32, u32)) -> (f32, f32) {
@@ -2347,28 +2328,38 @@ fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) {
         placement.region.h,
     );
     add_overlay_position_elements(layout, placement.controls);
-    add_row(
+    let status_row = Rect::new(
+        layout.content_column.x,
+        y,
+        layout.content_column.w,
+        UiTokens::ROW_HEIGHT,
+    );
+    let (enabled_rect, monitor_rect) = overlay_status_row_rects(status_row);
+    add_element(
         layout,
         &mut y,
         ElementId::OverlayEnabled,
         ElementKind::Toggle,
         "Show status overlay",
         "Show feedback without stealing focus",
+        enabled_rect,
     );
-    add_heading(
+    add_element(
         layout,
-        "Appearance",
-        "Shape the overlay without guessing where it will land.",
         &mut y,
+        ElementId::OverlayMonitor,
+        ElementKind::Value,
+        "Monitor",
+        "Choose where the status card appears",
+        monitor_rect,
     );
-    add_section_content_gap(&mut y);
     add_row(
         layout,
         &mut y,
         ElementId::OverlayAppearance,
         ElementKind::Value,
-        "Appearance",
-        "Follow Windows, light, or dark",
+        "Overlay style",
+        "Choose the status card appearance",
     );
     add_heading(
         layout,
@@ -2729,8 +2720,8 @@ fn add_onboarding(layout: &mut SettingsLayout, step: u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        brand_row_geometry, overlay_monitor_rect, overlay_placement_geometry,
-        overlay_position_grid_rect, overlay_preview_canvas_rect, overlay_preview_canvas_size,
+        brand_row_geometry, overlay_placement_geometry, overlay_position_grid_rect,
+        overlay_preview_canvas_rect, overlay_preview_canvas_size, overlay_status_row_rects,
         top_chrome_geometry, ElementId, ElementKind, HotkeySlot, RegionKind, SettingsLayout,
     };
     use crate::ui::navigation::Page;
@@ -2749,6 +2740,16 @@ mod tests {
         assert_eq!(
             brand.text.x,
             brand.icon.right() + super::UiTokens::BRAND_TEXT_GAP
+        );
+        assert!(brand.row.h > super::UiTokens::TOP_BAR_HEIGHT);
+        let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, None);
+        assert_eq!(
+            layout
+                .element(ElementId::Nav(Page::Home))
+                .expect("home navigation")
+                .rect
+                .y,
+            super::UiTokens::NAV_FIRST_ITEM_TOP
         );
     }
 
@@ -3303,6 +3304,10 @@ mod tests {
         let layout = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Overlay, "", 0, None);
         assert!(layout.element(ElementId::OverlayExternalChanges).is_none());
         assert!(layout.element(ElementId::OverlayPosition).is_none());
+        assert!(layout.element(ElementId::OverlayAppearance).is_some());
+
+        let system = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::System, "", 0, None);
+        assert!(system.element(ElementId::OverlayAppearance).is_none());
     }
 
     #[test]
@@ -3348,12 +3353,26 @@ mod tests {
                     .rect,
                 overlay_position_grid_rect(geometry.controls, 0)
             );
+            let enabled = layout
+                .element(ElementId::OverlayEnabled)
+                .expect("status toggle")
+                .rect;
+            let monitor = layout
+                .element(ElementId::OverlayMonitor)
+                .expect("monitor selector")
+                .rect;
+            let (expected_enabled, expected_monitor) = overlay_status_row_rects(super::Rect::new(
+                layout.content_column.x,
+                enabled.y,
+                layout.content_column.w,
+                enabled.h,
+            ));
+            assert_eq!(enabled, expected_enabled);
+            assert_eq!(monitor, expected_monitor);
+            assert_eq!(enabled.w, monitor.w);
             assert_eq!(
-                layout
-                    .element(ElementId::OverlayMonitor)
-                    .expect("monitor selector")
-                    .rect,
-                overlay_monitor_rect(geometry.controls)
+                monitor.x,
+                enabled.right() + super::UiTokens::CARD_COLUMN_GAP
             );
             assert_eq!(
                 layout

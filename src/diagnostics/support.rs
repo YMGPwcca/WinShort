@@ -921,7 +921,7 @@ fn safe_allowlist(allowlist: Option<&[String]>, sanitizer: &mut Sanitizer) -> Op
 
 fn safe_monitor(monitor: &MonitorChoice) -> String {
     match monitor {
-        MonitorChoice::Foreground => "foreground".into(),
+        MonitorChoice::Cursor => "cursor".into(),
         MonitorChoice::Primary => "primary".into(),
         MonitorChoice::Device(name) => format!("device:{name}"),
     }
@@ -1580,7 +1580,7 @@ safe=1"#,
                 high_contrast: Some(false),
                 disable_overlapped_content: Some(false),
                 position: "Bottom Center".into(),
-                monitor_selector: "foreground".into(),
+                monitor_selector: "cursor".into(),
                 target_monitor: Some(r"\\.\DISPLAY1".into()),
                 render_dpi: Some(144),
                 last_shown: None,
