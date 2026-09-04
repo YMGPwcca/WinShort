@@ -85,8 +85,8 @@ const BASE_WIDTH: f32 = 372.0;
 const ROW_HEIGHT: f32 = 62.0;
 const PAD: f32 = 16.0;
 const CARD_CORNER_RADIUS_DIP: f32 = 14.0;
-const DARK_COMPOSITION_TINT_ALPHA: f32 = 42.0;
-const LIGHT_COMPOSITION_TINT_ALPHA: f32 = 216.0;
+const DARK_COMPOSITION_TINT_ALPHA: f32 = 148.0;
+const LIGHT_COMPOSITION_TINT_ALPHA: f32 = 200.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SurfaceGeometry {
     width: f32,
@@ -353,7 +353,11 @@ fn palette_for(
         surface,
         border: theme.border_strong,
         text: theme.text,
-        secondary: theme.text_secondary,
+        secondary: if theme.mode == ThemeMode::Dark {
+            Color::rgb(230, 236, 240)
+        } else {
+            theme.text_secondary
+        },
         opaque: simple,
         icon: surface,
         changed_icon: surface,
@@ -2717,18 +2721,29 @@ mod tests {
         assert_eq!(system.surface, Color::rgba(255, 255, 255, 248));
         assert_eq!(explicit_dark.surface, Color::rgba(43, 43, 43, 248));
         assert_eq!(explicit_light.surface, Color::rgba(255, 255, 255, 248));
+        assert_eq!(explicit_dark.secondary, Color::rgb(230, 236, 240));
+        assert_eq!(explicit_light.secondary, Color::rgb(92, 92, 92));
         assert_eq!(
             resolved_theme_mode(OverlayAppearance::System, preferences),
             ThemeMode::Light
         );
-        assert_eq!(composition_tint_alpha(ThemeMode::Dark, 1.0), 42);
-        assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 216);
+        assert_eq!(composition_tint_alpha(ThemeMode::Dark, 1.0), 148);
+        assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 200);
     }
 
     #[test]
     fn light_composition_tint_stays_strong_enough_for_dark_text() {
-        assert!(composition_tint_alpha(ThemeMode::Light, 1.0) >= 216);
-        assert_eq!(composition_tint_alpha(ThemeMode::Light, 0.5), 108);
+        assert!(composition_tint_alpha(ThemeMode::Light, 1.0) >= 200);
+        assert_eq!(composition_tint_alpha(ThemeMode::Light, 0.5), 100);
+    }
+
+    #[test]
+    fn dark_composition_tint_keeps_secondary_text_high_contrast() {
+        assert!(composition_tint_alpha(ThemeMode::Dark, 1.0) >= 128);
+        assert_eq!(
+            palette_for(OverlayAppearance::Dark, SystemVisualPreferences::default()).secondary,
+            Color::rgb(230, 236, 240)
+        );
     }
 
     #[test]
