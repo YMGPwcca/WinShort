@@ -109,7 +109,7 @@ function Wait-Until {
 
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Text)
-    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $encoding = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($Path, $Text, $encoding)
 }
 
@@ -122,7 +122,11 @@ function Get-Rect {
 function Capture-Bitmap {
     param([System.Drawing.Rectangle]$Rectangle)
     Assert-Condition ($Rectangle.Width -gt 0 -and $Rectangle.Height -gt 0) 'cannot capture an empty rectangle'
-    $bitmap = New-Object System.Drawing.Bitmap($Rectangle.Width, $Rectangle.Height)
+    $bitmap = [System.Drawing.Bitmap]::new(
+        [int]$Rectangle.Width,
+        [int]$Rectangle.Height,
+        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+    )
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
         $graphics.CopyFromScreen($Rectangle.Left, $Rectangle.Top, 0, 0, $Rectangle.Size)
@@ -174,7 +178,7 @@ function New-ProcessStartInfo {
         [string]$DataDirectory,
         [string]$Appearance
     )
-    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info = [System.Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $ExePath
     $info.WorkingDirectory = $RepoRoot
     $info.UseShellExecute = $false
@@ -197,38 +201,68 @@ function New-VisualSheet {
         return
     }
 
-    $gap = 12
-    $labelHeight = 30
+    [int]$gap = 12
+    [int]$labelHeight = 30
     $images = @()
+    $sheet = $null
+    $graphics = $null
+    $font = $null
+    $brush = $null
     try {
+        [int]$width = 0
+        [int]$height = 0
         foreach ($capture in $Captures) {
-            $images += [System.Drawing.Bitmap]::FromFile($capture.ContextScreenshot)
+            Assert-Condition (Test-Path $capture.ContextScreenshot) "visual context capture missing: $($capture.ContextScreenshot)"
+            $image = [System.Drawing.Bitmap]::FromFile($capture.ContextScreenshot)
+            $images += $image
+            $width = [Math]::Max($width, [int]$image.Width)
+            $height = [Math]::Max($height, [int]$image.Height)
         }
-        $width = ($images | Measure-Object -Property Width -Maximum).Maximum
-        $height = ($images | Measure-Object -Property Height -Maximum).Maximum
-        $sheetWidth = ($width * $images.Count) + ($gap * ($images.Count - 1))
-        $sheetHeight = $labelHeight + $height
-        $sheet = New-Object System.Drawing.Bitmap($sheetWidth, $sheetHeight)
+
+        Assert-Condition ($width -gt 0 -and $height -gt 0) "invalid visual sheet source size: ${width}x${height}"
+        [int]$sheetWidth = ($width * [int]$images.Count) + ($gap * ([int]$images.Count - 1))
+        [int]$sheetHeight = $labelHeight + $height
+        Assert-Condition ($sheetWidth -gt 0 -and $sheetHeight -gt 0) "invalid visual sheet size: ${sheetWidth}x${sheetHeight}"
+
+        $sheet = [System.Drawing.Bitmap]::new(
+            $sheetWidth,
+            $sheetHeight,
+            [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+        )
         $graphics = [System.Drawing.Graphics]::FromImage($sheet)
-        $font = New-Object System.Drawing.Font('Segoe UI', 10.0, [System.Drawing.FontStyle]::Regular)
-        $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-        try {
-            $graphics.Clear([System.Drawing.Color]::FromArgb(24, 24, 24))
-            for ($index = 0; $index -lt $images.Count; $index++) {
-                $x = $index * ($width + $gap)
-                $graphics.DrawString($Captures[$index].Appearance.ToUpperInvariant(), $font, $brush, $x + 4, 6)
-                $graphics.DrawImage($images[$index], $x, $labelHeight, $images[$index].Width, $images[$index].Height)
-            }
-            $sheet.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+        $font = [System.Drawing.Font]::new(
+            'Segoe UI',
+            [single]10.0,
+            [System.Drawing.FontStyle]::Regular,
+            [System.Drawing.GraphicsUnit]::Point
+        )
+        $brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+
+        $graphics.Clear([System.Drawing.Color]::FromArgb(24, 24, 24))
+        for ($index = 0; $index -lt $images.Count; $index++) {
+            [int]$x = $index * ($width + $gap)
+            $graphics.DrawString(
+                $Captures[$index].Appearance.ToUpperInvariant(),
+                $font,
+                $brush,
+                [single]($x + 4),
+                [single]6
+            )
+            $graphics.DrawImage(
+                $images[$index],
+                $x,
+                $labelHeight,
+                [int]$images[$index].Width,
+                [int]$images[$index].Height
+            )
         }
-        finally {
-            $brush.Dispose()
-            $font.Dispose()
-            $graphics.Dispose()
-            $sheet.Dispose()
-        }
+        $sheet.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     }
     finally {
+        if ($null -ne $brush) { $brush.Dispose() }
+        if ($null -ne $font) { $font.Dispose() }
+        if ($null -ne $graphics) { $graphics.Dispose() }
+        if ($null -ne $sheet) { $sheet.Dispose() }
         foreach ($image in $images) {
             if ($null -ne $image) {
                 $image.Dispose()
@@ -314,6 +348,8 @@ show_external_audio_changes = false
 
     $sheetPath = Join-Path $ResultRoot 'runtime-overlay-visual-sheet.png'
     New-VisualSheet $captures $sheetPath
+    Assert-Condition (Test-Path $sheetPath) "visual sheet was not created: $sheetPath"
+
     $summary = [pscustomobject]@{
         ResultRoot = $ResultRoot
         Binary = $ExePath
