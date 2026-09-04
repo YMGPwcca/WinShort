@@ -85,6 +85,8 @@ const BASE_WIDTH: f32 = 372.0;
 const ROW_HEIGHT: f32 = 62.0;
 const PAD: f32 = 16.0;
 const CARD_CORNER_RADIUS_DIP: f32 = 14.0;
+const DARK_COMPOSITION_TINT_ALPHA: f32 = 42.0;
+const LIGHT_COMPOSITION_TINT_ALPHA: f32 = 216.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SurfaceGeometry {
     width: f32,
@@ -209,6 +211,25 @@ fn composition_blur_enabled(
         && backdrop_mode(preferences, composition_available) == BackdropMode::Acrylic
 }
 
+fn resolved_theme_mode(
+    appearance: OverlayAppearance,
+    preferences: SystemVisualPreferences,
+) -> ThemeMode {
+    match appearance {
+        OverlayAppearance::System => preferences.system_theme,
+        OverlayAppearance::Dark => ThemeMode::Dark,
+        OverlayAppearance::Light => ThemeMode::Light,
+    }
+}
+
+fn composition_tint_alpha(theme_mode: ThemeMode, opacity: f32) -> u8 {
+    let base = match theme_mode {
+        ThemeMode::Dark => DARK_COMPOSITION_TINT_ALPHA,
+        ThemeMode::Light => LIGHT_COMPOSITION_TINT_ALPHA,
+    };
+    (base * opacity.clamp(0.3, 1.0)).round() as u8
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShowTiming {
     phase: Phase,
@@ -318,13 +339,9 @@ fn palette_for(
             unavailable_text: foreground,
         };
     }
-    let theme = match appearance {
-        OverlayAppearance::System => match preferences.system_theme {
-            ThemeMode::Dark => Theme::dark(),
-            ThemeMode::Light => Theme::light(),
-        },
-        OverlayAppearance::Dark => Theme::dark(),
-        OverlayAppearance::Light => Theme::light(),
+    let theme = match resolved_theme_mode(appearance, preferences) {
+        ThemeMode::Dark => Theme::dark(),
+        ThemeMode::Light => Theme::light(),
     };
     let surface = Color::rgba(
         theme.card.r,
@@ -749,11 +766,7 @@ impl OverlayWindow {
             return OverlayRuntimeStatus::default();
         };
         let state = cell.borrow();
-        let resolved = match state.config.appearance {
-            OverlayAppearance::System => state.preferences.system_theme,
-            OverlayAppearance::Dark => ThemeMode::Dark,
-            OverlayAppearance::Light => ThemeMode::Light,
-        };
+        let resolved = resolved_theme_mode(state.config.appearance, state.preferences);
         OverlayRuntimeStatus {
             window_available: true,
             resolved_appearance: Some(
@@ -1105,6 +1118,7 @@ impl OverlayState {
             model: self.model.clone(),
             scale: self.config.scale,
             palette: self.palette,
+            theme_mode: resolved_theme_mode(self.config.appearance, self.preferences),
             alpha,
             opacity: self.config.opacity,
         }
@@ -1131,6 +1145,7 @@ struct OverlayRenderData {
     model: OverlayModel,
     scale: f32,
     palette: OverlayPalette,
+    theme_mode: ThemeMode,
     alpha: f32,
     opacity: f32,
 }
@@ -1643,7 +1658,7 @@ impl CompositionHost {
         self.tint_visual
             .SetOpacity(data.alpha.clamp(0.0, 1.0))
             .map_err(|e| Error::win("SetTintOpacity(overlay)", &e))?;
-        let tint_alpha = (42.0 * data.opacity.clamp(0.3, 1.0)).round() as u8;
+        let tint_alpha = composition_tint_alpha(data.theme_mode, data.opacity);
         self.tint_brush
             .SetColor(WinRtColor {
                 A: tint_alpha,
@@ -2179,7 +2194,6 @@ unsafe fn make_format(
     size: f32,
     weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
 ) -> Result<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat> {
-    // SAFETY: DWrite factory/text-format COM calls on objects created by the caller.
     unsafe {
         let family = HSTRING::from("Segoe UI Variable Text");
         let locale = HSTRING::from("en-US");
@@ -2208,7 +2222,6 @@ unsafe fn draw_text(
     rect: D2D_RECT_F,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
 ) {
-    // SAFETY: Direct2D DrawText on a live render target; buffers sized locally.
     unsafe {
         let wide: Vec<u16> = value.encode_utf16().collect();
         target.DrawText(
@@ -2230,7 +2243,6 @@ unsafe fn draw_icon(
     scale: f32,
     brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
 ) {
-    // SAFETY: Direct2D geometry drawing on a live render target created above.
     unsafe {
         let w = 1.8 * scale;
         match icon {
@@ -2474,8 +2486,6 @@ fn select_monitor(choice: MonitorChoice) -> Option<crate::platform::monitor::Mon
     match choice {
         MonitorChoice::Primary => crate::platform::monitor::primary(),
         MonitorChoice::Cursor => crate::platform::monitor::cursor(),
-        // Stable identity (#26): device names survive topology changes;
-        // fall back to primary with a warning when absent.
         MonitorChoice::Device(name) => {
             let found = crate::platform::monitor::all()
                 .into_iter()
@@ -2512,8 +2522,6 @@ fn position_for(
         OverlayPosition::BottomCenter => (center_x, bottom),
         OverlayPosition::BottomRight => (right, bottom),
     };
-    // Clamp into the work area; if the overlay cannot fit (absurd sizes),
-    // re-center on the axis that overflows (#26).
     let x = x.clamp(work.left, (work.right - size.cx).max(work.left));
     let y = y.clamp(work.top, (work.bottom - size.cy).max(work.top));
     POINT { x, y }
@@ -2525,7 +2533,6 @@ unsafe extern "system" fn overlay_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // SAFETY: window handle is thread-valid; state access via WindowState cell.
     unsafe {
         if msg == WM_NCCREATE {
             let create = &*(lparam.0 as *const CREATESTRUCTW);
@@ -2534,7 +2541,7 @@ unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         if msg == WM_NCDESTROY {
-            drop(win::take_state::<OverlayState>(hwnd)); // outer unsafe scope
+            drop(win::take_state::<OverlayState>(hwnd));
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         let Some(cell) = win::state_cell::<OverlayState>(hwnd) else {
@@ -2669,6 +2676,7 @@ mod tests {
         assert_eq!(palette.changed_icon, Color::rgb(1, 2, 3));
         assert!(palette.opaque);
     }
+
     #[test]
     fn backdrop_policy_falls_back_for_accessibility_or_missing_api() {
         let normal = SystemVisualPreferences::default();
@@ -2709,6 +2717,15 @@ mod tests {
         assert_eq!(system.surface, Color::rgba(255, 255, 255, 248));
         assert_eq!(explicit_dark.surface, Color::rgba(43, 43, 43, 248));
         assert_eq!(explicit_light.surface, Color::rgba(255, 255, 255, 248));
+        assert_eq!(resolved_theme_mode(OverlayAppearance::System, preferences), ThemeMode::Light);
+        assert_eq!(composition_tint_alpha(ThemeMode::Dark, 1.0), 42);
+        assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 216);
+    }
+
+    #[test]
+    fn light_composition_tint_stays_strong_enough_for_dark_text() {
+        assert!(composition_tint_alpha(ThemeMode::Light, 1.0) >= 216);
+        assert_eq!(composition_tint_alpha(ThemeMode::Light, 0.5), 108);
     }
 
     #[test]
@@ -2831,6 +2848,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn device_cycle_rows_report_real_system_endpoint() {
         let device = crate::audio::DeviceId {
@@ -2871,6 +2889,7 @@ mod tests {
         );
         assert_eq!(row.detail, "SIMGOT EW300 DSP");
     }
+
     #[test]
     fn long_output_names_are_bounded_before_overlay_rendering() {
         let row = output_row(&crate::audio::OutputState::Current {
