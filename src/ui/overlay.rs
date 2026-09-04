@@ -1894,10 +1894,12 @@ impl OverlayGraphics {
         }
     }
 }
-
 fn remove_no_redirection_bitmap(hwnd: HWND) {
     let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    #[cfg(target_pointer_width = "64")]
     let no_redirection = WS_EX_NOREDIRECTIONBITMAP.0 as isize;
+    #[cfg(target_pointer_width = "32")]
+    let no_redirection = WS_EX_NOREDIRECTIONBITMAP.0 as i32;
     let updated = style & !no_redirection;
     if style == updated {
         return;

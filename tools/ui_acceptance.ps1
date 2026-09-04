@@ -197,6 +197,7 @@ if (-not ('WinShortUiAcceptance.PatternBackdrop' -as [type])) {
 using System;
 using System.Drawing;
 using System.Threading;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace WinShortUiAcceptance {
@@ -226,7 +227,9 @@ namespace WinShortUiAcceptance {
             int cardLeft,
             int cardTop,
             int cardWidth,
-            int cardHeight
+            int cardHeight,
+            int cardRadius,
+            bool underOutsideOnly
         ) {
             Stop();
             var ready = new ManualResetEvent(false);
@@ -240,6 +243,8 @@ namespace WinShortUiAcceptance {
                 cardTop,
                 cardWidth,
                 cardHeight,
+                cardRadius,
+                underOutsideOnly,
                 ready
             ));
             worker.IsBackground = true;
@@ -331,9 +336,22 @@ namespace WinShortUiAcceptance {
             int cardTop,
             int cardWidth,
             int cardHeight,
+            int cardRadius,
+            bool underOutsideOnly,
             ManualResetEvent ready
         ) {
-            using (var under = new PatternForm(left, top, width, height, false, 0, 0, 0, 0))
+            using (var under = new PatternForm(
+                left,
+                top,
+                width,
+                height,
+                underOutsideOnly,
+                cardLeft,
+                cardTop,
+                cardWidth,
+                cardHeight,
+                cardRadius
+            ))
             using (var outside = new PatternForm(
                 left,
                 top,
@@ -343,7 +361,8 @@ namespace WinShortUiAcceptance {
                 cardLeft,
                 cardTop,
                 cardWidth,
-                cardHeight
+                cardHeight,
+                cardRadius
             )) {
                 lock (Gate) {
                     underForm = under;
@@ -377,7 +396,8 @@ namespace WinShortUiAcceptance {
                 int cardLeft,
                 int cardTop,
                 int cardWidth,
-                int cardHeight
+                int cardHeight,
+                int cardRadius
             ) {
                 SetStyle(
                     ControlStyles.AllPaintingInWmPaint
@@ -393,7 +413,15 @@ namespace WinShortUiAcceptance {
                 BackColor = Color.FromArgb(8, 28, 100);
                 if (outsideOnly) {
                     var visibleRegion = new Region(new Rectangle(0, 0, width, height));
-                    visibleRegion.Exclude(new Rectangle(cardLeft, cardTop, cardWidth, cardHeight));
+                    using (var cardPath = new GraphicsPath()) {
+                        var diameter = cardRadius * 2;
+                        cardPath.AddArc(cardLeft, cardTop, diameter, diameter, 180, 90);
+                        cardPath.AddArc(cardLeft + cardWidth - diameter, cardTop, diameter, diameter, 270, 90);
+                        cardPath.AddArc(cardLeft + cardWidth - diameter, cardTop + cardHeight - diameter, diameter, diameter, 0, 90);
+                        cardPath.AddArc(cardLeft, cardTop + cardHeight - diameter, diameter, diameter, 90, 90);
+                        cardPath.CloseFigure();
+                        visibleRegion.Exclude(cardPath);
+                    }
                     Region = visibleRegion;
                 }
             }
@@ -412,7 +440,7 @@ namespace WinShortUiAcceptance {
 
             protected override void OnPaint(PaintEventArgs e) {
                 e.Graphics.Clear(Color.FromArgb(8, 28, 100));
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                e.Graphics.SmoothingMode = SmoothingMode.None;
                 for (var x = 0; x < ClientSize.Width; x += 8) {
                     using (var brush = new SolidBrush(
                         (x / 8) % 2 == 0
@@ -1112,6 +1140,23 @@ show_external_audio_changes = false
             $candidate
         } "$Name main message window did not appear"
         $overlayRectangle = Get-Rect ([WinShortUiAcceptance.Native]::WindowRect($overlayHwnd))
+        $dpi = [WinShortUiAcceptance.Native]::Dpi($overlayHwnd)
+        $radius = [Math]::Max(1, [int][Math]::Round(14 * $dpi / 96.0))
+        $contextMargin = 48
+        $contextRectangle = Get-OverlayContextRectangle $overlayRectangle $contextMargin
+        Assert-Condition ([WinShortUiAcceptance.PatternBackdrop]::Start(
+            $contextRectangle.Left,
+            $contextRectangle.Top,
+            $contextRectangle.Width,
+            $contextRectangle.Height,
+            $overlayHwnd,
+            $contextMargin,
+            $contextMargin,
+            $overlayRectangle.Width,
+            $overlayRectangle.Height,
+            $radius,
+            $true
+        )) "$Name deterministic backdrop did not start"
 
         [WinShortUiAcceptance.Native]::PostMessageTo($overlayHwnd, $AcceptanceHideOverlayMessage) | Out-Null
         Wait-Until {
@@ -1128,12 +1173,13 @@ show_external_audio_changes = false
             $candidate
         } "$Name overlay did not reappear"
         Start-Sleep -Milliseconds 180
+        [WinShortUiAcceptance.PatternBackdrop]::LowerBelow($overlayHwnd)
         $shown = Capture-Bitmap $overlayRectangle
         $result = Compare-OverlayOutsideBody `
             -Baseline $baseline `
             -Shown $shown `
             -Inset 0 `
-            -Radius 14 `
+            -Radius $radius `
             -HeatmapPath (Join-Path $scenarioDirectory "runtime-overlay-$Name-heatmap.png")
         $opaqueRegion = New-Object System.Drawing.Rectangle(
             2,
@@ -1178,6 +1224,7 @@ show_external_audio_changes = false
         }
     }
     finally {
+        [WinShortUiAcceptance.PatternBackdrop]::Stop()
         if ($null -ne $baseline) { $baseline.Dispose() }
         if ($null -ne $shown) { $shown.Dispose() }
         if ($null -ne $process) {
@@ -1262,7 +1309,9 @@ show_external_audio_changes = false
                 $contextMargin,
                 $contextMargin,
                 $overlayRectangle.Width,
-                $overlayRectangle.Height
+                $overlayRectangle.Height,
+                $radius,
+                $false
             )) "deterministic backdrop did not start for $appearance"
 
             [WinShortUiAcceptance.Native]::PostMessageTo($overlayHwnd, $AcceptanceHideOverlayMessage) | Out-Null

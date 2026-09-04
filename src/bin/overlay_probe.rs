@@ -963,7 +963,11 @@ mod probe {
             if message == WM_NCCREATE {
                 let create =
                     &*(lparam.0 as *const windows::Win32::UI::WindowsAndMessaging::CREATESTRUCTW);
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
+                #[cfg(target_pointer_width = "64")]
+                let state_value = create.lpCreateParams as isize;
+                #[cfg(target_pointer_width = "32")]
+                let state_value = create.lpCreateParams as i32;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_value);
                 return DefWindowProcW(hwnd, message, wparam, lparam);
             }
             if message == WM_NCDESTROY {
