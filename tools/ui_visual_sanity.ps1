@@ -17,6 +17,7 @@ $ResultRoot = Join-Path $RepoRoot "target\ui-visual-sanity\$Stamp"
 New-Item -ItemType Directory -Path $ResultRoot -Force | Out-Null
 
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
 
 if (-not ('WinShortUiVisual.Native' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -186,15 +187,59 @@ function New-ProcessStartInfo {
     $info.EnvironmentVariables['WINSHORT_DATA_DIR'] = $DataDirectory
     $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-status-overlay'
     $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_NO_EXTERNAL'] = '1'
-    $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_THEME'] = if ($Appearance -eq 'light') { 'light' } else { 'dark' }
+    $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_THEME'] = $Appearance
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_OPAQUE') | Out-Null
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_COMPOSITION_FAILURE') | Out-Null
     return $info
 }
 
+function New-ColorBackdrop {
+    param([pscustomobject]$Background)
+
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $form = [System.Windows.Forms.Form]::new()
+    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+    $form.Bounds = $bounds
+    $form.ShowInTaskbar = $false
+    $form.TopMost = $false
+    $form.BackColor = [System.Drawing.ColorTranslator]::FromHtml($Background.Hex)
+
+    $label = [System.Windows.Forms.Label]::new()
+    $label.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $label.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $label.BackColor = [System.Drawing.Color]::Transparent
+    $label.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($Background.ForegroundHex)
+    $label.Font = [System.Drawing.Font]::new(
+        'Segoe UI',
+        [single]34.0,
+        [System.Drawing.FontStyle]::Bold,
+        [System.Drawing.GraphicsUnit]::Point
+    )
+    $label.Text = "WINSHORT BLUR TEST - $($Background.Name.ToUpperInvariant())`r`nABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789"
+    $form.Controls.Add($label)
+
+    [void]$form.Show()
+    [void]$form.Activate()
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Milliseconds 150
+    return $form
+}
+
+function Close-ColorBackdrop {
+    param([System.Windows.Forms.Form]$Form)
+    if ($null -eq $Form) {
+        return
+    }
+    $Form.Close()
+    $Form.Dispose()
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
 function New-VisualSheet {
     param(
         [object[]]$Captures,
+        [int]$BackgroundCount,
         [string]$Path
     )
     if ($Captures.Count -eq 0) {
@@ -202,7 +247,7 @@ function New-VisualSheet {
     }
 
     [int]$gap = 12
-    [int]$labelHeight = 30
+    [int]$labelHeight = 34
     $images = @()
     $sheet = $null
     $graphics = $null
@@ -220,8 +265,13 @@ function New-VisualSheet {
         }
 
         Assert-Condition ($width -gt 0 -and $height -gt 0) "invalid visual sheet source size: ${width}x${height}"
-        [int]$sheetWidth = ($width * [int]$images.Count) + ($gap * ([int]$images.Count - 1))
-        [int]$sheetHeight = $labelHeight + $height
+        Assert-Condition ($BackgroundCount -gt 0) 'background count must be positive'
+
+        [int]$columns = $BackgroundCount
+        [int]$rows = [int][Math]::Ceiling($images.Count / [double]$columns)
+        [int]$tileHeight = $labelHeight + $height
+        [int]$sheetWidth = ($width * $columns) + ($gap * ($columns - 1))
+        [int]$sheetHeight = ($tileHeight * $rows) + ($gap * ($rows - 1))
         Assert-Condition ($sheetWidth -gt 0 -and $sheetHeight -gt 0) "invalid visual sheet size: ${sheetWidth}x${sheetHeight}"
 
         $sheet = [System.Drawing.Bitmap]::new(
@@ -240,18 +290,22 @@ function New-VisualSheet {
 
         $graphics.Clear([System.Drawing.Color]::FromArgb(24, 24, 24))
         for ($index = 0; $index -lt $images.Count; $index++) {
-            [int]$x = $index * ($width + $gap)
+            [int]$column = $index % $columns
+            [int]$row = [Math]::Floor($index / $columns)
+            [int]$x = $column * ($width + $gap)
+            [int]$y = $row * ($tileHeight + $gap)
+            $label = "$($Captures[$index].Appearance.ToUpperInvariant()) / $($Captures[$index].Background.ToUpperInvariant())"
             $graphics.DrawString(
-                $Captures[$index].Appearance.ToUpperInvariant(),
+                $label,
                 $font,
                 $brush,
                 [single]($x + 4),
-                [single]6
+                [single]($y + 7)
             )
             $graphics.DrawImage(
                 $images[$index],
                 $x,
-                $labelHeight,
+                $y + $labelHeight,
                 [int]$images[$index].Width,
                 [int]$images[$index].Height
             )
@@ -275,14 +329,26 @@ Assert-Condition (Test-Path $ExePath) "release binary missing: $ExePath"
 $existing = Get-Process -Name 'winshort' -ErrorAction SilentlyContinue
 Assert-Condition ($null -eq $existing) 'an existing winshort.exe is running; refusing to touch the user process'
 
+$backgrounds = @(
+    [pscustomobject]@{ Name = 'black';   Hex = '#101010'; ForegroundHex = '#FFFFFF' },
+    [pscustomobject]@{ Name = 'white';   Hex = '#F2F2F2'; ForegroundHex = '#101010' },
+    [pscustomobject]@{ Name = 'gray';    Hex = '#808080'; ForegroundHex = '#FFFFFF' },
+    [pscustomobject]@{ Name = 'red';     Hex = '#D13438'; ForegroundHex = '#FFFFFF' },
+    [pscustomobject]@{ Name = 'yellow';  Hex = '#FFD335'; ForegroundHex = '#101010' },
+    [pscustomobject]@{ Name = 'green';   Hex = '#107C10'; ForegroundHex = '#FFFFFF' },
+    [pscustomobject]@{ Name = 'blue';    Hex = '#0067C0'; ForegroundHex = '#FFFFFF' },
+    [pscustomobject]@{ Name = 'magenta'; Hex = '#B4009E'; ForegroundHex = '#FFFFFF' }
+)
+
 $captures = @()
 try {
-    foreach ($appearance in @('system', 'dark', 'light')) {
-        $scenarioDirectory = Join-Path $ResultRoot $appearance
-        $dataDirectory = Join-Path $scenarioDirectory 'data'
-        New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
+    foreach ($appearance in @('dark', 'light')) {
+        foreach ($background in $backgrounds) {
+            $scenarioDirectory = Join-Path (Join-Path $ResultRoot $appearance) $background.Name
+            $dataDirectory = Join-Path $scenarioDirectory 'data'
+            New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
 
-        $config = @"
+            $config = @"
 schema_version = 10
 
 [overlay]
@@ -295,65 +361,74 @@ opacity = 1.0
 appearance = "$appearance"
 show_external_audio_changes = false
 "@
-        Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
+            Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
 
-        $process = $null
-        try {
-            $info = New-ProcessStartInfo $dataDirectory $appearance
-            $process = [System.Diagnostics.Process]::Start($info)
-            Assert-Condition ($null -ne $process) "could not start WinShort for $appearance visual sanity capture"
+            $process = $null
+            $backdrop = $null
+            try {
+                $backdrop = New-ColorBackdrop $background
 
-            $overlayHwnd = Wait-Until {
-                if ($process.HasExited) { return $null }
-                $candidate = [WinShortUiVisual.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-                if ($candidate -eq [IntPtr]::Zero) { return $null }
-                $candidate
-            } "runtime overlay did not appear for $appearance"
+                $info = New-ProcessStartInfo $dataDirectory $appearance
+                $process = [System.Diagnostics.Process]::Start($info)
+                Assert-Condition ($null -ne $process) "could not start WinShort for $appearance/$($background.Name) visual sanity capture"
 
-            Start-Sleep -Milliseconds 300
-            $overlayRectangle = Get-Rect ([WinShortUiVisual.Native]::WindowRect($overlayHwnd))
-            $contextMargin = 48
-            $contextRectangle = [System.Drawing.Rectangle]::FromLTRB(
-                $overlayRectangle.Left - $contextMargin,
-                $overlayRectangle.Top - $contextMargin,
-                $overlayRectangle.Right + $contextMargin,
-                $overlayRectangle.Bottom + $contextMargin
-            )
+                $overlayHwnd = Wait-Until {
+                    if ($process.HasExited) { return $null }
+                    $candidate = [WinShortUiVisual.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
+                    if ($candidate -eq [IntPtr]::Zero) { return $null }
+                    $candidate
+                } "runtime overlay did not appear for $appearance/$($background.Name)"
 
-            $cardPath = Join-Path $scenarioDirectory "runtime-overlay-$appearance-visual.png"
-            $contextPath = Join-Path $scenarioDirectory "runtime-overlay-$appearance-visual-context.png"
-            Save-Bitmap (Capture-Bitmap $overlayRectangle) $cardPath
-            Save-Bitmap (Capture-Bitmap $contextRectangle) $contextPath
-            Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process
+                Start-Sleep -Milliseconds 300
+                $overlayRectangle = Get-Rect ([WinShortUiVisual.Native]::WindowRect($overlayHwnd))
+                $contextMargin = 64
+                $contextRectangle = [System.Drawing.Rectangle]::FromLTRB(
+                    $overlayRectangle.Left - $contextMargin,
+                    $overlayRectangle.Top - $contextMargin,
+                    $overlayRectangle.Right + $contextMargin,
+                    $overlayRectangle.Bottom + $contextMargin
+                )
 
-            $captures += [pscustomobject]@{
-                Appearance = $appearance
-                Screenshot = $cardPath
-                ContextScreenshot = $contextPath
-                Width = $overlayRectangle.Width
-                Height = $overlayRectangle.Height
-            }
-        }
-        finally {
-            if ($null -ne $process) {
-                if (-not $process.HasExited) {
-                    $process.Kill() | Out-Null
-                    $process.WaitForExit(5000) | Out-Null
+                $cardPath = Join-Path $scenarioDirectory "runtime-overlay-$appearance-$($background.Name)-visual.png"
+                $contextPath = Join-Path $scenarioDirectory "runtime-overlay-$appearance-$($background.Name)-visual-context.png"
+                Save-Bitmap (Capture-Bitmap $overlayRectangle) $cardPath
+                Save-Bitmap (Capture-Bitmap $contextRectangle) $contextPath
+                Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process
+
+                $captures += [pscustomobject]@{
+                    Appearance = $appearance
+                    Background = $background.Name
+                    BackgroundHex = $background.Hex
+                    Screenshot = $cardPath
+                    ContextScreenshot = $contextPath
+                    Width = $overlayRectangle.Width
+                    Height = $overlayRectangle.Height
                 }
-                try { Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process } catch { }
-                $process.Dispose()
+            }
+            finally {
+                if ($null -ne $process) {
+                    if (-not $process.HasExited) {
+                        $process.Kill() | Out-Null
+                        $process.WaitForExit(5000) | Out-Null
+                    }
+                    try { Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process } catch { }
+                    $process.Dispose()
+                }
+                Close-ColorBackdrop $backdrop
             }
         }
     }
 
-    $sheetPath = Join-Path $ResultRoot 'runtime-overlay-visual-sheet.png'
-    New-VisualSheet $captures $sheetPath
+    $sheetPath = Join-Path $ResultRoot 'runtime-overlay-color-matrix.png'
+    New-VisualSheet $captures $backgrounds.Count $sheetPath
     Assert-Condition (Test-Path $sheetPath) "visual sheet was not created: $sheetPath"
 
     $summary = [pscustomobject]@{
         ResultRoot = $ResultRoot
         Binary = $ExePath
-        Purpose = 'human visual sanity only; no synthetic PatternBackdrop is used'
+        Purpose = 'human visual sanity for Dark and Light Composition overlays across deterministic colored desktop backdrops'
+        Backdrops = $backgrounds
+        BackdropPattern = 'large high-contrast text is rendered behind the overlay so blur remains visually inspectable on otherwise solid colors'
         MachineAcceptance = 'tools/ui_acceptance.ps1 remains authoritative for blur/outside-card metrics'
         Captures = $captures
         VisualSheet = $sheetPath
@@ -361,6 +436,7 @@ show_external_audio_changes = false
     $summaryPath = Join-Path $ResultRoot 'summary.json'
     $summary | ConvertTo-Json -Depth 6 | Set-Content -Path $summaryPath -Encoding UTF8
     Write-Output "Visual sanity captures complete: $summaryPath"
+    Write-Output "Color matrix: $sheetPath"
     exit 0
 }
 catch {
