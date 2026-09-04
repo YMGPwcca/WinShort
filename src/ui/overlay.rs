@@ -2717,7 +2717,10 @@ mod tests {
         assert_eq!(system.surface, Color::rgba(255, 255, 255, 248));
         assert_eq!(explicit_dark.surface, Color::rgba(43, 43, 43, 248));
         assert_eq!(explicit_light.surface, Color::rgba(255, 255, 255, 248));
-        assert_eq!(resolved_theme_mode(OverlayAppearance::System, preferences), ThemeMode::Light);
+        assert_eq!(
+            resolved_theme_mode(OverlayAppearance::System, preferences),
+            ThemeMode::Light
+        );
         assert_eq!(composition_tint_alpha(ThemeMode::Dark, 1.0), 42);
         assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 216);
     }
