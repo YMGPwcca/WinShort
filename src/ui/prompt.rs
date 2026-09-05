@@ -54,16 +54,14 @@ impl TextPrompt {
         accept_label: &str,
         initial_name: &str,
     ) -> crate::error::Result<Self> {
-        let _atom = *REGISTERED.get_or_init(|| {
-            win::register_class(CLASS_NAME, Some(prompt_wndproc)).expect("register prompt class")
-        });
+        let _atom = win::register_class_once(&REGISTERED, CLASS_NAME, Some(prompt_wndproc))?;
         let mut parent_rect = RECT::default();
         unsafe {
             let _ = GetWindowRect(parent, &mut parent_rect);
         }
         let x = parent_rect.left + ((parent_rect.right - parent_rect.left) - WIDTH) / 2;
         let y = parent_rect.top + ((parent_rect.bottom - parent_rect.top) - HEIGHT) / 2;
-        let state = Box::new(PromptUi {
+        let mut state = win::WindowCreation::new(PromptUi {
             action,
             accept_label: accept_label.into(),
             edit: HWND::default(),
@@ -82,13 +80,17 @@ impl TextPrompt {
                 Some(parent),
                 None,
                 None,
-                Some(Box::into_raw(state).cast()),
+                Some(state.parameter()),
             )
         }
         .map_err(|error| {
             crate::error::Error::win("CreateWindowExW(display profile prompt)", &error)
         })?;
-        let prompt = Self { hwnd };
+        // SAFETY: this constructor exclusively owns the newly created HWND.
+        let construction = unsafe { win::WindowConstructionGuard::new(hwnd) };
+        let prompt = Self {
+            hwnd: construction.complete(),
+        };
         if let Some(cell) = unsafe { win::state_cell::<PromptUi>(prompt.hwnd) } {
             let edit = cell.borrow().edit;
             let initial = HSTRING::from(initial_name);
@@ -126,11 +128,15 @@ unsafe extern "system" fn prompt_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == windows::Win32::UI::WindowsAndMessaging::WM_NCCREATE {
-        // SAFETY: WM_NCCREATE supplies the Box pointer passed to CreateWindowExW.
+        // SAFETY: WM_NCCREATE supplies the live creation slot passed to CreateWindowExW.
         let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
         // SAFETY: ownership transfers to the window state slot exactly once.
-        let state = unsafe { Box::from_raw(create.lpCreateParams as *mut PromptUi) };
-        win::store_state_ptr(hwnd, win::WindowState::new(*state));
+        let Some(state) =
+            (unsafe { win::WindowCreation::<PromptUi>::take_from(create.lpCreateParams) })
+        else {
+            return LRESULT(0);
+        };
+        win::store_state_ptr(hwnd, win::WindowState::new(state));
         return win::def_proc(hwnd, msg, wparam, lparam);
     }
     let Some(cell) = (unsafe { win::state_cell::<PromptUi>(hwnd) }) else {

@@ -668,7 +668,12 @@ impl App {
         devices: crate::audio::devices::DeviceLists,
     ) -> Result<&mut ControlCenterWindow> {
         if self.settings.is_none() {
-            self.settings = Some(ControlCenterWindow::create(devices)?);
+            self.settings = Some(ControlCenterWindow::create(
+                devices,
+                crate::ui::control_center::ConfigAccess::new(config, |candidate| {
+                    commit_config(candidate, crate::event::ConfigCommitOrigin::Settings)
+                }),
+            )?);
             info!("settings window created");
         }
         let active = self.display_rollback.is_some();
@@ -2164,17 +2169,17 @@ unsafe fn handle_tray(wparam: WPARAM, lparam: LPARAM) {
     }
 }
 
-fn apply_menu_command(app: &mut App, cmd: Option<u32>) {
-    use tray_menu::cmd;
-    match cmd {
-        Some(cmd::OPEN_SETTINGS) => app.show_settings(),
-        Some(cmd::SHOW_STATUS) => app.route_event(AppEvent::ShowStatusOverlay),
-        Some(cmd::SUSPEND_HOTKEYS) => app.toggle_suspended(),
-        Some(cmd::SHOW_DIAGNOSTICS) => app.show_diagnostics(),
-        Some(cmd::EXIT) => {
+fn apply_menu_command(app: &mut App, command: Option<tray_menu::Command>) {
+    use tray_menu::Command;
+    match command {
+        Some(Command::OpenSettings) => app.show_settings(),
+        Some(Command::ShowStatus) => app.route_event(AppEvent::ShowStatusOverlay),
+        Some(Command::PauseShortcuts) => app.toggle_suspended(),
+        Some(Command::Diagnostics) => app.show_diagnostics(),
+        Some(Command::Exit) => {
             let _ = app.begin_shutdown();
         }
-        _ => {}
+        None => {}
     }
 }
 
