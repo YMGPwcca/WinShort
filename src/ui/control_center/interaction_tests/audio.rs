@@ -15,15 +15,17 @@ fn unavailable_explicit_device_is_not_exposed_as_a_system_target() {
         warnings: Vec::new(),
     };
 
-    let (choices, current) =
-        picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], None);
+    let model = picker_model(PickerKind::InputDevice, &config, &devices, &[], None)
+        .expect("input device picker model");
 
-    assert_eq!(choices.len(), 1);
-    assert_eq!(current, 0);
-    assert_eq!(choices[0].label, "Current microphone");
+    assert_eq!(model.choices().len(), 1);
+    assert_eq!(model.current(), None);
+    assert_eq!(model.choices()[0].label(), "Current microphone");
     assert_eq!(
-        choices[0].value,
-        PickerValue::Device(DeviceSelection::Endpoint("current-endpoint".into()))
+        model.choices()[0].commit_value(),
+        Some(&PickerCommit::InputDevice(DeviceSelection::Endpoint(
+            "current-endpoint".into()
+        )))
     );
     assert_eq!(
         config.audio.input_device,

@@ -9,9 +9,7 @@ use crate::ui::control_center_automation::{
 };
 use crate::ui::controls::ControlValue;
 use crate::ui::layout::{ElementId, ElementKind};
-use crate::ui::presentation::{
-    allowlist_mode, format_optional_hotkey, friendly_device, AudioDeviceKind,
-};
+use crate::ui::presentation::{format_optional_hotkey, friendly_device, AudioDeviceKind};
 use windows::Win32::Foundation::HWND;
 
 impl SettingsUi {
@@ -165,15 +163,7 @@ impl SettingsUi {
             node.enabled = false;
             return;
         };
-        let configured = match flow {
-            crate::audio::DeviceCycleFlow::Input => {
-                self.draft.audio.cycle_input_allowlist.as_deref()
-            }
-            crate::audio::DeviceCycleFlow::Output => {
-                self.draft.audio.cycle_output_allowlist.as_deref()
-            }
-        };
-        let mode = allowlist_mode(configured);
+        let mode = self.audio_view().mode(flow);
         node.name = crate::ui::presentation::allowlist_mode_label(choice, kind).into();
         node.help_text = if mode == choice {
             "Selected cycling mode".into()

@@ -4,7 +4,6 @@ use super::overlay_preview::overlay_preview_aspect;
 use super::placement::client_size_dip;
 use super::state::SettingsUi;
 use crate::ui::layout::{ElementId, LayoutContext, SettingsLayout};
-use crate::ui::presentation::allowlist_mode;
 use crate::ui::renderer::Renderer;
 use windows::Win32::Foundation::HWND;
 
@@ -32,8 +31,10 @@ impl SettingsUi {
                 self.runtime.foreground.aggregate,
                 crate::audio::Aggregate::NoExternalApp
             ),
-            input_cycle_mode: allowlist_mode(self.draft.audio.cycle_input_allowlist.as_deref()),
-            output_cycle_mode: allowlist_mode(self.draft.audio.cycle_output_allowlist.as_deref()),
+            input_cycle_mode: self.audio_view().mode(crate::audio::DeviceCycleFlow::Input),
+            output_cycle_mode: self
+                .audio_view()
+                .mode(crate::audio::DeviceCycleFlow::Output),
             input_device_count: self.devices.inputs.len(),
             output_device_count: self.devices.outputs.len(),
             overlay_preview_aspect: self.overlay_preview_aspect,

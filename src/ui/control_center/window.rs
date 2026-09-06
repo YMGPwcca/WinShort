@@ -4,7 +4,7 @@ use super::appearance::settings_theme;
 use super::chrome::apply_chrome;
 use super::messages::settings_wndproc;
 use super::native::invalidate;
-use super::picker_choices::{picker_choices, picker_element, picker_selection_indices};
+use super::picker_choices::{picker_element, picker_model};
 use super::placement::{
     client_rect_from_dip, client_work_rect, fixed_window_size, load_settings_rect,
     picker_height_px, picker_width_dip, window_geometry,
@@ -14,8 +14,8 @@ use crate::config::validate::Violation;
 use crate::error::{Error, Result};
 use crate::platform::window as win;
 use crate::ui::controls;
-use crate::ui::layout::{ElementId, OnboardingStep};
-use crate::ui::picker::{PickerKind, PickerPopup, PickerValue};
+use crate::ui::layout::OnboardingStep;
+use crate::ui::picker::{PickerCommit, PickerKind, PickerPopup};
 use crate::ui::prompt::{PromptAction, TextPrompt};
 use std::sync::OnceLock;
 use windows::Win32::Foundation::{HWND, RECT};
@@ -43,7 +43,6 @@ pub(super) struct SavedSettingsRect {
 pub(crate) struct ControlCenterWindow {
     pub hwnd: HWND,
     pub(super) picker: Option<PickerPopup>,
-    pub(super) picker_owner: Option<ElementId>,
     pub(super) rename_prompt: Option<TextPrompt>,
     pub(super) last_rect: Option<SavedSettingsRect>,
 }
@@ -114,7 +113,6 @@ impl ControlCenterWindow {
         Ok(Self {
             hwnd,
             picker: None,
-            picker_owner: None,
             last_rect: saved,
             rename_prompt: None,
         })
@@ -315,7 +313,6 @@ impl ControlCenterWindow {
         &mut self,
         kind: PickerKind,
         devices: crate::audio::devices::DeviceLists,
-        monitors: Vec<crate::platform::monitor::MonitorGeometry>,
     ) -> Result<()> {
         let Some(cell) = (unsafe { win::state_cell::<SettingsUi>(self.hwnd) }) else {
             return Err(Error::internal("settings state missing"));
@@ -327,10 +324,12 @@ impl ControlCenterWindow {
         if matches!(kind, PickerKind::DisplayOutputs | PickerKind::DisplayRoute) {
             cell.borrow_mut().refresh_display_outputs();
         }
+        let owner = picker_element(kind);
         let (draft, display_outputs, control_rect, dpi, selected_display_route) = {
             let ui = cell.borrow();
-            let element = picker_element(kind)
-                .and_then(|id| ui.layout.element(id))
+            let element = ui
+                .layout
+                .element(owner)
                 .ok_or_else(|| Error::internal("settings picker row missing"))?;
             (
                 ui.draft.clone(),
@@ -341,33 +340,23 @@ impl ControlCenterWindow {
             )
         };
         let anchor = client_rect_from_dip(control_rect, dpi);
-        let (choices, current) = picker_choices(
+        let model = picker_model(
             kind,
             &draft,
             &devices,
-            &monitors,
             &display_outputs,
             selected_display_route,
-        );
-        let selected_indices = picker_selection_indices(kind, &draft, &choices);
-        if choices.is_empty() {
+        )
+        .map_err(Error::internal)?;
+        if model.choices().is_empty() {
             return Err(Error::config("no choices available"));
         }
         let work = client_work_rect(self.hwnd)?;
         let scale = dpi.max(96) as f32 / 96.0;
-        let width = (picker_width_dip(control_rect.w, &choices) * scale).round() as i32;
-        let height = picker_height_px(choices.len(), scale);
+        let width = (picker_width_dip(control_rect.w, model.choices()) * scale).round() as i32;
+        let height = picker_height_px(model.choices().len(), scale);
         let geometry = crate::ui::picker::place_popup(anchor, work, width, height);
-        let owner =
-            picker_element(kind).ok_or_else(|| Error::internal("settings picker row missing"))?;
-        let picker = match PickerPopup::create(
-            self.hwnd,
-            kind,
-            choices,
-            current,
-            &selected_indices,
-            geometry,
-        ) {
+        let picker = match PickerPopup::create(self.hwnd, model, geometry) {
             Ok(picker) => picker,
             Err(error) => {
                 self.cancel_picker();
@@ -377,7 +366,6 @@ impl ControlCenterWindow {
         let picker_hwnd = picker.hwnd;
         let picker_list_hwnd = picker.list;
         self.picker = Some(picker);
-        self.picker_owner = Some(owner);
         let actual = unsafe { GetFocus() };
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             cell.borrow_mut().set_picker_open(
@@ -407,7 +395,8 @@ impl ControlCenterWindow {
         Ok(())
     }
 
-    pub(crate) fn commit_picker(&mut self, kind: PickerKind, value: PickerValue) {
+    pub(crate) fn commit_picker(&mut self, commit: PickerCommit) {
+        let kind = commit.kind();
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();
             if kind == PickerKind::DisplayProfile && ui.display.is_dirty() {
@@ -419,7 +408,7 @@ impl ControlCenterWindow {
                 }];
             } else {
                 let before = ui.draft.clone();
-                ui.apply_picker(kind, value);
+                ui.apply_picker(commit);
                 let risky_display_edit = matches!(
                     kind,
                     PickerKind::DisplayOutputs | PickerKind::DisplayTopology
@@ -461,7 +450,6 @@ impl ControlCenterWindow {
     }
 
     pub(super) fn cancel_picker_impl(&mut self, restore_focus: bool) {
-        let owner = self.picker_owner.take();
         let _ = self.picker.take();
         if restore_focus {
             unsafe {
@@ -470,9 +458,7 @@ impl ControlCenterWindow {
         }
         let actual = unsafe { GetFocus() };
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
-            let mut ui = cell.borrow_mut();
-            let owner = owner.or(ui.focus.picker_owner());
-            ui.set_picker_closed(self.hwnd, owner, actual);
+            cell.borrow_mut().set_picker_closed(self.hwnd, actual);
         }
     }
 

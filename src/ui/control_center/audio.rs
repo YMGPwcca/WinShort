@@ -5,14 +5,14 @@ use super::state::SettingsUi;
 use crate::audio::DeviceCycleFlow;
 use crate::config::validate::Violation;
 use crate::ui::layout::ElementId;
-use crate::ui::presentation::AllowlistMode;
+use crate::ui::presentation::{AllowlistMode, DeviceCycleSelection};
 use windows::Win32::Foundation::HWND;
 
-pub(super) fn allowlist_label(allowlist: Option<&[String]>) -> String {
-    match allowlist {
-        None => "All available devices".into(),
-        Some([]) => "Don't cycle".into(),
-        Some(ids) => format!("{} selected", ids.len()),
+pub(super) fn allowlist_label(selection: &DeviceCycleSelection) -> String {
+    match selection.mode() {
+        AllowlistMode::All => "All available devices".into(),
+        AllowlistMode::Disabled => "Don't cycle".into(),
+        AllowlistMode::Selected => format!("{} selected", selection.endpoints().len()),
     }
 }
 
@@ -51,47 +51,67 @@ impl SettingsUi {
             }];
             return;
         }
-        let allowlist = match mode {
-            AllowlistMode::All => None,
-            AllowlistMode::Disabled => Some(Vec::new()),
-            AllowlistMode::Selected => Some(view.allowlist(flow).map_or_else(
-                || {
+
+        let current = view.cycle_selection(flow);
+        let selection = match mode {
+            AllowlistMode::All => DeviceCycleSelection::All,
+            AllowlistMode::Disabled => DeviceCycleSelection::Disabled,
+            AllowlistMode::Selected => {
+                let endpoints = if current.mode() == AllowlistMode::Selected {
+                    current.endpoints().to_vec()
+                } else {
                     devices
                         .iter()
                         .map(|device| device.endpoint.clone())
                         .collect()
-                },
-                <[String]>::to_vec,
-            )),
+                };
+                match DeviceCycleSelection::selected(endpoints) {
+                    Ok(selection) => selection,
+                    Err(reason) => {
+                        self.validation = vec![Violation {
+                            field: "Audio".into(),
+                            message: reason.into(),
+                        }];
+                        return;
+                    }
+                }
+            }
         };
+
         let before = self.draft.clone();
-        *self.cycle_allowlist_mut(flow) = allowlist;
+        self.set_cycle_selection(flow, selection);
         self.commit_local_change(hwnd, before);
     }
 
     pub(super) fn toggle_cycle_device(&mut self, hwnd: HWND, flow: DeviceCycleFlow, index: usize) {
-        let Some(endpoint) = self
-            .audio_view()
-            .devices(flow)
-            .get(index)
-            .map(|d| d.endpoint.clone())
-        else {
+        let view = self.audio_view();
+        let Some(endpoint) = view.devices(flow).get(index).map(|d| d.endpoint.clone()) else {
             return;
         };
-        let before = self.draft.clone();
-        let values = self.cycle_allowlist_mut(flow).get_or_insert_with(Vec::new);
-        if let Some(position) = values.iter().position(|value| value == &endpoint) {
-            values.remove(position);
+        let mut endpoints = view.cycle_selection(flow).endpoints().to_vec();
+        if let Some(position) = endpoints.iter().position(|value| value == &endpoint) {
+            endpoints.remove(position);
         } else {
-            values.push(endpoint);
+            endpoints.push(endpoint);
         }
+        let selection = if endpoints.is_empty() {
+            DeviceCycleSelection::Disabled
+        } else {
+            match DeviceCycleSelection::selected(endpoints) {
+                Ok(selection) => selection,
+                Err(_) => return,
+            }
+        };
+        let before = self.draft.clone();
+        self.set_cycle_selection(flow, selection);
         self.commit_local_change(hwnd, before);
     }
 
-    fn cycle_allowlist_mut(&mut self, flow: DeviceCycleFlow) -> &mut Option<Vec<String>> {
+    fn set_cycle_selection(&mut self, flow: DeviceCycleFlow, selection: DeviceCycleSelection) {
+        let configured = selection.into_config();
         match flow {
-            DeviceCycleFlow::Input => &mut self.draft.audio.cycle_input_allowlist,
-            DeviceCycleFlow::Output => &mut self.draft.audio.cycle_output_allowlist,
+            DeviceCycleFlow::Input => self.draft.audio.cycle_input_allowlist = configured,
+            DeviceCycleFlow::Output => self.draft.audio.cycle_output_allowlist = configured,
         }
     }
 }

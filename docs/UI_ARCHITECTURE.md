@@ -61,15 +61,32 @@ confirmation has one typed pending target, so Reset and Delete cannot both be
 armed. First-run layout uses the finite `OnboardingStep` enum rather than numeric
 step values.
 
+Picker results cross the native/application boundary as one exhaustive
+`PickerCommit`; picker kind and result value cannot disagree. Popup rows use an
+internal `PickerChoiceValue` only while the native list is open. `PickerModel`
+validates that every row belongs to the requested picker domain and represents
+current selection as `Option<usize>`, so a missing configured value is not
+silently displayed as row zero.
+
+Device-cycle allowlists use `DeviceCycleSelection::{All, Disabled, Selected}` in
+UI code. `Selected` can only be constructed with at least one endpoint. The
+persisted `Option<Vec<String>>` encoding is translated at the configuration
+boundary: `None` means All, an empty vector means Disabled, and a non-empty
+vector means Selected. Presentation, layout and UI mutation consume the typed
+state rather than interpreting those sentinels independently.
+
 Display rollback presentation is derived from one semantic
 `DisplayRollbackStatus` projection of the runtime snapshot. The application
 boundary still supplies its existing transport fields; Control Center policy and
 painting do not copy independent active/keep flags into `SettingsUi`.
 
-`FocusState` installs or removes a picker owner/window/list binding atomically.
-Logical focus is distinct from native ownership and the keyboard-visible focus
-indicator. `SearchCaret` has either no timer deadline or an active blink state.
-An empty or entirely disabled focus order produces `None`, not an invalid index.
+`FocusState` atomically observes only the picker host/list HWNDs. The logical
+picker owner is the existing focus target, while `ControlCenterWindow` alone owns
+the `PickerPopup`. This prevents a second copied owner field from drifting out of
+sync. Logical focus remains distinct from native ownership and the
+keyboard-visible focus indicator. `SearchCaret` has either no timer deadline or
+an active blink state. An empty or entirely disabled focus order produces `None`,
+not an invalid index.
 
 `DisplayRouteEdit` is the validated result of parsing editor text. Its dimensions
 and rational refresh components are nonzero, and its rotation is an enum. Only

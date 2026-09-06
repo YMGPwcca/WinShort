@@ -8,18 +8,24 @@ fn advanced_display_topology_stays_selected_in_picker() {
     config.display_profiles.profiles = vec![profile];
     config.display_profiles.active_profile = Some("custom".into());
 
-    let (choices, selected) = picker_choices(
+    let model = picker_model(
         PickerKind::DisplayTopology,
         &config,
         &Default::default(),
         &[],
-        &[],
         None,
-    );
-    assert_eq!(choices[selected].label, "Current arrangement (advanced)");
+    )
+    .expect("display topology picker model");
+    let selected = model.current().expect("current topology");
     assert_eq!(
-        choices[selected].value,
-        PickerValue::DisplayTopology(crate::display::DisplayTopology::Custom)
+        model.choices()[selected].label(),
+        "Current arrangement (advanced)"
+    );
+    assert_eq!(
+        model.choices()[selected].commit_value(),
+        Some(&PickerCommit::DisplayTopology(
+            crate::display::DisplayTopology::Custom
+        ))
     );
 }
 
@@ -67,10 +73,9 @@ fn display_topology_changes_stay_local_until_explicit_keep() {
     ui.draft.display_profiles.profiles = vec![sample_profile("display", "Display", true)];
     ui.draft.display_profiles.active_profile = Some("display".into());
 
-    ui.apply_picker(
-        PickerKind::DisplayTopology,
-        PickerValue::DisplayTopology(crate::display::DisplayTopology::Clone),
-    );
+    ui.apply_picker(PickerCommit::DisplayTopology(
+        crate::display::DisplayTopology::Clone,
+    ));
 
     assert!(ui.display.is_dirty());
     assert_eq!(ui.display.step(), Some(DisplayWizardStep::Review));

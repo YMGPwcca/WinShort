@@ -60,7 +60,7 @@ use self::overlay_preview::{overlay_preview_card_rect, work_area_aspect};
 #[cfg(test)]
 use self::painting::APPLIED_STATUS;
 #[cfg(test)]
-use self::picker_choices::{picker_choices, picker_selection_indices};
+use self::picker_choices::picker_model;
 #[cfg(test)]
 use self::placement::{
     client_rect_from_dip, fixed_window_size, picker_height_px, picker_width_dip,
@@ -92,7 +92,7 @@ use crate::ui::layout::{ElementId, ElementKind, HotkeySlot, Rect as UiRect, Sett
 #[cfg(test)]
 use crate::ui::navigation::Page;
 #[cfg(test)]
-use crate::ui::picker::{PickerChoice, PickerKind, PickerValue, PopupRect};
+use crate::ui::picker::{PickerChoice, PickerCommit, PickerKind, PopupRect};
 #[cfg(test)]
 use crate::ui::presentation::DisplayWizardStep;
 #[cfg(test)]

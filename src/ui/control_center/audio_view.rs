@@ -4,8 +4,8 @@ use crate::audio::devices::DeviceLists;
 use crate::audio::{AudioState, DeviceCycleFlow, DeviceId, OutputState};
 use crate::config::model::{AudioCfg, DeviceSelection};
 use crate::ui::presentation::{
-    allowlist_mode, device_choice_label_at, device_selection_presentation, friendly_device,
-    friendly_device_name, AllowlistMode, AudioDeviceKind, DeviceSelectionPresentation,
+    device_choice_label_at, device_selection_presentation, friendly_device, friendly_device_name,
+    AllowlistMode, AudioDeviceKind, DeviceCycleSelection, DeviceSelectionPresentation,
 };
 
 pub(super) struct AudioView<'a> {
@@ -92,23 +92,26 @@ impl<'a> AudioView<'a> {
         }
     }
 
-    pub(super) fn allowlist(&self, flow: DeviceCycleFlow) -> Option<&'a [String]> {
-        match flow {
+    pub(super) fn cycle_selection(&self, flow: DeviceCycleFlow) -> DeviceCycleSelection {
+        let configured = match flow {
             DeviceCycleFlow::Input => self.config.cycle_input_allowlist.as_deref(),
             DeviceCycleFlow::Output => self.config.cycle_output_allowlist.as_deref(),
-        }
+        };
+        DeviceCycleSelection::from_config(configured)
     }
 
     pub(super) fn mode(&self, flow: DeviceCycleFlow) -> AllowlistMode {
-        allowlist_mode(self.allowlist(flow))
+        self.cycle_selection(flow).mode()
     }
 
     pub(super) fn cycle_device_selected(&self, flow: DeviceCycleFlow, index: usize) -> bool {
         let Some(device) = self.devices(flow).get(index) else {
             return false;
         };
-        self.allowlist(flow)
-            .is_some_and(|ids| ids.contains(&device.endpoint))
+        self.cycle_selection(flow)
+            .endpoints()
+            .iter()
+            .any(|endpoint| endpoint == &device.endpoint)
     }
 
     pub(super) fn cycle_device_label(&self, flow: DeviceCycleFlow, index: usize) -> String {

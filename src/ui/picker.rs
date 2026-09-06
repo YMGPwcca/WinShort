@@ -10,8 +10,11 @@ mod painting;
 mod selection;
 mod window;
 
+pub(crate) use crate::ui::presentation::DeviceCycleSelection;
 pub(crate) use geometry::place_popup;
-pub(crate) use model::{PickerChoice, PickerKind, PickerValue, PopupRect};
+pub(crate) use model::{
+    PickerChoice, PickerChoiceValue, PickerCommit, PickerKind, PickerModel, PopupRect,
+};
 #[cfg(test)]
 pub(crate) use window::{hiword, loword};
 pub(crate) use window::{PickerPopup, ITEM_HEIGHT_DIP};

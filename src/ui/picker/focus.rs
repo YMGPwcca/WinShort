@@ -1,6 +1,6 @@
 //! Focus for the picker.
 
-use super::selection::selected_value;
+use super::selection::selected_commit;
 use super::window::{PickerCloseAction, PickerUi, LB_ITEMFROMPOINT, WM_APP_PICKER_FOCUS_LOST};
 use crate::platform::window as win;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -88,8 +88,13 @@ pub(super) fn claim_close(cell: &std::cell::RefCell<PickerUi>, action: PickerClo
 }
 
 pub(super) fn commit_selected(parent: HWND, list: HWND) {
-    let Some((kind, value)) = selected_value(parent, list) else {
-        return;
+    let commit = match selected_commit(parent, list) {
+        Ok(Some(commit)) => commit,
+        Ok(None) => return,
+        Err(reason) => {
+            crate::warn_!("picker selection rejected: {reason}");
+            return;
+        }
     };
     let Some(cell) = (unsafe { win::state_cell::<PickerUi>(parent) }) else {
         return;
@@ -97,7 +102,7 @@ pub(super) fn commit_selected(parent: HWND, list: HWND) {
     if !claim_close(cell, PickerCloseAction::Commit) {
         return;
     }
-    crate::event::post_main(crate::event::AppEvent::CommitSettingsPicker { kind, value });
+    crate::event::post_main(crate::event::AppEvent::CommitSettingsPicker { commit });
 }
 
 pub(super) fn cancel_picker(hwnd: HWND, restore_focus: bool) {

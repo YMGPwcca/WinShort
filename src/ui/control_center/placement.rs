@@ -168,7 +168,7 @@ pub(super) fn picker_width_dip(control_width: f32, choices: &[PickerChoice]) -> 
     // the popup compact enough to remain a bounded child surface.
     let longest = choices
         .iter()
-        .map(|choice| choice.label.encode_utf16().count() as f32)
+        .map(|choice| choice.label().encode_utf16().count() as f32)
         .fold(0.0, f32::max);
     let content_width = 64.0 + longest * 7.2;
     control_width

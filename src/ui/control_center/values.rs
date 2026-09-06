@@ -154,12 +154,18 @@ impl SettingsUi {
                     .selection(crate::audio::DeviceCycleFlow::Output)
                     .primary,
             )),
-            ElementId::InputAllowlist => ControlValue::Text(Cow::Owned(allowlist_label(
-                self.draft.audio.cycle_input_allowlist.as_deref(),
-            ))),
-            ElementId::OutputAllowlist => ControlValue::Text(Cow::Owned(allowlist_label(
-                self.draft.audio.cycle_output_allowlist.as_deref(),
-            ))),
+            ElementId::InputAllowlist => {
+                let selection = self
+                    .audio_view()
+                    .cycle_selection(crate::audio::DeviceCycleFlow::Input);
+                ControlValue::Text(Cow::Owned(allowlist_label(&selection)))
+            }
+            ElementId::OutputAllowlist => {
+                let selection = self
+                    .audio_view()
+                    .cycle_selection(crate::audio::DeviceCycleFlow::Output);
+                ControlValue::Text(Cow::Owned(allowlist_label(&selection)))
+            }
             ElementId::InputRole => {
                 ControlValue::Text(Cow::Borrowed(self.draft.audio.input_role.label()))
             }

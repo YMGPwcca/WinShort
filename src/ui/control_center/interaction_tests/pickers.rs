@@ -3,38 +3,39 @@ use super::*;
 #[test]
 fn overlay_monitor_picker_exposes_only_primary_and_cursor_position() {
     let mut config = Config::default();
-    let (choices, current) = picker_choices(
+    let model = picker_model(
         PickerKind::OverlayMonitor,
         &config,
         &Default::default(),
         &[],
-        &[],
         None,
-    );
+    )
+    .expect("overlay monitor picker model");
 
     assert_eq!(
-        choices
+        model
+            .choices()
             .iter()
-            .map(|choice| choice.label.as_str())
+            .map(PickerChoice::label)
             .collect::<Vec<_>>(),
         vec!["Primary", "Cursor position"]
     );
-    assert_eq!(current, 1);
+    assert_eq!(model.current(), Some(1));
     assert_eq!(
-        choices[1].value,
-        PickerValue::Monitor(MonitorChoice::Cursor)
+        model.choices()[1].commit_value(),
+        Some(&PickerCommit::OverlayMonitor(MonitorChoice::Cursor))
     );
 
     config.overlay.monitor = MonitorChoice::Primary;
-    let (_, current) = picker_choices(
+    let model = picker_model(
         PickerKind::OverlayMonitor,
         &config,
         &Default::default(),
         &[],
-        &[],
         None,
-    );
-    assert_eq!(current, 0);
+    )
+    .expect("overlay monitor picker model");
+    assert_eq!(model.current(), Some(0));
 }
 
 #[test]
@@ -55,19 +56,51 @@ fn device_picker_exposes_only_real_endpoints_and_marks_system_default() {
     };
 
     let config = Config::default();
-    let (choices, selected) =
-        picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], None);
+    let model = picker_model(PickerKind::InputDevice, &config, &devices, &[], None)
+        .expect("input device picker model");
 
-    assert_eq!(choices.len(), 1);
-    assert_eq!(selected, 0);
-    assert_eq!(choices[0].label, "Current microphone");
+    assert_eq!(model.choices().len(), 1);
+    assert_eq!(model.current(), Some(0));
+    assert_eq!(model.choices()[0].label(), "Current microphone");
     assert_eq!(
-        choices[0].value,
-        PickerValue::Device(DeviceSelection::Endpoint("current-endpoint".into()))
+        model.choices()[0].commit_value(),
+        Some(&PickerCommit::InputDevice(DeviceSelection::Endpoint(
+            "current-endpoint".into()
+        )))
     );
     assert_ne!(
-        choices[0].value,
-        PickerValue::Device(DeviceSelection::Default)
+        model.choices()[0].commit_value(),
+        Some(&PickerCommit::InputDevice(DeviceSelection::Default))
+    );
+}
+
+#[test]
+fn device_picker_has_no_fake_current_row_when_configured_endpoint_is_missing() {
+    let current = crate::audio::DeviceId {
+        endpoint: "current-endpoint".into(),
+        name: "Current microphone".into(),
+    };
+    let devices = crate::audio::devices::DeviceLists {
+        inputs: vec![current.clone()],
+        outputs: Vec::new(),
+        input_defaults: crate::audio::devices::DefaultDevices {
+            console: Some(current),
+            ..Default::default()
+        },
+        output_defaults: Default::default(),
+        warnings: Vec::new(),
+    };
+    let mut config = Config::default();
+    config.audio.input_device = DeviceSelection::Endpoint("missing-endpoint".into());
+
+    let model = picker_model(PickerKind::InputDevice, &config, &devices, &[], None)
+        .expect("input device picker model");
+
+    assert_eq!(model.choices().len(), 1);
+    assert_eq!(model.current(), None);
+    assert_eq!(
+        config.audio.input_device,
+        DeviceSelection::Endpoint("missing-endpoint".into())
     );
 }
 
@@ -92,34 +125,26 @@ fn allowlist_picker_exposes_clear_controls_and_offline_selections() {
         output_defaults: Default::default(),
         warnings: Vec::new(),
     };
-    let (choices, current) = picker_choices(
-        PickerKind::InputAllowlist,
-        &config,
-        &devices,
-        &[],
-        &[],
-        None,
-    );
-    assert_eq!(current, 1);
-    assert_eq!(choices[0].label, "All available microphones");
-    assert_eq!(choices[1].label, "Selected microphones");
-    assert_eq!(choices[2].label, "Don't cycle microphones");
-    assert_eq!(
-        picker_selection_indices(PickerKind::InputAllowlist, &config, &choices),
-        vec![1, 4, 5]
-    );
-    assert!(choices[5].label.starts_with("Saved device unavailable"));
+    let model = picker_model(PickerKind::InputAllowlist, &config, &devices, &[], None)
+        .expect("input allowlist picker model");
+    assert_eq!(model.current(), Some(1));
+    assert_eq!(model.choices()[0].label(), "All available microphones");
+    assert_eq!(model.choices()[1].label(), "Selected microphones");
+    assert_eq!(model.choices()[2].label(), "Don't cycle microphones");
+    assert_eq!(model.selected_indices(), &[1, 4, 5]);
+    assert!(model.choices()[5]
+        .label()
+        .starts_with("Saved device unavailable"));
 
     config.audio.cycle_input_allowlist = None;
-    assert_eq!(
-        picker_selection_indices(PickerKind::InputAllowlist, &config, &choices),
-        vec![0]
-    );
+    let model = picker_model(PickerKind::InputAllowlist, &config, &devices, &[], None)
+        .expect("input allowlist picker model");
+    assert_eq!(model.selected_indices(), &[0]);
+
     config.audio.cycle_input_allowlist = Some(Vec::new());
-    assert_eq!(
-        picker_selection_indices(PickerKind::InputAllowlist, &config, &choices),
-        vec![2]
-    );
+    let model = picker_model(PickerKind::InputAllowlist, &config, &devices, &[], None)
+        .expect("input allowlist picker model");
+    assert_eq!(model.selected_indices(), &[2]);
 }
 
 #[test]
@@ -139,14 +164,14 @@ fn picker_anchor_is_converted_to_control_center_client_pixels() {
 
 #[test]
 fn picker_width_is_compact_and_bounded() {
-    let short = vec![PickerChoice {
-        label: "Top Left".into(),
-        value: PickerValue::Position(OverlayPosition::TopLeft),
-    }];
-    let long = vec![PickerChoice {
-        label: "A deliberately long endpoint name for the default device".into(),
-        value: PickerValue::Position(OverlayPosition::TopLeft),
-    }];
+    let short = vec![PickerChoice::commit(
+        "Top Left",
+        PickerCommit::OverlayPosition(OverlayPosition::TopLeft),
+    )];
+    let long = vec![PickerChoice::commit(
+        "A deliberately long endpoint name for the default device",
+        PickerCommit::OverlayPosition(OverlayPosition::TopLeft),
+    )];
     assert_eq!(picker_width_dip(190.0, &short), 320.0);
     assert_eq!(picker_width_dip(190.0, &long), 400.0);
     assert_eq!(picker_width_dip(900.0, &long), 400.0);
@@ -165,10 +190,7 @@ fn picker_focus_state_suppresses_logical_child_focus() {
     let hwnd = HWND(2usize as *mut _);
     let mut ui = empty_settings_ui();
     ui.install_automation(hwnd);
-    {
-        let value = Some(ElementId::InputDevice);
-        ui.focus.set_target(value);
-    };
+    ui.focus.set_target(Some(ElementId::InputDevice));
     let picker_hwnd = HWND(3usize as *mut _);
     let picker_list_hwnd = HWND(4usize as *mut _);
     ui.set_picker_open(
@@ -194,7 +216,7 @@ fn picker_focus_state_suppresses_logical_child_focus() {
     assert_eq!(snapshot.focus_owner, AutomationFocusOwner::Picker);
     assert_eq!(snapshot.picker_open_for, Some(ElementId::InputDevice));
     assert!(snapshot.nodes.iter().all(|node| !node.focused));
-    ui.set_picker_closed(hwnd, Some(ElementId::InputDevice), HWND::default());
+    ui.set_picker_closed(hwnd, HWND::default());
     let snapshot = ui.automation.as_ref().expect("automation").snapshot();
     assert_eq!(snapshot.focus_owner, AutomationFocusOwner::Outside);
     assert_eq!(snapshot.picker_open_for, None);

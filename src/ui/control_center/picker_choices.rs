@@ -1,18 +1,22 @@
-//! Picker choices for the control center.
+//! Typed picker models for the control center.
 
 use crate::config::model::{
     Config, DeviceSelection, EndpointRole, MonitorChoice, OverlayAppearance, OverlayPosition,
 };
 use crate::keyboard::binding::ModifierMask;
 use crate::ui::layout::ElementId;
-use crate::ui::picker::{PickerChoice, PickerKind, PickerValue};
+use crate::ui::picker::{
+    DeviceCycleSelection, PickerChoice, PickerChoiceValue, PickerCommit, PickerKind, PickerModel,
+};
 use crate::ui::presentation::{
-    allowlist_mode, display_output_label, format_modifier as format_modifier_display,
-    AllowlistMode, AudioDeviceKind,
+    display_output_label, format_modifier as format_modifier_display, AllowlistMode,
+    AudioDeviceKind,
 };
 
-pub(super) fn picker_element(kind: PickerKind) -> Option<ElementId> {
-    Some(match kind {
+type PickerParts = (Vec<PickerChoice>, Option<usize>, Vec<usize>);
+
+pub(super) const fn picker_element(kind: PickerKind) -> ElementId {
+    match kind {
         PickerKind::InputDevice => ElementId::InputDevice,
         PickerKind::OutputDevice => ElementId::OutputDevice,
         PickerKind::InputAllowlist => ElementId::InputAllowlist,
@@ -29,95 +33,327 @@ pub(super) fn picker_element(kind: PickerKind) -> Option<ElementId> {
         PickerKind::OverlayAppearance => ElementId::OverlayAppearance,
         PickerKind::OverlayPosition => ElementId::OverlayPosition,
         PickerKind::OverlayMonitor => ElementId::OverlayMonitor,
-    })
+    }
 }
 
-pub(super) fn picker_choices(
+pub(super) fn picker_model(
     kind: PickerKind,
     draft: &Config,
     devices: &crate::audio::devices::DeviceLists,
-    _monitors: &[crate::platform::monitor::MonitorGeometry],
     display_outputs: &[crate::display::DisplayOutput],
     selected_display_route: Option<usize>,
-) -> (Vec<PickerChoice>, usize) {
-    let mut choices = Vec::new();
-    match kind {
-        PickerKind::InputDevice => {
-            choices.extend(device_choices(
-                &devices.inputs,
-                devices.input_defaults.for_role(draft.audio.input_role),
-                AudioDeviceKind::Microphone,
-            ));
-        }
-        PickerKind::OutputDevice => {
-            choices.extend(device_choices(
-                &devices.outputs,
-                devices.output_defaults.for_role(draft.audio.output_role),
-                AudioDeviceKind::Speaker,
-            ));
-        }
-        PickerKind::InputAllowlist => {
-            choices.extend(allowlist_choices(
-                &devices.inputs,
-                draft.audio.cycle_input_allowlist.as_deref(),
-                AudioDeviceKind::Microphone,
-            ));
-        }
-        PickerKind::OutputAllowlist => {
-            choices.extend(allowlist_choices(
-                &devices.outputs,
-                draft.audio.cycle_output_allowlist.as_deref(),
-                AudioDeviceKind::Speaker,
-            ));
-        }
-        PickerKind::DisplayProfile => {
-            choices.extend(display_profile_choices(&draft.display_profiles));
-        }
-        PickerKind::DisplayOutputs => {
-            choices.extend(display_outputs.iter().map(|output| {
-                let label = display_output_label(
-                    &output.monitor_name,
-                    &output.adapter_name,
-                    &output.connector_name,
-                    output.active,
-                );
-                PickerChoice {
-                    label: label.compact(),
-                    value: PickerValue::DisplayOutput(output.route.clone()),
-                }
-            }));
-        }
-        PickerKind::DisplayTopology => {
-            for topology in [
-                crate::display::DisplayTopology::Extend,
-                crate::display::DisplayTopology::Clone,
-            ] {
-                choices.push(PickerChoice {
-                    label: topology.label().into(),
-                    value: PickerValue::DisplayTopology(topology),
-                });
-            }
-            if let Some(topology) = draft
-                .display_profiles
-                .active()
-                .map(|profile| profile.topology)
-                .filter(|topology| {
-                    !matches!(
-                        topology,
-                        crate::display::DisplayTopology::Extend
-                            | crate::display::DisplayTopology::Clone
-                    )
-                })
-            {
-                choices.push(PickerChoice {
-                    label: "Current arrangement (advanced)".into(),
-                    value: PickerValue::DisplayTopology(topology),
-                });
-            }
-        }
+) -> Result<PickerModel, &'static str> {
+    let (choices, current, selected_indices) = match kind {
+        PickerKind::InputDevice => input_device_parts(draft, devices),
+        PickerKind::OutputDevice => output_device_parts(draft, devices),
+        PickerKind::InputAllowlist => allowlist_parts(
+            &devices.inputs,
+            DeviceCycleSelection::from_config(draft.audio.cycle_input_allowlist.as_deref()),
+            AudioDeviceKind::Microphone,
+        ),
+        PickerKind::OutputAllowlist => allowlist_parts(
+            &devices.outputs,
+            DeviceCycleSelection::from_config(draft.audio.cycle_output_allowlist.as_deref()),
+            AudioDeviceKind::Speaker,
+        ),
+        PickerKind::InputRole => role_parts(true, draft.audio.input_role),
+        PickerKind::OutputRole => role_parts(false, draft.audio.output_role),
+        PickerKind::DisplayProfile => display_profile_parts(draft),
+        PickerKind::DisplayOutputs => display_outputs_parts(draft, display_outputs),
+        PickerKind::DisplayTopology => display_topology_parts(draft),
         PickerKind::DisplayRoute => {
-            if let Some(profile) = draft.display_profiles.active() {
-                choices.extend(profile.routes.iter().enumerate().map(|(index, route)| {
+            display_route_parts(draft, display_outputs, selected_display_route)
+        }
+        PickerKind::DesktopNumberModifier => modifier_parts(
+            false,
+            draft.virtual_desktops.number_modifier,
+            ModifierPicker::DesktopNumber,
+        ),
+        PickerKind::MoveDesktopModifier => modifier_parts(
+            true,
+            draft
+                .virtual_desktops
+                .move_follow_modifier
+                .unwrap_or(ModifierMask::NONE),
+            ModifierPicker::MoveDesktop,
+        ),
+        PickerKind::SilentMoveDesktopModifier => modifier_parts(
+            true,
+            draft
+                .virtual_desktops
+                .move_silent_modifier
+                .unwrap_or(ModifierMask::NONE),
+            ModifierPicker::SilentMoveDesktop,
+        ),
+        PickerKind::OverlayAppearance => overlay_appearance_parts(draft),
+        PickerKind::OverlayPosition => overlay_position_parts(draft),
+        PickerKind::OverlayMonitor => overlay_monitor_parts(draft),
+    };
+    PickerModel::new(kind, choices, current, selected_indices)
+}
+
+fn input_device_parts(draft: &Config, devices: &crate::audio::devices::DeviceLists) -> PickerParts {
+    let default = devices.input_defaults.for_role(draft.audio.input_role);
+    let choices = devices
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(index, device)| {
+            PickerChoice::commit(
+                crate::ui::presentation::device_choice_label_at(
+                    &devices.inputs,
+                    index,
+                    default,
+                    AudioDeviceKind::Microphone,
+                )
+                .unwrap_or_else(|| "Device unavailable".into()),
+                PickerCommit::InputDevice(DeviceSelection::Endpoint(device.endpoint.clone())),
+            )
+        })
+        .collect::<Vec<_>>();
+    let current = current_device_index(&draft.audio.input_device, default, &choices);
+    (choices, current, Vec::new())
+}
+
+fn output_device_parts(
+    draft: &Config,
+    devices: &crate::audio::devices::DeviceLists,
+) -> PickerParts {
+    let default = devices.output_defaults.for_role(draft.audio.output_role);
+    let choices = devices
+        .outputs
+        .iter()
+        .enumerate()
+        .map(|(index, device)| {
+            PickerChoice::commit(
+                crate::ui::presentation::device_choice_label_at(
+                    &devices.outputs,
+                    index,
+                    default,
+                    AudioDeviceKind::Speaker,
+                )
+                .unwrap_or_else(|| "Device unavailable".into()),
+                PickerCommit::OutputDevice(DeviceSelection::Endpoint(device.endpoint.clone())),
+            )
+        })
+        .collect::<Vec<_>>();
+    let current = current_device_index(&draft.audio.output_device, default, &choices);
+    (choices, current, Vec::new())
+}
+
+fn current_device_index(
+    selection: &DeviceSelection,
+    default: Option<&crate::audio::DeviceId>,
+    choices: &[PickerChoice],
+) -> Option<usize> {
+    let endpoint = match selection {
+        DeviceSelection::Default => default.map(|device| device.endpoint.as_str()),
+        DeviceSelection::Endpoint(endpoint) => Some(endpoint.as_str()),
+    }?;
+    choices.iter().position(|choice| {
+        matches!(
+            choice.commit_value(),
+            Some(PickerCommit::InputDevice(DeviceSelection::Endpoint(id)))
+                | Some(PickerCommit::OutputDevice(DeviceSelection::Endpoint(id)))
+                if id == endpoint
+        )
+    })
+}
+
+fn allowlist_parts(
+    devices: &[crate::audio::DeviceId],
+    configured: DeviceCycleSelection,
+    device_kind: AudioDeviceKind,
+) -> PickerParts {
+    let mut choices = vec![
+        PickerChoice::allowlist_mode(
+            crate::ui::presentation::allowlist_mode_label(AllowlistMode::All, device_kind),
+            AllowlistMode::All,
+        ),
+        PickerChoice::allowlist_mode(
+            crate::ui::presentation::allowlist_mode_label(AllowlistMode::Selected, device_kind),
+            AllowlistMode::Selected,
+        ),
+        PickerChoice::allowlist_mode(
+            crate::ui::presentation::allowlist_mode_label(AllowlistMode::Disabled, device_kind),
+            AllowlistMode::Disabled,
+        ),
+    ];
+    choices.extend(devices.iter().enumerate().map(|(index, device)| {
+        PickerChoice::allowlist_endpoint(
+            crate::ui::presentation::device_choice_label_at(devices, index, None, device_kind)
+                .unwrap_or_else(|| "Device unavailable".into()),
+            device.endpoint.clone(),
+        )
+    }));
+    for endpoint in configured.endpoints() {
+        if !devices.iter().any(|device| device.endpoint == *endpoint) {
+            choices.push(PickerChoice::allowlist_endpoint(
+                "Saved device unavailable — reconnect it to use it",
+                endpoint.clone(),
+            ));
+        }
+    }
+
+    let mode_index = match configured.mode() {
+        AllowlistMode::All => 0,
+        AllowlistMode::Selected => 1,
+        AllowlistMode::Disabled => 2,
+    };
+    let mut selected_indices = vec![mode_index];
+    if configured.mode() == AllowlistMode::Selected {
+        selected_indices.extend(choices.iter().enumerate().filter_map(|(index, choice)| {
+            match choice.value() {
+                PickerChoiceValue::AllowlistEndpoint(endpoint)
+                    if configured.endpoints().iter().any(|saved| saved == endpoint) =>
+                {
+                    Some(index)
+                }
+                PickerChoiceValue::Commit(_)
+                | PickerChoiceValue::AllowlistMode(_)
+                | PickerChoiceValue::AllowlistEndpoint(_)
+                | PickerChoiceValue::DisplayOutput(_) => None,
+            }
+        }));
+    }
+    (choices, Some(mode_index), selected_indices)
+}
+
+fn role_parts(input: bool, current_role: EndpointRole) -> PickerParts {
+    let choices = [
+        EndpointRole::Console,
+        EndpointRole::Multimedia,
+        EndpointRole::Communications,
+    ]
+    .into_iter()
+    .map(|role| {
+        let commit = if input {
+            PickerCommit::InputRole(role)
+        } else {
+            PickerCommit::OutputRole(role)
+        };
+        PickerChoice::commit(role.label(), commit)
+    })
+    .collect::<Vec<_>>();
+    let current_commit = if input {
+        PickerCommit::InputRole(current_role)
+    } else {
+        PickerCommit::OutputRole(current_role)
+    };
+    let current = current_commit_index(&choices, &current_commit);
+    (choices, current, Vec::new())
+}
+
+fn display_profile_parts(draft: &Config) -> PickerParts {
+    let mut choices = vec![PickerChoice::commit(
+        "No profile selected",
+        PickerCommit::DisplayProfile(None),
+    )];
+    choices.extend(draft.display_profiles.profiles.iter().map(|profile| {
+        let status = if profile.confirmed {
+            "Ready"
+        } else {
+            "Needs a test"
+        };
+        PickerChoice::commit(
+            format!("{} — {} ({status})", profile.name, profile.topology.label()),
+            PickerCommit::DisplayProfile(Some(profile.id.clone())),
+        )
+    }));
+    let current = current_commit_index(
+        &choices,
+        &PickerCommit::DisplayProfile(draft.display_profiles.active_profile.clone()),
+    );
+    (choices, current, Vec::new())
+}
+
+fn display_outputs_parts(
+    draft: &Config,
+    display_outputs: &[crate::display::DisplayOutput],
+) -> PickerParts {
+    let choices = display_outputs
+        .iter()
+        .map(|output| {
+            let label = display_output_label(
+                &output.monitor_name,
+                &output.adapter_name,
+                &output.connector_name,
+                output.active,
+            );
+            PickerChoice::display_output(label.compact(), output.route.clone())
+        })
+        .collect::<Vec<_>>();
+    let selected_indices = draft
+        .display_profiles
+        .active()
+        .map(|profile| {
+            choices
+                .iter()
+                .enumerate()
+                .filter_map(|(index, choice)| match choice.value() {
+                    PickerChoiceValue::DisplayOutput(route)
+                        if profile
+                            .routes
+                            .iter()
+                            .any(|configured| crate::display::same_output(configured, route)) =>
+                    {
+                        Some(index)
+                    }
+                    PickerChoiceValue::Commit(_)
+                    | PickerChoiceValue::AllowlistMode(_)
+                    | PickerChoiceValue::AllowlistEndpoint(_)
+                    | PickerChoiceValue::DisplayOutput(_) => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (choices, None, selected_indices)
+}
+
+fn display_topology_parts(draft: &Config) -> PickerParts {
+    let mut choices = [
+        crate::display::DisplayTopology::Extend,
+        crate::display::DisplayTopology::Clone,
+    ]
+    .into_iter()
+    .map(|topology| PickerChoice::commit(topology.label(), PickerCommit::DisplayTopology(topology)))
+    .collect::<Vec<_>>();
+    if let Some(topology) = draft
+        .display_profiles
+        .active()
+        .map(|profile| profile.topology)
+        .filter(|topology| {
+            !matches!(
+                topology,
+                crate::display::DisplayTopology::Extend | crate::display::DisplayTopology::Clone
+            )
+        })
+    {
+        choices.push(PickerChoice::commit(
+            "Current arrangement (advanced)",
+            PickerCommit::DisplayTopology(topology),
+        ));
+    }
+    let current = draft.display_profiles.active().and_then(|profile| {
+        current_commit_index(&choices, &PickerCommit::DisplayTopology(profile.topology))
+    });
+    (choices, current, Vec::new())
+}
+
+fn display_route_parts(
+    draft: &Config,
+    display_outputs: &[crate::display::DisplayOutput],
+    selected_display_route: Option<usize>,
+) -> PickerParts {
+    let choices = draft
+        .display_profiles
+        .active()
+        .map(|profile| {
+            profile
+                .routes
+                .iter()
+                .enumerate()
+                .map(|(index, route)| {
                     let label = display_outputs
                         .iter()
                         .find(|output| crate::display::same_output(&output.route, route))
@@ -133,328 +369,107 @@ pub(super) fn picker_choices(
                         .unwrap_or_else(|| {
                             format!("Configured display {} — unavailable", index + 1)
                         });
-                    PickerChoice {
-                        label,
-                        value: PickerValue::DisplayRoute(index),
-                    }
-                }));
-            }
-        }
-        PickerKind::InputRole => {
-            for role in [
-                EndpointRole::Console,
-                EndpointRole::Multimedia,
-                EndpointRole::Communications,
-            ] {
-                choices.push(PickerChoice {
-                    label: role.label().into(),
-                    value: PickerValue::Role(role),
-                });
-            }
-        }
-        PickerKind::OutputRole => {
-            for role in [
-                EndpointRole::Console,
-                EndpointRole::Multimedia,
-                EndpointRole::Communications,
-            ] {
-                choices.push(PickerChoice {
-                    label: role.label().into(),
-                    value: PickerValue::Role(role),
-                });
-            }
-        }
-        PickerKind::DesktopNumberModifier => {
-            choices.extend(modifier_choices(false));
-        }
-        PickerKind::MoveDesktopModifier => {
-            choices.extend(modifier_choices(true));
-        }
-        PickerKind::SilentMoveDesktopModifier => {
-            choices.extend(modifier_choices(true));
-        }
-        PickerKind::OverlayAppearance => {
-            choices.extend(
-                OverlayAppearance::ALL
-                    .into_iter()
-                    .map(|appearance| PickerChoice {
-                        label: appearance.label().into(),
-                        value: PickerValue::Appearance(appearance),
-                    }),
-            );
-        }
-        PickerKind::OverlayPosition => {
-            choices.extend(
-                OverlayPosition::ALL
-                    .into_iter()
-                    .map(|position| PickerChoice {
-                        label: position.label().into(),
-                        value: PickerValue::Position(position),
-                    }),
-            );
-        }
-        PickerKind::OverlayMonitor => {
-            choices.push(PickerChoice {
-                label: "Primary".into(),
-                value: PickerValue::Monitor(MonitorChoice::Primary),
-            });
-            choices.push(PickerChoice {
-                label: "Cursor position".into(),
-                value: PickerValue::Monitor(MonitorChoice::Cursor),
-            });
-        }
-    }
-    let current_index = match kind {
-        PickerKind::InputDevice => current_device_index(
-            &draft.audio.input_device,
-            devices.input_defaults.for_role(draft.audio.input_role),
-            &choices,
-        ),
-        PickerKind::OutputDevice => current_device_index(
-            &draft.audio.output_device,
-            devices.output_defaults.for_role(draft.audio.output_role),
-            &choices,
-        ),
-        PickerKind::InputAllowlist | PickerKind::OutputAllowlist => {
-            let configured = if kind == PickerKind::InputAllowlist {
-                draft.audio.cycle_input_allowlist.as_deref()
-            } else {
-                draft.audio.cycle_output_allowlist.as_deref()
-            };
-            match allowlist_mode(configured) {
-                AllowlistMode::All => 0,
-                AllowlistMode::Selected => 1,
-                AllowlistMode::Disabled => 2,
-            }
-        }
-        PickerKind::DisplayOutputs => 0,
-        PickerKind::DisplayRoute => selected_display_route
-            .and_then(|selected| {
-                choices
-                    .iter()
-                    .position(|choice| choice.value == PickerValue::DisplayRoute(selected))
-            })
-            .unwrap_or(0),
-        _ => {
-            let current = current_picker_value(kind, draft);
-            choices
-                .iter()
-                .position(|choice| choice.value == current)
-                .unwrap_or(0)
-        }
-    };
-    (choices, current_index)
+                    PickerChoice::commit(label, PickerCommit::DisplayRoute(index))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let current = selected_display_route
+        .and_then(|selected| current_commit_index(&choices, &PickerCommit::DisplayRoute(selected)));
+    (choices, current, Vec::new())
 }
 
-pub(super) fn picker_selection_indices(
-    kind: PickerKind,
-    draft: &Config,
-    choices: &[PickerChoice],
-) -> Vec<usize> {
-    if kind == PickerKind::DisplayOutputs {
-        let Some(profile) = draft.display_profiles.active() else {
-            return Vec::new();
-        };
-        return choices
-            .iter()
-            .enumerate()
-            .filter_map(|(index, choice)| match &choice.value {
-                PickerValue::DisplayOutput(route)
-                    if profile
-                        .routes
-                        .iter()
-                        .any(|configured| crate::display::same_output(configured, route)) =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            })
-            .collect();
-    }
-    let configured = match kind {
-        PickerKind::InputAllowlist => draft.audio.cycle_input_allowlist.as_deref(),
-        PickerKind::OutputAllowlist => draft.audio.cycle_output_allowlist.as_deref(),
-        _ => return Vec::new(),
-    };
-    let mode = allowlist_mode(configured);
-    let mode_index = match mode {
-        AllowlistMode::All => 0,
-        AllowlistMode::Selected => 1,
-        AllowlistMode::Disabled => 2,
-    };
-    let mut selected = vec![mode_index];
-    if mode == AllowlistMode::Selected {
-        selected.extend(choices.iter().enumerate().filter_map(
-            |(index, choice)| match &choice.value {
-                PickerValue::Allowlist(Some(values))
-                    if values.len() == 1
-                        && configured.is_some_and(|ids| ids.iter().any(|id| id == &values[0])) =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            },
-        ));
-    }
-    selected
+#[derive(Debug, Clone, Copy)]
+enum ModifierPicker {
+    DesktopNumber,
+    MoveDesktop,
+    SilentMoveDesktop,
 }
 
-fn allowlist_choices(
-    devices: &[crate::audio::DeviceId],
-    configured: Option<&[String]>,
-    kind: AudioDeviceKind,
-) -> Vec<PickerChoice> {
-    let mut choices = vec![
-        PickerChoice {
-            label: crate::ui::presentation::allowlist_mode_label(AllowlistMode::All, kind).into(),
-            value: PickerValue::AllowlistMode(AllowlistMode::All),
-        },
-        PickerChoice {
-            label: crate::ui::presentation::allowlist_mode_label(AllowlistMode::Selected, kind)
-                .into(),
-            value: PickerValue::AllowlistMode(AllowlistMode::Selected),
-        },
-        PickerChoice {
-            label: crate::ui::presentation::allowlist_mode_label(AllowlistMode::Disabled, kind)
-                .into(),
-            value: PickerValue::AllowlistMode(AllowlistMode::Disabled),
-        },
-    ];
-    choices.extend(devices.iter().enumerate().map(|(index, device)| {
-        PickerChoice {
-            label: crate::ui::presentation::device_choice_label_at(devices, index, None, kind)
-                .unwrap_or_else(|| "Device unavailable".into()),
-            value: PickerValue::Allowlist(Some(vec![device.endpoint.clone()])),
-        }
-    }));
-    if let Some(configured) = configured {
-        for endpoint in configured {
-            if !devices.iter().any(|device| device.endpoint == *endpoint) {
-                choices.push(PickerChoice {
-                    label: "Saved device unavailable — reconnect it to use it".into(),
-                    value: PickerValue::Allowlist(Some(vec![endpoint.clone()])),
-                });
-            }
+impl ModifierPicker {
+    fn commit(self, modifier: ModifierMask) -> PickerCommit {
+        match self {
+            Self::DesktopNumber => PickerCommit::DesktopNumberModifier(modifier),
+            Self::MoveDesktop => PickerCommit::MoveDesktopModifier(modifier),
+            Self::SilentMoveDesktop => PickerCommit::SilentMoveDesktopModifier(modifier),
         }
     }
-    choices
 }
 
-fn display_profile_choices(profiles: &crate::display::DisplayProfilesCfg) -> Vec<PickerChoice> {
-    let mut choices = vec![PickerChoice {
-        label: "No profile selected".into(),
-        value: PickerValue::DisplayProfile(None),
-    }];
-    choices.extend(profiles.profiles.iter().map(|profile| {
-        let status = if profile.confirmed {
-            "Ready"
-        } else {
-            "Needs a test"
-        };
-        PickerChoice {
-            label: format!("{} — {} ({status})", profile.name, profile.topology.label()),
-            value: PickerValue::DisplayProfile(Some(profile.id.clone())),
-        }
-    }));
-    choices
-}
-
-fn modifier_choices(allow_unassigned: bool) -> Vec<PickerChoice> {
+fn modifier_parts(
+    allow_unassigned: bool,
+    current: ModifierMask,
+    picker: ModifierPicker,
+) -> PickerParts {
     let mut choices = Vec::new();
     if allow_unassigned {
-        choices.push(PickerChoice {
-            label: "Unassigned".into(),
-            value: PickerValue::Modifier(ModifierMask::NONE),
-        });
+        choices.push(PickerChoice::commit(
+            "Unassigned",
+            picker.commit(ModifierMask::NONE),
+        ));
     }
     for bits in 1u8..=0b1111 {
         let modifier = ModifierMask::from_bits(bits);
-        choices.push(PickerChoice {
-            label: format_modifier_display(modifier),
-            value: PickerValue::Modifier(modifier),
-        });
+        choices.push(PickerChoice::commit(
+            format_modifier_display(modifier),
+            picker.commit(modifier),
+        ));
     }
+    let current = current_commit_index(&choices, &picker.commit(current));
+    (choices, current, Vec::new())
+}
+
+fn overlay_appearance_parts(draft: &Config) -> PickerParts {
+    let choices = OverlayAppearance::ALL
+        .into_iter()
+        .map(|appearance| {
+            PickerChoice::commit(
+                appearance.label(),
+                PickerCommit::OverlayAppearance(appearance),
+            )
+        })
+        .collect::<Vec<_>>();
+    let current = current_commit_index(
+        &choices,
+        &PickerCommit::OverlayAppearance(draft.overlay.appearance),
+    );
+    (choices, current, Vec::new())
+}
+
+fn overlay_position_parts(draft: &Config) -> PickerParts {
+    let choices = OverlayPosition::ALL
+        .into_iter()
+        .map(|position| {
+            PickerChoice::commit(position.label(), PickerCommit::OverlayPosition(position))
+        })
+        .collect::<Vec<_>>();
+    let current = current_commit_index(
+        &choices,
+        &PickerCommit::OverlayPosition(draft.overlay.position),
+    );
+    (choices, current, Vec::new())
+}
+
+fn overlay_monitor_parts(draft: &Config) -> PickerParts {
+    let choices = vec![
+        PickerChoice::commit(
+            "Primary",
+            PickerCommit::OverlayMonitor(MonitorChoice::Primary),
+        ),
+        PickerChoice::commit(
+            "Cursor position",
+            PickerCommit::OverlayMonitor(MonitorChoice::Cursor),
+        ),
+    ];
+    let current = current_commit_index(
+        &choices,
+        &PickerCommit::OverlayMonitor(draft.overlay.monitor.clone()),
+    );
+    (choices, current, Vec::new())
+}
+
+fn current_commit_index(choices: &[PickerChoice], current: &PickerCommit) -> Option<usize> {
     choices
-}
-
-fn device_choices(
-    devices: &[crate::audio::DeviceId],
-    default: Option<&crate::audio::DeviceId>,
-    kind: AudioDeviceKind,
-) -> Vec<PickerChoice> {
-    devices
         .iter()
-        .enumerate()
-        .map(|(index, device)| PickerChoice {
-            label: crate::ui::presentation::device_choice_label_at(devices, index, default, kind)
-                .unwrap_or_else(|| "Device unavailable".into()),
-            value: PickerValue::Device(DeviceSelection::Endpoint(device.endpoint.clone())),
-        })
-        .collect()
-}
-
-fn current_device_index(
-    selection: &DeviceSelection,
-    default: Option<&crate::audio::DeviceId>,
-    choices: &[PickerChoice],
-) -> usize {
-    let endpoint = match selection {
-        DeviceSelection::Default => default.map(|device| device.endpoint.as_str()),
-        DeviceSelection::Endpoint(endpoint) => Some(endpoint.as_str()),
-    };
-    endpoint
-        .and_then(|endpoint| {
-            choices.iter().position(|choice| {
-                matches!(
-                    &choice.value,
-                    PickerValue::Device(DeviceSelection::Endpoint(id)) if id == endpoint
-                )
-            })
-        })
-        .unwrap_or(0)
-}
-
-fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
-    match kind {
-        PickerKind::InputDevice => PickerValue::Device(draft.audio.input_device.clone()),
-        PickerKind::OutputDevice => PickerValue::Device(draft.audio.output_device.clone()),
-        PickerKind::InputAllowlist => {
-            PickerValue::AllowlistMode(allowlist_mode(draft.audio.cycle_input_allowlist.as_deref()))
-        }
-        PickerKind::OutputAllowlist => PickerValue::AllowlistMode(allowlist_mode(
-            draft.audio.cycle_output_allowlist.as_deref(),
-        )),
-        PickerKind::DisplayProfile => {
-            PickerValue::DisplayProfile(draft.display_profiles.active_profile.clone())
-        }
-        PickerKind::DisplayOutputs => PickerValue::DisplayOutputs(Vec::new()),
-        PickerKind::DisplayTopology => PickerValue::DisplayTopology(
-            draft
-                .display_profiles
-                .active()
-                .map(|profile| profile.topology)
-                .unwrap_or_default(),
-        ),
-        PickerKind::DisplayRoute => PickerValue::DisplayRoute(0),
-        PickerKind::InputRole => PickerValue::Role(draft.audio.input_role),
-        PickerKind::OutputRole => PickerValue::Role(draft.audio.output_role),
-        PickerKind::DesktopNumberModifier => {
-            PickerValue::Modifier(draft.virtual_desktops.number_modifier)
-        }
-        PickerKind::MoveDesktopModifier => PickerValue::Modifier(
-            draft
-                .virtual_desktops
-                .move_follow_modifier
-                .unwrap_or(ModifierMask::NONE),
-        ),
-        PickerKind::SilentMoveDesktopModifier => PickerValue::Modifier(
-            draft
-                .virtual_desktops
-                .move_silent_modifier
-                .unwrap_or(ModifierMask::NONE),
-        ),
-        PickerKind::OverlayAppearance => PickerValue::Appearance(draft.overlay.appearance),
-        PickerKind::OverlayPosition => PickerValue::Position(draft.overlay.position),
-        PickerKind::OverlayMonitor => PickerValue::Monitor(draft.overlay.monitor.clone()),
-    }
+        .position(|choice| choice.commit_value() == Some(current))
 }

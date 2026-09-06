@@ -8,20 +8,14 @@ use windows::Win32::Foundation::HWND;
 
 impl SettingsUi {
     pub(super) fn set_pointer_focus(&mut self, target: Option<ElementId>) {
-        {
-            let value = false;
-            self.focus.set_indicator_visible(value);
-        };
-        {
-            let value = target.filter(|id| {
-                let Some(element) = self.layout.element(*id) else {
-                    return false;
-                };
-                !matches!(element.kind, ElementKind::Card | ElementKind::Info)
-                    && !self.is_disabled(*id)
-            });
-            self.focus.set_target(value);
-        };
+        self.focus.set_indicator_visible(false);
+        let value = target.filter(|id| {
+            let Some(element) = self.layout.element(*id) else {
+                return false;
+            };
+            !matches!(element.kind, ElementKind::Card | ElementKind::Info) && !self.is_disabled(*id)
+        });
+        self.focus.set_target(value);
     }
 
     pub(super) fn clear_search_focus_without_settings_window(&mut self) {
@@ -112,8 +106,8 @@ impl SettingsUi {
         self.finish_focus_transition(hwnd);
     }
 
-    pub(super) fn set_picker_closed(&mut self, hwnd: HWND, owner: Option<ElementId>, actual: HWND) {
-        self.focus.close_picker(owner);
+    pub(super) fn set_picker_closed(&mut self, hwnd: HWND, actual: HWND) {
+        self.focus.close_picker();
         self.focus.sync_native(hwnd, actual);
         self.finish_focus_transition(hwnd);
     }

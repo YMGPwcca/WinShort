@@ -172,13 +172,18 @@ fn invalid_desktop_modifier_gets_actionable_copy() {
 }
 
 #[test]
-fn allowlist_modes_preserve_persisted_semantics() {
-    assert_eq!(allowlist_mode(None), AllowlistMode::All);
-    assert_eq!(allowlist_mode(Some(&[])), AllowlistMode::Disabled);
+fn typed_cycle_selection_preserves_persisted_semantics() {
     assert_eq!(
-        allowlist_mode(Some(&["endpoint".to_string()])),
-        AllowlistMode::Selected
+        DeviceCycleSelection::from_config(None),
+        DeviceCycleSelection::All
     );
+    assert_eq!(
+        DeviceCycleSelection::from_config(Some(&[])),
+        DeviceCycleSelection::Disabled
+    );
+    let selected = DeviceCycleSelection::from_config(Some(&["endpoint".to_string()]));
+    assert_eq!(selected.mode(), AllowlistMode::Selected);
+    assert_eq!(selected.endpoints(), &["endpoint".to_string()]);
 }
 
 #[test]

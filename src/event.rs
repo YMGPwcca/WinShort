@@ -159,8 +159,7 @@ pub enum AppEvent {
         reverse: bool,
     },
     CommitSettingsPicker {
-        kind: crate::ui::picker::PickerKind,
-        value: crate::ui::picker::PickerValue,
+        commit: crate::ui::picker::PickerCommit,
     },
     CancelSettingsPicker {
         popup_hwnd: isize,

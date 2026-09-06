@@ -727,43 +727,58 @@ impl App {
     }
     fn open_settings_picker(&mut self, kind: crate::ui::picker::PickerKind) {
         let devices = self.audio_devices();
-        let monitors = crate::platform::monitor::all();
         if let Some(settings) = &mut self.settings {
-            if let Err(error) = settings.open_picker(kind, devices, monitors) {
+            if let Err(error) = settings.open_picker(kind, devices) {
                 error_!("open settings picker failed: {error}");
             }
         }
     }
 
-    pub(crate) fn commit_settings_picker(
-        &mut self,
-        kind: crate::ui::picker::PickerKind,
-        value: crate::ui::picker::PickerValue,
-    ) {
-        let system_target = match (&kind, &value) {
-            (
-                crate::ui::picker::PickerKind::InputDevice,
-                crate::ui::picker::PickerValue::Device(
-                    crate::config::model::DeviceSelection::Endpoint(endpoint),
+    pub(crate) fn commit_settings_picker(&mut self, commit: crate::ui::picker::PickerCommit) {
+        let system_target = match &commit {
+            crate::ui::picker::PickerCommit::InputDevice(
+                crate::config::model::DeviceSelection::Endpoint(endpoint),
+            ) => Some((
+                crate::audio::DeviceCycleFlow::Input,
+                endpoint.clone(),
+                crate::ui::picker::PickerCommit::InputDevice(
+                    crate::config::model::DeviceSelection::Default,
                 ),
-            ) => Some((crate::audio::DeviceCycleFlow::Input, endpoint.clone())),
-            (
-                crate::ui::picker::PickerKind::OutputDevice,
-                crate::ui::picker::PickerValue::Device(
-                    crate::config::model::DeviceSelection::Endpoint(endpoint),
+            )),
+            crate::ui::picker::PickerCommit::OutputDevice(
+                crate::config::model::DeviceSelection::Endpoint(endpoint),
+            ) => Some((
+                crate::audio::DeviceCycleFlow::Output,
+                endpoint.clone(),
+                crate::ui::picker::PickerCommit::OutputDevice(
+                    crate::config::model::DeviceSelection::Default,
                 ),
-            ) => Some((crate::audio::DeviceCycleFlow::Output, endpoint.clone())),
-            _ => None,
+            )),
+            crate::ui::picker::PickerCommit::InputDevice(
+                crate::config::model::DeviceSelection::Default,
+            )
+            | crate::ui::picker::PickerCommit::OutputDevice(
+                crate::config::model::DeviceSelection::Default,
+            )
+            | crate::ui::picker::PickerCommit::InputAllowlist(_)
+            | crate::ui::picker::PickerCommit::OutputAllowlist(_)
+            | crate::ui::picker::PickerCommit::DisplayProfile(_)
+            | crate::ui::picker::PickerCommit::DisplayOutputs(_)
+            | crate::ui::picker::PickerCommit::DisplayTopology(_)
+            | crate::ui::picker::PickerCommit::DisplayRoute(_)
+            | crate::ui::picker::PickerCommit::InputRole(_)
+            | crate::ui::picker::PickerCommit::OutputRole(_)
+            | crate::ui::picker::PickerCommit::DesktopNumberModifier(_)
+            | crate::ui::picker::PickerCommit::MoveDesktopModifier(_)
+            | crate::ui::picker::PickerCommit::SilentMoveDesktopModifier(_)
+            | crate::ui::picker::PickerCommit::OverlayPosition(_)
+            | crate::ui::picker::PickerCommit::OverlayAppearance(_)
+            | crate::ui::picker::PickerCommit::OverlayMonitor(_) => None,
         };
 
-        if let Some((flow, endpoint)) = system_target {
+        if let Some((flow, endpoint, persisted_commit)) = system_target {
             if let Some(settings) = &mut self.settings {
-                settings.commit_picker(
-                    kind,
-                    crate::ui::picker::PickerValue::Device(
-                        crate::config::model::DeviceSelection::Default,
-                    ),
-                );
+                settings.commit_picker(persisted_commit);
             }
             let live = crate::app::config();
             let follows_system_default = match flow {
@@ -784,7 +799,7 @@ impl App {
         }
 
         if let Some(settings) = &mut self.settings {
-            settings.commit_picker(kind, value);
+            settings.commit_picker(commit);
         }
     }
 
@@ -1351,8 +1366,8 @@ impl App {
             AppEvent::FocusSettingsFromPicker { reverse } => {
                 self.focus_settings_from_picker(reverse);
             }
-            AppEvent::CommitSettingsPicker { kind, value } => {
-                self.commit_settings_picker(kind, value);
+            AppEvent::CommitSettingsPicker { commit } => {
+                self.commit_settings_picker(commit);
             }
             AppEvent::CancelSettingsPicker {
                 popup_hwnd,

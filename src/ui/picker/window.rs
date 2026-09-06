@@ -5,7 +5,7 @@ use super::geometry::{
     clip_window_to_round_rect, picker_corner_diameter_px, picker_inset_px, picker_list_rect,
 };
 use super::messages::{picker_list_subclass, picker_wndproc};
-use super::model::{PickerChoice, PickerKind, PopupRect};
+use super::model::{PickerChoice, PickerKind, PickerModel, PopupRect};
 use crate::error::{Error, Result};
 use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
@@ -111,15 +111,9 @@ pub(super) fn picker_item_height_px(dpi: u32) -> u32 {
 }
 
 impl PickerPopup {
-    pub(crate) fn create(
-        parent: HWND,
-        kind: PickerKind,
-        choices: Vec<PickerChoice>,
-        current: usize,
-        selected_indices: &[usize],
-        geometry: PopupRect,
-    ) -> Result<Self> {
+    pub(crate) fn create(parent: HWND, model: PickerModel, geometry: PopupRect) -> Result<Self> {
         let _atom = win::register_class_once(&REGISTERED, CLASS_NAME, Some(picker_wndproc))?;
+        let (kind, choices, current, selected_indices) = model.into_parts();
         let mut state = win::WindowCreation::new(PickerUi {
             generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
             kind,
@@ -203,20 +197,17 @@ impl PickerPopup {
             let _ = unsafe { SetWindowTheme(list, PCWSTR(theme_name.as_ptr()), PCWSTR::null()) };
         }
         let font = create_picker_font(dpi);
-        let (labels, selected) = {
+        let labels = {
             let Some(cell) = (unsafe { win::state_cell::<PickerUi>(hwnd) }) else {
                 return Err(Error::internal("settings picker state missing"));
             };
             let mut ui = cell.borrow_mut();
             ui.list = list;
             ui.font = font;
-            let labels = ui
-                .choices
+            ui.choices
                 .iter()
                 .map(|choice| choice.label.clone())
-                .collect::<Vec<_>>();
-            let selected = current.min(ui.choices.len().saturating_sub(1));
-            (labels, selected)
+                .collect::<Vec<_>>()
         };
 
         for label in labels {
@@ -237,10 +228,10 @@ impl PickerPopup {
                         list,
                         LB_SETSEL,
                         Some(WPARAM(1)),
-                        Some(LPARAM(*index as isize)),
+                        Some(LPARAM(index as isize)),
                     );
                 }
-            } else {
+            } else if let Some(selected) = current {
                 let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
                     list,
                     LB_SETCURSEL,

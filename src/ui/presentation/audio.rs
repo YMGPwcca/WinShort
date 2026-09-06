@@ -1,4 +1,5 @@
-//! Audio for the presentation.
+//! Audio presentation semantics and labels. Persisted allowlist sentinels are
+//! converted to typed UI state only at the config boundary below.
 
 use crate::audio::DeviceId;
 use crate::config::model::DeviceSelection;
@@ -22,7 +23,6 @@ pub(crate) struct DeviceSelectionPresentation {
     pub status: Option<String>,
 }
 
-/// The three meanings represented by the persisted `Option<Vec<String>>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AllowlistMode {
     All,
@@ -30,11 +30,69 @@ pub(crate) enum AllowlistMode {
     Disabled,
 }
 
-pub(crate) fn allowlist_mode(value: Option<&[String]>) -> AllowlistMode {
-    match value {
-        None => AllowlistMode::All,
-        Some([]) => AllowlistMode::Disabled,
-        Some(_) => AllowlistMode::Selected,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SelectedEndpoints(Vec<String>);
+
+impl SelectedEndpoints {
+    fn new(endpoints: Vec<String>) -> Option<Self> {
+        (!endpoints.is_empty()).then_some(Self(endpoints))
+    }
+
+    fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+
+    fn into_inner(self) -> Vec<String> {
+        self.0
+    }
+}
+
+/// UI-domain device-cycle semantics. `Option<Vec<String>>` remains a config DTO
+/// detail and cannot represent an empty `Selected` state here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeviceCycleSelection {
+    All,
+    Disabled,
+    Selected(SelectedEndpoints),
+}
+
+impl DeviceCycleSelection {
+    pub(crate) fn from_config(configured: Option<&[String]>) -> Self {
+        match configured {
+            None => Self::All,
+            Some([]) => Self::Disabled,
+            Some(endpoints) => Self::Selected(SelectedEndpoints(endpoints.to_vec())),
+        }
+    }
+
+    pub(crate) fn selected(endpoints: Vec<String>) -> Result<Self, &'static str> {
+        SelectedEndpoints::new(endpoints)
+            .map(Self::Selected)
+            .ok_or("selected device cycle list cannot be empty")
+    }
+
+    pub(crate) fn mode(&self) -> AllowlistMode {
+        match self {
+            Self::All => AllowlistMode::All,
+            Self::Selected(_) => AllowlistMode::Selected,
+            Self::Disabled => AllowlistMode::Disabled,
+        }
+    }
+
+    pub(crate) fn endpoints(&self) -> &[String] {
+        match self {
+            Self::Selected(endpoints) => endpoints.as_slice(),
+            Self::All | Self::Disabled => &[],
+        }
+    }
+
+    /// Config boundary: translate typed UI semantics back to the persisted DTO.
+    pub(crate) fn into_config(self) -> Option<Vec<String>> {
+        match self {
+            Self::All => None,
+            Self::Disabled => Some(Vec::new()),
+            Self::Selected(endpoints) => Some(endpoints.into_inner()),
+        }
     }
 }
 
