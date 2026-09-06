@@ -1,20 +1,17 @@
-//! Activation routing for the Control Center.
-//!
-//! The entry point owns cross-cutting command bookkeeping. Domain helpers own
-//! the side effects for their element families so one match no longer mixes
-//! navigation, audio, display, shortcut and platform operations.
+//! Domain-routed activation for the Control Center.
 
 use super::config_toggle::ConfigToggle;
 use super::native::{invalidate, open_config_folder, post_main, start_timer};
 use super::state::SettingsUi;
-
 use crate::audio::DeviceCycleFlow;
 use crate::keyboard::binding::ModifierMask;
 use crate::ui::control_center_automation::node_has_invoke;
-use crate::ui::layout::ElementId;
+use crate::ui::layout::{
+    AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, OverlayElement,
+    ShellElement, ShortcutElement, SystemElement, WorkspaceElement,
+};
 use crate::ui::navigation::Page;
 use crate::ui::picker::PickerKind;
-
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
 
@@ -36,7 +33,16 @@ impl SettingsUi {
 
         self.queue_invoked_automation(id);
         self.clear_stale_confirmations(id);
-        self.dispatch_activation(hwnd, id);
+        match id.domain() {
+            ElementDomain::Shell(element) => self.activate_shell(hwnd, element),
+            ElementDomain::Home(element) => self.activate_home(hwnd, element),
+            ElementDomain::Audio(element) => self.activate_audio(hwnd, element),
+            ElementDomain::Displays(element) => self.activate_display(hwnd, element),
+            ElementDomain::Shortcuts(element) => self.activate_shortcut(hwnd, element),
+            ElementDomain::Workspaces(element) => self.activate_workspace(hwnd, element),
+            ElementDomain::Overlay(element) => self.activate_overlay(hwnd, element),
+            ElementDomain::System(element) => self.activate_system(hwnd, element),
+        }
 
         self.rebuild_layout(hwnd);
         invalidate(hwnd);
@@ -64,106 +70,9 @@ impl SettingsUi {
         }
     }
 
-    fn dispatch_activation(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::DesktopsEnabled
-            | ElementId::DisplayProfilesEnabled
-            | ElementId::OverlayEnabled
-            | ElementId::OverlayExternalChanges
-            | ElementId::StartHotkeysEnabled
-            | ElementId::WinNumberEnabled => self.activate_config_toggle(hwnd, id),
-
-            ElementId::Search
-            | ElementId::Nav(_)
-            | ElementId::SearchResult(_)
-            | ElementId::WindowClose
-            | ElementId::OnboardingContinue
-            | ElementId::OnboardingOpen
-            | ElementId::Cancel
-            | ElementId::Save => self.activate_shell(hwnd, id),
-
-            ElementId::HomeSpeaker
-            | ElementId::HomeCurrentDesktop
-            | ElementId::HomeMicrophone
-            | ElementId::HomePreviousDesktop
-            | ElementId::HomeSpecial
-            | ElementId::HomeDisplayProfile
-            | ElementId::HomeShortcutHealth
-            | ElementId::HomeDiagnostics => self.activate_home(hwnd, id),
-
-            ElementId::InputCycleMode(_)
-            | ElementId::OutputCycleMode(_)
-            | ElementId::InputCycleDevice(_)
-            | ElementId::OutputCycleDevice(_)
-            | ElementId::InputDevice
-            | ElementId::OutputDevice
-            | ElementId::InputAllowlist
-            | ElementId::OutputAllowlist
-            | ElementId::InputRole
-            | ElementId::OutputRole => self.activate_audio(hwnd, id),
-
-            ElementId::DisplayProfileCard(_)
-            | ElementId::DisplayOutputCard(_)
-            | ElementId::DisplayTopologyChoice(_)
-            | ElementId::DisplayWizardBack
-            | ElementId::DisplayWizardNext
-            | ElementId::DisplayWizardCancel
-            | ElementId::DisplayWizardSummary
-            | ElementId::EditDisplayProfile
-            | ElementId::DisplayProfile
-            | ElementId::DisplayOutputs
-            | ElementId::DisplayTopology
-            | ElementId::DisplayRoute
-            | ElementId::EditDisplayRoute
-            | ElementId::NewDisplayProfile
-            | ElementId::UpdateDisplayProfile
-            | ElementId::RenameDisplayProfile
-            | ElementId::DuplicateDisplayProfile
-            | ElementId::TestApplyDisplayProfile
-            | ElementId::ApplyDisplayProfile
-            | ElementId::DeleteDisplayProfile
-            | ElementId::KeepDisplayChange
-            | ElementId::UndoDisplayChange
-            | ElementId::DiscardDisplayEdits => self.activate_display(hwnd, id),
-
-            ElementId::HotkeyCard(_)
-            | ElementId::HotkeyEnabled(_)
-            | ElementId::HotkeyUnassign(_)
-            | ElementId::MicHotkey
-            | ElementId::OutputHotkey
-            | ElementId::ForegroundHotkey
-            | ElementId::CycleInputHotkey
-            | ElementId::CycleOutputHotkey
-            | ElementId::ForegroundVolumeUpHotkey
-            | ElementId::ForegroundVolumeDownHotkey
-            | ElementId::PreviousDesktopHotkey
-            | ElementId::AssignScratchpadHotkey
-            | ElementId::ToggleScratchpadHotkey
-            | ElementId::DisplayProfileHotkey => self.activate_shortcut(hwnd, id),
-
-            ElementId::DesktopNumberModifier
-            | ElementId::MoveDesktopModifier
-            | ElementId::SilentMoveDesktopModifier => self.activate_workspace(id),
-
-            ElementId::OverlayPositionCell(_)
-            | ElementId::OverlayAppearance
-            | ElementId::OverlayPosition
-            | ElementId::OverlayMonitor
-            | ElementId::OverlayDuration
-            | ElementId::OverlayOpacity
-            | ElementId::OverlayScale
-            | ElementId::OverlayPreview => self.activate_overlay(hwnd, id),
-
-            ElementId::StartWithWindows
-            | ElementId::DebugLogging
-            | ElementId::DiagnosticsStatus
-            | ElementId::OpenConfigFolder
-            | ElementId::ResetSettings => self.activate_system(hwnd, id),
-        }
-    }
-
     fn activate_config_toggle(&mut self, hwnd: HWND, id: ElementId) {
         let Some(toggle) = ConfigToggle::from_element(id) else {
+            crate::warn_!("element {id:?} was routed as a config toggle without a toggle policy");
             return;
         };
         let before = self.draft.clone();
@@ -173,202 +82,200 @@ impl SettingsUi {
         }
     }
 
-    fn activate_shell(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::WindowClose => unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+    fn activate_shell(&mut self, hwnd: HWND, element: ShellElement) {
+        match element {
+            ShellElement::WindowClose => unsafe {
+                if windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                     Some(hwnd),
                     WM_CLOSE,
                     WPARAM(0),
                     LPARAM(0),
-                );
+                )
+                .is_err()
+                {
+                    crate::warn_!("failed to post Control Center close request");
+                }
             },
-            ElementId::Nav(page) => self.activate_navigation(page),
-            ElementId::Search => self.focus.set_target(Some(ElementId::Search)),
-            ElementId::SearchResult(index) => self.activate_search_result(index),
-            ElementId::OnboardingContinue => {
+            ShellElement::Nav(page) => self.activate_navigation(page),
+            ShellElement::Search => self.focus.set_target(Some(ElementId::Search)),
+            ShellElement::SearchResult(index) => self.activate_search_result(index),
+            ShellElement::OnboardingContinue => {
                 self.onboarding_step = Some(2);
                 self.reset_scroll();
             }
-            ElementId::OnboardingOpen => {
+            ShellElement::OnboardingOpen => {
                 if crate::ui::first_run::mark_completed(&crate::config::data_dir()).is_err() {
                     crate::warn_!("could not persist onboarding completion marker");
                 }
                 self.onboarding_step = None;
                 self.set_page(Page::Home);
             }
-            ElementId::Cancel => {
+            ShellElement::Cancel => {
                 self.replace_draft((*self.config_access.current()).clone());
                 self.validation.clear();
                 self.recording = None;
                 self.stop_capture();
             }
-            ElementId::Save => {}
-            _ => {}
+            ShellElement::Save => {}
         }
     }
 
-    fn activate_home(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::HomeSpeaker => {
+    fn activate_home(&mut self, hwnd: HWND, element: HomeElement) {
+        match element {
+            HomeElement::Speaker => {
                 self.set_page(Page::Audio);
                 self.focus.set_target(Some(ElementId::OutputDevice));
-                post_main(crate::event::AppEvent::OpenSettingsPicker(
-                    PickerKind::OutputDevice,
-                ));
+                post_main(crate::event::AppEvent::OpenSettingsPicker(PickerKind::OutputDevice));
             }
-            ElementId::HomeMicrophone => {
+            HomeElement::Microphone => {
                 self.set_page(Page::Audio);
                 self.focus.set_target(Some(ElementId::InputDevice));
-                post_main(crate::event::AppEvent::OpenSettingsPicker(
-                    PickerKind::InputDevice,
-                ));
+                post_main(crate::event::AppEvent::OpenSettingsPicker(PickerKind::InputDevice));
             }
-            ElementId::HomeCurrentDesktop => self.set_page(Page::Workspaces),
-            ElementId::HomePreviousDesktop => {
+            HomeElement::CurrentDesktop => self.set_page(Page::Workspaces),
+            HomeElement::PreviousDesktop => {
                 post_main(crate::event::AppEvent::SwitchPreviousDesktopFromUi);
             }
-            ElementId::HomeSpecial => self.activate_special_workspace(hwnd),
-            ElementId::HomeDisplayProfile => {
+            HomeElement::Special => self.activate_special_workspace(hwnd),
+            HomeElement::DisplayProfile => {
                 self.set_page(Page::Displays);
                 self.refresh_display_outputs();
             }
-            ElementId::HomeShortcutHealth => self.set_page(Page::Shortcuts),
-            ElementId::HomeDiagnostics => post_main(crate::event::AppEvent::ShowDiagnostics),
-            _ => {}
+            HomeElement::ShortcutHealth => self.set_page(Page::Shortcuts),
+            HomeElement::Diagnostics => post_main(crate::event::AppEvent::ShowDiagnostics),
         }
     }
 
-    fn activate_audio(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::InputCycleMode(index) => {
+    fn activate_audio(&mut self, hwnd: HWND, element: AudioElement) {
+        match element {
+            AudioElement::InputCycleMode(index) => {
                 if let Some(mode) = super::audio_view::cycle_mode_choice(index) {
                     self.set_cycle_mode(hwnd, DeviceCycleFlow::Input, mode);
                 }
             }
-            ElementId::OutputCycleMode(index) => {
+            AudioElement::OutputCycleMode(index) => {
                 if let Some(mode) = super::audio_view::cycle_mode_choice(index) {
                     self.set_cycle_mode(hwnd, DeviceCycleFlow::Output, mode);
                 }
             }
-            ElementId::InputCycleDevice(index) => {
+            AudioElement::InputCycleDevice(index) => {
                 self.toggle_cycle_device(hwnd, DeviceCycleFlow::Input, index as usize);
             }
-            ElementId::OutputCycleDevice(index) => {
+            AudioElement::OutputCycleDevice(index) => {
                 self.toggle_cycle_device(hwnd, DeviceCycleFlow::Output, index as usize);
             }
-            ElementId::InputDevice => Self::request_picker(PickerKind::InputDevice),
-            ElementId::OutputDevice => Self::request_picker(PickerKind::OutputDevice),
-            ElementId::InputAllowlist => Self::request_picker(PickerKind::InputAllowlist),
-            ElementId::OutputAllowlist => Self::request_picker(PickerKind::OutputAllowlist),
-            ElementId::InputRole => Self::request_picker(PickerKind::InputRole),
-            ElementId::OutputRole => Self::request_picker(PickerKind::OutputRole),
-            _ => {}
+            AudioElement::InputDevice => Self::request_picker(PickerKind::InputDevice),
+            AudioElement::OutputDevice => Self::request_picker(PickerKind::OutputDevice),
+            AudioElement::InputAllowlist => Self::request_picker(PickerKind::InputAllowlist),
+            AudioElement::OutputAllowlist => Self::request_picker(PickerKind::OutputAllowlist),
+            AudioElement::InputRole => Self::request_picker(PickerKind::InputRole),
+            AudioElement::OutputRole => Self::request_picker(PickerKind::OutputRole),
         }
     }
 
-    fn activate_display(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::DisplayProfileCard(index) => self.activate_display_profile_card(hwnd, index),
-            ElementId::DisplayOutputCard(index) => self.toggle_display_output(index),
-            ElementId::DisplayTopologyChoice(index) => self.set_display_topology(index),
-            ElementId::DisplayWizardBack => self.move_display_editor(hwnd, false),
-            ElementId::DisplayWizardNext => self.move_display_editor(hwnd, true),
-            ElementId::DisplayWizardCancel => self.cancel_display_editor(),
-            ElementId::DisplayWizardSummary => {}
-            ElementId::DisplayProfile => Self::request_picker(PickerKind::DisplayProfile),
-            ElementId::DisplayOutputs => Self::request_picker(PickerKind::DisplayOutputs),
-            ElementId::DisplayTopology => Self::request_picker(PickerKind::DisplayTopology),
-            ElementId::DisplayRoute => Self::request_picker(PickerKind::DisplayRoute),
-            ElementId::EditDisplayRoute => self.request_display_route_edit(),
-            ElementId::NewDisplayProfile | ElementId::UpdateDisplayProfile => {
-                self.start_display_editor(hwnd, id == ElementId::UpdateDisplayProfile);
+    fn activate_display(&mut self, hwnd: HWND, element: DisplayElement) {
+        match element {
+            DisplayElement::ProfilesEnabled => {
+                self.activate_config_toggle(hwnd, ElementId::DisplayProfilesEnabled)
             }
-            ElementId::EditDisplayProfile => self.start_existing_display_editor(),
-            ElementId::RenameDisplayProfile => self.request_display_profile_rename(),
-            ElementId::DuplicateDisplayProfile => self.activate_display_profile_duplicate(hwnd),
-            ElementId::TestApplyDisplayProfile => {
+            DisplayElement::ProfileCard(index) => self.activate_display_profile_card(hwnd, index),
+            DisplayElement::OutputCard(index) => self.toggle_display_output(index),
+            DisplayElement::TopologyChoice(index) => self.set_display_topology(index),
+            DisplayElement::WizardBack => self.move_display_editor(hwnd, false),
+            DisplayElement::WizardNext => self.move_display_editor(hwnd, true),
+            DisplayElement::WizardCancel => self.cancel_display_editor(),
+            DisplayElement::WizardSummary => {}
+            DisplayElement::Profile => Self::request_picker(PickerKind::DisplayProfile),
+            DisplayElement::Outputs => Self::request_picker(PickerKind::DisplayOutputs),
+            DisplayElement::Topology => Self::request_picker(PickerKind::DisplayTopology),
+            DisplayElement::Route => Self::request_picker(PickerKind::DisplayRoute),
+            DisplayElement::EditRoute => self.request_display_route_edit(),
+            DisplayElement::NewProfile => self.start_display_editor(hwnd, false),
+            DisplayElement::UpdateProfile => self.start_display_editor(hwnd, true),
+            DisplayElement::EditProfile => self.start_existing_display_editor(),
+            DisplayElement::RenameProfile => self.request_display_profile_rename(),
+            DisplayElement::DuplicateProfile => self.activate_display_profile_duplicate(hwnd),
+            DisplayElement::TestApply => {
                 if let Some(profile) = self.draft.display_profiles.active().cloned() {
                     post_main(crate::event::AppEvent::TestApplyDisplayProfile { profile });
                 }
             }
-            ElementId::ApplyDisplayProfile => {
+            DisplayElement::Apply => {
                 if let Some(profile) = self.draft.display_profiles.active().cloned() {
                     post_main(crate::event::AppEvent::ApplyDisplayProfile { profile });
                 }
             }
-            ElementId::DeleteDisplayProfile => self.activate_display_profile_delete(hwnd),
-            ElementId::KeepDisplayChange => post_main(crate::event::AppEvent::KeepDisplayProfile),
-            ElementId::UndoDisplayChange => post_main(crate::event::AppEvent::RevertDisplayProfile),
-            ElementId::DiscardDisplayEdits => {
+            DisplayElement::DeleteProfile => self.activate_display_profile_delete(hwnd),
+            DisplayElement::KeepChange => post_main(crate::event::AppEvent::KeepDisplayProfile),
+            DisplayElement::UndoChange => post_main(crate::event::AppEvent::RevertDisplayProfile),
+            DisplayElement::DiscardEdits => {
                 self.cancel_display_editor();
                 self.validation.clear();
             }
-            _ => {}
         }
     }
 
-    fn activate_shortcut(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::HotkeyCard(_) => {}
-            ElementId::HotkeyEnabled(slot) => self.toggle_hotkey_enabled(hwnd, slot),
-            ElementId::HotkeyUnassign(slot) => self.unassign_hotkey(hwnd, slot),
-            ElementId::MicHotkey
-            | ElementId::OutputHotkey
-            | ElementId::ForegroundHotkey
-            | ElementId::CycleInputHotkey
-            | ElementId::CycleOutputHotkey
-            | ElementId::ForegroundVolumeUpHotkey
-            | ElementId::ForegroundVolumeDownHotkey
-            | ElementId::PreviousDesktopHotkey
-            | ElementId::AssignScratchpadHotkey
-            | ElementId::ToggleScratchpadHotkey
-            | ElementId::DisplayProfileHotkey => {
-                self.recording = Some(id);
+    fn activate_shortcut(&mut self, hwnd: HWND, element: ShortcutElement) {
+        match element {
+            ShortcutElement::Card(_) => {}
+            ShortcutElement::Enabled(slot) => self.toggle_hotkey_enabled(hwnd, slot),
+            ShortcutElement::Unassign(slot) => self.unassign_hotkey(hwnd, slot),
+            ShortcutElement::Capture(capture) => {
+                self.recording = Some(capture.id());
                 self.recording_modifiers = ModifierMask::NONE;
                 self.validation.clear();
                 crate::keyboard::hook::begin_capture();
                 self.capture_armed = true;
                 start_timer(hwnd);
             }
-            _ => {}
         }
     }
 
-    fn activate_workspace(&mut self, id: ElementId) {
-        let picker = match id {
-            ElementId::DesktopNumberModifier => PickerKind::DesktopNumberModifier,
-            ElementId::MoveDesktopModifier => PickerKind::MoveDesktopModifier,
-            ElementId::SilentMoveDesktopModifier => PickerKind::SilentMoveDesktopModifier,
-            _ => return,
-        };
-        Self::request_picker(picker);
+    fn activate_workspace(&mut self, hwnd: HWND, element: WorkspaceElement) {
+        match element {
+            WorkspaceElement::Enabled => self.activate_config_toggle(hwnd, ElementId::DesktopsEnabled),
+            WorkspaceElement::WinNumberEnabled => {
+                self.activate_config_toggle(hwnd, ElementId::WinNumberEnabled)
+            }
+            WorkspaceElement::DesktopNumberModifier => {
+                Self::request_picker(PickerKind::DesktopNumberModifier)
+            }
+            WorkspaceElement::MoveDesktopModifier => {
+                Self::request_picker(PickerKind::MoveDesktopModifier)
+            }
+            WorkspaceElement::SilentMoveDesktopModifier => {
+                Self::request_picker(PickerKind::SilentMoveDesktopModifier)
+            }
+        }
     }
 
-    fn activate_overlay(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::OverlayPositionCell(index) => {
-                self.set_overlay_position(hwnd, index as usize);
+    fn activate_overlay(&mut self, hwnd: HWND, element: OverlayElement) {
+        match element {
+            OverlayElement::Enabled => self.activate_config_toggle(hwnd, ElementId::OverlayEnabled),
+            OverlayElement::ExternalChanges => {
+                self.activate_config_toggle(hwnd, ElementId::OverlayExternalChanges)
             }
-            ElementId::OverlayAppearance => Self::request_picker(PickerKind::OverlayAppearance),
-            ElementId::OverlayPosition => Self::request_picker(PickerKind::OverlayPosition),
-            ElementId::OverlayMonitor => Self::request_picker(PickerKind::OverlayMonitor),
-            ElementId::OverlayPreview => post_main(crate::event::AppEvent::PreviewOverlay {
+            OverlayElement::PositionCell(index) => self.set_overlay_position(hwnd, index as usize),
+            OverlayElement::Appearance => Self::request_picker(PickerKind::OverlayAppearance),
+            OverlayElement::Position => Self::request_picker(PickerKind::OverlayPosition),
+            OverlayElement::Monitor => Self::request_picker(PickerKind::OverlayMonitor),
+            OverlayElement::Preview => post_main(crate::event::AppEvent::PreviewOverlay {
                 config: self.draft.overlay.clone(),
             }),
-            ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale => {}
-            _ => {}
+            OverlayElement::Duration | OverlayElement::Opacity | OverlayElement::Scale => {}
         }
     }
 
-    fn activate_system(&mut self, hwnd: HWND, id: ElementId) {
-        match id {
-            ElementId::StartWithWindows => self.toggle_startup_registration(hwnd),
-            ElementId::DebugLogging => self.toggle_debug_logging(hwnd, id),
-            ElementId::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
-            ElementId::OpenConfigFolder => open_config_folder(),
-            ElementId::ResetSettings => self.activate_reset_settings(hwnd),
-            _ => {}
+    fn activate_system(&mut self, hwnd: HWND, element: SystemElement) {
+        match element {
+            SystemElement::StartWithWindows => self.toggle_startup_registration(hwnd),
+            SystemElement::StartHotkeysEnabled => {
+                self.activate_config_toggle(hwnd, ElementId::StartHotkeysEnabled)
+            }
+            SystemElement::DebugLogging => self.toggle_debug_logging(hwnd, ElementId::DebugLogging),
+            SystemElement::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
+            SystemElement::OpenConfigFolder => open_config_folder(),
+            SystemElement::ResetSettings => self.activate_reset_settings(hwnd),
         }
     }
 

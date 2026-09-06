@@ -6,6 +6,7 @@ mod builder;
 mod chrome;
 mod display_wizard;
 mod displays;
+mod domain;
 mod geometry;
 mod home;
 mod model;
@@ -24,6 +25,10 @@ mod legacy;
 #[cfg(test)]
 pub(crate) use chrome::brand_row_geometry;
 pub(crate) use chrome::{top_chrome_geometry, top_chrome_separator_rect, TopChromeGeometry};
+pub(crate) use domain::{
+    AudioElement, DisplayElement, ElementDomain, HomeElement, OverlayElement, ShellElement,
+    ShortcutCaptureElement, ShortcutElement, SystemElement, WorkspaceElement,
+};
 pub(crate) use geometry::Rect;
 pub(crate) use model::{Element, ElementId, ElementKind, HotkeySlot, LayoutContext, RegionKind};
 pub(crate) use overlay::{overlay_placement_geometry, overlay_preview_canvas_rect};
