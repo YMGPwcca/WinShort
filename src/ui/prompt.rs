@@ -1,114 +1,101 @@
-//! Small accessible native text prompts used by Display Profile workflows.
-
+use crate::error::{Error, Result};
+use crate::event::{self, AppEvent};
+use crate::platform::window as win;
+use std::cell::RefCell;
 use std::sync::OnceLock;
-
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::{DEFAULT_GUI_FONT, GetStockObject, HFONT};
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
-use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, CREATESTRUCTW, HMENU,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-    WM_CREATE, WM_KEYDOWN, WM_NCDESTROY, WM_SETFOCUS, WM_SIZE, WS_BORDER, WS_CAPTION, WS_CHILD,
-    WS_EX_DLGMODALFRAME, WS_EX_TOOLWINDOW, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, DestroyWindow, GetWindowTextLengthW, GetWindowTextW, MoveWindow, SendMessageW,
+    SetWindowTextW, ShowWindow, BN_CLICKED, CW_USEDEFAULT, ES_AUTOHSCROLL, HMENU, SW_SHOW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_SETFONT,
+    WM_SIZE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE,
 };
 
-use crate::platform::window as win;
-
-const CLASS_NAME: &str = "WinShort.DisplayProfilePrompt";
-const EDIT_ID: usize = 1;
-const OK_ID: usize = 2;
-const CANCEL_ID: usize = 3;
-const WIDTH: i32 = 440;
-const HEIGHT: i32 = 150;
-const EDIT_SUBCLASS_ID: usize = 1;
-#[derive(Debug, Clone)]
-pub enum PromptAction {
-    RenameProfile {
-        profile_id: String,
-    },
-    EditRoute {
-        profile_id: String,
-        route_index: usize,
-    },
-}
+const CLASS_NAME: &str = "WinShort.TextPrompt";
+const IDC_EDIT: usize = 100;
+const IDC_OK: usize = 101;
+const IDC_CANCEL: usize = 102;
+const VK_RETURN: u32 = 0x0D;
+const VK_ESCAPE: u32 = 0x1B;
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 
-struct PromptUi {
-    action: PromptAction,
-    accept_label: String,
-    edit: HWND,
-    closing: bool,
+#[derive(Debug, Clone)]
+pub(crate) enum PromptAction {
+    RenameProfile { profile_id: String },
+    EditRoute { profile_id: String, route_index: usize },
 }
 
-pub struct TextPrompt {
-    pub hwnd: HWND,
+struct PromptState {
+    action: PromptAction,
+    edit: HWND,
+    ok: HWND,
+    cancel: HWND,
+    submit_text: String,
+}
+
+pub(crate) struct TextPrompt {
+    hwnd: HWND,
 }
 
 impl TextPrompt {
-    pub fn create(
-        parent: HWND,
+    pub(crate) fn create(
+        owner: HWND,
         action: PromptAction,
         title: &str,
-        accept_label: &str,
-        initial_name: &str,
-    ) -> crate::error::Result<Self> {
+        submit_text: &str,
+        initial: &str,
+    ) -> Result<Self> {
         let _atom = win::register_class_once(&REGISTERED, CLASS_NAME, Some(prompt_wndproc))?;
-        let mut parent_rect = RECT::default();
-        unsafe {
-            let _ = GetWindowRect(parent, &mut parent_rect);
-        }
-        let x = parent_rect.left + ((parent_rect.right - parent_rect.left) - WIDTH) / 2;
-        let y = parent_rect.top + ((parent_rect.bottom - parent_rect.top) - HEIGHT) / 2;
-        let mut state = win::WindowCreation::new(PromptUi {
+        let mut state = win::WindowCreation::new(PromptState {
             action,
-            accept_label: accept_label.into(),
             edit: HWND::default(),
-            closing: false,
+            ok: HWND::default(),
+            cancel: HWND::default(),
+            submit_text: submit_text.into(),
         });
         let hwnd = unsafe {
             CreateWindowExW(
-                WINDOW_EX_STYLE(WS_EX_DLGMODALFRAME.0 | WS_EX_TOOLWINDOW.0),
+                WS_EX_TOOLWINDOW,
                 PCWSTR(HSTRING::from(CLASS_NAME).as_ptr()),
                 PCWSTR(HSTRING::from(title).as_ptr()),
-                WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0),
-                x,
-                y,
-                WIDTH,
-                HEIGHT,
-                Some(parent),
+                WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                520,
+                168,
+                Some(owner),
                 None,
                 None,
                 Some(state.parameter()),
             )
         }
-        .map_err(|error| {
-            crate::error::Error::win("CreateWindowExW(display profile prompt)", &error)
-        })?;
+        .map_err(|error| Error::win("CreateWindowExW(text prompt)", &error))?;
         // SAFETY: this constructor exclusively owns the newly created HWND.
         let construction = unsafe { win::WindowConstructionGuard::new(hwnd) };
-        let prompt = Self {
-            hwnd: construction.complete(),
+        let Some(cell) = (unsafe { win::state_cell::<PromptState>(hwnd) }) else {
+            return Err(Error::internal("text prompt state missing"));
         };
-        if let Some(cell) = unsafe { win::state_cell::<PromptUi>(prompt.hwnd) } {
-            let edit = cell.borrow().edit;
-            let initial = HSTRING::from(initial_name);
-            unsafe {
-                let _ = SetWindowTextW(edit, PCWSTR(initial.as_ptr()));
-            }
-        }
+        let edit = cell.borrow().edit;
+        let initial = HSTRING::from(initial);
         unsafe {
-            let _ = ShowWindow(prompt.hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(prompt.hwnd);
+            if SetWindowTextW(edit, PCWSTR(initial.as_ptr())).is_err() {
+                crate::warn_!("could not initialize text prompt contents");
+            }
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetFocus(Some(edit));
         }
-        Ok(prompt)
+        let hwnd = construction.complete();
+        Ok(Self { hwnd })
     }
 
-    pub fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         if !self.hwnd.0.is_null() {
-            unsafe {
-                let _ = DestroyWindow(self.hwnd);
+            if unsafe { DestroyWindow(self.hwnd) }.is_err() {
+                crate::warn_!("could not destroy text prompt window");
             }
             self.hwnd = HWND::default();
         }
@@ -127,225 +114,230 @@ unsafe extern "system" fn prompt_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == windows::Win32::UI::WindowsAndMessaging::WM_NCCREATE {
-        // SAFETY: WM_NCCREATE supplies the live creation slot passed to CreateWindowExW.
-        let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
-        // SAFETY: ownership transfers to the window state slot exactly once.
-        let Some(state) =
-            (unsafe { win::WindowCreation::<PromptUi>::take_from(create.lpCreateParams) })
-        else {
-            return LRESULT(0);
-        };
-        win::store_state_ptr(hwnd, win::WindowState::new(state));
-        return win::def_proc(hwnd, msg, wparam, lparam);
-    }
-    let Some(cell) = (unsafe { win::state_cell::<PromptUi>(hwnd) }) else {
-        return win::def_proc(hwnd, msg, wparam, lparam);
-    };
-    if msg == WM_NCDESTROY {
-        // SAFETY: this is the matching exactly-once state teardown.
-        unsafe {
-            drop(win::take_state::<PromptUi>(hwnd));
-        }
-        return win::def_proc(hwnd, msg, wparam, lparam);
-    }
     match msg {
-        WM_CREATE => {
-            let edit = match unsafe {
-                CreateWindowExW(
-                    WINDOW_EX_STYLE::default(),
-                    PCWSTR(HSTRING::from("EDIT").as_ptr()),
-                    PCWSTR(HSTRING::from("").as_ptr()),
-                    WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | WS_TABSTOP.0 | 0x0080),
-                    12,
-                    14,
-                    WIDTH - 36,
-                    28,
-                    Some(hwnd),
-                    Some(HMENU(EDIT_ID as *mut _)),
-                    None,
-                    None,
-                )
-            } {
-                Ok(edit) => edit,
-                Err(_) => return LRESULT(-1),
-            };
-            cell.borrow_mut().edit = edit;
-            let accept_label = cell.borrow().accept_label.clone();
-            let ok = match unsafe {
-                CreateWindowExW(
-                    WINDOW_EX_STYLE::default(),
-                    PCWSTR(HSTRING::from("BUTTON").as_ptr()),
-                    PCWSTR(HSTRING::from(accept_label.as_str()).as_ptr()),
-                    WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | 0x0001),
-                    WIDTH - 220,
-                    66,
-                    92,
-                    30,
-                    Some(hwnd),
-                    Some(HMENU(OK_ID as *mut _)),
-                    None,
-                    None,
-                )
-            } {
-                Ok(ok) => ok,
-                Err(_) => return LRESULT(-1),
-            };
-            let cancel = match unsafe {
-                CreateWindowExW(
-                    WINDOW_EX_STYLE::default(),
-                    PCWSTR(HSTRING::from("BUTTON").as_ptr()),
-                    PCWSTR(HSTRING::from("Cancel").as_ptr()),
-                    WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0),
-                    WIDTH - 118,
-                    66,
-                    92,
-                    30,
-                    Some(hwnd),
-                    Some(HMENU(CANCEL_ID as *mut _)),
-                    None,
-                    None,
-                )
-            } {
-                Ok(cancel) => cancel,
-                Err(_) => return LRESULT(-1),
-            };
-            if edit.0.is_null() || ok.0.is_null() || cancel.0.is_null() {
-                return LRESULT(-1);
-            }
-            unsafe {
-                let _ = SetWindowSubclass(
-                    edit,
-                    Some(prompt_edit_subclass),
-                    EDIT_SUBCLASS_ID,
-                    hwnd.0 as usize,
-                );
-            }
-            unsafe {
-                let _ = SetFocus(Some(edit));
-            }
-            LRESULT(0)
-        }
-        WM_SETFOCUS => {
-            let edit = cell.borrow().edit;
-            unsafe {
-                let _ = SetFocus(Some(edit));
-            }
-            LRESULT(0)
-        }
-        WM_SIZE => {
-            let width = (lparam.0 as u32 & 0xFFFF) as i32;
-            let edit = cell.borrow().edit;
-            unsafe {
-                let _ = SetWindowPos(
-                    edit,
-                    None,
-                    12,
-                    14,
-                    width.saturating_sub(36),
-                    28,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-            }
-            LRESULT(0)
-        }
-        WM_COMMAND => {
-            let command = wparam.0 & 0xFFFF;
-            if command == OK_ID {
-                submit(hwnd, cell);
-                LRESULT(0)
-            } else if command == CANCEL_ID {
-                cancel(hwnd, cell);
-                LRESULT(0)
-            } else {
-                win::def_proc(hwnd, msg, wparam, lparam)
-            }
-        }
-        WM_CLOSE => {
-            cancel(hwnd, cell);
-            LRESULT(0)
-        }
-        _ => win::def_proc(hwnd, msg, wparam, lparam),
-    }
-}
-unsafe extern "system" fn prompt_edit_subclass(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _subclass_id: usize,
-    ref_data: usize,
-) -> LRESULT {
-    let parent = HWND(ref_data as *mut _);
-    match msg {
-        WM_KEYDOWN if wparam.0 as u16 == 0x0D => {
-            if let Some(cell) = unsafe { win::state_cell::<PromptUi>(parent) } {
-                submit(parent, cell);
-            }
-            LRESULT(0)
-        }
-        WM_KEYDOWN if wparam.0 as u16 == 0x1B => {
-            if let Some(cell) = unsafe { win::state_cell::<PromptUi>(parent) } {
-                cancel(parent, cell);
-            }
-            LRESULT(0)
-        }
-        windows::Win32::UI::WindowsAndMessaging::WM_NCDESTROY => unsafe {
-            let _ = RemoveWindowSubclass(hwnd, Some(prompt_edit_subclass), EDIT_SUBCLASS_ID);
-            DefSubclassProc(hwnd, msg, wparam, lparam)
+        WM_CREATE => handle_create(hwnd, lparam),
+        WM_COMMAND => handle_command(hwnd, wparam),
+        WM_KEYDOWN => handle_keydown(hwnd, wparam),
+        WM_SIZE => handle_resize(hwnd),
+        WM_CLOSE => close_prompt(hwnd),
+        WM_DESTROY => handle_destroy(hwnd),
+        _ => unsafe {
+            windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
         },
-        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
     }
 }
 
-fn submit(hwnd: HWND, cell: &std::cell::RefCell<PromptUi>) {
-    let (edit, action, closing) = {
-        let state = cell.borrow();
-        (state.edit, state.action.clone(), state.closing)
-    };
-    if closing {
-        return;
+fn state_cell(hwnd: HWND) -> Option<&'static RefCell<PromptState>> {
+    // SAFETY: only called while the prompt HWND is alive on its owning UI
+    // thread. WM_NCDESTROY cleanup is owned by the shared window plumbing.
+    unsafe { win::state_cell::<PromptState>(hwnd) }
+}
+
+fn handle_create(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    if unsafe { win::install_state_from_create::<PromptState>(hwnd, lparam) }.is_none() {
+        return LRESULT(-1);
     }
-    let length = unsafe { GetWindowTextLengthW(edit) }.max(0) as usize;
-    let mut buffer = vec![0u16; length + 1];
-    unsafe {
-        let _ = GetWindowTextW(edit, &mut buffer);
-    }
-    let value = String::from_utf16_lossy(&buffer[..length]);
-    if value.trim().is_empty() {
-        return;
-    }
-    cell.borrow_mut().closing = true;
-    match action {
-        PromptAction::RenameProfile { profile_id } => {
-            crate::event::post_main(crate::event::AppEvent::DisplayProfileRenameSubmitted {
-                profile_id,
-                name: value,
-            });
+    match create_children(hwnd) {
+        Ok(()) => LRESULT(0),
+        Err(error) => {
+            crate::error_!("text prompt child creation failed: {error}");
+            LRESULT(-1)
         }
+    }
+}
+
+fn create_children(hwnd: HWND) -> Result<()> {
+    let Some(cell) = state_cell(hwnd) else {
+        return Err(Error::internal("text prompt state missing during create"));
+    };
+    let submit_text = cell.borrow().submit_text.clone();
+    let edit = create_child(
+        hwnd,
+        "EDIT",
+        "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        IDC_EDIT,
+    )?;
+    let ok = create_child(
+        hwnd,
+        "BUTTON",
+        &submit_text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        IDC_OK,
+    )?;
+    let cancel = create_child(
+        hwnd,
+        "BUTTON",
+        "Cancel",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        IDC_CANCEL,
+    )?;
+    apply_default_font(edit);
+    apply_default_font(ok);
+    apply_default_font(cancel);
+    {
+        let mut state = cell.borrow_mut();
+        state.edit = edit;
+        state.ok = ok;
+        state.cancel = cancel;
+    }
+    layout_children(hwnd, edit, ok, cancel);
+    Ok(())
+}
+
+fn create_child(
+    parent: HWND,
+    class: &str,
+    text: &str,
+    style: WINDOW_STYLE,
+    id: usize,
+) -> Result<HWND> {
+    unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            PCWSTR(HSTRING::from(class).as_ptr()),
+            PCWSTR(HSTRING::from(text).as_ptr()),
+            style,
+            0,
+            0,
+            10,
+            10,
+            Some(parent),
+            Some(HMENU(id as *mut _)),
+            None,
+            None,
+        )
+    }
+    .map_err(|error| Error::win("CreateWindowExW(text prompt child)", &error))
+}
+
+fn apply_default_font(hwnd: HWND) {
+    if let Ok(font) = unsafe { GetStockObject(DEFAULT_GUI_FONT) } {
+        let hfont = HFONT(font.0);
+        unsafe {
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETFONT,
+                Some(WPARAM(hfont.0 as usize)),
+                Some(LPARAM(1)),
+            );
+        }
+    }
+}
+
+fn handle_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    if hiword(wparam.0) != BN_CLICKED as u16 {
+        return LRESULT(0);
+    }
+    match loword(wparam.0) as usize {
+        IDC_OK => submit_prompt(hwnd),
+        IDC_CANCEL => close_prompt(hwnd),
+        _ => LRESULT(0),
+    }
+}
+
+fn handle_keydown(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    match wparam.0 as u32 {
+        VK_RETURN => submit_prompt(hwnd),
+        VK_ESCAPE => close_prompt(hwnd),
+        _ => LRESULT(0),
+    }
+}
+
+fn submit_prompt(hwnd: HWND) -> LRESULT {
+    let Some(cell) = state_cell(hwnd) else {
+        return LRESULT(0);
+    };
+    // Copy everything needed before posting or destroying; those operations can
+    // synchronously re-enter native window code.
+    let (action, edit) = {
+        let state = cell.borrow();
+        (state.action.clone(), state.edit)
+    };
+    let text = read_window_text(edit);
+    let event = match action {
+        PromptAction::RenameProfile { profile_id } => AppEvent::DisplayProfileRenameSubmitted {
+            profile_id,
+            name: text,
+        },
         PromptAction::EditRoute {
             profile_id,
             route_index,
-        } => {
-            crate::event::post_main(crate::event::AppEvent::DisplayProfileRouteEditSubmitted {
-                profile_id,
-                route_index,
-                value,
-            });
-        }
+        } => AppEvent::DisplayProfileRouteEditSubmitted {
+            profile_id,
+            route_index,
+            value: text,
+        },
+    };
+    event::post_main(event);
+    close_prompt(hwnd)
+}
+
+fn read_window_text(hwnd: HWND) -> String {
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return String::new();
     }
+    let mut buffer = vec![0u16; len as usize + 1];
+    let copied = unsafe { GetWindowTextW(hwnd, &mut buffer) };
+    if copied <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..copied as usize])
+}
+
+fn handle_resize(hwnd: HWND) -> LRESULT {
+    let Some(cell) = state_cell(hwnd) else {
+        return LRESULT(0);
+    };
+    let (edit, ok, cancel) = {
+        let state = cell.borrow();
+        (state.edit, state.ok, state.cancel)
+    };
+    layout_children(hwnd, edit, ok, cancel);
+    LRESULT(0)
+}
+
+fn layout_children(hwnd: HWND, edit: HWND, ok: HWND, cancel: HWND) {
+    let mut rect = windows::Win32::Foundation::RECT::default();
+    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) }.is_err() {
+        return;
+    }
+    let width = (rect.right - rect.left).max(0);
+    let button_width = 96;
+    let gap = 10;
     unsafe {
-        let _ = DestroyWindow(hwnd);
+        let _ = MoveWindow(edit, 16, 18, (width - 32).max(10), 30, true);
+        let _ = MoveWindow(cancel, width - 16 - button_width, 70, button_width, 32, true);
+        let _ = MoveWindow(
+            ok,
+            width - 16 - button_width * 2 - gap,
+            70,
+            button_width,
+            32,
+            true,
+        );
     }
 }
 
-fn cancel(hwnd: HWND, cell: &std::cell::RefCell<PromptUi>) {
-    if cell.borrow().closing {
-        return;
+fn close_prompt(hwnd: HWND) -> LRESULT {
+    if unsafe { DestroyWindow(hwnd) }.is_err() {
+        crate::warn_!("could not destroy text prompt window");
     }
-    cell.borrow_mut().closing = true;
-    crate::event::post_main(crate::event::AppEvent::DisplayProfileRenameCancelled);
+    LRESULT(0)
+}
+
+fn handle_destroy(hwnd: HWND) -> LRESULT {
     unsafe {
-        let _ = DestroyWindow(hwnd);
+        win::drop_state::<PromptState>(hwnd);
     }
+    LRESULT(0)
+}
+
+fn loword(value: usize) -> u16 {
+    (value & 0xFFFF) as u16
+}
+
+fn hiword(value: usize) -> u16 {
+    ((value >> 16) & 0xFFFF) as u16
 }
