@@ -274,7 +274,11 @@ impl SettingsUi {
             ),
             SystemElement::DebugLogging => self.toggle_debug_logging(hwnd, ElementId::DebugLogging),
             SystemElement::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
-            SystemElement::OpenConfigFolder => open_config_folder(),
+            SystemElement::OpenConfigFolder => {
+                if let Err(error) = open_config_folder() {
+                    crate::error_!("open config folder failed: {error}");
+                }
+            }
             SystemElement::ResetSettings => self.activate_reset_settings(hwnd),
         }
     }

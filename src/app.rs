@@ -688,7 +688,11 @@ impl App {
             settings.set_display_rollback_state(active, keep_available);
             settings.set_runtime_snapshot(runtime);
         }
-        Ok(self.settings.as_mut().expect("just created"))
+        self.settings.as_mut().ok_or_else(|| {
+            crate::error::Error::internal(
+                "Control Center state missing after successful window construction",
+            )
+        })
     }
 
     pub fn show_settings(&mut self) {
@@ -712,7 +716,11 @@ impl App {
             self.diagnostics = Some(crate::ui::diagnostics::DiagnosticsWindow::create(snapshot)?);
             info!("diagnostics window created");
         }
-        Ok(self.diagnostics.as_mut().expect("just created"))
+        self.diagnostics.as_mut().ok_or_else(|| {
+            crate::error::Error::internal(
+                "Diagnostics state missing after successful window construction",
+            )
+        })
     }
 
     pub fn show_diagnostics(&mut self) {
@@ -906,8 +914,8 @@ impl App {
                     },
                 };
                 let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
-                unsafe {
-                    let _ = crate::event::post_event(hwnd, event);
+                if !unsafe { crate::event::post_event(hwnd, event) } {
+                    crate::warn_!("support bundle completion queued but main-window wake failed");
                 }
             }) {
             Ok(join) => self.support_bundle = Some(join),
@@ -1433,7 +1441,9 @@ impl App {
         }
         self.foreground.take();
         if let Some(join) = self.support_bundle.take() {
-            let _ = join.join();
+            if join.join().is_err() {
+                crate::error_!("support bundle worker panicked during shutdown");
+            }
         }
         if let Some(diagnostics) = self.diagnostics.take() {
             unsafe {
@@ -1461,12 +1471,16 @@ impl App {
         // Never DestroyWindow the borrowed main window here (reentrancy);
         // post WM_CLOSE so destruction happens outside any App borrow.
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            if windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                 Some(self.hwnd),
                 windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
                 windows::Win32::Foundation::WPARAM(0),
                 windows::Win32::Foundation::LPARAM(0),
-            );
+            )
+            .is_err()
+            {
+                crate::warn_!("failed to post main-window close after shutdown cleanup");
+            }
         }
         true
     }

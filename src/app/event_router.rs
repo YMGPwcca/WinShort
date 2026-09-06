@@ -89,7 +89,9 @@ impl App {
             DiagnosticsEvent::CreateSupportBundle => self.start_support_bundle(),
             DiagnosticsEvent::SupportBundleFinished { path, error } => {
                 if let Some(join) = self.support_bundle.take() {
-                    let _ = join.join();
+                    if join.join().is_err() {
+                        crate::error_!("support bundle worker panicked before completion cleanup");
+                    }
                 }
                 if let Some(window) = &mut self.diagnostics {
                     window.set_bundle_running(false);

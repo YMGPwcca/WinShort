@@ -531,10 +531,15 @@ pub unsafe fn post_event(hwnd: windows::Win32::Foundation::HWND, ev: AppEvent) -
 }
 
 pub(crate) fn post_main(ev: AppEvent) {
-    if let Some(hwnd) = crate::app::main_hwnd() {
-        unsafe {
-            let _ = post_event(hwnd, ev);
-        }
+    let kind = std::mem::discriminant(&ev);
+    let Some(hwnd) = crate::app::main_hwnd() else {
+        crate::warn_!("dropping app event {kind:?}: main window is unavailable");
+        return;
+    };
+    // `post_event` queues before waking. A failed wake therefore delays delivery
+    // until another wake succeeds; it does not justify silently losing evidence.
+    if !unsafe { post_event(hwnd, ev) } {
+        crate::warn_!("app event {kind:?} queued but main-window wake failed");
     }
 }
 
