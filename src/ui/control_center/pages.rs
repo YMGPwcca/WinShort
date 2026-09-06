@@ -4,7 +4,10 @@ use super::overlay_preview::{overlay_position, overlay_position_label};
 use super::state::SettingsUi;
 use crate::ui::controls;
 use crate::ui::controls::ControlValue;
-use crate::ui::layout::{ElementId, ElementKind};
+use crate::ui::layout::{
+    AudioElement, DisplayElement, ElementDomain, ElementKind, HomeElement, OverlayElement,
+    ShellElement, ShortcutElement, SystemElement, WorkspaceElement,
+};
 use crate::ui::navigation::Page;
 use crate::ui::renderer::Renderer;
 
@@ -29,73 +32,62 @@ impl SettingsUi {
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
     ) {
-        match element.id {
-            ElementId::HomeSpeaker
-            | ElementId::HomeMicrophone
-            | ElementId::HomeCurrentDesktop
-            | ElementId::HomePreviousDesktop
-            | ElementId::HomeSpecial
-            | ElementId::HomeDisplayProfile
-            | ElementId::HomeShortcutHealth
-            | ElementId::HomeDiagnostics => {
-                self.draw_home_element(renderer, element, interaction);
+        match element.id.domain() {
+            ElementDomain::Shell(domain) => {
+                self.draw_shell_element(renderer, element, interaction, domain)
             }
-            ElementId::DisplayProfileCard(_)
-            | ElementId::DisplayOutputCard(_)
-            | ElementId::DisplayTopologyChoice(_)
-            | ElementId::RenameDisplayProfile
-            | ElementId::DisplayWizardBack
-            | ElementId::DisplayWizardNext
-            | ElementId::DisplayWizardCancel
-            | ElementId::EditDisplayProfile
-            | ElementId::NewDisplayProfile
-            | ElementId::UpdateDisplayProfile
-            | ElementId::DuplicateDisplayProfile
-            | ElementId::DeleteDisplayProfile
-            | ElementId::TestApplyDisplayProfile
-            | ElementId::ApplyDisplayProfile
-            | ElementId::KeepDisplayChange
-            | ElementId::UndoDisplayChange
-            | ElementId::DiscardDisplayEdits => {
-                self.draw_display_element(renderer, element, interaction);
+            ElementDomain::Home(domain) => {
+                self.draw_home_element(renderer, element, interaction, domain)
             }
-            ElementId::HotkeyCard(_)
-            | ElementId::HotkeyEnabled(_)
-            | ElementId::HotkeyUnassign(_)
-            | ElementId::MicHotkey
-            | ElementId::OutputHotkey
-            | ElementId::ForegroundHotkey
-            | ElementId::CycleInputHotkey
-            | ElementId::CycleOutputHotkey
-            | ElementId::ForegroundVolumeUpHotkey
-            | ElementId::ForegroundVolumeDownHotkey
-            | ElementId::PreviousDesktopHotkey
-            | ElementId::AssignScratchpadHotkey
-            | ElementId::ToggleScratchpadHotkey
-            | ElementId::DisplayProfileHotkey => {
-                self.draw_shortcut_element(renderer, element, interaction);
+            ElementDomain::Audio(domain) => {
+                self.draw_audio_element(renderer, element, interaction, domain)
             }
-            ElementId::InputDevice
-            | ElementId::OutputDevice
-            | ElementId::InputCycleMode(_)
-            | ElementId::OutputCycleMode(_)
-            | ElementId::InputCycleDevice(_)
-            | ElementId::OutputCycleDevice(_) => {
-                self.draw_audio_element(renderer, element, interaction);
+            ElementDomain::Displays(domain) => {
+                self.draw_display_element(renderer, element, interaction, domain)
             }
-            ElementId::OverlayPositionCell(index) => controls::draw_position_cell(
-                renderer,
-                element,
-                overlay_position_label(index as usize),
-                self.draft.overlay.position == overlay_position(index as usize),
-                interaction,
-            ),
-            ElementId::OverlayPreview => {
-                self.paint_display_wizard_back(renderer, element, interaction);
+            ElementDomain::Shortcuts(domain) => {
+                self.draw_shortcut_element(renderer, element, interaction, domain)
             }
-            _ if matches!(element.kind, ElementKind::Card | ElementKind::Info) => {}
-            _ if element.id.is_shell_chrome() => {}
+            ElementDomain::Workspaces(domain) => {
+                self.draw_workspace_element(renderer, element, interaction, domain)
+            }
+            ElementDomain::Overlay(domain) => {
+                self.draw_overlay_element(renderer, element, interaction, domain)
+            }
+            ElementDomain::System(domain) => {
+                self.draw_system_element(renderer, element, interaction, domain)
+            }
+        }
+    }
+
+    fn draw_standard_element(
+        &self,
+        renderer: &Renderer,
+        element: &crate::ui::layout::Element,
+        interaction: controls::Interaction,
+    ) {
+        match element.kind {
+            ElementKind::Card | ElementKind::Info => {}
             _ => controls::draw_row(renderer, element, self.value_for(element.id), interaction),
+        }
+    }
+
+    fn draw_shell_element(
+        &self,
+        renderer: &Renderer,
+        element: &crate::ui::layout::Element,
+        interaction: controls::Interaction,
+        domain: ShellElement,
+    ) {
+        match domain {
+            ShellElement::Search
+            | ShellElement::Nav(_)
+            | ShellElement::SearchResult(_)
+            | ShellElement::WindowClose => {}
+            ShellElement::OnboardingContinue
+            | ShellElement::OnboardingOpen
+            | ShellElement::Cancel
+            | ShellElement::Save => self.draw_standard_element(renderer, element, interaction),
         }
     }
 
@@ -104,13 +96,12 @@ impl SettingsUi {
         renderer: &Renderer,
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
+        domain: HomeElement,
     ) {
-        match element.id {
-            ElementId::HomeSpeaker => self.paint_home_speaker(renderer, element, interaction),
-            ElementId::HomeMicrophone => {
-                self.paint_home_microphone(renderer, element, interaction);
-            }
-            ElementId::HomeCurrentDesktop => {
+        match domain {
+            HomeElement::Speaker => self.paint_home_speaker(renderer, element, interaction),
+            HomeElement::Microphone => self.paint_home_microphone(renderer, element, interaction),
+            HomeElement::CurrentDesktop => {
                 let value = self.runtime.desktop.current_desktop.map_or_else(
                     || "Desktop status unavailable".into(),
                     |index| format!("Desktop {}", index + 1),
@@ -126,10 +117,10 @@ impl SettingsUi {
                     interaction,
                 );
             }
-            ElementId::HomePreviousDesktop => {
-                controls::draw_row(renderer, element, self.value_for(element.id), interaction);
+            HomeElement::PreviousDesktop => {
+                self.draw_standard_element(renderer, element, interaction);
             }
-            ElementId::HomeSpecial => {
+            HomeElement::Special => {
                 let (value, detail, action) = self.special_workspace_summary();
                 controls::draw_home_card(
                     renderer,
@@ -142,10 +133,10 @@ impl SettingsUi {
                     interaction,
                 );
             }
-            ElementId::HomeDisplayProfile => {
+            HomeElement::DisplayProfile => {
                 self.paint_home_display_profile(renderer, element, interaction);
             }
-            ElementId::HomeShortcutHealth => {
+            HomeElement::ShortcutHealth => {
                 let (value, detail, action) = self.shortcut_health_copy();
                 controls::draw_home_card(
                     renderer,
@@ -158,7 +149,7 @@ impl SettingsUi {
                     interaction,
                 );
             }
-            ElementId::HomeDiagnostics => {
+            HomeElement::Diagnostics => {
                 let (title, value, detail) = self.home_diagnostics_copy();
                 controls::draw_home_card(
                     renderer,
@@ -171,7 +162,50 @@ impl SettingsUi {
                     interaction,
                 );
             }
-            _ => {}
+        }
+    }
+
+    fn draw_audio_element(
+        &self,
+        renderer: &Renderer,
+        element: &crate::ui::layout::Element,
+        interaction: controls::Interaction,
+        domain: AudioElement,
+    ) {
+        match domain {
+            AudioElement::InputDevice => {
+                let presentation = self
+                    .audio_view()
+                    .selection(crate::audio::DeviceCycleFlow::Input);
+                controls::draw_device_row(renderer, element, &presentation, interaction);
+            }
+            AudioElement::OutputDevice => {
+                let presentation = self
+                    .audio_view()
+                    .selection(crate::audio::DeviceCycleFlow::Output);
+                controls::draw_device_row(renderer, element, &presentation, interaction);
+            }
+            AudioElement::InputCycleMode(_) | AudioElement::OutputCycleMode(_) => {
+                controls::draw_choice(
+                    renderer,
+                    element,
+                    self.choice_selected(element.id),
+                    interaction,
+                    true,
+                );
+            }
+            AudioElement::InputCycleDevice(index) => {
+                self.paint_input_cycle_device(renderer, element, interaction, index);
+            }
+            AudioElement::OutputCycleDevice(index) => {
+                self.paint_output_cycle_device(renderer, element, interaction, index);
+            }
+            AudioElement::InputAllowlist
+            | AudioElement::OutputAllowlist
+            | AudioElement::InputRole
+            | AudioElement::OutputRole => {
+                self.draw_standard_element(renderer, element, interaction);
+            }
         }
     }
 
@@ -180,22 +214,23 @@ impl SettingsUi {
         renderer: &Renderer,
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
+        domain: DisplayElement,
     ) {
-        match element.id {
-            ElementId::DisplayProfileCard(index) => {
+        match domain {
+            DisplayElement::ProfileCard(index) => {
                 if let Some(card) = self.profile_card_data(index as usize) {
                     controls::draw_profile_card(renderer, element.rect, &card, interaction);
                 }
             }
-            ElementId::DisplayOutputCard(index) => {
+            DisplayElement::OutputCard(index) => {
                 if let Some(card) = self.display_output_card_data(index as usize) {
                     controls::draw_display_route_card(renderer, element, &card, interaction);
                 }
             }
-            ElementId::DisplayTopologyChoice(index) => {
+            DisplayElement::TopologyChoice(index) => {
                 self.paint_display_topology_choice(renderer, element, interaction, index);
             }
-            ElementId::RenameDisplayProfile => {
+            DisplayElement::RenameProfile => {
                 let name = self
                     .draft
                     .display_profiles
@@ -204,7 +239,50 @@ impl SettingsUi {
                     .unwrap_or("No profile selected");
                 controls::draw_profile_name_row(renderer, element, name, interaction);
             }
-            _ => self.paint_display_wizard_back(renderer, element, interaction),
+            DisplayElement::NewProfile | DisplayElement::TestApply => self.paint_action_element(
+                renderer,
+                element,
+                interaction,
+                controls::ButtonStyle::Primary,
+                true,
+            ),
+            DisplayElement::WizardNext | DisplayElement::KeepChange => self.paint_action_element(
+                renderer,
+                element,
+                interaction,
+                controls::ButtonStyle::Primary,
+                false,
+            ),
+            DisplayElement::DeleteProfile | DisplayElement::DiscardEdits => self
+                .paint_action_element(
+                    renderer,
+                    element,
+                    interaction,
+                    controls::ButtonStyle::Danger,
+                    false,
+                ),
+            DisplayElement::WizardBack
+            | DisplayElement::WizardCancel
+            | DisplayElement::EditProfile
+            | DisplayElement::UpdateProfile
+            | DisplayElement::DuplicateProfile
+            | DisplayElement::Apply
+            | DisplayElement::UndoChange => self.paint_action_element(
+                renderer,
+                element,
+                interaction,
+                controls::ButtonStyle::Secondary,
+                false,
+            ),
+            DisplayElement::WizardSummary
+            | DisplayElement::ProfilesEnabled
+            | DisplayElement::Profile
+            | DisplayElement::Outputs
+            | DisplayElement::Topology
+            | DisplayElement::Route
+            | DisplayElement::EditRoute => {
+                self.draw_standard_element(renderer, element, interaction);
+            }
         }
     }
 
@@ -213,12 +291,13 @@ impl SettingsUi {
         renderer: &Renderer,
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
+        domain: ShortcutElement,
     ) {
-        match element.id {
-            ElementId::HotkeyCard(slot) => {
+        match domain {
+            ShortcutElement::Card(slot) => {
                 controls::draw_hotkey_card(renderer, element, self.hotkey_enabled(slot));
             }
-            ElementId::HotkeyEnabled(_) | ElementId::HotkeyUnassign(_) => {
+            ShortcutElement::Enabled(_) | ShortcutElement::Unassign(_) => {
                 let label = match self.value_for(element.id) {
                     ControlValue::Action(value) => value.into_owned(),
                     _ => element.label.clone(),
@@ -231,7 +310,7 @@ impl SettingsUi {
                     interaction,
                 );
             }
-            _ => {
+            ShortcutElement::Capture(_) => {
                 let value = match self.value_for(element.id) {
                     ControlValue::Text(value) => value.into_owned(),
                     _ => String::new(),
@@ -241,39 +320,75 @@ impl SettingsUi {
         }
     }
 
-    fn draw_audio_element(
+    fn draw_workspace_element(
         &self,
         renderer: &Renderer,
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
+        domain: WorkspaceElement,
     ) {
-        match element.id {
-            ElementId::InputDevice => {
-                let presentation = self
-                    .audio_view()
-                    .selection(crate::audio::DeviceCycleFlow::Input);
-                controls::draw_device_row(renderer, element, &presentation, interaction);
+        match domain {
+            WorkspaceElement::Enabled
+            | WorkspaceElement::WinNumberEnabled
+            | WorkspaceElement::DesktopNumberModifier
+            | WorkspaceElement::MoveDesktopModifier
+            | WorkspaceElement::SilentMoveDesktopModifier => {
+                self.draw_standard_element(renderer, element, interaction);
             }
-            ElementId::OutputDevice => {
-                let presentation = self
-                    .audio_view()
-                    .selection(crate::audio::DeviceCycleFlow::Output);
-                controls::draw_device_row(renderer, element, &presentation, interaction);
-            }
-            ElementId::InputCycleMode(_) | ElementId::OutputCycleMode(_) => controls::draw_choice(
+        }
+    }
+
+    fn draw_overlay_element(
+        &self,
+        renderer: &Renderer,
+        element: &crate::ui::layout::Element,
+        interaction: controls::Interaction,
+        domain: OverlayElement,
+    ) {
+        match domain {
+            OverlayElement::PositionCell(index) => controls::draw_position_cell(
                 renderer,
                 element,
-                self.choice_selected(element.id),
+                overlay_position_label(index as usize),
+                self.draft.overlay.position == overlay_position(index as usize),
                 interaction,
-                true,
             ),
-            ElementId::InputCycleDevice(index) => {
-                self.paint_input_cycle_device(renderer, element, interaction, index);
+            OverlayElement::Preview => self.paint_action_element(
+                renderer,
+                element,
+                interaction,
+                controls::ButtonStyle::Primary,
+                false,
+            ),
+            OverlayElement::Enabled
+            | OverlayElement::ExternalChanges
+            | OverlayElement::Appearance
+            | OverlayElement::Position
+            | OverlayElement::Monitor
+            | OverlayElement::Duration
+            | OverlayElement::Opacity
+            | OverlayElement::Scale => {
+                self.draw_standard_element(renderer, element, interaction);
             }
-            ElementId::OutputCycleDevice(index) => {
-                self.paint_output_cycle_device(renderer, element, interaction, index);
+        }
+    }
+
+    fn draw_system_element(
+        &self,
+        renderer: &Renderer,
+        element: &crate::ui::layout::Element,
+        interaction: controls::Interaction,
+        domain: SystemElement,
+    ) {
+        match domain {
+            SystemElement::StartWithWindows
+            | SystemElement::StartHotkeysEnabled
+            | SystemElement::DebugLogging
+            | SystemElement::DiagnosticsStatus
+            | SystemElement::OpenConfigFolder
+            | SystemElement::ResetSettings => {
+                self.draw_standard_element(renderer, element, interaction);
             }
-            _ => {}
         }
     }
 }
@@ -285,27 +400,25 @@ impl SettingsUi {
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
     ) {
-        {
-            let detail = match &self.runtime.output {
-                crate::audio::OutputState::Current { muted: true, .. } => "Muted".into(),
-                crate::audio::OutputState::Current { volume_pct, .. } => {
-                    format!("{volume_pct}% volume")
-                }
-                crate::audio::OutputState::Unavailable { .. } => {
-                    "Windows Audio is not available".into()
-                }
-            };
-            controls::draw_home_card(
-                renderer,
-                element.rect,
-                "Speakers",
-                &self.audio_view().current_output_name(),
-                &detail,
-                "Choose",
-                controls::IconKind::Speaker,
-                interaction,
-            );
-        }
+        let detail = match &self.runtime.output {
+            crate::audio::OutputState::Current { muted: true, .. } => "Muted".into(),
+            crate::audio::OutputState::Current { volume_pct, .. } => {
+                format!("{volume_pct}% volume")
+            }
+            crate::audio::OutputState::Unavailable { .. } => {
+                "Windows Audio is not available".into()
+            }
+        };
+        controls::draw_home_card(
+            renderer,
+            element.rect,
+            "Speakers",
+            &self.audio_view().current_output_name(),
+            &detail,
+            "Choose",
+            controls::IconKind::Speaker,
+            interaction,
+        );
     }
 
     fn paint_home_microphone(
@@ -314,29 +427,25 @@ impl SettingsUi {
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
     ) {
-        {
-            let detail = match &self.runtime.microphone {
-                crate::audio::AudioState::Muted { volume_pct } => {
-                    format!("Muted · {volume_pct}% input volume")
-                }
-                crate::audio::AudioState::Active { volume_pct } => {
-                    format!("{volume_pct}% input volume")
-                }
-                crate::audio::AudioState::Unavailable { .. } => {
-                    "Windows Audio is not available".into()
-                }
-            };
-            controls::draw_home_card(
-                renderer,
-                element.rect,
-                "Microphone",
-                &self.audio_view().current_input_name(),
-                &detail,
-                "Choose",
-                controls::IconKind::Microphone,
-                interaction,
-            );
-        }
+        let detail = match &self.runtime.microphone {
+            crate::audio::AudioState::Muted { volume_pct } => {
+                format!("Muted · {volume_pct}% input volume")
+            }
+            crate::audio::AudioState::Active { volume_pct } => {
+                format!("{volume_pct}% input volume")
+            }
+            crate::audio::AudioState::Unavailable { .. } => "Windows Audio is not available".into(),
+        };
+        controls::draw_home_card(
+            renderer,
+            element.rect,
+            "Microphone",
+            &self.audio_view().current_input_name(),
+            &detail,
+            "Choose",
+            controls::IconKind::Microphone,
+            interaction,
+        );
     }
 
     fn paint_home_display_profile(
@@ -345,26 +454,24 @@ impl SettingsUi {
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
     ) {
-        {
-            let (name, detail) = self.display_summary();
-            let compact_detail = detail
-                .split_once(" · ")
-                .map_or(detail.as_str(), |(summary, _)| summary);
-            controls::draw_home_card(
-                renderer,
-                element.rect,
-                "Display",
-                &name,
-                compact_detail,
-                if self.draft.display_profiles.profiles.is_empty() {
-                    "Set up"
-                } else {
-                    "Open"
-                },
-                controls::IconKind::Page(Page::Displays),
-                interaction,
-            );
-        }
+        let (name, detail) = self.display_summary();
+        let compact_detail = detail
+            .split_once(" · ")
+            .map_or(detail.as_str(), |(summary, _)| summary);
+        controls::draw_home_card(
+            renderer,
+            element.rect,
+            "Display",
+            &name,
+            compact_detail,
+            if self.draft.display_profiles.profiles.is_empty() {
+                "Set up"
+            } else {
+                "Open"
+            },
+            controls::IconKind::Page(Page::Displays),
+            interaction,
+        );
     }
 
     fn paint_display_topology_choice(
@@ -374,29 +481,27 @@ impl SettingsUi {
         interaction: controls::Interaction,
         index: u8,
     ) {
-        {
-            let topology = if index == 0 {
-                crate::display::DisplayTopology::Extend
-            } else {
-                crate::display::DisplayTopology::Clone
-            };
-            let selected = self
-                .draft
-                .display_profiles
-                .active()
-                .is_some_and(|profile| profile.topology == topology);
-            let output_names = self.selected_display_names();
-            controls::draw_topology_choice(
-                renderer,
-                element,
-                topology.label(),
-                &element.description,
-                &output_names,
-                selected,
-                topology == crate::display::DisplayTopology::Clone,
-                interaction,
-            );
-        }
+        let topology = if index == 0 {
+            crate::display::DisplayTopology::Extend
+        } else {
+            crate::display::DisplayTopology::Clone
+        };
+        let selected = self
+            .draft
+            .display_profiles
+            .active()
+            .is_some_and(|profile| profile.topology == topology);
+        let output_names = self.selected_display_names();
+        controls::draw_topology_choice(
+            renderer,
+            element,
+            topology.label(),
+            &element.description,
+            &output_names,
+            selected,
+            topology == crate::display::DisplayTopology::Clone,
+            interaction,
+        );
     }
 
     fn paint_input_cycle_device(
@@ -406,15 +511,13 @@ impl SettingsUi {
         interaction: controls::Interaction,
         index: u8,
     ) {
-        {
-            let selected = self
-                .audio_view()
-                .cycle_device_selected(crate::audio::DeviceCycleFlow::Input, index as usize);
-            let label = self
-                .audio_view()
-                .cycle_device_label(crate::audio::DeviceCycleFlow::Input, index as usize);
-            controls::draw_labeled_choice(renderer, element, &label, selected, interaction, false);
-        }
+        let selected = self
+            .audio_view()
+            .cycle_device_selected(crate::audio::DeviceCycleFlow::Input, index as usize);
+        let label = self
+            .audio_view()
+            .cycle_device_label(crate::audio::DeviceCycleFlow::Input, index as usize);
+        controls::draw_labeled_choice(renderer, element, &label, selected, interaction, false);
     }
 
     fn paint_output_cycle_device(
@@ -424,57 +527,32 @@ impl SettingsUi {
         interaction: controls::Interaction,
         index: u8,
     ) {
-        {
-            let selected = self
-                .audio_view()
-                .cycle_device_selected(crate::audio::DeviceCycleFlow::Output, index as usize);
-            let label = self
-                .audio_view()
-                .cycle_device_label(crate::audio::DeviceCycleFlow::Output, index as usize);
-            controls::draw_labeled_choice(renderer, element, &label, selected, interaction, false);
-        }
+        let selected = self
+            .audio_view()
+            .cycle_device_selected(crate::audio::DeviceCycleFlow::Output, index as usize);
+        let label = self
+            .audio_view()
+            .cycle_device_label(crate::audio::DeviceCycleFlow::Output, index as usize);
+        controls::draw_labeled_choice(renderer, element, &label, selected, interaction, false);
     }
 
-    fn paint_display_wizard_back(
+    fn paint_action_element(
         &self,
         renderer: &Renderer,
         element: &crate::ui::layout::Element,
         interaction: controls::Interaction,
+        style: controls::ButtonStyle,
+        use_row_when_tall: bool,
     ) {
-        {
-            if (element.id == ElementId::NewDisplayProfile
-                || element.id == ElementId::TestApplyDisplayProfile)
-                && element.rect.h > 40.0
-            {
-                controls::draw_row(renderer, element, self.value_for(element.id), interaction);
-            } else {
-                let label = match self.value_for(element.id) {
-                    ControlValue::Action(value) => value.into_owned(),
-                    _ => element.label.clone(),
-                };
-                controls::draw_button_style(
-                    renderer,
-                    element.rect,
-                    &label,
-                    if element.id == ElementId::DeleteDisplayProfile
-                        || element.id == ElementId::DiscardDisplayEdits
-                    {
-                        controls::ButtonStyle::Danger
-                    } else if matches!(
-                        element.id,
-                        ElementId::NewDisplayProfile
-                            | ElementId::TestApplyDisplayProfile
-                            | ElementId::KeepDisplayChange
-                            | ElementId::OverlayPreview
-                            | ElementId::DisplayWizardNext
-                    ) {
-                        controls::ButtonStyle::Primary
-                    } else {
-                        controls::ButtonStyle::Secondary
-                    },
-                    interaction,
-                );
-            }
+        if use_row_when_tall && element.rect.h > 40.0 {
+            controls::draw_row(renderer, element, self.value_for(element.id), interaction);
+            return;
         }
+
+        let label = match self.value_for(element.id) {
+            ControlValue::Action(value) => value.into_owned(),
+            _ => element.label.clone(),
+        };
+        controls::draw_button_style(renderer, element.rect, &label, style, interaction);
     }
 }

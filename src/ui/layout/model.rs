@@ -288,11 +288,4 @@ impl ElementId {
         ElementId::Cancel,
         ElementId::Save,
     ];
-
-    pub(crate) fn is_shell_chrome(self) -> bool {
-        matches!(
-            self,
-            Self::Search | Self::Nav(_) | Self::SearchResult(_) | Self::WindowClose
-        )
-    }
 }

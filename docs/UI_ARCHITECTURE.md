@@ -32,6 +32,14 @@ they do not reach through to window-owned `SettingsUi`.
 - `tray`: native notification-area registration, typed menu selection and icon
   rasterization. The GDI conversion boundary owns its intermediate resources.
 
+`ElementId` remains the stable flat geometry, focus and UI Automation identity.
+`ElementId::domain()` is the single exhaustive family classifier. Availability,
+activation, visible values, page painting and accessibility enrichment route
+through `ElementDomain` and then match only the narrower domain enum. This keeps
+stable IDs without copying giant element-family lists into every consumer; adding
+a new domain variant makes the affected domain handlers fail to compile until its
+policy and presentation are considered.
+
 Small cohesive modules such as animation, theme, navigation and first-run policy
 remain together. The final anti-fragmentation pass also folded search-caret state
 into search, display-inventory state into display inventory, close-state helpers

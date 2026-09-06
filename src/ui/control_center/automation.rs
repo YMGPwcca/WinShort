@@ -8,7 +8,10 @@ use crate::ui::control_center_automation::{
     snapshot_from_settings, SettingsAutomation, SettingsAutomationAction, SettingsAutomationNode,
 };
 use crate::ui::controls::ControlValue;
-use crate::ui::layout::{ElementId, ElementKind};
+use crate::ui::layout::{
+    AudioElement, DisplayElement, ElementDomain, ElementId, ElementKind, HomeElement,
+    OverlayElement, ShellElement, ShortcutElement, SystemElement, WorkspaceElement,
+};
 use crate::ui::presentation::{format_optional_hotkey, friendly_device, AudioDeviceKind};
 use windows::Win32::Foundation::HWND;
 
@@ -58,29 +61,29 @@ impl SettingsUi {
     }
 
     fn enrich_automation_node(&self, node: &mut SettingsAutomationNode) {
-        match node.id {
-            ElementId::HomeSpecial | ElementId::HomeDiagnostics => {
-                self.enrich_home_automation_node(node);
+        match node.id.domain() {
+            ElementDomain::Shell(element) => self.enrich_shell_automation_node(node, element),
+            ElementDomain::Home(element) => self.enrich_home_automation_node(node, element),
+            ElementDomain::Audio(element) => self.enrich_audio_automation_node(node, element),
+            ElementDomain::Displays(element) => self.enrich_display_automation_node(node, element),
+            ElementDomain::Shortcuts(element) => {
+                self.enrich_shortcut_automation_node(node, element)
             }
-            ElementId::InputCycleMode(_)
-            | ElementId::OutputCycleMode(_)
-            | ElementId::InputDevice
-            | ElementId::OutputDevice
-            | ElementId::InputCycleDevice(_)
-            | ElementId::OutputCycleDevice(_) => self.enrich_audio_automation_node(node),
-            ElementId::DisplayProfileCard(_)
-            | ElementId::DisplayWizardSummary
-            | ElementId::RenameDisplayProfile
-            | ElementId::DisplayOutputCard(_)
-            | ElementId::DisplayTopologyChoice(_) => self.enrich_display_automation_node(node),
-            ElementId::HotkeyEnabled(_) | ElementId::HotkeyUnassign(_) => {
-                self.enrich_shortcut_automation_node(node);
+            ElementDomain::Workspaces(element) => {
+                self.enrich_workspace_automation_node(node, element)
             }
-            ElementId::OverlayPositionCell(index) => {
-                node.name = overlay_position_label(index as usize).into();
-                node.help_text = "Choose this overlay position".into();
-            }
-            ElementId::Nav(page) => {
+            ElementDomain::Overlay(element) => self.enrich_overlay_automation_node(node, element),
+            ElementDomain::System(element) => self.enrich_system_automation_node(node, element),
+        }
+    }
+
+    fn enrich_shell_automation_node(
+        &self,
+        node: &mut SettingsAutomationNode,
+        element: ShellElement,
+    ) {
+        match element {
+            ShellElement::Nav(page) => {
                 node.name = if page == self.page {
                     format!("{} (selected)", page.label())
                 } else {
@@ -88,49 +91,64 @@ impl SettingsUi {
                 };
                 node.help_text = page.description().into();
             }
-            _ => {}
+            ShellElement::Search
+            | ShellElement::SearchResult(_)
+            | ShellElement::WindowClose
+            | ShellElement::OnboardingContinue
+            | ShellElement::OnboardingOpen
+            | ShellElement::Cancel
+            | ShellElement::Save => {}
         }
     }
 
-    fn enrich_home_automation_node(&self, node: &mut SettingsAutomationNode) {
-        match node.id {
-            ElementId::HomeSpecial => {
+    fn enrich_home_automation_node(&self, node: &mut SettingsAutomationNode, element: HomeElement) {
+        match element {
+            HomeElement::Special => {
                 let (status, detail, action) = self.special_workspace_summary();
                 node.name = format!("Special Desktop: {status}");
                 node.value = action;
                 node.help_text = detail;
             }
-            ElementId::HomeDiagnostics => {
+            HomeElement::Diagnostics => {
                 let (title, value, detail) = self.home_diagnostics_copy();
                 node.name = title;
                 node.value = value;
                 node.help_text = detail;
             }
-            _ => {}
+            HomeElement::Speaker
+            | HomeElement::CurrentDesktop
+            | HomeElement::Microphone
+            | HomeElement::PreviousDesktop
+            | HomeElement::DisplayProfile
+            | HomeElement::ShortcutHealth => {}
         }
     }
 
-    fn enrich_audio_automation_node(&self, node: &mut SettingsAutomationNode) {
-        match node.id {
-            ElementId::InputCycleMode(index) => self.enrich_cycle_mode_node(
+    fn enrich_audio_automation_node(
+        &self,
+        node: &mut SettingsAutomationNode,
+        element: AudioElement,
+    ) {
+        match element {
+            AudioElement::InputCycleMode(index) => self.enrich_cycle_mode_node(
                 node,
                 index,
                 crate::audio::DeviceCycleFlow::Input,
                 AudioDeviceKind::Microphone,
             ),
-            ElementId::OutputCycleMode(index) => self.enrich_cycle_mode_node(
+            AudioElement::OutputCycleMode(index) => self.enrich_cycle_mode_node(
                 node,
                 index,
                 crate::audio::DeviceCycleFlow::Output,
                 AudioDeviceKind::Speaker,
             ),
-            ElementId::InputDevice => {
+            AudioElement::InputDevice => {
                 self.enrich_selected_device_node(node, crate::audio::DeviceCycleFlow::Input);
             }
-            ElementId::OutputDevice => {
+            AudioElement::OutputDevice => {
                 self.enrich_selected_device_node(node, crate::audio::DeviceCycleFlow::Output);
             }
-            ElementId::InputCycleDevice(index) => {
+            AudioElement::InputCycleDevice(index) => {
                 if let Some(device) = self.devices.inputs.get(index as usize) {
                     let label = friendly_device(device, AudioDeviceKind::Microphone);
                     node.name = label.primary;
@@ -139,7 +157,7 @@ impl SettingsUi {
                         .unwrap_or_else(|| "Use this microphone when cycling".into());
                 }
             }
-            ElementId::OutputCycleDevice(index) => {
+            AudioElement::OutputCycleDevice(index) => {
                 if let Some(device) = self.devices.outputs.get(index as usize) {
                     let label = friendly_device(device, AudioDeviceKind::Speaker);
                     node.name = label.primary;
@@ -148,7 +166,10 @@ impl SettingsUi {
                         .unwrap_or_else(|| "Use this speaker when cycling".into());
                 }
             }
-            _ => {}
+            AudioElement::InputAllowlist
+            | AudioElement::OutputAllowlist
+            | AudioElement::InputRole
+            | AudioElement::OutputRole => {}
         }
     }
 
@@ -183,9 +204,13 @@ impl SettingsUi {
         node.help_text = node.value.clone();
     }
 
-    fn enrich_display_automation_node(&self, node: &mut SettingsAutomationNode) {
-        match node.id {
-            ElementId::DisplayProfileCard(index) => {
+    fn enrich_display_automation_node(
+        &self,
+        node: &mut SettingsAutomationNode,
+        element: DisplayElement,
+    ) {
+        match element {
+            DisplayElement::ProfileCard(index) => {
                 let Some(profile) = self.draft.display_profiles.profiles.get(index as usize) else {
                     return;
                 };
@@ -203,7 +228,7 @@ impl SettingsUi {
                     "Select this profile and test it before activation".into()
                 };
             }
-            ElementId::DisplayWizardSummary => {
+            DisplayElement::WizardSummary => {
                 let Some(profile) = self.draft.display_profiles.active() else {
                     return;
                 };
@@ -221,28 +246,50 @@ impl SettingsUi {
                     profile.name
                 );
             }
-            ElementId::RenameDisplayProfile => {
+            DisplayElement::RenameProfile => {
                 if let Some(profile) = self.draft.display_profiles.active() {
                     node.name = format!("Profile name: {}", profile.name);
                     node.help_text = "Change the current profile name".into();
                 }
             }
-            ElementId::DisplayOutputCard(index) => {
+            DisplayElement::OutputCard(index) => {
                 if let Some(card) = self.display_output_card_data(index as usize) {
                     node.name = card.primary;
                     node.help_text = card.detail;
                 }
             }
-            ElementId::DisplayTopologyChoice(index) => {
+            DisplayElement::TopologyChoice(index) => {
                 node.name = if index == 0 { "Extend" } else { "Duplicate" }.into();
             }
-            _ => {}
+            DisplayElement::WizardBack
+            | DisplayElement::WizardNext
+            | DisplayElement::WizardCancel
+            | DisplayElement::ProfilesEnabled
+            | DisplayElement::EditProfile
+            | DisplayElement::Profile
+            | DisplayElement::Outputs
+            | DisplayElement::Topology
+            | DisplayElement::Route
+            | DisplayElement::EditRoute
+            | DisplayElement::NewProfile
+            | DisplayElement::UpdateProfile
+            | DisplayElement::DuplicateProfile
+            | DisplayElement::TestApply
+            | DisplayElement::Apply
+            | DisplayElement::DeleteProfile
+            | DisplayElement::KeepChange
+            | DisplayElement::UndoChange
+            | DisplayElement::DiscardEdits => {}
         }
     }
 
-    fn enrich_shortcut_automation_node(&self, node: &mut SettingsAutomationNode) {
-        match node.id {
-            ElementId::HotkeyEnabled(slot) => {
+    fn enrich_shortcut_automation_node(
+        &self,
+        node: &mut SettingsAutomationNode,
+        element: ShortcutElement,
+    ) {
+        match element {
+            ShortcutElement::Enabled(slot) => {
                 let state = if self.hotkey_enabled(slot) {
                     "Disable"
                 } else {
@@ -258,7 +305,7 @@ impl SettingsUi {
                     "Assign a shortcut before enabling it".into()
                 };
             }
-            ElementId::HotkeyUnassign(slot) => {
+            ShortcutElement::Unassign(slot) => {
                 node.name = format!("Unassign {}", Self::hotkey_subject(slot));
                 node.help_text = if self.configured_hotkey(slot).is_some() {
                     "Remove this shortcut completely".into()
@@ -266,7 +313,58 @@ impl SettingsUi {
                     "No shortcut is assigned".into()
                 };
             }
-            _ => {}
+            ShortcutElement::Card(_) | ShortcutElement::Capture(_) => {}
+        }
+    }
+
+    fn enrich_workspace_automation_node(
+        &self,
+        _node: &mut SettingsAutomationNode,
+        element: WorkspaceElement,
+    ) {
+        match element {
+            WorkspaceElement::Enabled
+            | WorkspaceElement::WinNumberEnabled
+            | WorkspaceElement::DesktopNumberModifier
+            | WorkspaceElement::MoveDesktopModifier
+            | WorkspaceElement::SilentMoveDesktopModifier => {}
+        }
+    }
+
+    fn enrich_overlay_automation_node(
+        &self,
+        node: &mut SettingsAutomationNode,
+        element: OverlayElement,
+    ) {
+        match element {
+            OverlayElement::PositionCell(index) => {
+                node.name = overlay_position_label(index as usize).into();
+                node.help_text = "Choose this overlay position".into();
+            }
+            OverlayElement::Enabled
+            | OverlayElement::ExternalChanges
+            | OverlayElement::Appearance
+            | OverlayElement::Position
+            | OverlayElement::Monitor
+            | OverlayElement::Duration
+            | OverlayElement::Opacity
+            | OverlayElement::Scale
+            | OverlayElement::Preview => {}
+        }
+    }
+
+    fn enrich_system_automation_node(
+        &self,
+        _node: &mut SettingsAutomationNode,
+        element: SystemElement,
+    ) {
+        match element {
+            SystemElement::StartWithWindows
+            | SystemElement::StartHotkeysEnabled
+            | SystemElement::DebugLogging
+            | SystemElement::DiagnosticsStatus
+            | SystemElement::OpenConfigFolder
+            | SystemElement::ResetSettings => {}
         }
     }
 

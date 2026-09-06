@@ -59,11 +59,7 @@ impl SettingsUi {
         self.interaction.confirmations_mut().retain_only(keep);
     }
 
-    fn activate_config_toggle(&mut self, hwnd: HWND, id: ElementId) {
-        let Some(toggle) = ConfigToggle::from_element(id) else {
-            crate::warn_!("element {id:?} was routed as a config toggle without a toggle policy");
-            return;
-        };
+    fn activate_config_toggle(&mut self, hwnd: HWND, id: ElementId, toggle: ConfigToggle) {
         let before = self.draft.clone();
         toggle.toggle(&mut self.draft);
         if self.commit_local_change(hwnd, before) {
@@ -167,9 +163,11 @@ impl SettingsUi {
 
     fn activate_display(&mut self, hwnd: HWND, element: DisplayElement) {
         match element {
-            DisplayElement::ProfilesEnabled => {
-                self.activate_config_toggle(hwnd, ElementId::DisplayProfilesEnabled)
-            }
+            DisplayElement::ProfilesEnabled => self.activate_config_toggle(
+                hwnd,
+                ElementId::DisplayProfilesEnabled,
+                ConfigToggle::DisplayProfiles,
+            ),
             DisplayElement::ProfileCard(index) => self.activate_display_profile_card(hwnd, index),
             DisplayElement::OutputCard(index) => self.toggle_display_output(index),
             DisplayElement::TopologyChoice(index) => self.set_display_topology(index),
@@ -223,12 +221,16 @@ impl SettingsUi {
 
     fn activate_workspace(&mut self, hwnd: HWND, element: WorkspaceElement) {
         match element {
-            WorkspaceElement::Enabled => {
-                self.activate_config_toggle(hwnd, ElementId::DesktopsEnabled)
-            }
-            WorkspaceElement::WinNumberEnabled => {
-                self.activate_config_toggle(hwnd, ElementId::WinNumberEnabled)
-            }
+            WorkspaceElement::Enabled => self.activate_config_toggle(
+                hwnd,
+                ElementId::DesktopsEnabled,
+                ConfigToggle::Workspaces,
+            ),
+            WorkspaceElement::WinNumberEnabled => self.activate_config_toggle(
+                hwnd,
+                ElementId::WinNumberEnabled,
+                ConfigToggle::WorkspaceNumbers,
+            ),
             WorkspaceElement::DesktopNumberModifier => {
                 Self::request_picker(PickerKind::DesktopNumberModifier)
             }
@@ -243,10 +245,14 @@ impl SettingsUi {
 
     fn activate_overlay(&mut self, hwnd: HWND, element: OverlayElement) {
         match element {
-            OverlayElement::Enabled => self.activate_config_toggle(hwnd, ElementId::OverlayEnabled),
-            OverlayElement::ExternalChanges => {
-                self.activate_config_toggle(hwnd, ElementId::OverlayExternalChanges)
+            OverlayElement::Enabled => {
+                self.activate_config_toggle(hwnd, ElementId::OverlayEnabled, ConfigToggle::Overlay)
             }
+            OverlayElement::ExternalChanges => self.activate_config_toggle(
+                hwnd,
+                ElementId::OverlayExternalChanges,
+                ConfigToggle::ExternalAudio,
+            ),
             OverlayElement::PositionCell(index) => self.set_overlay_position(hwnd, index as usize),
             OverlayElement::Appearance => Self::request_picker(PickerKind::OverlayAppearance),
             OverlayElement::Position => Self::request_picker(PickerKind::OverlayPosition),
@@ -261,9 +267,11 @@ impl SettingsUi {
     fn activate_system(&mut self, hwnd: HWND, element: SystemElement) {
         match element {
             SystemElement::StartWithWindows => self.toggle_startup_registration(hwnd),
-            SystemElement::StartHotkeysEnabled => {
-                self.activate_config_toggle(hwnd, ElementId::StartHotkeysEnabled)
-            }
+            SystemElement::StartHotkeysEnabled => self.activate_config_toggle(
+                hwnd,
+                ElementId::StartHotkeysEnabled,
+                ConfigToggle::PauseShortcuts,
+            ),
             SystemElement::DebugLogging => self.toggle_debug_logging(hwnd, ElementId::DebugLogging),
             SystemElement::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
             SystemElement::OpenConfigFolder => open_config_folder(),

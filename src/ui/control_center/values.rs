@@ -7,7 +7,11 @@ use super::overlay_preview::{
 };
 use super::state::{ConfirmationTarget, SettingsUi};
 use crate::ui::controls::ControlValue;
-use crate::ui::layout::{ElementId, HotkeySlot};
+use crate::ui::layout::{
+    AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, HotkeySlot,
+    OverlayElement, ShellElement, ShortcutCaptureElement, ShortcutElement, SystemElement,
+    WorkspaceElement,
+};
 use crate::ui::navigation::search;
 use crate::ui::presentation::{
     format_desktop_modifier, format_modifier as format_modifier_display,
@@ -16,49 +20,112 @@ use std::borrow::Cow;
 
 impl SettingsUi {
     pub(super) fn value_for(&self, id: ElementId) -> ControlValue<'_> {
-        match id {
-            ElementId::DesktopsEnabled
-            | ElementId::DisplayProfilesEnabled
-            | ElementId::OverlayEnabled
-            | ElementId::OverlayExternalChanges
-            | ElementId::StartHotkeysEnabled
-            | ElementId::WinNumberEnabled => ControlValue::Toggle(
-                ConfigToggle::from_element(id).is_some_and(|toggle| toggle.selected(&self.draft)),
-            ),
-            ElementId::Search => ControlValue::Text(Cow::Borrowed(&self.search_query)),
-            ElementId::Nav(page) => ControlValue::Action(Cow::Borrowed(page.label())),
-            ElementId::SearchResult(index) => {
+        match id.domain() {
+            ElementDomain::Shell(element) => self.shell_value(element),
+            ElementDomain::Home(element) => self.home_value(element),
+            ElementDomain::Audio(element) => self.audio_value(element),
+            ElementDomain::Displays(element) => self.display_value(element),
+            ElementDomain::Shortcuts(element) => self.shortcut_value(element),
+            ElementDomain::Workspaces(element) => self.workspace_value(element),
+            ElementDomain::Overlay(element) => self.overlay_value(element),
+            ElementDomain::System(element) => self.system_value(element),
+        }
+    }
+
+    fn shell_value(&self, element: ShellElement) -> ControlValue<'_> {
+        match element {
+            ShellElement::Search => ControlValue::Text(Cow::Borrowed(&self.search_query)),
+            ShellElement::Nav(page) => ControlValue::Action(Cow::Borrowed(page.label())),
+            ShellElement::SearchResult(index) => ControlValue::Action(Cow::Borrowed(
                 if search(&self.search_query).get(index as usize).is_some() {
-                    ControlValue::Action(Cow::Borrowed("Open"))
+                    "Open"
                 } else {
-                    ControlValue::Action(Cow::Borrowed(""))
-                }
-            }
-            ElementId::WindowClose => ControlValue::Action(Cow::Borrowed("Close")),
-            ElementId::HomeSpeaker => {
+                    ""
+                },
+            )),
+            ShellElement::WindowClose => ControlValue::Action(Cow::Borrowed("Close")),
+            ShellElement::OnboardingContinue => ControlValue::Action(Cow::Borrowed("Continue")),
+            ShellElement::OnboardingOpen => ControlValue::Action(Cow::Borrowed("Open WinShort")),
+            ShellElement::Cancel | ShellElement::Save => ControlValue::Action(Cow::Borrowed("")),
+        }
+    }
+
+    fn home_value(&self, element: HomeElement) -> ControlValue<'_> {
+        match element {
+            HomeElement::Speaker => {
                 ControlValue::Text(Cow::Owned(self.audio_view().current_output_name()))
             }
-            ElementId::HomeCurrentDesktop => ControlValue::Text(Cow::Owned(
+            HomeElement::CurrentDesktop => ControlValue::Text(Cow::Owned(
                 self.runtime.desktop.current_desktop.map_or_else(
                     || "Desktop status unavailable".into(),
                     |index| format!("Desktop {}", index + 1),
                 ),
             )),
-            ElementId::HomeMicrophone => {
+            HomeElement::Microphone => {
                 ControlValue::Text(Cow::Owned(self.audio_view().current_input_name()))
             }
-            ElementId::HomePreviousDesktop => ControlValue::Action(Cow::Borrowed("Switch")),
-            ElementId::HomeSpecial => {
+            HomeElement::PreviousDesktop => ControlValue::Action(Cow::Borrowed("Switch")),
+            HomeElement::Special => {
                 ControlValue::Action(Cow::Owned(self.special_workspace_summary().2))
             }
-            ElementId::HomeDisplayProfile => {
-                ControlValue::Text(Cow::Owned(self.display_summary().0))
-            }
-            ElementId::HomeShortcutHealth => {
+            HomeElement::DisplayProfile => ControlValue::Text(Cow::Owned(self.display_summary().0)),
+            HomeElement::ShortcutHealth => {
                 ControlValue::Text(Cow::Owned(self.shortcut_health_copy().0))
             }
-            ElementId::HomeDiagnostics => ControlValue::Action(Cow::Borrowed("Open")),
-            ElementId::DisplayProfileCard(index) => ControlValue::Text(Cow::Owned(
+            HomeElement::Diagnostics => ControlValue::Action(Cow::Borrowed("Open")),
+        }
+    }
+
+    fn audio_value(&self, element: AudioElement) -> ControlValue<'_> {
+        match element {
+            AudioElement::InputCycleMode(index) => {
+                ControlValue::Toggle(self.choice_selected(ElementId::InputCycleMode(index)))
+            }
+            AudioElement::OutputCycleMode(index) => {
+                ControlValue::Toggle(self.choice_selected(ElementId::OutputCycleMode(index)))
+            }
+            AudioElement::InputCycleDevice(index) => ControlValue::Toggle(
+                self.audio_view()
+                    .cycle_device_selected(crate::audio::DeviceCycleFlow::Input, index as usize),
+            ),
+            AudioElement::OutputCycleDevice(index) => ControlValue::Toggle(
+                self.audio_view()
+                    .cycle_device_selected(crate::audio::DeviceCycleFlow::Output, index as usize),
+            ),
+            AudioElement::InputDevice => ControlValue::Text(Cow::Owned(
+                self.audio_view()
+                    .selection(crate::audio::DeviceCycleFlow::Input)
+                    .primary,
+            )),
+            AudioElement::OutputDevice => ControlValue::Text(Cow::Owned(
+                self.audio_view()
+                    .selection(crate::audio::DeviceCycleFlow::Output)
+                    .primary,
+            )),
+            AudioElement::InputAllowlist => {
+                let selection = self
+                    .audio_view()
+                    .cycle_selection(crate::audio::DeviceCycleFlow::Input);
+                ControlValue::Text(Cow::Owned(allowlist_label(&selection)))
+            }
+            AudioElement::OutputAllowlist => {
+                let selection = self
+                    .audio_view()
+                    .cycle_selection(crate::audio::DeviceCycleFlow::Output);
+                ControlValue::Text(Cow::Owned(allowlist_label(&selection)))
+            }
+            AudioElement::InputRole => {
+                ControlValue::Text(Cow::Borrowed(self.draft.audio.input_role.label()))
+            }
+            AudioElement::OutputRole => {
+                ControlValue::Text(Cow::Borrowed(self.draft.audio.output_role.label()))
+            }
+        }
+    }
+
+    fn display_value(&self, element: DisplayElement) -> ControlValue<'_> {
+        match element {
+            DisplayElement::ProfileCard(index) => ControlValue::Text(Cow::Owned(
                 self.draft
                     .display_profiles
                     .profiles
@@ -66,11 +133,11 @@ impl SettingsUi {
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "Unavailable".into()),
             )),
-            ElementId::DisplayOutputCard(index) => ControlValue::Toggle(
+            DisplayElement::OutputCard(index) => ControlValue::Toggle(
                 self.display_output_card_data(index as usize)
                     .is_some_and(|card| card.selected),
             ),
-            ElementId::DisplayTopologyChoice(index) => {
+            DisplayElement::TopologyChoice(index) => {
                 let topology = if index == 0 {
                     crate::display::DisplayTopology::Extend
                 } else {
@@ -83,109 +150,23 @@ impl SettingsUi {
                         .is_some_and(|profile| profile.topology == topology),
                 )
             }
-            ElementId::InputCycleMode(_) | ElementId::OutputCycleMode(_) => {
-                ControlValue::Toggle(self.choice_selected(id))
+            DisplayElement::WizardBack => ControlValue::Action(Cow::Borrowed("Back")),
+            DisplayElement::WizardNext => ControlValue::Action(Cow::Borrowed("Next")),
+            DisplayElement::WizardCancel => ControlValue::Action(Cow::Borrowed("Cancel")),
+            DisplayElement::WizardSummary => ControlValue::Text(Cow::Borrowed("")),
+            DisplayElement::ProfilesEnabled => {
+                ControlValue::Toggle(ConfigToggle::DisplayProfiles.selected(&self.draft))
             }
-            ElementId::InputCycleDevice(index) => ControlValue::Toggle(
-                self.audio_view()
-                    .cycle_device_selected(crate::audio::DeviceCycleFlow::Input, index as usize),
-            ),
-            ElementId::OutputCycleDevice(index) => ControlValue::Toggle(
-                self.audio_view()
-                    .cycle_device_selected(crate::audio::DeviceCycleFlow::Output, index as usize),
-            ),
-            ElementId::OverlayPositionCell(index) => ControlValue::Toggle(
-                self.draft.overlay.position == overlay_position(index as usize),
-            ),
-            ElementId::DisplayWizardBack => ControlValue::Action(Cow::Borrowed("Back")),
-            ElementId::DisplayWizardNext => ControlValue::Action(Cow::Borrowed("Next")),
-            ElementId::DisplayWizardCancel => ControlValue::Action(Cow::Borrowed("Cancel")),
-            ElementId::EditDisplayProfile => ControlValue::Action(Cow::Borrowed("Edit")),
-            ElementId::DisplayWizardSummary => ControlValue::Text(Cow::Borrowed("")),
-            ElementId::OnboardingContinue => ControlValue::Action(Cow::Borrowed("Continue")),
-            ElementId::OnboardingOpen => ControlValue::Action(Cow::Borrowed("Open WinShort")),
-            ElementId::StartWithWindows => ControlValue::Toggle(self.startup_enabled),
-            ElementId::HotkeyCard(_) => ControlValue::Action(Cow::Borrowed("")),
-            ElementId::HotkeyEnabled(slot) => {
-                ControlValue::Action(Cow::Borrowed(if self.hotkey_enabled(slot) {
-                    "Disable"
-                } else {
-                    "Enable"
-                }))
-            }
-            ElementId::HotkeyUnassign(_) => ControlValue::Action(Cow::Borrowed("Unassign")),
-            ElementId::MicHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::Microphone))
-            }
-            ElementId::OutputHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::Output))
-            }
-            ElementId::ForegroundHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::Foreground))
-            }
-            ElementId::CycleInputHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::CycleInput))
-            }
-            ElementId::CycleOutputHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::CycleOutput))
-            }
-            ElementId::ForegroundVolumeUpHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::ForegroundVolumeUp))
-            }
-            ElementId::ForegroundVolumeDownHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::ForegroundVolumeDown))
-            }
-            ElementId::PreviousDesktopHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::PreviousDesktop))
-            }
-            ElementId::AssignScratchpadHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::AssignSpecial))
-            }
-            ElementId::ToggleScratchpadHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::ToggleSpecial))
-            }
-            ElementId::InputDevice => ControlValue::Text(Cow::Owned(
-                self.audio_view()
-                    .selection(crate::audio::DeviceCycleFlow::Input)
-                    .primary,
-            )),
-            ElementId::OutputDevice => ControlValue::Text(Cow::Owned(
-                self.audio_view()
-                    .selection(crate::audio::DeviceCycleFlow::Output)
-                    .primary,
-            )),
-            ElementId::InputAllowlist => {
-                let selection = self
-                    .audio_view()
-                    .cycle_selection(crate::audio::DeviceCycleFlow::Input);
-                ControlValue::Text(Cow::Owned(allowlist_label(&selection)))
-            }
-            ElementId::OutputAllowlist => {
-                let selection = self
-                    .audio_view()
-                    .cycle_selection(crate::audio::DeviceCycleFlow::Output);
-                ControlValue::Text(Cow::Owned(allowlist_label(&selection)))
-            }
-            ElementId::InputRole => {
-                ControlValue::Text(Cow::Borrowed(self.draft.audio.input_role.label()))
-            }
-            ElementId::OutputRole => {
-                ControlValue::Text(Cow::Borrowed(self.draft.audio.output_role.label()))
-            }
-            ElementId::DisplayProfile => ControlValue::Text(Cow::Owned(
+            DisplayElement::EditProfile => ControlValue::Action(Cow::Borrowed("Edit")),
+            DisplayElement::Profile => ControlValue::Text(Cow::Owned(
                 self.draft
                     .display_profiles
                     .active()
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "No profile selected".into()),
             )),
-            ElementId::DisplayProfileHotkey => {
-                self.hotkey_value(id, self.configured_hotkey(HotkeySlot::DisplayProfile))
-            }
-            ElementId::DisplayOutputs => {
-                ControlValue::Text(Cow::Owned(self.display_outputs_label()))
-            }
-            ElementId::DisplayTopology => ControlValue::Text(Cow::Owned(
+            DisplayElement::Outputs => ControlValue::Text(Cow::Owned(self.display_outputs_label())),
+            DisplayElement::Topology => ControlValue::Text(Cow::Owned(
                 self.draft
                     .display_profiles
                     .active()
@@ -198,19 +179,19 @@ impl SettingsUi {
                     })
                     .unwrap_or_else(|| "No profile selected".into()),
             )),
-            ElementId::DisplayRoute => {
+            DisplayElement::Route => {
                 ControlValue::Text(Cow::Owned(self.selected_display_route_label()))
             }
-            ElementId::EditDisplayRoute => ControlValue::Action(Cow::Borrowed("Edit")),
-            ElementId::NewDisplayProfile => ControlValue::Action(Cow::Borrowed("New from current")),
-            ElementId::UpdateDisplayProfile => {
+            DisplayElement::EditRoute => ControlValue::Action(Cow::Borrowed("Edit")),
+            DisplayElement::NewProfile => ControlValue::Action(Cow::Borrowed("New from current")),
+            DisplayElement::UpdateProfile => {
                 ControlValue::Action(Cow::Borrowed("Replace from current"))
             }
-            ElementId::RenameDisplayProfile => ControlValue::Action(Cow::Borrowed("Edit name")),
-            ElementId::DuplicateDisplayProfile => ControlValue::Action(Cow::Borrowed("Duplicate")),
-            ElementId::TestApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Test")),
-            ElementId::ApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Activate")),
-            ElementId::DeleteDisplayProfile => ControlValue::Action(Cow::Borrowed(
+            DisplayElement::RenameProfile => ControlValue::Action(Cow::Borrowed("Edit name")),
+            DisplayElement::DuplicateProfile => ControlValue::Action(Cow::Borrowed("Duplicate")),
+            DisplayElement::TestApply => ControlValue::Action(Cow::Borrowed("Test")),
+            DisplayElement::Apply => ControlValue::Action(Cow::Borrowed("Activate")),
+            DisplayElement::DeleteProfile => ControlValue::Action(Cow::Borrowed(
                 if self
                     .interaction
                     .confirmations()
@@ -221,53 +202,121 @@ impl SettingsUi {
                     "Delete"
                 },
             )),
-            ElementId::KeepDisplayChange => ControlValue::Action(Cow::Borrowed("Keep")),
-            ElementId::UndoDisplayChange => ControlValue::Action(Cow::Borrowed("Revert")),
-            ElementId::DiscardDisplayEdits => ControlValue::Action(Cow::Borrowed("Discard")),
-            ElementId::DesktopNumberModifier => ControlValue::Text(Cow::Owned(
+            DisplayElement::KeepChange => ControlValue::Action(Cow::Borrowed("Keep")),
+            DisplayElement::UndoChange => ControlValue::Action(Cow::Borrowed("Revert")),
+            DisplayElement::DiscardEdits => ControlValue::Action(Cow::Borrowed("Discard")),
+        }
+    }
+
+    fn shortcut_value(&self, element: ShortcutElement) -> ControlValue<'_> {
+        match element {
+            ShortcutElement::Card(_) => ControlValue::Action(Cow::Borrowed("")),
+            ShortcutElement::Enabled(slot) => {
+                ControlValue::Action(Cow::Borrowed(if self.hotkey_enabled(slot) {
+                    "Disable"
+                } else {
+                    "Enable"
+                }))
+            }
+            ShortcutElement::Unassign(_) => ControlValue::Action(Cow::Borrowed("Unassign")),
+            ShortcutElement::Capture(capture) => {
+                let slot = Self::capture_slot(capture);
+                self.hotkey_value(capture.id(), self.configured_hotkey(slot))
+            }
+        }
+    }
+
+    fn capture_slot(capture: ShortcutCaptureElement) -> HotkeySlot {
+        match capture {
+            ShortcutCaptureElement::Microphone => HotkeySlot::Microphone,
+            ShortcutCaptureElement::Output => HotkeySlot::Output,
+            ShortcutCaptureElement::Foreground => HotkeySlot::Foreground,
+            ShortcutCaptureElement::CycleInput => HotkeySlot::CycleInput,
+            ShortcutCaptureElement::CycleOutput => HotkeySlot::CycleOutput,
+            ShortcutCaptureElement::ForegroundVolumeUp => HotkeySlot::ForegroundVolumeUp,
+            ShortcutCaptureElement::ForegroundVolumeDown => HotkeySlot::ForegroundVolumeDown,
+            ShortcutCaptureElement::PreviousDesktop => HotkeySlot::PreviousDesktop,
+            ShortcutCaptureElement::AssignSpecial => HotkeySlot::AssignSpecial,
+            ShortcutCaptureElement::ToggleSpecial => HotkeySlot::ToggleSpecial,
+            ShortcutCaptureElement::DisplayProfile => HotkeySlot::DisplayProfile,
+        }
+    }
+
+    fn workspace_value(&self, element: WorkspaceElement) -> ControlValue<'_> {
+        match element {
+            WorkspaceElement::Enabled => {
+                ControlValue::Toggle(ConfigToggle::Workspaces.selected(&self.draft))
+            }
+            WorkspaceElement::WinNumberEnabled => {
+                ControlValue::Toggle(ConfigToggle::WorkspaceNumbers.selected(&self.draft))
+            }
+            WorkspaceElement::DesktopNumberModifier => ControlValue::Text(Cow::Owned(
                 format_desktop_modifier(self.draft.virtual_desktops.number_modifier),
             )),
-            ElementId::MoveDesktopModifier => ControlValue::Text(Cow::Owned(
+            WorkspaceElement::MoveDesktopModifier => ControlValue::Text(Cow::Owned(
                 self.draft
                     .virtual_desktops
                     .move_follow_modifier
                     .map_or_else(|| "Not assigned".into(), format_modifier_display),
             )),
-            ElementId::SilentMoveDesktopModifier => ControlValue::Text(Cow::Owned(
+            WorkspaceElement::SilentMoveDesktopModifier => ControlValue::Text(Cow::Owned(
                 self.draft
                     .virtual_desktops
                     .move_silent_modifier
                     .map_or_else(|| "Not assigned".into(), format_modifier_display),
             )),
-            ElementId::OverlayAppearance => {
+        }
+    }
+
+    fn overlay_value(&self, element: OverlayElement) -> ControlValue<'_> {
+        match element {
+            OverlayElement::Enabled => {
+                ControlValue::Toggle(ConfigToggle::Overlay.selected(&self.draft))
+            }
+            OverlayElement::ExternalChanges => {
+                ControlValue::Toggle(ConfigToggle::ExternalAudio.selected(&self.draft))
+            }
+            OverlayElement::PositionCell(index) => ControlValue::Toggle(
+                self.draft.overlay.position == overlay_position(index as usize),
+            ),
+            OverlayElement::Appearance => {
                 ControlValue::Text(Cow::Borrowed(self.draft.overlay.appearance.label()))
             }
-            ElementId::OverlayPosition => {
+            OverlayElement::Position => {
                 ControlValue::Text(Cow::Borrowed(self.draft.overlay.position.label()))
             }
-            ElementId::OverlayMonitor => ControlValue::Text(Cow::Owned(
+            OverlayElement::Monitor => ControlValue::Text(Cow::Owned(
                 crate::ui::presentation::monitor_choice_label(&self.draft.overlay.monitor),
             )),
-            ElementId::OverlayDuration => ControlValue::Slider {
+            OverlayElement::Duration => ControlValue::Slider {
                 ratio: (self.draft.overlay.duration_ms.saturating_sub(500) as f32 / 9500.0)
                     .clamp(0.0, 1.0),
                 label: Cow::Borrowed(overlay_duration_label(self.draft.overlay.duration_ms)),
             },
-            ElementId::OverlayOpacity => ControlValue::Slider {
+            OverlayElement::Opacity => ControlValue::Slider {
                 ratio: ((self.draft.overlay.opacity - 0.3) / 0.7).clamp(0.0, 1.0),
                 label: Cow::Borrowed(overlay_opacity_label(self.draft.overlay.opacity)),
             },
-            ElementId::OverlayScale => ControlValue::Slider {
+            OverlayElement::Scale => ControlValue::Slider {
                 ratio: ((self.draft.overlay.scale - 0.7) / 0.9).clamp(0.0, 1.0),
                 label: Cow::Borrowed(overlay_scale_label(self.draft.overlay.scale)),
             },
-            ElementId::OverlayPreview => ControlValue::Action(Cow::Borrowed("Show on screen")),
-            ElementId::DebugLogging => {
+            OverlayElement::Preview => ControlValue::Action(Cow::Borrowed("Show on screen")),
+        }
+    }
+
+    fn system_value(&self, element: SystemElement) -> ControlValue<'_> {
+        match element {
+            SystemElement::StartWithWindows => ControlValue::Toggle(self.startup_enabled),
+            SystemElement::StartHotkeysEnabled => {
+                ControlValue::Toggle(ConfigToggle::PauseShortcuts.selected(&self.draft))
+            }
+            SystemElement::DebugLogging => {
                 ControlValue::Toggle(crate::diagnostics::logging::debug_logging_enabled())
             }
-            ElementId::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("Open")),
-            ElementId::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
-            ElementId::ResetSettings => ControlValue::Action(Cow::Borrowed(
+            SystemElement::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("Open")),
+            SystemElement::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
+            SystemElement::ResetSettings => ControlValue::Action(Cow::Borrowed(
                 if self
                     .interaction
                     .confirmations()
@@ -278,7 +327,6 @@ impl SettingsUi {
                     "Reset"
                 },
             )),
-            ElementId::Cancel | ElementId::Save => ControlValue::Action(Cow::Borrowed("")),
         }
     }
 }
