@@ -19,7 +19,7 @@ pub(crate) use presentation::{
     application_row, application_volume_row, device_cycle_error_row, device_cycle_no_devices_row,
     device_cycle_row, microphone_row, output_row,
 };
-pub(crate) use window::OverlayWindow;
+pub(crate) use window::{OverlayRuntimeStatus, OverlayWindow};
 
 #[cfg(test)]
 use self::layout::{position_for, surface_geometry};
