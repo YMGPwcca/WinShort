@@ -38,7 +38,7 @@ pub(super) fn picker_choices(
     devices: &crate::audio::devices::DeviceLists,
     _monitors: &[crate::platform::monitor::MonitorGeometry],
     display_outputs: &[crate::display::DisplayOutput],
-    selected_display_route: usize,
+    selected_display_route: Option<usize>,
 ) -> (Vec<PickerChoice>, usize) {
     let mut choices = Vec::new();
     match kind {
@@ -228,8 +228,15 @@ pub(super) fn picker_choices(
             }
         }
         PickerKind::DisplayOutputs => 0,
+        PickerKind::DisplayRoute => selected_display_route
+            .and_then(|selected| {
+                choices
+                    .iter()
+                    .position(|choice| choice.value == PickerValue::DisplayRoute(selected))
+            })
+            .unwrap_or(0),
         _ => {
-            let current = current_picker_value(kind, draft, selected_display_route);
+            let current = current_picker_value(kind, draft);
             choices
                 .iter()
                 .position(|choice| choice.value == current)
@@ -407,11 +414,7 @@ fn current_device_index(
         .unwrap_or(0)
 }
 
-fn current_picker_value(
-    kind: PickerKind,
-    draft: &Config,
-    selected_display_route: usize,
-) -> PickerValue {
+fn current_picker_value(kind: PickerKind, draft: &Config) -> PickerValue {
     match kind {
         PickerKind::InputDevice => PickerValue::Device(draft.audio.input_device.clone()),
         PickerKind::OutputDevice => PickerValue::Device(draft.audio.output_device.clone()),
@@ -432,7 +435,7 @@ fn current_picker_value(
                 .map(|profile| profile.topology)
                 .unwrap_or_default(),
         ),
-        PickerKind::DisplayRoute => PickerValue::DisplayRoute(selected_display_route),
+        PickerKind::DisplayRoute => PickerValue::DisplayRoute(0),
         PickerKind::InputRole => PickerValue::Role(draft.audio.input_role),
         PickerKind::OutputRole => PickerValue::Role(draft.audio.output_role),
         PickerKind::DesktopNumberModifier => {

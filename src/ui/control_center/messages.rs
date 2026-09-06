@@ -47,7 +47,7 @@ pub(super) unsafe extern "system" fn settings_wndproc(
         };
 
         if msg == WM_NCDESTROY {
-            drop(win::take_state::<SettingsUi>(hwnd)); // outer unsafe scope
+            drop(win::take_state::<SettingsUi>(hwnd));
             return win::def_proc(hwnd, msg, wparam, lparam);
         }
         match msg {
@@ -103,7 +103,7 @@ pub(super) unsafe extern "system" fn settings_wndproc(
             WM_MOUSEMOVE => pointer::handle_mousemove(cell, hwnd, lparam),
             WM_MOUSELEAVE => {
                 let mut ui = cell.borrow_mut();
-                ui.mouse_tracking = false;
+                ui.interaction.set_mouse_tracking(false);
                 ui.set_hover(hwnd, None);
                 LRESULT(0)
             }

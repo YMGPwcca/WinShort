@@ -31,6 +31,7 @@ pub(crate) use domain::{
 };
 pub(crate) use geometry::Rect;
 pub(crate) use model::{Element, ElementId, ElementKind, HotkeySlot, LayoutContext, RegionKind};
+pub(crate) use onboarding::OnboardingStep;
 pub(crate) use overlay::{overlay_placement_geometry, overlay_preview_canvas_rect};
 #[cfg(test)]
 pub(crate) use overlay::{

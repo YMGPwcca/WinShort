@@ -14,22 +14,20 @@ impl SettingsUi {
         let toggle_value = ConfigToggle::from_element(id).map_or_else(
             || match id {
                 ElementId::StartWithWindows => self.startup_enabled,
-
                 ElementId::DebugLogging => crate::diagnostics::logging::debug_logging_enabled(),
                 _ => false,
             },
             |toggle| toggle.selected(&self.draft),
         );
+        let hovered = self.interaction.hovered() == Some(id);
         Interaction {
-            hovered: self.hovered == Some(id),
-            pressed: self.pressed == Some(id),
+            hovered,
+            pressed: self.interaction.pressed() == Some(id),
             focused: self.visual_focus(id),
             disabled,
-            hover_t: self.motion.value(
-                id,
-                MotionChannel::Hover,
-                if self.hovered == Some(id) { 1.0 } else { 0.0 },
-            ),
+            hover_t: self
+                .motion
+                .value(id, MotionChannel::Hover, if hovered { 1.0 } else { 0.0 }),
             state_t: self.motion.value(
                 id,
                 MotionChannel::ToggleState,
@@ -39,22 +37,22 @@ impl SettingsUi {
     }
 
     pub(super) fn set_hover(&mut self, hwnd: HWND, next: Option<ElementId>) {
-        if next == self.hovered {
+        if next == self.interaction.hovered() {
             return;
         }
         if !SystemVisualPreferences::query().animations_enabled {
-            self.hovered = next;
+            self.interaction.set_hovered(next);
             self.motion.clear_channel(MotionChannel::Hover);
             invalidate(hwnd);
             return;
         }
-        if let Some(old) = self.hovered {
+        if let Some(old) = self.interaction.hovered() {
             self.motion.animate_to(old, MotionChannel::Hover, 0.0, 140);
         }
         if let Some(new) = next {
             self.motion.animate_to(new, MotionChannel::Hover, 1.0, 140);
         }
-        self.hovered = next;
+        self.interaction.set_hovered(next);
         start_timer(hwnd);
         invalidate(hwnd);
     }

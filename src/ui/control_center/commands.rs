@@ -2,13 +2,12 @@
 
 use super::config_toggle::ConfigToggle;
 use super::native::{invalidate, open_config_folder, post_main, start_timer};
-use super::state::SettingsUi;
+use super::state::{ConfirmationTarget, SettingsUi};
 use crate::audio::DeviceCycleFlow;
-use crate::keyboard::binding::ModifierMask;
 use crate::ui::control_center_automation::node_has_invoke;
 use crate::ui::layout::{
-    AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, OverlayElement,
-    ShellElement, ShortcutElement, SystemElement, WorkspaceElement,
+    AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, OnboardingStep,
+    OverlayElement, ShellElement, ShortcutElement, SystemElement, WorkspaceElement,
 };
 use crate::ui::navigation::Page;
 use crate::ui::picker::PickerKind;
@@ -16,18 +15,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
 
 impl SettingsUi {
-    pub(super) fn consume_reset_confirmation(confirm: &mut bool) -> bool {
-        if *confirm {
-            *confirm = false;
-            true
-        } else {
-            *confirm = true;
-            false
-        }
-    }
-
     pub(super) fn activate(&mut self, hwnd: HWND, id: ElementId) {
-        if self.closing || self.is_disabled(id) {
+        if self.interaction.closing() || self.is_disabled(id) {
             return;
         }
 
@@ -62,12 +51,12 @@ impl SettingsUi {
     }
 
     fn clear_stale_confirmations(&mut self, id: ElementId) {
-        if id != ElementId::ResetSettings {
-            self.reset_confirm = false;
-        }
-        if id != ElementId::DeleteDisplayProfile {
-            self.delete_profile_confirm = false;
-        }
+        let keep = match id {
+            ElementId::ResetSettings => Some(ConfirmationTarget::ResetSettings),
+            ElementId::DeleteDisplayProfile => Some(ConfirmationTarget::DeleteDisplayProfile),
+            _ => None,
+        };
+        self.interaction.confirmations_mut().retain_only(keep);
     }
 
     fn activate_config_toggle(&mut self, hwnd: HWND, id: ElementId) {
@@ -100,7 +89,7 @@ impl SettingsUi {
             ShellElement::Search => self.focus.set_target(Some(ElementId::Search)),
             ShellElement::SearchResult(index) => self.activate_search_result(index),
             ShellElement::OnboardingContinue => {
-                self.onboarding_step = Some(2);
+                self.onboarding_step = Some(OnboardingStep::Shortcuts);
                 self.reset_scroll();
             }
             ShellElement::OnboardingOpen => {
@@ -113,7 +102,6 @@ impl SettingsUi {
             ShellElement::Cancel => {
                 self.replace_draft((*self.config_access.current()).clone());
                 self.validation.clear();
-                self.recording = None;
                 self.stop_capture();
             }
             ShellElement::Save => {}
@@ -125,12 +113,16 @@ impl SettingsUi {
             HomeElement::Speaker => {
                 self.set_page(Page::Audio);
                 self.focus.set_target(Some(ElementId::OutputDevice));
-                post_main(crate::event::AppEvent::OpenSettingsPicker(PickerKind::OutputDevice));
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::OutputDevice,
+                ));
             }
             HomeElement::Microphone => {
                 self.set_page(Page::Audio);
                 self.focus.set_target(Some(ElementId::InputDevice));
-                post_main(crate::event::AppEvent::OpenSettingsPicker(PickerKind::InputDevice));
+                post_main(crate::event::AppEvent::OpenSettingsPicker(
+                    PickerKind::InputDevice,
+                ));
             }
             HomeElement::CurrentDesktop => self.set_page(Page::Workspaces),
             HomeElement::PreviousDesktop => {
@@ -221,11 +213,9 @@ impl SettingsUi {
             ShortcutElement::Enabled(slot) => self.toggle_hotkey_enabled(hwnd, slot),
             ShortcutElement::Unassign(slot) => self.unassign_hotkey(hwnd, slot),
             ShortcutElement::Capture(capture) => {
-                self.recording = Some(capture.id());
-                self.recording_modifiers = ModifierMask::NONE;
+                self.interaction.start_capture(capture.id());
                 self.validation.clear();
                 crate::keyboard::hook::begin_capture();
-                self.capture_armed = true;
                 start_timer(hwnd);
             }
         }
@@ -233,7 +223,9 @@ impl SettingsUi {
 
     fn activate_workspace(&mut self, hwnd: HWND, element: WorkspaceElement) {
         match element {
-            WorkspaceElement::Enabled => self.activate_config_toggle(hwnd, ElementId::DesktopsEnabled),
+            WorkspaceElement::Enabled => {
+                self.activate_config_toggle(hwnd, ElementId::DesktopsEnabled)
+            }
             WorkspaceElement::WinNumberEnabled => {
                 self.activate_config_toggle(hwnd, ElementId::WinNumberEnabled)
             }

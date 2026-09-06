@@ -2,11 +2,23 @@ use super::*;
 
 #[test]
 fn reset_requires_two_explicit_activations() {
-    let mut pending = false;
-    assert!(!SettingsUi::consume_reset_confirmation(&mut pending));
-    assert!(pending);
-    assert!(SettingsUi::consume_reset_confirmation(&mut pending));
-    assert!(!pending);
+    let mut ui = empty_settings_ui();
+    assert!(!ui
+        .interaction
+        .confirmations_mut()
+        .request_or_consume(ConfirmationTarget::ResetSettings));
+    assert!(ui
+        .interaction
+        .confirmations()
+        .is_pending(ConfirmationTarget::ResetSettings));
+    assert!(ui
+        .interaction
+        .confirmations_mut()
+        .request_or_consume(ConfirmationTarget::ResetSettings));
+    assert!(!ui
+        .interaction
+        .confirmations()
+        .is_pending(ConfirmationTarget::ResetSettings));
 }
 
 #[test]

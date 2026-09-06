@@ -5,7 +5,7 @@ use super::geometry::Rect;
 #[cfg(test)]
 use super::legacy::legacy_rows;
 use super::model::{Element, ElementId, ElementKind, LayoutContext, SectionLabel, VisualRegion};
-use super::onboarding::add_onboarding;
+use super::onboarding::{add_onboarding, OnboardingStep};
 use super::pages::add_page;
 use super::search::add_search_results;
 use crate::ui::navigation::Page;
@@ -58,7 +58,7 @@ impl SettingsLayout {
         page: Page,
         query: &str,
         profile_count: usize,
-        onboarding_step: Option<u8>,
+        onboarding_step: Option<OnboardingStep>,
     ) -> Self {
         let mut context = LayoutContext {
             profile_count,
@@ -85,7 +85,7 @@ impl SettingsLayout {
         page: Page,
         query: &str,
         context: LayoutContext,
-        onboarding_step: Option<u8>,
+        onboarding_step: Option<OnboardingStep>,
     ) -> Self {
         let mut layout = Self::shell_base(width, height, page);
         layout.add_chrome();

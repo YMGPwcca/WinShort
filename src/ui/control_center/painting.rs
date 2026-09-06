@@ -54,8 +54,8 @@ impl SettingsUi {
                     &renderer,
                     element,
                     self.page,
-                    self.hovered == Some(element.id),
-                    self.pressed == Some(element.id),
+                    self.interaction.hovered() == Some(element.id),
+                    self.interaction.pressed() == Some(element.id),
                     self.visual_focus(element.id),
                 );
                 if page == Page::Advanced {
@@ -149,7 +149,7 @@ impl SettingsUi {
             self.layout.search_rect,
             &self.search_query,
             self.search_has_focus(),
-            self.hovered == Some(ElementId::Search),
+            self.interaction.hovered() == Some(ElementId::Search),
             self.caret.visible(),
         );
         if let Some(element) = self
@@ -161,8 +161,8 @@ impl SettingsUi {
             controls::draw_close_button(
                 renderer,
                 element,
-                self.hovered == Some(ElementId::WindowClose),
-                self.pressed == Some(ElementId::WindowClose),
+                self.interaction.hovered() == Some(ElementId::WindowClose),
+                self.interaction.pressed() == Some(ElementId::WindowClose),
                 self.visual_focus(ElementId::WindowClose),
             );
         }
@@ -296,15 +296,16 @@ impl SettingsUi {
     }
 
     pub(super) fn draw_footer(&self, renderer: &Renderer) {
+        let rollback = self.display_rollback_status();
         let text = if let Some(first) = self.validation.first() {
             format!("Couldn't apply change — {}", friendly_violation(first))
-        } else if self.display_rollback_active {
-            if self.display_keep_available {
+        } else if rollback.active() {
+            if rollback.keep_available() {
                 "Display test is active — keep it or revert before the timer ends".into()
             } else {
                 "Display recovery is active — use Revert to retry".into()
             }
-        } else if self.display_editor.is_some() || self.display_draft_dirty {
+        } else if self.display.is_editing() {
             "Display draft — changes aren't applied until you test and keep them".into()
         } else if self.applied_until.is_some() {
             APPLIED_STATUS.into()

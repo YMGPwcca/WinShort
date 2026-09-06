@@ -70,13 +70,14 @@ impl SettingsUi {
     }
 
     pub(super) fn hotkey_value(&self, id: ElementId, hotkey: Option<Hotkey>) -> ControlValue<'_> {
-        if self.recording == Some(id) {
-            if self.recording_modifiers.is_empty() {
+        if self.interaction.capture_target() == Some(id) {
+            let modifiers = self.interaction.capture_modifiers();
+            if modifiers.is_empty() {
                 ControlValue::Text(Cow::Borrowed("Press a shortcut…"))
             } else {
                 ControlValue::Text(Cow::Owned(format!(
                     "{} …",
-                    format_modifier_display(self.recording_modifiers)
+                    format_modifier_display(modifiers)
                 )))
             }
         } else {
@@ -213,18 +214,17 @@ impl SettingsUi {
     }
 
     pub(super) fn stop_capture(&mut self) {
-        crate::keyboard::hook::end_capture();
-        self.capture_armed = false;
+        if self.interaction.clear_capture() {
+            crate::keyboard::hook::end_capture();
+        }
     }
 
     pub(super) fn record_key(&mut self, hwnd: HWND, vk: u16, down: bool) -> bool {
-        let Some(id) = self.recording else {
+        let Some(id) = self.interaction.capture_target() else {
             return false;
         };
         let before = self.draft.clone();
         if vk == 0x1B && down {
-            self.recording = None;
-            self.recording_modifiers = ModifierMask::NONE;
             self.stop_capture();
             invalidate(hwnd);
             return true;
@@ -235,31 +235,32 @@ impl SettingsUi {
             if let Some(action) = action {
                 self.draft.hotkeys.clear_disabled_hotkey(&action);
             }
-            self.recording_modifiers = ModifierMask::NONE;
             self.stop_capture();
             self.validation = crate::config::validate(&self.draft);
-            if self.display_editor.is_some() && self.draft != before {
-                self.display_draft_dirty = true;
+            if self.display.is_editing() && self.draft != before {
+                self.display.mark_dirty();
             }
-            if self.validation.is_empty() && self.draft != before && !self.display_draft_dirty {
+            if self.validation.is_empty() && self.draft != before && !self.display.is_dirty() {
                 self.commit_local_change(hwnd, before.clone());
             }
             invalidate(hwnd);
             return true;
         }
         if let Some(modifier) = modifier_for_vk(vk) {
-            self.recording_modifiers = if down {
-                self.recording_modifiers.union(modifier)
+            let current = self.interaction.capture_modifiers();
+            self.interaction.set_capture_modifiers(if down {
+                current.union(modifier)
             } else {
-                self.recording_modifiers.without(modifier)
-            };
+                current.without(modifier)
+            });
             invalidate(hwnd);
             return true;
         }
         if !down {
             return true;
         }
-        if self.recording_modifiers.is_empty() {
+        let modifiers = self.interaction.capture_modifiers();
+        if modifiers.is_empty() {
             self.validation = vec![Violation {
                 field: "hotkeys".into(),
                 message: "Use Ctrl, Alt, Shift, or Win with the key".into(),
@@ -269,20 +270,18 @@ impl SettingsUi {
         }
 
         let hotkey = Hotkey {
-            modifiers: self.recording_modifiers,
+            modifiers,
             key: VirtualKey(vk),
         };
         if let Some(slot) = HotkeySlot::from_capture_id(id) {
             self.set_recorded_hotkey(slot, hotkey);
         }
-        if self.display_editor.is_some() && self.draft != before {
-            self.display_draft_dirty = true;
+        if self.display.is_editing() && self.draft != before {
+            self.display.mark_dirty();
         }
-        self.recording = None;
-        self.recording_modifiers = ModifierMask::NONE;
         self.stop_capture();
         self.validation = crate::config::validate(&self.draft);
-        if self.validation.is_empty() && self.draft != before && !self.display_draft_dirty {
+        if self.validation.is_empty() && self.draft != before && !self.display.is_dirty() {
             self.commit_local_change(hwnd, before);
         }
         invalidate(hwnd);
@@ -291,15 +290,14 @@ impl SettingsUi {
 
     /// Apply a chord delivered by hook capture mode (#14).
     pub(super) fn finish_recording(&mut self, chord: crate::keyboard::hook::CapturedChord) {
-        self.recording_modifiers = ModifierMask::NONE;
         match chord.key {
             None => {
                 // Esc: cancel recording.
-                self.recording = None;
+                self.interaction.clear_capture();
                 self.validation.clear();
             }
             Some(key) => {
-                if let Some(id) = self.recording {
+                if let Some(id) = self.interaction.capture_target() {
                     let hotkey = Hotkey {
                         modifiers: chord.modifiers,
                         key,
@@ -318,10 +316,10 @@ impl SettingsUi {
                         }
                     }
                 }
-                if self.display_editor.is_some() {
-                    self.display_draft_dirty = true;
+                if self.display.is_editing() {
+                    self.display.mark_dirty();
                 }
-                self.recording = None;
+                self.interaction.clear_capture();
                 self.validation = crate::config::validate(&self.draft);
             }
         }

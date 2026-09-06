@@ -8,7 +8,7 @@ use windows::Win32::Foundation::HWND;
 
 impl SettingsUi {
     pub(super) fn set_page(&mut self, page: Page) {
-        if page != Page::Displays && self.display_editor.is_some() {
+        if page != Page::Displays && self.display.is_editing() {
             self.replace_draft((*self.config_access.current()).clone());
         }
         self.page = page;

@@ -180,10 +180,18 @@ impl ElementId {
             Self::HomeShortcutHealth => ElementDomain::Home(HomeElement::ShortcutHealth),
             Self::HomeDiagnostics => ElementDomain::Home(HomeElement::Diagnostics),
 
-            Self::InputCycleMode(index) => ElementDomain::Audio(AudioElement::InputCycleMode(index)),
-            Self::OutputCycleMode(index) => ElementDomain::Audio(AudioElement::OutputCycleMode(index)),
-            Self::InputCycleDevice(index) => ElementDomain::Audio(AudioElement::InputCycleDevice(index)),
-            Self::OutputCycleDevice(index) => ElementDomain::Audio(AudioElement::OutputCycleDevice(index)),
+            Self::InputCycleMode(index) => {
+                ElementDomain::Audio(AudioElement::InputCycleMode(index))
+            }
+            Self::OutputCycleMode(index) => {
+                ElementDomain::Audio(AudioElement::OutputCycleMode(index))
+            }
+            Self::InputCycleDevice(index) => {
+                ElementDomain::Audio(AudioElement::InputCycleDevice(index))
+            }
+            Self::OutputCycleDevice(index) => {
+                ElementDomain::Audio(AudioElement::OutputCycleDevice(index))
+            }
             Self::InputDevice => ElementDomain::Audio(AudioElement::InputDevice),
             Self::OutputDevice => ElementDomain::Audio(AudioElement::OutputDevice),
             Self::InputAllowlist => ElementDomain::Audio(AudioElement::InputAllowlist),
@@ -191,14 +199,22 @@ impl ElementId {
             Self::InputRole => ElementDomain::Audio(AudioElement::InputRole),
             Self::OutputRole => ElementDomain::Audio(AudioElement::OutputRole),
 
-            Self::DisplayProfileCard(index) => ElementDomain::Displays(DisplayElement::ProfileCard(index)),
-            Self::DisplayOutputCard(index) => ElementDomain::Displays(DisplayElement::OutputCard(index)),
-            Self::DisplayTopologyChoice(index) => ElementDomain::Displays(DisplayElement::TopologyChoice(index)),
+            Self::DisplayProfileCard(index) => {
+                ElementDomain::Displays(DisplayElement::ProfileCard(index))
+            }
+            Self::DisplayOutputCard(index) => {
+                ElementDomain::Displays(DisplayElement::OutputCard(index))
+            }
+            Self::DisplayTopologyChoice(index) => {
+                ElementDomain::Displays(DisplayElement::TopologyChoice(index))
+            }
             Self::DisplayWizardBack => ElementDomain::Displays(DisplayElement::WizardBack),
             Self::DisplayWizardNext => ElementDomain::Displays(DisplayElement::WizardNext),
             Self::DisplayWizardCancel => ElementDomain::Displays(DisplayElement::WizardCancel),
             Self::DisplayWizardSummary => ElementDomain::Displays(DisplayElement::WizardSummary),
-            Self::DisplayProfilesEnabled => ElementDomain::Displays(DisplayElement::ProfilesEnabled),
+            Self::DisplayProfilesEnabled => {
+                ElementDomain::Displays(DisplayElement::ProfilesEnabled)
+            }
             Self::EditDisplayProfile => ElementDomain::Displays(DisplayElement::EditProfile),
             Self::DisplayProfile => ElementDomain::Displays(DisplayElement::Profile),
             Self::DisplayOutputs => ElementDomain::Displays(DisplayElement::Outputs),
@@ -208,7 +224,9 @@ impl ElementId {
             Self::NewDisplayProfile => ElementDomain::Displays(DisplayElement::NewProfile),
             Self::UpdateDisplayProfile => ElementDomain::Displays(DisplayElement::UpdateProfile),
             Self::RenameDisplayProfile => ElementDomain::Displays(DisplayElement::RenameProfile),
-            Self::DuplicateDisplayProfile => ElementDomain::Displays(DisplayElement::DuplicateProfile),
+            Self::DuplicateDisplayProfile => {
+                ElementDomain::Displays(DisplayElement::DuplicateProfile)
+            }
             Self::TestApplyDisplayProfile => ElementDomain::Displays(DisplayElement::TestApply),
             Self::ApplyDisplayProfile => ElementDomain::Displays(DisplayElement::Apply),
             Self::DeleteDisplayProfile => ElementDomain::Displays(DisplayElement::DeleteProfile),
@@ -219,27 +237,57 @@ impl ElementId {
             Self::HotkeyCard(slot) => ElementDomain::Shortcuts(ShortcutElement::Card(slot)),
             Self::HotkeyEnabled(slot) => ElementDomain::Shortcuts(ShortcutElement::Enabled(slot)),
             Self::HotkeyUnassign(slot) => ElementDomain::Shortcuts(ShortcutElement::Unassign(slot)),
-            Self::MicHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::Microphone)),
-            Self::OutputHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::Output)),
-            Self::ForegroundHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::Foreground)),
-            Self::CycleInputHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::CycleInput)),
-            Self::CycleOutputHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::CycleOutput)),
-            Self::ForegroundVolumeUpHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::ForegroundVolumeUp)),
-            Self::ForegroundVolumeDownHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::ForegroundVolumeDown)),
-            Self::PreviousDesktopHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::PreviousDesktop)),
-            Self::AssignScratchpadHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::AssignSpecial)),
-            Self::ToggleScratchpadHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::ToggleSpecial)),
-            Self::DisplayProfileHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::DisplayProfile)),
+            Self::MicHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::Microphone,
+            )),
+            Self::OutputHotkey => {
+                ElementDomain::Shortcuts(ShortcutElement::Capture(ShortcutCaptureElement::Output))
+            }
+            Self::ForegroundHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::Foreground,
+            )),
+            Self::CycleInputHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::CycleInput,
+            )),
+            Self::CycleOutputHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::CycleOutput,
+            )),
+            Self::ForegroundVolumeUpHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::ForegroundVolumeUp,
+            )),
+            Self::ForegroundVolumeDownHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::ForegroundVolumeDown,
+            )),
+            Self::PreviousDesktopHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::PreviousDesktop,
+            )),
+            Self::AssignScratchpadHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::AssignSpecial,
+            )),
+            Self::ToggleScratchpadHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::ToggleSpecial,
+            )),
+            Self::DisplayProfileHotkey => ElementDomain::Shortcuts(ShortcutElement::Capture(
+                ShortcutCaptureElement::DisplayProfile,
+            )),
 
             Self::DesktopsEnabled => ElementDomain::Workspaces(WorkspaceElement::Enabled),
             Self::WinNumberEnabled => ElementDomain::Workspaces(WorkspaceElement::WinNumberEnabled),
-            Self::DesktopNumberModifier => ElementDomain::Workspaces(WorkspaceElement::DesktopNumberModifier),
-            Self::MoveDesktopModifier => ElementDomain::Workspaces(WorkspaceElement::MoveDesktopModifier),
-            Self::SilentMoveDesktopModifier => ElementDomain::Workspaces(WorkspaceElement::SilentMoveDesktopModifier),
+            Self::DesktopNumberModifier => {
+                ElementDomain::Workspaces(WorkspaceElement::DesktopNumberModifier)
+            }
+            Self::MoveDesktopModifier => {
+                ElementDomain::Workspaces(WorkspaceElement::MoveDesktopModifier)
+            }
+            Self::SilentMoveDesktopModifier => {
+                ElementDomain::Workspaces(WorkspaceElement::SilentMoveDesktopModifier)
+            }
 
             Self::OverlayEnabled => ElementDomain::Overlay(OverlayElement::Enabled),
             Self::OverlayExternalChanges => ElementDomain::Overlay(OverlayElement::ExternalChanges),
-            Self::OverlayPositionCell(index) => ElementDomain::Overlay(OverlayElement::PositionCell(index)),
+            Self::OverlayPositionCell(index) => {
+                ElementDomain::Overlay(OverlayElement::PositionCell(index))
+            }
             Self::OverlayAppearance => ElementDomain::Overlay(OverlayElement::Appearance),
             Self::OverlayPosition => ElementDomain::Overlay(OverlayElement::Position),
             Self::OverlayMonitor => ElementDomain::Overlay(OverlayElement::Monitor),

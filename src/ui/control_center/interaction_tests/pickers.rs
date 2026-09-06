@@ -9,7 +9,7 @@ fn overlay_monitor_picker_exposes_only_primary_and_cursor_position() {
         &Default::default(),
         &[],
         &[],
-        0,
+        None,
     );
 
     assert_eq!(
@@ -32,7 +32,7 @@ fn overlay_monitor_picker_exposes_only_primary_and_cursor_position() {
         &Default::default(),
         &[],
         &[],
-        0,
+        None,
     );
     assert_eq!(current, 0);
 }
@@ -56,7 +56,7 @@ fn device_picker_exposes_only_real_endpoints_and_marks_system_default() {
 
     let config = Config::default();
     let (choices, selected) =
-        picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], 0);
+        picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], None);
 
     assert_eq!(choices.len(), 1);
     assert_eq!(selected, 0);
@@ -92,8 +92,14 @@ fn allowlist_picker_exposes_clear_controls_and_offline_selections() {
         output_defaults: Default::default(),
         warnings: Vec::new(),
     };
-    let (choices, current) =
-        picker_choices(PickerKind::InputAllowlist, &config, &devices, &[], &[], 0);
+    let (choices, current) = picker_choices(
+        PickerKind::InputAllowlist,
+        &config,
+        &devices,
+        &[],
+        &[],
+        None,
+    );
     assert_eq!(current, 1);
     assert_eq!(choices[0].label, "All available microphones");
     assert_eq!(choices[1].label, "Selected microphones");

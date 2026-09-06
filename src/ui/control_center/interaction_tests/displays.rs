@@ -14,7 +14,7 @@ fn advanced_display_topology_stays_selected_in_picker() {
         &Default::default(),
         &[],
         &[],
-        0,
+        None,
     );
     assert_eq!(choices[selected].label, "Current arrangement (advanced)");
     assert_eq!(
@@ -72,13 +72,15 @@ fn display_topology_changes_stay_local_until_explicit_keep() {
         PickerValue::DisplayTopology(crate::display::DisplayTopology::Clone),
     );
 
-    assert!(ui.display_draft_dirty);
+    assert!(ui.display.is_dirty());
+    assert_eq!(ui.display.step(), Some(DisplayWizardStep::Review));
     assert_eq!(
         ui.draft.display_profiles.active().unwrap().topology,
         crate::display::DisplayTopology::Clone
     );
     ui.replace_draft(Config::default());
-    assert!(!ui.display_draft_dirty);
+    assert!(!ui.display.is_dirty());
+    assert!(!ui.display.is_editing());
 }
 
 #[test]
@@ -160,6 +162,7 @@ fn display_profile_delete_removes_hotkey_and_selects_remaining_profile() {
         .hotkeys
         .disabled_hotkey("display_profile:first")
         .is_none());
+    assert_eq!(ui.display.selected_route(), None);
 }
 
 #[test]
@@ -177,6 +180,9 @@ fn display_route_editor_changes_supported_values_and_untrusts_profile() {
     assert_eq!(route.refresh_numerator, 144);
     assert_eq!(route.rotation, 2);
     assert!(!ui.draft.display_profiles.active().unwrap().confirmed);
+    assert_eq!(ui.display.selected_route(), Some(0));
+    assert!(ui.display.is_dirty());
+    assert_eq!(ui.display.step(), Some(DisplayWizardStep::Review));
 }
 
 #[test]
@@ -210,7 +216,8 @@ fn profile_hotkey_capture_and_clear_uses_stable_profile_id() {
     ui.draft.display_profiles.active_profile = Some("ai-id".into());
     let hotkey = Hotkey::parse("Ctrl+Alt+F4").unwrap();
 
-    ui.recording = Some(ElementId::DisplayProfileHotkey);
+    ui.interaction
+        .start_capture(ElementId::DisplayProfileHotkey);
     ui.finish_recording(crate::keyboard::hook::CapturedChord {
         modifiers: hotkey.modifiers,
         key: Some(hotkey.key),
@@ -219,7 +226,8 @@ fn profile_hotkey_capture_and_clear_uses_stable_profile_id() {
     assert_eq!(ui.draft.hotkeys.display_profiles[0].profile_id, "ai-id");
     assert_eq!(ui.draft.hotkeys.display_profiles[0].hotkey, hotkey);
 
-    ui.recording = Some(ElementId::DisplayProfileHotkey);
+    ui.interaction
+        .start_capture(ElementId::DisplayProfileHotkey);
     ui.finish_recording(crate::keyboard::hook::CapturedChord {
         modifiers: ModifierMask::NONE,
         key: Some(VirtualKey(0x2E)),
@@ -231,7 +239,7 @@ fn profile_hotkey_capture_and_clear_uses_stable_profile_id() {
 fn dirty_display_edits_block_other_changes_without_mutating_draft() {
     let hwnd = HWND(std::ptr::dangling_mut());
     let mut ui = empty_settings_ui();
-    ui.display_draft_dirty = true;
+    ui.display.open(DisplayWizardStep::Review, true);
     let before = ui.draft.clone();
     ui.draft.overlay.enabled = !ui.draft.overlay.enabled;
 
@@ -281,9 +289,7 @@ fn display_test_remains_enabled_when_backend_revalidates_inventory() {
     let mut ui = empty_settings_ui();
     ui.draft.display_profiles.profiles = vec![sample_profile("test", "Baseline", true)];
     ui.draft.display_profiles.active_profile = Some("test".into());
-    ui.display_editor = Some(DisplayEditorState {
-        step: DisplayWizardStep::Review,
-    });
+    ui.display.open(DisplayWizardStep::Review, false);
     ui.inventory = DisplayInventory::Failed("display query failed".into());
     assert!(!ui.is_disabled(ElementId::TestApplyDisplayProfile));
     assert!(ui.layout_context().display_inventory_unknown);
@@ -324,14 +330,9 @@ fn display_editor_back_and_next_move_one_step_without_applying() {
     let mut ui = empty_settings_ui();
     ui.draft.display_profiles.profiles = vec![sample_profile("wizard", "Wizard", true)];
     ui.draft.display_profiles.active_profile = Some("wizard".into());
-    ui.display_editor = Some(DisplayEditorState {
-        step: DisplayWizardStep::Displays,
-    });
+    ui.display.open(DisplayWizardStep::Displays, false);
     ui.move_display_editor(HWND::default(), true);
-    assert_eq!(
-        ui.display_editor.expect("editor").step,
-        DisplayWizardStep::Arrangement
-    );
+    assert_eq!(ui.display.step(), Some(DisplayWizardStep::Arrangement));
     assert_eq!(
         ui.draft
             .display_profiles
@@ -341,23 +342,15 @@ fn display_editor_back_and_next_move_one_step_without_applying() {
         crate::display::DisplayTopology::Extend
     );
     ui.move_display_editor(HWND::default(), false);
-    assert_eq!(
-        ui.display_editor.expect("editor").step,
-        DisplayWizardStep::Displays
-    );
+    assert_eq!(ui.display.step(), Some(DisplayWizardStep::Displays));
 }
 
 #[test]
 fn display_editor_requires_a_route_before_advancing() {
     let mut ui = empty_settings_ui();
-    ui.display_editor = Some(DisplayEditorState {
-        step: DisplayWizardStep::Displays,
-    });
+    ui.display.open(DisplayWizardStep::Displays, false);
     ui.move_display_editor(HWND::default(), true);
-    assert_eq!(
-        ui.display_editor.expect("editor").step,
-        DisplayWizardStep::Displays
-    );
+    assert_eq!(ui.display.step(), Some(DisplayWizardStep::Displays));
     assert!(ui
         .validation
         .iter()
@@ -369,14 +362,21 @@ fn delete_profile_requires_a_second_confirmation() {
     let mut ui = empty_settings_ui();
     ui.draft.display_profiles.profiles = vec![sample_profile("delete", "Delete me", true)];
     ui.draft.display_profiles.active_profile = Some("delete".into());
-    ui.delete_profile_confirm = false;
     assert!(!ui.is_disabled(ElementId::DeleteDisplayProfile));
-    assert!(!SettingsUi::consume_reset_confirmation(
-        &mut ui.delete_profile_confirm
-    ));
-    assert!(ui.delete_profile_confirm);
-    assert!(SettingsUi::consume_reset_confirmation(
-        &mut ui.delete_profile_confirm
-    ));
-    assert!(!ui.delete_profile_confirm);
+    assert!(!ui
+        .interaction
+        .confirmations_mut()
+        .request_or_consume(ConfirmationTarget::DeleteDisplayProfile));
+    assert!(ui
+        .interaction
+        .confirmations()
+        .is_pending(ConfirmationTarget::DeleteDisplayProfile));
+    assert!(ui
+        .interaction
+        .confirmations_mut()
+        .request_or_consume(ConfirmationTarget::DeleteDisplayProfile));
+    assert!(!ui
+        .interaction
+        .confirmations()
+        .is_pending(ConfirmationTarget::DeleteDisplayProfile));
 }

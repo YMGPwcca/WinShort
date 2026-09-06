@@ -1,50 +1,49 @@
 //! Display edit for the control center.
 
 use super::display_routes::{next_display_profile_identity, parse_display_route_values};
-use super::state::{DisplayEditorState, SettingsUi};
+use super::state::SettingsUi;
 use crate::config::validate::Violation;
 use crate::ui::presentation::DisplayWizardStep;
 use windows::Win32::Foundation::HWND;
 
 impl SettingsUi {
     pub(super) fn start_display_editor(&mut self, _hwnd: HWND, update_selected: bool) {
-        if self.display_editor.is_some() {
+        if self.display.is_editing() {
             return;
         }
         self.refresh_display_outputs();
         let before = self.draft.clone();
         self.capture_display_profile(_hwnd, update_selected);
         if self.draft != before {
-            self.display_editor = Some(DisplayEditorState {
-                step: DisplayWizardStep::Displays,
-            });
-            self.display_draft_dirty = true;
-            self.selected_display_route = 0;
+            let route_count = self
+                .draft
+                .display_profiles
+                .active()
+                .map_or(0, |profile| profile.routes.len());
+            self.display.open(DisplayWizardStep::Displays, true);
+            self.display.select_first_route(route_count);
             self.validation.clear();
         }
     }
 
     pub(super) fn start_existing_display_editor(&mut self) {
-        if self
+        let route_count = self
             .draft
             .display_profiles
             .active()
-            .is_some_and(|profile| !profile.routes.is_empty())
-        {
-            self.display_editor = Some(DisplayEditorState {
-                step: DisplayWizardStep::Displays,
-            });
-            self.display_draft_dirty = false;
-            self.selected_display_route = 0;
+            .map_or(0, |profile| profile.routes.len());
+        if route_count > 0 {
+            self.display.open(DisplayWizardStep::Displays, false);
+            self.display.select_first_route(route_count);
             self.validation.clear();
         }
     }
 
     pub(super) fn move_display_editor(&mut self, _hwnd: HWND, forward: bool) {
-        let Some(editor) = self.display_editor.as_mut() else {
+        let Some(step) = self.display.step() else {
             return;
         };
-        if forward && editor.step == DisplayWizardStep::Displays {
+        if forward && step == DisplayWizardStep::Displays {
             let has_route = self
                 .draft
                 .display_profiles
@@ -59,19 +58,19 @@ impl SettingsUi {
             }
         }
         let next = if forward {
-            editor.step.next()
+            step.next()
         } else {
-            editor.step.previous()
+            step.previous()
         };
         if let Some(step) = next {
-            editor.step = step;
+            self.display.set_step(step);
             self.reset_scroll();
             self.validation.clear();
         }
     }
 
     pub(super) fn cancel_display_editor(&mut self) {
-        if self.display_editor.is_some() {
+        if self.display.is_editing() {
             self.replace_draft((*self.config_access.current()).clone());
             self.validation.clear();
         }
@@ -89,7 +88,7 @@ impl SettingsUi {
             return;
         };
         let profile_id = profile.id.clone();
-        if let Some(profile) = self
+        let route_count = if let Some(profile) = self
             .draft
             .display_profiles
             .profiles
@@ -114,10 +113,13 @@ impl SettingsUi {
             ) {
                 profile.topology = crate::display::DisplayTopology::Extend;
             }
-            self.selected_display_route = self
-                .selected_display_route
-                .min(profile.routes.len().saturating_sub(1));
-            self.display_draft_dirty = true;
+            Some(profile.routes.len())
+        } else {
+            None
+        };
+        if let Some(route_count) = route_count {
+            self.display.clamp_selected_route(route_count);
+            self.display.mark_dirty();
             self.validation.clear();
         }
     }
@@ -142,7 +144,7 @@ impl SettingsUi {
             if profile.routes.len() > 1 {
                 profile.topology = topology;
                 profile.confirmed = false;
-                self.display_draft_dirty = true;
+                self.display.mark_dirty();
                 self.validation.clear();
             }
         }
@@ -174,7 +176,12 @@ impl SettingsUi {
             Ok(mut profile) => {
                 profile.confirmed = false;
                 if self.draft.display_profiles.upsert(profile) {
-                    self.selected_display_route = 0;
+                    let route_count = self
+                        .draft
+                        .display_profiles
+                        .active()
+                        .map_or(0, |profile| profile.routes.len());
+                    self.display.select_first_route(route_count);
                     self.validation.clear();
                 } else {
                     self.validation = vec![Violation {
@@ -227,7 +234,12 @@ impl SettingsUi {
         duplicate.name = name;
         duplicate.confirmed = false;
         if self.draft.display_profiles.upsert(duplicate) {
-            self.selected_display_route = 0;
+            let route_count = self
+                .draft
+                .display_profiles
+                .active()
+                .map_or(0, |profile| profile.routes.len());
+            self.display.select_first_route(route_count);
             self.validation.clear();
         } else {
             self.validation = vec![Violation {
@@ -273,8 +285,8 @@ impl SettingsUi {
             return;
         };
         profile.name = normalized.to_string();
-        if self.display_editor.is_some() {
-            self.display_draft_dirty = true;
+        if self.display.is_editing() {
+            self.display.mark_dirty();
         }
         self.validation.clear();
     }
@@ -313,12 +325,11 @@ impl SettingsUi {
         };
         edit.apply_to(route);
         profile.confirmed = false;
-        self.selected_display_route = route_index;
-        self.display_draft_dirty = true;
-        if self.display_editor.is_none() {
-            self.display_editor = Some(DisplayEditorState {
-                step: DisplayWizardStep::Review,
-            });
+        self.display.select_route(Some(route_index));
+        if self.display.is_editing() {
+            self.display.mark_dirty();
+        } else {
+            self.display.open(DisplayWizardStep::Review, true);
         }
         self.validation.clear();
     }
@@ -333,7 +344,7 @@ impl SettingsUi {
             self.draft
                 .hotkeys
                 .clear_disabled_hotkey(&format!("display_profile:{active}"));
-            self.selected_display_route = 0;
+            self.display.select_route(None);
         }
         self.validation.clear();
     }

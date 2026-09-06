@@ -73,9 +73,10 @@ impl SettingsUi {
         &crate::display::DisplayRoute,
     )> {
         let profile = self.draft.display_profiles.active()?;
+        let route_index = self.display.selected_route()?;
         profile
             .routes
-            .get(self.selected_display_route)
+            .get(route_index)
             .map(|route| (profile, route))
     }
 

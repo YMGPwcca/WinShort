@@ -83,7 +83,7 @@ fn phase_one_hotkey_capture_maps_to_each_config_field() {
         ElementId::ForegroundVolumeUpHotkey,
         ElementId::ForegroundVolumeDownHotkey,
     ] {
-        ui.recording = Some(id);
+        ui.interaction.start_capture(id);
         ui.finish_recording(crate::keyboard::hook::CapturedChord {
             modifiers: hotkey.modifiers,
             key: Some(hotkey.key),

@@ -141,10 +141,26 @@ fn managed_shortcut_cards_include_record_state_and_unassign_controls() {
 
 #[test]
 fn onboarding_steps_expose_real_choices_and_shortcut_values() {
-    let first = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, Some(1));
+    let first = SettingsLayout::build_shell(
+        960.0,
+        660.0,
+        0.0,
+        Page::Home,
+        "",
+        0,
+        Some(OnboardingStep::Setup),
+    );
     assert!(first.element(ElementId::OutputAllowlist).is_some());
     assert!(first.element(ElementId::OnboardingContinue).is_some());
-    let ready = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Home, "", 0, Some(2));
+    let ready = SettingsLayout::build_shell(
+        960.0,
+        660.0,
+        0.0,
+        Page::Home,
+        "",
+        0,
+        Some(OnboardingStep::Shortcuts),
+    );
     assert!(ready.element(ElementId::MicHotkey).is_some());
     assert!(ready.element(ElementId::OnboardingOpen).is_some());
 }

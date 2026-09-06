@@ -5,14 +5,14 @@ use std::cell::RefCell;
 use std::sync::OnceLock;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{DEFAULT_GUI_FONT, GetStockObject, HFONT};
+use windows::Win32::Graphics::Gdi::{GetStockObject, DEFAULT_GUI_FONT, HFONT};
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GetWindowTextLengthW, GetWindowTextW, MoveWindow, SendMessageW,
-    SetWindowTextW, ShowWindow, BN_CLICKED, CW_USEDEFAULT, ES_AUTOHSCROLL, HMENU, SW_SHOW,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_SETFONT,
-    WM_SIZE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-    WS_VISIBLE,
+    SetWindowTextW, ShowWindow, BN_CLICKED, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOHSCROLL, HMENU,
+    SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_KEYDOWN,
+    WM_NCCREATE, WM_NCDESTROY, WM_SETFONT, WM_SIZE, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 
 const CLASS_NAME: &str = "WinShort.TextPrompt";
@@ -25,8 +25,13 @@ static REGISTERED: OnceLock<u16> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(crate) enum PromptAction {
-    RenameProfile { profile_id: String },
-    EditRoute { profile_id: String, route_index: usize },
+    RenameProfile {
+        profile_id: String,
+    },
+    EditRoute {
+        profile_id: String,
+        route_index: usize,
+    },
 }
 
 struct PromptState {
@@ -115,12 +120,13 @@ unsafe extern "system" fn prompt_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_CREATE => handle_create(hwnd, lparam),
+        WM_NCCREATE => handle_nccreate(hwnd, msg, wparam, lparam),
+        WM_CREATE => handle_create(hwnd),
         WM_COMMAND => handle_command(hwnd, wparam),
         WM_KEYDOWN => handle_keydown(hwnd, wparam),
         WM_SIZE => handle_resize(hwnd),
-        WM_CLOSE => close_prompt(hwnd),
-        WM_DESTROY => handle_destroy(hwnd),
+        WM_CLOSE => cancel_prompt(hwnd),
+        WM_NCDESTROY => handle_ncdestroy(hwnd, msg, wparam, lparam),
         _ => unsafe {
             windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
         },
@@ -133,10 +139,17 @@ fn state_cell(hwnd: HWND) -> Option<&'static RefCell<PromptState>> {
     unsafe { win::state_cell::<PromptState>(hwnd) }
 }
 
-fn handle_create(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    if unsafe { win::install_state_from_create::<PromptState>(hwnd, lparam) }.is_none() {
-        return LRESULT(-1);
-    }
+fn handle_nccreate(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let cs = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
+    let Some(state) = (unsafe { win::WindowCreation::<PromptState>::take_from(cs.lpCreateParams) })
+    else {
+        return LRESULT(0);
+    };
+    win::store_state_ptr(hwnd, win::WindowState::new(state));
+    win::def_proc(hwnd, msg, wparam, lparam)
+}
+
+fn handle_create(hwnd: HWND) -> LRESULT {
     match create_children(hwnd) {
         Ok(()) => LRESULT(0),
         Err(error) => {
@@ -212,16 +225,18 @@ fn create_child(
 }
 
 fn apply_default_font(hwnd: HWND) {
-    if let Ok(font) = unsafe { GetStockObject(DEFAULT_GUI_FONT) } {
-        let hfont = HFONT(font.0);
-        unsafe {
-            let _ = SendMessageW(
-                hwnd,
-                WM_SETFONT,
-                Some(WPARAM(hfont.0 as usize)),
-                Some(LPARAM(1)),
-            );
-        }
+    let font = unsafe { GetStockObject(DEFAULT_GUI_FONT) };
+    if font.0.is_null() {
+        return;
+    }
+    let hfont = HFONT(font.0);
+    unsafe {
+        let _ = SendMessageW(
+            hwnd,
+            WM_SETFONT,
+            Some(WPARAM(hfont.0 as usize)),
+            Some(LPARAM(1)),
+        );
     }
 }
 
@@ -231,7 +246,7 @@ fn handle_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     }
     match loword(wparam.0) as usize {
         IDC_OK => submit_prompt(hwnd),
-        IDC_CANCEL => close_prompt(hwnd),
+        IDC_CANCEL => cancel_prompt(hwnd),
         _ => LRESULT(0),
     }
 }
@@ -239,7 +254,7 @@ fn handle_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 fn handle_keydown(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     match wparam.0 as u32 {
         VK_RETURN => submit_prompt(hwnd),
-        VK_ESCAPE => close_prompt(hwnd),
+        VK_ESCAPE => cancel_prompt(hwnd),
         _ => LRESULT(0),
     }
 }
@@ -270,6 +285,14 @@ fn submit_prompt(hwnd: HWND) -> LRESULT {
         },
     };
     event::post_main(event);
+    close_prompt(hwnd)
+}
+
+fn cancel_prompt(hwnd: HWND) -> LRESULT {
+    // The Control Center owns the TextPrompt wrapper even after the native HWND
+    // closes itself. Wake the owner so it clears that wrapper instead of keeping
+    // a stale handle until the next prompt or shutdown.
+    event::post_main(AppEvent::DisplayProfileRenameCancelled);
     close_prompt(hwnd)
 }
 
@@ -308,7 +331,14 @@ fn layout_children(hwnd: HWND, edit: HWND, ok: HWND, cancel: HWND) {
     let gap = 10;
     unsafe {
         let _ = MoveWindow(edit, 16, 18, (width - 32).max(10), 30, true);
-        let _ = MoveWindow(cancel, width - 16 - button_width, 70, button_width, 32, true);
+        let _ = MoveWindow(
+            cancel,
+            width - 16 - button_width,
+            70,
+            button_width,
+            32,
+            true,
+        );
         let _ = MoveWindow(
             ok,
             width - 16 - button_width * 2 - gap,
@@ -327,11 +357,11 @@ fn close_prompt(hwnd: HWND) -> LRESULT {
     LRESULT(0)
 }
 
-fn handle_destroy(hwnd: HWND) -> LRESULT {
+fn handle_ncdestroy(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
-        win::drop_state::<PromptState>(hwnd);
+        drop(win::take_state::<PromptState>(hwnd));
     }
-    LRESULT(0)
+    win::def_proc(hwnd, msg, wparam, lparam)
 }
 
 fn loword(value: usize) -> u16 {

@@ -1,9 +1,9 @@
 //! Picker apply for the control center.
 
-use super::state::SettingsUi;
-
+use super::state::{ConfirmationTarget, SettingsUi};
 use crate::config::validate::Violation;
 use crate::ui::picker::{PickerKind, PickerValue};
+use crate::ui::presentation::DisplayWizardStep;
 
 impl SettingsUi {
     pub(super) fn apply_picker(&mut self, kind: PickerKind, value: PickerValue) {
@@ -22,7 +22,12 @@ impl SettingsUi {
             }
             (PickerKind::DisplayProfile, PickerValue::DisplayProfile(value)) => {
                 self.draft.display_profiles.active_profile = value;
-                self.selected_display_route = 0;
+                let route_count = self
+                    .draft
+                    .display_profiles
+                    .active()
+                    .map_or(0, |profile| profile.routes.len());
+                self.display.select_first_route(route_count);
             }
             (PickerKind::DisplayOutputs, PickerValue::DisplayOutputs(routes)) => {
                 if routes.is_empty() {
@@ -32,7 +37,7 @@ impl SettingsUi {
                     }];
                     return;
                 }
-                if let Some(profile) = self
+                let route_count = if let Some(profile) = self
                     .draft
                     .display_profiles
                     .active_profile
@@ -43,8 +48,7 @@ impl SettingsUi {
                             .profiles
                             .iter_mut()
                             .find(|profile| profile.id.eq_ignore_ascii_case(id))
-                    })
-                {
+                    }) {
                     let mut merged = Vec::with_capacity(routes.len());
                     for selected in routes {
                         if let Some(existing) = profile
@@ -68,14 +72,21 @@ impl SettingsUi {
                     ) {
                         profile.topology = crate::display::DisplayTopology::Extend;
                     }
-                    self.selected_display_route = self
-                        .selected_display_route
-                        .min(profile.routes.len().saturating_sub(1));
-                    self.display_draft_dirty = true;
+                    Some(profile.routes.len())
+                } else {
+                    None
+                };
+                if let Some(route_count) = route_count {
+                    self.display.clamp_selected_route(route_count);
+                    if self.display.is_editing() {
+                        self.display.mark_dirty();
+                    } else {
+                        self.display.open(DisplayWizardStep::Review, true);
+                    }
                 }
             }
             (PickerKind::DisplayTopology, PickerValue::DisplayTopology(topology)) => {
-                if let Some(profile) = self
+                let changed = if let Some(profile) = self
                     .draft
                     .display_profiles
                     .active_profile
@@ -86,15 +97,23 @@ impl SettingsUi {
                             .profiles
                             .iter_mut()
                             .find(|profile| profile.id.eq_ignore_ascii_case(id))
-                    })
-                {
+                    }) {
                     profile.topology = topology;
                     profile.confirmed = false;
-                    self.display_draft_dirty = true;
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    if self.display.is_editing() {
+                        self.display.mark_dirty();
+                    } else {
+                        self.display.open(DisplayWizardStep::Review, true);
+                    }
                 }
             }
             (PickerKind::DisplayRoute, PickerValue::DisplayRoute(index)) => {
-                self.selected_display_route = index;
+                self.display.select_route(Some(index));
             }
             (PickerKind::InputRole, PickerValue::Role(value)) => {
                 self.draft.audio.input_role = value;
@@ -125,7 +144,13 @@ impl SettingsUi {
             }
             _ => {}
         }
-        self.reset_confirm = false;
+        if self
+            .interaction
+            .confirmations()
+            .is_pending(ConfirmationTarget::ResetSettings)
+        {
+            self.interaction.confirmations_mut().clear();
+        }
         self.validation.clear();
     }
 }

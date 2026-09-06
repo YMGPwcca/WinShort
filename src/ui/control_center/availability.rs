@@ -3,8 +3,9 @@
 use super::state::SettingsUi;
 use crate::config::model::DeviceSelection;
 use crate::ui::layout::{
-    AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, HotkeySlot, OverlayElement,
-    ShellElement, ShortcutCaptureElement, ShortcutElement, SystemElement, WorkspaceElement,
+    AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, HotkeySlot,
+    OverlayElement, ShellElement, ShortcutCaptureElement, ShortcutElement, SystemElement,
+    WorkspaceElement,
 };
 use crate::ui::presentation::DisplayWizardStep;
 
@@ -76,11 +77,13 @@ impl SettingsUi {
     }
 
     fn display_disabled(&self, element: DisplayElement) -> bool {
+        let rollback = self.display_rollback_status();
+        let rollback_active = rollback.active();
         match element {
             DisplayElement::Profile => {
                 !self.draft.display_profiles.enabled
                     || self.draft.display_profiles.active().is_none()
-                    || self.display_draft_dirty
+                    || self.display.is_dirty()
             }
             DisplayElement::Outputs | DisplayElement::Route | DisplayElement::EditRoute => {
                 self.display_edit_unavailable()
@@ -92,19 +95,19 @@ impl SettingsUi {
                         .display_profiles
                         .active()
                         .is_none_or(|profile| profile.routes.len() <= 1)
-                    || self.display_rollback_active
+                    || rollback_active
             }
             DisplayElement::NewProfile => self.display_creation_unavailable(),
             DisplayElement::EditProfile => self.display_edit_unavailable(),
             DisplayElement::UpdateProfile
             | DisplayElement::DuplicateProfile
             | DisplayElement::DeleteProfile => {
-                self.display_edit_unavailable() || self.display_editor.is_some()
+                self.display_edit_unavailable() || self.display.is_editing()
             }
             DisplayElement::RenameProfile => self.display_edit_unavailable(),
             DisplayElement::TestApply => {
                 self.display_edit_unavailable()
-                    || self.display_editor.is_none()
+                    || !self.display.is_editing()
                     || self
                         .draft
                         .display_profiles
@@ -118,27 +121,27 @@ impl SettingsUi {
                         .display_profiles
                         .active()
                         .is_none_or(|profile| !profile.confirmed)
-                    || self.display_rollback_active
+                    || rollback_active
             }
             DisplayElement::ProfileCard(index) => {
                 index as usize >= self.draft.display_profiles.profiles.len()
                     || self.display_creation_unavailable()
             }
             DisplayElement::OutputCard(index) => {
-                self.display_editor.is_none()
-                    || self.display_rollback_active
+                !self.display.is_editing()
+                    || rollback_active
                     || index as usize >= self.display_route_candidates().len()
             }
             DisplayElement::TopologyChoice(_) => {
-                self.display_editor.is_none()
-                    || self.display_rollback_active
+                !self.display.is_editing()
+                    || rollback_active
                     || self
                         .draft
                         .display_profiles
                         .active()
                         .is_none_or(|profile| profile.routes.len() <= 1)
             }
-            DisplayElement::WizardNext => self.display_editor.is_none_or(|editor| match editor.step {
+            DisplayElement::WizardNext => self.display.step().is_none_or(|step| match step {
                 DisplayWizardStep::Displays => self
                     .draft
                     .display_profiles
@@ -152,11 +155,11 @@ impl SettingsUi {
                     .is_none_or(|profile| profile.name.trim().is_empty()),
                 DisplayWizardStep::Review => true,
             }),
-            DisplayElement::WizardBack | DisplayElement::WizardCancel => self.display_editor.is_none(),
-            DisplayElement::ProfilesEnabled => self.display_draft_dirty,
-            DisplayElement::KeepChange => !self.display_keep_available,
-            DisplayElement::UndoChange => !self.display_rollback_active,
-            DisplayElement::DiscardEdits => !self.display_draft_dirty,
+            DisplayElement::WizardBack | DisplayElement::WizardCancel => !self.display.is_editing(),
+            DisplayElement::ProfilesEnabled => self.display.is_dirty(),
+            DisplayElement::KeepChange => !rollback.keep_available(),
+            DisplayElement::UndoChange => !rollback_active,
+            DisplayElement::DiscardEdits => !self.display.is_dirty(),
             DisplayElement::WizardSummary => false,
         }
     }
@@ -217,8 +220,9 @@ impl SettingsUi {
                 !self.draft.virtual_desktops.enabled
                     || !self.draft.virtual_desktops.win_number_switching
             }
-            WorkspaceElement::MoveDesktopModifier
-            | WorkspaceElement::SilentMoveDesktopModifier => !self.draft.virtual_desktops.enabled,
+            WorkspaceElement::MoveDesktopModifier | WorkspaceElement::SilentMoveDesktopModifier => {
+                !self.draft.virtual_desktops.enabled
+            }
         }
     }
 
@@ -250,12 +254,12 @@ impl SettingsUi {
     fn display_edit_unavailable(&self) -> bool {
         !self.draft.display_profiles.enabled
             || self.draft.display_profiles.active().is_none()
-            || self.display_rollback_active
+            || self.display_rollback_status().active()
     }
 
     fn display_creation_unavailable(&self) -> bool {
         !self.draft.display_profiles.enabled
-            || self.display_rollback_active
-            || self.display_editor.is_some()
+            || self.display_rollback_status().active()
+            || self.display.is_editing()
     }
 }

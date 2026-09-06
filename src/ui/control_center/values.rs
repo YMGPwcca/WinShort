@@ -5,8 +5,7 @@ use super::config_toggle::ConfigToggle;
 use super::overlay_preview::{
     overlay_duration_label, overlay_opacity_label, overlay_position, overlay_scale_label,
 };
-use super::state::SettingsUi;
-
+use super::state::{ConfirmationTarget, SettingsUi};
 use crate::ui::controls::ControlValue;
 use crate::ui::layout::{ElementId, HotkeySlot};
 use crate::ui::navigation::search;
@@ -106,7 +105,6 @@ impl SettingsUi {
             ElementId::OnboardingContinue => ControlValue::Action(Cow::Borrowed("Continue")),
             ElementId::OnboardingOpen => ControlValue::Action(Cow::Borrowed("Open WinShort")),
             ElementId::StartWithWindows => ControlValue::Toggle(self.startup_enabled),
-
             ElementId::HotkeyCard(_) => ControlValue::Action(Cow::Borrowed("")),
             ElementId::HotkeyEnabled(slot) => {
                 ControlValue::Action(Cow::Borrowed(if self.hotkey_enabled(slot) {
@@ -168,7 +166,6 @@ impl SettingsUi {
             ElementId::OutputRole => {
                 ControlValue::Text(Cow::Borrowed(self.draft.audio.output_role.label()))
             }
-
             ElementId::DisplayProfile => ControlValue::Text(Cow::Owned(
                 self.draft
                     .display_profiles
@@ -207,17 +204,20 @@ impl SettingsUi {
             ElementId::DuplicateDisplayProfile => ControlValue::Action(Cow::Borrowed("Duplicate")),
             ElementId::TestApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Test")),
             ElementId::ApplyDisplayProfile => ControlValue::Action(Cow::Borrowed("Activate")),
-            ElementId::DeleteDisplayProfile => {
-                ControlValue::Action(Cow::Borrowed(if self.delete_profile_confirm {
+            ElementId::DeleteDisplayProfile => ControlValue::Action(Cow::Borrowed(
+                if self
+                    .interaction
+                    .confirmations()
+                    .is_pending(ConfirmationTarget::DeleteDisplayProfile)
+                {
                     "Confirm delete"
                 } else {
                     "Delete"
-                }))
-            }
+                },
+            )),
             ElementId::KeepDisplayChange => ControlValue::Action(Cow::Borrowed("Keep")),
             ElementId::UndoDisplayChange => ControlValue::Action(Cow::Borrowed("Revert")),
             ElementId::DiscardDisplayEdits => ControlValue::Action(Cow::Borrowed("Discard")),
-
             ElementId::DesktopNumberModifier => ControlValue::Text(Cow::Owned(
                 format_desktop_modifier(self.draft.virtual_desktops.number_modifier),
             )),
@@ -233,11 +233,9 @@ impl SettingsUi {
                     .move_silent_modifier
                     .map_or_else(|| "Not assigned".into(), format_modifier_display),
             )),
-
             ElementId::OverlayAppearance => {
                 ControlValue::Text(Cow::Borrowed(self.draft.overlay.appearance.label()))
             }
-
             ElementId::OverlayPosition => {
                 ControlValue::Text(Cow::Borrowed(self.draft.overlay.position.label()))
             }
@@ -263,13 +261,17 @@ impl SettingsUi {
             }
             ElementId::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("Open")),
             ElementId::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
-            ElementId::ResetSettings => {
-                ControlValue::Action(Cow::Borrowed(if self.reset_confirm {
+            ElementId::ResetSettings => ControlValue::Action(Cow::Borrowed(
+                if self
+                    .interaction
+                    .confirmations()
+                    .is_pending(ConfirmationTarget::ResetSettings)
+                {
                     "Confirm reset"
                 } else {
                     "Reset"
-                }))
-            }
+                },
+            )),
             ElementId::Cancel | ElementId::Save => ControlValue::Action(Cow::Borrowed("")),
         }
     }

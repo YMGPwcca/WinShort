@@ -9,8 +9,9 @@ use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
 
 impl SettingsUi {
     pub(super) fn draw_display_safety(&self, renderer: &Renderer, rect: UiRect) {
-        let disabled = !self.draft.display_profiles.enabled && !self.display_rollback_active;
-        let recovery = self.runtime.display_rollback_error.is_some();
+        let rollback = self.display_rollback_status();
+        let disabled = !self.draft.display_profiles.enabled && !rollback.active();
+        let recovery = rollback.error().is_some();
         let role = if recovery {
             BrushRole::Danger
         } else if disabled {
@@ -49,9 +50,7 @@ impl SettingsUi {
     }
 
     pub(super) fn draw_wizard_steps(&self, renderer: &Renderer, rect: UiRect) {
-        let current = self
-            .display_editor
-            .map_or(DisplayWizardStep::Displays, |editor| editor.step);
+        let current = self.display.step().unwrap_or(DisplayWizardStep::Displays);
         let width = rect.w / DisplayWizardStep::ALL.len() as f32;
         for (index, step) in DisplayWizardStep::ALL.into_iter().enumerate() {
             let x = rect.x + index as f32 * width;
@@ -81,10 +80,7 @@ impl SettingsUi {
     pub(super) fn draw_display_wizard_summary(&self, renderer: &Renderer, rect: UiRect) {
         renderer.fill_rounded(rect.d2d(), 10.0, BrushRole::BackgroundSubtle);
         renderer.stroke_rounded(rect.d2d(), 10.0, BrushRole::Border, 1.0);
-        if self
-            .display_editor
-            .is_some_and(|editor| editor.step == DisplayWizardStep::Review)
-        {
+        if self.display.step() == Some(DisplayWizardStep::Review) {
             self.draw_display_review_summary(renderer, rect);
             return;
         }

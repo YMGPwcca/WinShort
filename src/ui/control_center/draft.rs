@@ -15,32 +15,28 @@ impl SettingsUi {
 
     pub(super) fn replace_draft(&mut self, draft: Config) {
         self.draft = draft;
-        self.display_draft_dirty = false;
-        self.display_editor = None;
-        self.delete_profile_confirm = false;
-        self.selected_display_route = 0;
+        self.display.close();
+        self.interaction.confirmations_mut().clear();
         self.motion.clear_channel(MotionChannel::ToggleState);
     }
 
     pub(super) fn discard_uncommitted_draft(&mut self) {
-        if self.dirty() || self.display_draft_dirty || self.display_editor.is_some() {
+        if self.dirty() || self.display.is_editing() {
             self.replace_draft((*self.config_access.current()).clone());
         }
     }
 
     pub(super) fn set_display_rollback_state(&mut self, active: bool, keep_available: bool) {
-        self.display_rollback_active = active;
-        self.display_keep_available = keep_available;
+        self.runtime
+            .set_display_rollback_phase(active, keep_available);
     }
 
     pub(super) fn set_runtime_snapshot(&mut self, snapshot: ControlCenterRuntimeSnapshot) {
-        self.display_rollback_active = snapshot.display_rollback_active;
-        self.display_keep_available = snapshot.display_keep_available;
         self.runtime = snapshot;
     }
 
     pub(super) fn commit_local_change(&mut self, hwnd: HWND, before: Config) -> bool {
-        if self.display_draft_dirty {
+        if self.display.is_dirty() {
             self.draft = before;
             self.validation = vec![Violation {
                 field: "Displays".into(),
@@ -53,7 +49,7 @@ impl SettingsUi {
         }
         match self.config_access.commit(self.draft.clone()) {
             Ok(()) => {
-                self.display_draft_dirty = false;
+                self.display.clear_dirty();
                 self.validation.clear();
                 self.applied_until = Some(Instant::now() + Duration::from_secs(2));
                 start_timer(hwnd);

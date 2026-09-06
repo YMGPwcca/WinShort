@@ -286,7 +286,7 @@ impl SettingsUi {
             .as_ref()
             .map(SettingsAutomation::drain_actions)
             .unwrap_or_default();
-        if self.closing {
+        if self.interaction.closing() {
             return false;
         }
 

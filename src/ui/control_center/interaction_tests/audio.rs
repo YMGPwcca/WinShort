@@ -16,7 +16,7 @@ fn unavailable_explicit_device_is_not_exposed_as_a_system_target() {
     };
 
     let (choices, current) =
-        picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], 0);
+        picker_choices(PickerKind::InputDevice, &config, &devices, &[], &[], None);
 
     assert_eq!(choices.len(), 1);
     assert_eq!(current, 0);

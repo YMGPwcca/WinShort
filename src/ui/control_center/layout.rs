@@ -10,6 +10,7 @@ use windows::Win32::Foundation::HWND;
 
 impl SettingsUi {
     pub(super) fn layout_context(&self) -> LayoutContext {
+        let rollback = self.display_rollback_status();
         LayoutContext {
             profile_count: self.draft.display_profiles.profiles.len(),
             display_output_count: self.display_route_candidates().len(),
@@ -18,11 +19,11 @@ impl SettingsUi {
                 .display_profiles
                 .active()
                 .map_or(0, |profile| profile.routes.len()),
-            display_editor_step: self.display_editor.map(|editor| editor.step),
+            display_editor_step: self.display.step(),
             display_profiles_enabled: self.draft.display_profiles.enabled,
-            display_draft_dirty: self.display_draft_dirty,
-            display_rollback_active: self.display_rollback_active,
-            display_keep_available: self.display_keep_available,
+            display_draft_dirty: self.display.is_dirty(),
+            display_rollback_active: rollback.active(),
+            display_keep_available: rollback.keep_available(),
             display_inventory_unknown: self.inventory.error().is_some()
                 || !self.inventory.was_queried(),
             workspace_enabled: self.draft.virtual_desktops.enabled,

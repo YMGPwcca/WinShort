@@ -48,6 +48,24 @@ query and a failed query. Stale outputs and a failure cannot coexist. A profile'
 Named card presentation values feed both painters and accessibility labels;
 positional tuples of strings and unrelated flags are no longer the contract.
 
+`DisplaySession` owns the display editor phase, dirty flag and optional selected
+route as one transaction state. A closed editor cannot be dirty, and an empty
+profile has no selected route rather than a synthetic route zero. Output or
+topology changes made through the existing picker enter the Review phase when
+needed so a risky display draft always has an explicit Test/Keep/Discard path.
+
+`InteractionState` owns short-lived pointer, close, confirmation and hotkey
+capture state. `HotkeyCaptureState` makes the recording target and modifier mask
+one transition instead of independent recording/armed booleans. Destructive
+confirmation has one typed pending target, so Reset and Delete cannot both be
+armed. First-run layout uses the finite `OnboardingStep` enum rather than numeric
+step values.
+
+Display rollback presentation is derived from one semantic
+`DisplayRollbackStatus` projection of the runtime snapshot. The application
+boundary still supplies its existing transport fields; Control Center policy and
+painting do not copy independent active/keep flags into `SettingsUi`.
+
 `FocusState` installs or removes a picker owner/window/list binding atomically.
 Logical focus is distinct from native ownership and the keyboard-visible focus
 indicator. `SearchCaret` has either no timer deadline or an active blink state.
@@ -108,8 +126,9 @@ SDK property-ID tables remain explicit. They naturally have many arms; replacing
 them with indirect registries just to lower a complexity number would obscure
 behavior. Large operation bodies, repeated configuration mutations, native
 dispatch, accessibility enrichment, Composition setup, page painting, wizard
-construction and report construction have instead been separated by purpose. Geometry/rendering constants
-and accessibility identifiers retain their existing values.
+construction and report construction have instead been separated by purpose.
+Geometry/rendering constants and accessibility identifiers retain their existing
+values.
 
 See [UI_REFACTOR_REPORT.md](UI_REFACTOR_REPORT.md) for the measured before/after
 structure and the measurement's limitations. Windows regression and ABI tests

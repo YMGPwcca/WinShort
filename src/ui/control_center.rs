@@ -70,7 +70,7 @@ use self::scroll::{
     page_scroll_target, scroll_after_wheel, settings_wheel_action, SettingsWheelAction,
 };
 #[cfg(test)]
-use self::state::DisplayEditorState;
+use self::state::ConfirmationTarget;
 #[cfg(test)]
 use self::window::CONTROL_CENTER_STYLE;
 #[cfg(test)]
@@ -104,5 +104,7 @@ use windows::Win32::UI::WindowsAndMessaging::{HTCAPTION, HTCLIENT};
 
 #[cfg(test)]
 mod interaction_tests;
+#[cfg(test)]
+mod state_tests;
 
 pub(crate) use config_access::ConfigAccess;

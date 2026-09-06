@@ -14,7 +14,7 @@ use crate::config::validate::Violation;
 use crate::error::{Error, Result};
 use crate::platform::window as win;
 use crate::ui::controls;
-use crate::ui::layout::ElementId;
+use crate::ui::layout::{ElementId, OnboardingStep};
 use crate::ui::picker::{PickerKind, PickerPopup, PickerValue};
 use crate::ui::prompt::{PromptAction, TextPrompt};
 use std::sync::OnceLock;
@@ -26,19 +26,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub(crate) const CLASS_NAME: &str = "WinShort.ControlCenter";
-
 pub(crate) const DESIGN_WIDTH: f32 = 960.0;
-
 pub(crate) const DESIGN_HEIGHT: f32 = 660.0;
-
 pub(super) const UI_TIMER: usize = 1;
-
 pub(super) const UI_TIMER_MS: u32 = 16;
-
 pub(super) const CONTROL_CENTER_STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_POPUP.0 | WS_CLIPCHILDREN.0);
-
 static REGISTERED: OnceLock<u16> = OnceLock::new();
-
 pub(super) const WM_MOUSELEAVE: u32 = 0x02A3;
 
 #[derive(Debug, Clone, Copy)]
@@ -75,8 +68,8 @@ impl ControlCenterWindow {
         );
 
         let draft = (*config_access.current()).clone();
-        let onboarding_step =
-            crate::ui::first_run::should_show(&crate::config::data_dir()).then_some(1);
+        let onboarding_step = crate::ui::first_run::should_show(&crate::config::data_dir())
+            .then_some(OnboardingStep::Setup);
         let mut state = win::WindowCreation::new(SettingsUi::new(
             dpi,
             devices,
@@ -133,10 +126,10 @@ impl ControlCenterWindow {
         };
         let changed = {
             let mut ui = cell.borrow_mut();
-            let changed =
-                ui.display_rollback_active != active || ui.display_keep_available != keep_available;
+            let before = ui.display_rollback_status();
+            ui.set_display_rollback_state(active, keep_available);
+            let changed = ui.display_rollback_status() != before;
             if changed {
-                ui.set_display_rollback_state(active, keep_available);
                 ui.rebuild_layout(self.hwnd);
             }
             changed
@@ -211,7 +204,7 @@ impl ControlCenterWindow {
             let mut ui = cell.borrow_mut();
             let before = ui.draft.clone();
             ui.rename_display_profile(profile_id, name);
-            if ui.draft != before && !ui.display_draft_dirty {
+            if ui.draft != before && !ui.display.is_dirty() {
                 ui.commit_local_change(self.hwnd, before);
             }
             ui.publish_automation_snapshot(self.hwnd);
@@ -238,8 +231,7 @@ impl ControlCenterWindow {
             {
                 *existing = confirmed_profile.clone();
             }
-            ui.display_draft_dirty = false;
-            ui.display_editor = None;
+            ui.display.close();
             ui.rebuild_layout(self.hwnd);
         }
         invalidate(self.hwnd);
@@ -257,7 +249,7 @@ impl ControlCenterWindow {
     pub(crate) fn show(&mut self) -> Result<()> {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();
-            ui.closing = false;
+            ui.interaction.reopen();
             ui.startup_enabled = crate::platform::startup::is_enabled();
             if !ui.dirty() {
                 let current = ui.config_access.current();
@@ -313,7 +305,7 @@ impl ControlCenterWindow {
             let _ = std::fs::create_dir_all(parent);
         }
         let contents = format!(
-            "left={}\\ntop={}\\nright={}\\nbottom={}\\ndpi={}\\n",
+            "left={}\ntop={}\nright={}\nbottom={}\ndpi={}\n",
             saved.rect.left, saved.rect.top, saved.rect.right, saved.rect.bottom, saved.dpi
         );
         let _ = std::fs::write(path, contents);
@@ -345,7 +337,7 @@ impl ControlCenterWindow {
                 ui.inventory.outputs().to_vec(),
                 controls::value_control_rect_for(element.rect, element.id, element.kind),
                 ui.dpi,
-                ui.selected_display_route,
+                ui.display.selected_route(),
             )
         };
         let anchor = client_rect_from_dip(control_rect, dpi);
@@ -418,7 +410,7 @@ impl ControlCenterWindow {
     pub(crate) fn commit_picker(&mut self, kind: PickerKind, value: PickerValue) {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();
-            if kind == PickerKind::DisplayProfile && ui.display_draft_dirty {
+            if kind == PickerKind::DisplayProfile && ui.display.is_dirty() {
                 ui.validation = vec![Violation {
                     field: "Displays".into(),
                     message:

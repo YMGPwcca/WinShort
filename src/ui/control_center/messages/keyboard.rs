@@ -69,9 +69,9 @@ pub(super) unsafe fn handle_keydown(
                 LRESULT(0)
             }
             0x1B => {
-                let reset_confirm = cell.borrow().reset_confirm;
-                if reset_confirm {
-                    cell.borrow_mut().reset_confirm = false;
+                let confirmation_cleared =
+                    cell.borrow_mut().interaction.confirmations_mut().clear();
+                if confirmation_cleared {
                     invalidate(hwnd);
                 } else if cell.borrow_mut().begin_close() {
                     crate::event::post_main(crate::event::AppEvent::ControlCenterWindowClosed);
