@@ -60,6 +60,7 @@ fn value_for_uses_cached_devices_without_reacquiring_app() {
         Config::default(),
         None,
         super::super::config_access::ConfigAccess::unavailable(),
+        super::super::config_access::ControlCenterAccess::system(),
     );
     ui.draft.audio.input_device = DeviceSelection::Endpoint("input".into());
     match ui.value_for(ElementId::InputDevice) {

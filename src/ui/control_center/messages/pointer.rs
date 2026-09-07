@@ -1,6 +1,6 @@
 //! Pointer message handling for the control center.
 
-use super::super::native::invalidate;
+use super::super::native::{invalidate, post_main};
 use super::super::placement::mouse_point;
 use super::super::scroll::{settings_wheel_action, SettingsWheelAction};
 use super::super::state::SettingsUi;
@@ -79,7 +79,7 @@ pub(super) unsafe fn handle_lbuttondown(
         (picker_hwnd, close_hit)
     };
     if let Some(popup_hwnd) = picker_hwnd {
-        crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+        post_main(crate::event::AppEvent::CancelSettingsPicker {
             popup_hwnd: popup_hwnd.0 as isize,
             restore_focus: true,
         });
@@ -216,7 +216,7 @@ pub(super) unsafe fn handle_mousewheel(
     };
     match settings_wheel_action(picker_hwnd, scroll, delta, max_scroll) {
         SettingsWheelAction::ClosePicker(popup_hwnd) => {
-            crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+            post_main(crate::event::AppEvent::CancelSettingsPicker {
                 popup_hwnd: popup_hwnd.0 as isize,
                 restore_focus: true,
             });

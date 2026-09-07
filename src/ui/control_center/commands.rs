@@ -89,8 +89,8 @@ impl SettingsUi {
                 self.reset_scroll();
             }
             ShellElement::OnboardingOpen => {
-                if crate::ui::first_run::mark_completed(&crate::config::data_dir()).is_err() {
-                    crate::warn_!("could not persist onboarding completion marker");
+                if crate::ui::first_run::mark_completed(&self.access.data_dir()).is_err() {
+                    crate::warn_!("failed to persist onboarding completion");
                 }
                 self.onboarding_step = None;
                 self.set_page(Page::Home);
@@ -213,7 +213,7 @@ impl SettingsUi {
             ShortcutElement::Capture(capture) => {
                 self.interaction.start_capture(capture.id());
                 self.validation.clear();
-                crate::keyboard::hook::begin_capture();
+                self.access.begin_capture();
                 start_timer(hwnd);
             }
         }
@@ -275,7 +275,7 @@ impl SettingsUi {
             SystemElement::DebugLogging => self.toggle_debug_logging(hwnd, ElementId::DebugLogging),
             SystemElement::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
             SystemElement::OpenConfigFolder => {
-                if let Err(error) = open_config_folder() {
+                if let Err(error) = open_config_folder(&self.access.data_dir()) {
                     crate::error_!("open config folder failed: {error}");
                 }
             }

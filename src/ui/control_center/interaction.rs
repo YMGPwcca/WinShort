@@ -14,7 +14,7 @@ impl SettingsUi {
         let toggle_value = ConfigToggle::from_element(id).map_or_else(
             || match id {
                 ElementId::StartWithWindows => self.startup_enabled,
-                ElementId::DebugLogging => crate::diagnostics::logging::debug_logging_enabled(),
+                ElementId::DebugLogging => self.debug_logging_enabled,
                 _ => false,
             },
             |toggle| toggle.selected(&self.draft),

@@ -2,7 +2,7 @@
 
 use super::super::appearance::settings_theme;
 use super::super::chrome::apply_chrome;
-use super::super::native::invalidate;
+use super::super::native::{invalidate, post_main};
 use super::super::placement::fixed_window_size;
 use super::super::state::SettingsUi;
 use super::super::window::UI_TIMER;
@@ -36,7 +36,7 @@ pub(super) unsafe fn handle_killfocus(
         }
     };
     if let Some(popup_hwnd) = picker_to_close {
-        crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+        post_main(crate::event::AppEvent::CancelSettingsPicker {
             popup_hwnd: popup_hwnd.0 as isize,
             restore_focus: false,
         });
@@ -57,9 +57,9 @@ pub(super) unsafe fn handle_close(cell: &std::cell::RefCell<SettingsUi>) -> LRES
         }
     };
     if should_close {
-        crate::event::post_main(crate::event::AppEvent::ControlCenterWindowClosed);
+        post_main(crate::event::AppEvent::ControlCenterWindowClosed);
         if end_capture {
-            crate::keyboard::hook::end_capture();
+            cell.borrow().access.end_capture();
         }
     }
     LRESULT(0)
@@ -82,7 +82,7 @@ pub(super) unsafe fn handle_paint(cell: &std::cell::RefCell<SettingsUi>, hwnd: H
 pub(super) unsafe fn handle_size(cell: &std::cell::RefCell<SettingsUi>, hwnd: HWND) -> LRESULT {
     let picker_hwnd = cell.borrow().focus.picker_window();
     if let Some(popup_hwnd) = picker_hwnd {
-        crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+        post_main(crate::event::AppEvent::CancelSettingsPicker {
             popup_hwnd: popup_hwnd.0 as isize,
             restore_focus: false,
         });
@@ -108,7 +108,7 @@ pub(super) unsafe fn handle_dpichanged(
 ) -> LRESULT {
     let picker_hwnd = cell.borrow().focus.picker_window();
     if let Some(popup_hwnd) = picker_hwnd {
-        crate::event::post_main(crate::event::AppEvent::CancelSettingsPicker {
+        post_main(crate::event::AppEvent::CancelSettingsPicker {
             popup_hwnd: popup_hwnd.0 as isize,
             restore_focus: false,
         });
@@ -180,7 +180,7 @@ pub(super) unsafe fn handle_timer(cell: &std::cell::RefCell<SettingsUi>, hwnd: H
         let mut ui = cell.borrow_mut();
         let capture_was_active = ui.interaction.capture_active();
         if capture_was_active {
-            while let Some(chord) = crate::keyboard::hook::take_captured_chord() {
+            while let Some(chord) = ui.access.take_captured_chord() {
                 let before = ui.draft.clone();
                 ui.finish_recording(chord);
                 if !ui.interaction.capture_active()
@@ -207,7 +207,7 @@ pub(super) unsafe fn handle_timer(cell: &std::cell::RefCell<SettingsUi>, hwnd: H
     // The capture hook can synchronously interact with window state. Release
     // the RefCell borrow before ending it so native re-entrancy cannot collide.
     if end_capture {
-        crate::keyboard::hook::end_capture();
+        cell.borrow().access.end_capture();
     }
     if stop_timer {
         let _ = unsafe { KillTimer(Some(hwnd), UI_TIMER) };

@@ -17,6 +17,7 @@ use crate::ui::controls;
 use crate::ui::layout::OnboardingStep;
 use crate::ui::picker::{PickerCommit, PickerKind, PickerPopup};
 use crate::ui::prompt::{PromptAction, TextPrompt};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
@@ -45,19 +46,22 @@ pub(crate) struct ControlCenterWindow {
     pub(super) picker: Option<PickerPopup>,
     pub(super) rename_prompt: Option<TextPrompt>,
     pub(super) last_rect: Option<SavedSettingsRect>,
+    pub(super) position_path: PathBuf,
 }
 
 impl ControlCenterWindow {
     pub(crate) fn create(
         devices: crate::audio::devices::DeviceLists,
         config_access: super::config_access::ConfigAccess,
+        access: super::config_access::ControlCenterAccess,
     ) -> Result<Self> {
         let _atom = win::register_class_once(&REGISTERED, CLASS_NAME, Some(settings_wndproc))?;
 
         let primary = crate::platform::monitor::primary();
         let primary_dpi = primary.as_ref().map_or(96, |m| m.dpi);
         let (default_width, default_height) = fixed_window_size(primary_dpi);
-        let saved = load_settings_rect();
+        let position_path = access.data_dir().join("settings-window.txt");
+        let saved = load_settings_rect(&position_path);
         let (x, y, w, h, dpi) = window_geometry(
             primary.as_ref().map(|monitor| monitor.work),
             primary_dpi,
@@ -67,14 +71,15 @@ impl ControlCenterWindow {
         );
 
         let draft = (*config_access.current()).clone();
-        let onboarding_step = crate::ui::first_run::should_show(&crate::config::data_dir())
-            .then_some(OnboardingStep::Setup);
+        let onboarding_step =
+            crate::ui::first_run::should_show(&access.data_dir()).then_some(OnboardingStep::Setup);
         let mut state = win::WindowCreation::new(SettingsUi::new(
             dpi,
             devices,
             draft,
             onboarding_step,
             config_access,
+            access,
         ));
         let hwnd = unsafe {
             CreateWindowExW(
@@ -114,6 +119,7 @@ impl ControlCenterWindow {
             hwnd,
             picker: None,
             last_rect: saved,
+            position_path,
             rename_prompt: None,
         })
     }
@@ -248,7 +254,8 @@ impl ControlCenterWindow {
         if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(self.hwnd) } {
             let mut ui = cell.borrow_mut();
             ui.interaction.reopen();
-            ui.startup_enabled = crate::platform::startup::is_enabled();
+            ui.startup_enabled = ui.access.startup_enabled();
+            ui.debug_logging_enabled = ui.access.debug_logging_enabled();
             if !ui.dirty() {
                 let current = ui.config_access.current();
                 ui.replace_draft((*current).clone());
@@ -298,15 +305,20 @@ impl ControlCenterWindow {
         let Some(saved) = self.last_rect else {
             return;
         };
-        let path = crate::config::data_dir().join("settings-window.txt");
+        let path = &self.position_path;
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                crate::warn_!("create settings position directory failed: {error}");
+                return;
+            }
         }
         let contents = format!(
             "left={}\ntop={}\nright={}\nbottom={}\ndpi={}\n",
             saved.rect.left, saved.rect.top, saved.rect.right, saved.rect.bottom, saved.dpi
         );
-        let _ = std::fs::write(path, contents);
+        if let Err(error) = std::fs::write(path, contents) {
+            crate::warn_!("persist settings position failed: {error}");
+        }
     }
 
     pub(crate) fn open_picker(

@@ -311,9 +311,7 @@ impl SettingsUi {
             SystemElement::StartHotkeysEnabled => {
                 ControlValue::Toggle(ConfigToggle::PauseShortcuts.selected(&self.draft))
             }
-            SystemElement::DebugLogging => {
-                ControlValue::Toggle(crate::diagnostics::logging::debug_logging_enabled())
-            }
+            SystemElement::DebugLogging => ControlValue::Toggle(self.debug_logging_enabled),
             SystemElement::DiagnosticsStatus => ControlValue::Action(Cow::Borrowed("Open")),
             SystemElement::OpenConfigFolder => ControlValue::Action(Cow::Borrowed("Open folder")),
             SystemElement::ResetSettings => ControlValue::Action(Cow::Borrowed(

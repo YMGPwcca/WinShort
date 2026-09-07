@@ -675,6 +675,7 @@ impl App {
                 crate::ui::control_center::ConfigAccess::new(config, |candidate| {
                     commit_config(candidate, crate::event::ConfigCommitOrigin::Settings)
                 }),
+                crate::ui::control_center::ControlCenterAccess::system(),
             )?);
             info!("settings window created");
         }

@@ -362,6 +362,7 @@ impl InteractionState {
 
 pub(crate) struct SettingsUi {
     pub(super) config_access: ConfigAccess,
+    pub(super) access: super::config_access::ControlCenterAccess,
     pub(super) focus: FocusState,
     pub(super) caret: SearchCaret,
     pub(super) inventory: DisplayInventory,
@@ -374,6 +375,7 @@ pub(crate) struct SettingsUi {
     pub(super) display: DisplaySession,
     pub(super) onboarding_step: Option<OnboardingStep>,
     pub(super) startup_enabled: bool,
+    pub(super) debug_logging_enabled: bool,
     pub(super) runtime: ControlCenterRuntimeSnapshot,
     pub(super) devices: crate::audio::devices::DeviceLists,
     pub(super) overlay_preview_aspect: (u32, u32),
@@ -392,10 +394,12 @@ impl SettingsUi {
         draft: Config,
         onboarding_step: Option<OnboardingStep>,
         config_access: ConfigAccess,
+        access: super::config_access::ControlCenterAccess,
     ) -> Self {
         let page = Page::Home;
         Self {
             config_access,
+            access,
             inventory: DisplayInventory::Unqueried,
             caret: SearchCaret::Hidden,
             focus: FocusState::default(),
@@ -415,7 +419,8 @@ impl SettingsUi {
             draft,
             display: DisplaySession::default(),
             onboarding_step,
-            startup_enabled: false,
+            startup_enabled: access.startup_enabled(),
+            debug_logging_enabled: access.debug_logging_enabled(),
             runtime: ControlCenterRuntimeSnapshot::default(),
             devices,
             overlay_preview_aspect: (16, 9),

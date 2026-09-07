@@ -11,7 +11,7 @@ use windows::Win32::Foundation::HWND;
 impl SettingsUi {
     pub(super) fn toggle_startup_registration(&mut self, hwnd: HWND) {
         let enable = !self.startup_enabled;
-        if let Err(error) = crate::platform::startup::set_enabled(enable) {
+        if let Err(error) = self.access.set_startup_enabled(enable) {
             self.validation = vec![Violation {
                 field: "Startup".into(),
                 message: error.to_string(),
@@ -24,8 +24,9 @@ impl SettingsUi {
     }
 
     pub(super) fn toggle_debug_logging(&mut self, hwnd: HWND, id: ElementId) {
-        let enabled = !crate::diagnostics::logging::debug_logging_enabled();
-        crate::diagnostics::logging::set_debug_logging(enabled);
+        let enabled = !self.debug_logging_enabled;
+        self.access.set_debug_logging(enabled);
+        self.debug_logging_enabled = enabled;
         self.applied_until = Some(Instant::now() + Duration::from_secs(2));
         start_timer(hwnd);
         self.animate_toggle(hwnd, id, enabled);

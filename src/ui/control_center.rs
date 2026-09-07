@@ -107,4 +107,4 @@ mod interaction_tests;
 #[cfg(test)]
 mod state_tests;
 
-pub(crate) use config_access::ConfigAccess;
+pub(crate) use config_access::{ConfigAccess, ControlCenterAccess};

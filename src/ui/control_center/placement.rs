@@ -5,10 +5,10 @@ use crate::error::{Error, Result};
 use crate::ui::layout::Rect as UiRect;
 use crate::ui::picker::{PickerChoice, PopupRect};
 use crate::ui::theme::UiTokens;
+use std::path::Path;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 
-pub(super) fn load_settings_rect() -> Option<SavedSettingsRect> {
-    let path = crate::config::data_dir().join("settings-window.txt");
+pub(super) fn load_settings_rect(path: &Path) -> Option<SavedSettingsRect> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut left = None;
     let mut top = None;

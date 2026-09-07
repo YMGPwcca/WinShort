@@ -38,13 +38,12 @@ pub(super) fn post_main(event: crate::event::AppEvent) {
     crate::event::post_main(event);
 }
 
-pub(super) fn open_config_folder() -> Result<()> {
+pub(super) fn open_config_folder(folder: &std::path::Path) -> Result<()> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    let folder = crate::config::data_dir();
-    std::fs::create_dir_all(&folder)
+    std::fs::create_dir_all(folder)
         .map_err(|error| Error::config(format!("create config directory: {error}")))?;
     let operation = HSTRING::from("open");
     let target = HSTRING::from(folder.to_string_lossy().as_ref());

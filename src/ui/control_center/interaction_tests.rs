@@ -14,6 +14,7 @@ fn empty_settings_ui() -> SettingsUi {
         Config::default(),
         None,
         super::config_access::ConfigAccess::unavailable(),
+        super::config_access::ControlCenterAccess::system(),
     );
     ui.layout = SettingsLayout::build(DESIGN_WIDTH, DESIGN_HEIGHT, 0.0);
     ui
@@ -26,7 +27,7 @@ fn search_settings_ui() -> SettingsUi {
     {
         let value = AutomationFocusOwner::Settings;
         ui.focus.set_owner(value);
-    };
+    }
     ui
 }
 

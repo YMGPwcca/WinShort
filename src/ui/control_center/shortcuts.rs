@@ -215,7 +215,7 @@ impl SettingsUi {
 
     pub(super) fn stop_capture(&mut self) {
         if self.interaction.clear_capture() {
-            crate::keyboard::hook::end_capture();
+            self.access.end_capture();
         }
     }
 

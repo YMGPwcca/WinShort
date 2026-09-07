@@ -1,6 +1,6 @@
 //! Keyboard message handling for the control center.
 
-use super::super::native::invalidate;
+use super::super::native::{invalidate, post_main};
 
 use super::super::scroll::page_scroll_target;
 use super::super::shortcuts::key_down;
@@ -74,7 +74,7 @@ pub(super) unsafe fn handle_keydown(
                 if confirmation_cleared {
                     invalidate(hwnd);
                 } else if cell.borrow_mut().begin_close() {
-                    crate::event::post_main(crate::event::AppEvent::ControlCenterWindowClosed);
+                    post_main(crate::event::AppEvent::ControlCenterWindowClosed);
                 }
                 LRESULT(0)
             }
