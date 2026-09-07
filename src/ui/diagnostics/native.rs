@@ -6,14 +6,11 @@ use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
 
 pub(super) fn post_main(event: crate::event::AppEvent) {
-    if let Some(hwnd) = crate::app::main_hwnd() {
-        unsafe {
-            let _ = crate::event::post_event(hwnd, event);
-        }
-    }
+    crate::event::post_main(event);
 }
 
 pub(super) fn invalidate(hwnd: HWND) {
+    // A closing diagnostics HWND needs no retry if invalidation is rejected.
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
