@@ -150,12 +150,13 @@ impl SettingsAutomation {
                     LPARAM(0),
                 )
             };
-            if result.is_err() {
+            if let Err(error) = result {
+                crate::warn_!("could not schedule accessibility notification flush: {error}");
                 let mut pending = self
                     .state
                     .pending
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .unwrap_or_else(|poison| poison.into_inner());
                 pending.flush_posted = false;
             }
         }
@@ -212,32 +213,52 @@ impl SettingsAutomation {
         };
         match notification.kind {
             AutomationNotificationKind::FocusChanged => unsafe {
-                let _ = UiaRaiseAutomationEvent(&provider, UIA_AutomationFocusChangedEventId);
+                if let Err(error) =
+                    UiaRaiseAutomationEvent(&provider, UIA_AutomationFocusChangedEventId)
+                {
+                    crate::warn_!("accessibility focus event delivery failed: {error}");
+                }
             },
             AutomationNotificationKind::Invoked => unsafe {
-                let _ = UiaRaiseAutomationEvent(&provider, UIA_Invoke_InvokedEventId);
+                if let Err(error) = UiaRaiseAutomationEvent(&provider, UIA_Invoke_InvokedEventId) {
+                    crate::warn_!("accessibility invoke event delivery failed: {error}");
+                }
             },
             AutomationNotificationKind::Property(property) => {
                 let mut old_value = match notification.old_value.to_variant() {
                     Ok(value) => value,
-                    Err(_) => return,
+                    Err(error) => {
+                        crate::warn_!(
+                            "accessibility old property value conversion failed: {error}"
+                        );
+                        return;
+                    }
                 };
                 let mut new_value = match notification.new_value.to_variant() {
                     Ok(value) => value,
-                    Err(_) => {
+                    Err(error) => {
+                        crate::warn_!(
+                            "accessibility new property value conversion failed: {error}"
+                        );
                         unsafe {
+                            // Cleanup cannot change notification semantics and has
+                            // no meaningful recovery path if COM rejects it.
                             let _ = VariantClear(&mut old_value);
                         }
                         return;
                     }
                 };
                 unsafe {
-                    let _ = UiaRaiseAutomationPropertyChangedEvent(
+                    if let Err(error) = UiaRaiseAutomationPropertyChangedEvent(
                         &provider,
                         UIA_PROPERTY_ID(property),
                         &old_value,
                         &new_value,
-                    );
+                    ) {
+                        crate::warn_!("accessibility property event delivery failed: {error}");
+                    }
+                    // These variants are local owned payloads. Clearing them is
+                    // teardown; retrying or surfacing cleanup failure is not useful.
                     let _ = VariantClear(&mut old_value);
                     let _ = VariantClear(&mut new_value);
                 }
@@ -334,7 +355,13 @@ impl SettingsAutomation {
         if lparam.0 != UiaRootObjectId as isize {
             return None;
         }
-        let provider = self.root_provider().ok()?;
+        let provider = match self.root_provider() {
+            Ok(provider) => provider,
+            Err(error) => {
+                crate::warn_!("accessibility root provider unavailable: {error}");
+                return None;
+            }
+        };
         Some(unsafe { UiaReturnRawElementProvider(hwnd, wparam, lparam, &provider) })
     }
 }

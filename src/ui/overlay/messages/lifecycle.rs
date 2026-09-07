@@ -25,8 +25,12 @@ pub(super) unsafe fn handle_settingchange(
         });
         match plan {
             Ok(Some(plan)) => {
-                apply_frame_plan(hwnd, plan, true);
-                set_timer(hwnd, plan.timer_interval);
+                if let Err(error) = apply_frame_plan(hwnd, plan, true) {
+                    crate::warn_!("overlay visual refresh placement failed: {error}");
+                }
+                if let Err(error) = set_timer(hwnd, plan.timer_interval) {
+                    crate::warn_!("overlay visual refresh timer failed: {error}");
+                }
                 if let Err(error) = render_prepared_frame(cell, hwnd, plan) {
                     crate::warn_!("overlay visual refresh failed: {error}");
                 }
@@ -47,7 +51,9 @@ pub(super) unsafe fn handle_timer(cell: &std::cell::RefCell<OverlayState>, hwnd:
         match plan {
             Some(TickPlan::Hide) => apply_hide_window(hwnd),
             Some(TickPlan::Frame(plan)) => {
-                apply_frame_plan(hwnd, plan, false);
+                if let Err(error) = apply_frame_plan(hwnd, plan, false) {
+                    crate::warn_!("overlay frame placement failed: {error}");
+                }
                 if let Err(error) = render_prepared_frame(cell, hwnd, plan) {
                     crate::warn_!("overlay frame failed: {error}");
                 }

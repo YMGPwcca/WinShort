@@ -105,7 +105,6 @@ fn run_surface_operation(
 
     let mut switched_to_fallback = false;
     if result.is_err() && surface.is_composition() {
-        let original_error = result.expect_err("surface operation error was checked above");
         remove_no_redirection_bitmap(hwnd);
         match graphics.create_surface(hwnd, spec.dpi, spec.size) {
             Ok(fallback_surface) => {
@@ -128,12 +127,10 @@ fn run_surface_operation(
                     result = Ok(());
                 } else {
                     crate::warn_!("opaque D2D overlay fallback failed: {fallback_result:?}");
-                    result = Err(original_error);
                 }
             }
             Err(fallback_error) => {
                 crate::warn_!("could not create opaque D2D overlay fallback: {fallback_error}");
-                result = Err(original_error);
             }
         }
     }
@@ -157,7 +154,7 @@ fn run_surface_operation(
 }
 
 pub(super) fn resize_surface(cell: &std::cell::RefCell<OverlayState>, hwnd: HWND) -> Result<()> {
-    let Some(size) = client_size(hwnd) else {
+    let Some(size) = client_size(hwnd)? else {
         return Ok(());
     };
     let spec = {

@@ -49,17 +49,25 @@ pub(crate) struct OverlayRuntimeStatus {
     pub last_shown: Option<SystemTime>,
 }
 
-fn apply_show_plan(hwnd: HWND, plan: ShowPlan) {
-    apply_frame_plan(hwnd, plan, true);
+fn apply_show_plan(hwnd: HWND, plan: ShowPlan) -> Result<()> {
+    apply_frame_plan(hwnd, plan, true)?;
+    if let Err(error) = set_timer(hwnd, plan.timer_interval) {
+        apply_hide_window(hwnd);
+        return Err(error);
+    }
     unsafe {
+        // ShowWindow reports the previous visibility state, not operation failure.
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
-    set_timer(hwnd, plan.timer_interval);
+    Ok(())
 }
 
-pub(super) fn set_timer(hwnd: HWND, interval: u32) {
-    unsafe {
-        let _ = SetTimer(Some(hwnd), TIMER_ID, interval, None);
+pub(super) fn set_timer(hwnd: HWND, interval: u32) -> Result<()> {
+    let timer = unsafe { SetTimer(Some(hwnd), TIMER_ID, interval, None) };
+    if timer == 0 {
+        Err(Error::internal("SetTimer(overlay) returned zero"))
+    } else {
+        Ok(())
     }
 }
 
@@ -75,19 +83,22 @@ fn apply_window_region(hwnd: HWND, region: WindowRegion) {
         )
     };
     if handle.is_invalid() {
+        crate::warn_!("could not create overlay window region; using rectangular window");
         return;
     }
     if unsafe { SetWindowRgn(hwnd, Some(handle), true) } == 0 {
+        // Ownership transfers to the window only on success.
         let _ = unsafe { DeleteObject(HGDIOBJ(handle.0)) };
+        crate::warn_!("could not apply overlay window region; using previous region");
     }
 }
 
-pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) {
+pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -> Result<()> {
     if apply_region {
         apply_window_region(hwnd, plan.region);
     }
     unsafe {
-        let _ = SetWindowPos(
+        SetWindowPos(
             hwnd,
             Some(HWND_TOPMOST),
             plan.position.x,
@@ -95,12 +106,16 @@ pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) {
             plan.size.cx,
             plan.size.cy,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        );
+        )
+        .map_err(|error| Error::win("SetWindowPos(overlay)", &error))?;
     }
+    Ok(())
 }
 
 pub(super) fn apply_hide_window(hwnd: HWND) {
     unsafe {
+        // Hide/teardown is intentionally best-effort: a timer can already be
+        // absent and ShowWindow returns prior visibility rather than an error.
         let _ = KillTimer(Some(hwnd), TIMER_ID);
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
@@ -117,8 +132,11 @@ pub(super) fn remove_no_redirection_bitmap(hwnd: HWND) {
         return;
     }
     unsafe {
+        // SetWindowLongPtrW has an ambiguous zero return unless LastError is
+        // managed around the call, so the observable fallible operation here is
+        // the required frame refresh below.
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, updated);
-        let _ = SetWindowPos(
+        if let Err(error) = SetWindowPos(
             hwnd,
             None,
             0,
@@ -126,21 +144,22 @@ pub(super) fn remove_no_redirection_bitmap(hwnd: HWND) {
             0,
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        );
+        ) {
+            crate::warn_!("overlay fallback frame refresh failed: {error}");
+        }
     }
 }
 
-pub(super) fn client_size(hwnd: HWND) -> Option<SIZE> {
+pub(super) fn client_size(hwnd: HWND) -> Result<Option<SIZE>> {
     let mut client = RECT::default();
-    unsafe {
-        GetClientRect(hwnd, &mut client).ok()?;
-    }
+    unsafe { GetClientRect(hwnd, &mut client) }
+        .map_err(|error| Error::win("GetClientRect(overlay)", &error))?;
     let width = client.right - client.left;
     let height = client.bottom - client.top;
-    (width > 0 && height > 0).then_some(SIZE {
+    Ok((width > 0 && height > 0).then_some(SIZE {
         cx: width,
         cy: height,
-    })
+    }))
 }
 
 impl OverlayWindow {
@@ -229,7 +248,7 @@ impl OverlayWindow {
         let Some(plan) = plan else {
             return Ok(());
         };
-        apply_show_plan(self.hwnd, plan);
+        apply_show_plan(self.hwnd, plan)?;
         render_prepared_frame(cell, self.hwnd, plan)
     }
 
