@@ -16,7 +16,10 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 pub(super) unsafe fn draw_picker_surface(hwnd: HWND, hdc: HDC) {
     let mut rect = RECT::default();
     unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
+        if windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect).is_err() {
+            crate::warn_!("picker client area unavailable during paint");
+            return;
+        }
         let colors = picker_colors(false);
         let background = CreateSolidBrush(to_colorref(colors.background));
         let border = CreatePen(PS_SOLID, 1, to_colorref(colors.border));

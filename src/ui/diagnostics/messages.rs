@@ -47,7 +47,9 @@ pub(super) unsafe extern "system" fn diagnostics_wndproc(
             WM_SIZE => {
                 let mut ui = cell.borrow_mut();
                 if let Some(renderer) = ui.renderer.as_mut() {
-                    let _ = renderer.resize();
+                    if let Err(error) = renderer.resize() {
+                        crate::error_!("diagnostics renderer resize failed: {error}");
+                    }
                 }
                 invalidate(hwnd);
                 LRESULT(0)
@@ -67,8 +69,13 @@ pub(super) unsafe extern "system" fn diagnostics_wndproc(
             WM_MOUSEWHEEL => {
                 let mut ui = cell.borrow_mut();
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
-                let layout = ui.layout(hwnd);
-                ui.scroll = (ui.scroll - delta / 120.0 * 56.0).clamp(0.0, layout.max_scroll);
+                match ui.layout(hwnd) {
+                    Ok(layout) => {
+                        ui.scroll =
+                            (ui.scroll - delta / 120.0 * 56.0).clamp(0.0, layout.max_scroll);
+                    }
+                    Err(error) => crate::warn_!("diagnostics layout unavailable: {error}"),
+                }
                 invalidate(hwnd);
                 LRESULT(0)
             }

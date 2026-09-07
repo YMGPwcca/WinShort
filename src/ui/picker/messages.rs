@@ -35,8 +35,11 @@ pub(super) unsafe extern "system" fn picker_list_subclass(
         WM_ERASEBKGND => {
             let hdc = HDC(wparam.0 as *mut _);
             let mut rect = RECT::default();
-            let _ =
-                unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) };
+            if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) }
+                .is_err()
+            {
+                return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+            }
             let colors = picker_colors(false);
             let brush = unsafe { CreateSolidBrush(to_colorref(colors.background)) };
             let _ = unsafe { FillRect(hdc, &rect, brush) };

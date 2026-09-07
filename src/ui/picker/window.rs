@@ -255,7 +255,7 @@ impl PickerPopup {
             // Keep the picker in the Control Center's child z-order. The
             // owner remains the active top-level window while the real
             // LISTBOX receives keyboard focus.
-            let _ = SetWindowPos(
+            if let Err(error) = SetWindowPos(
                 self.hwnd,
                 Some(HWND_TOP),
                 0,
@@ -263,7 +263,9 @@ impl PickerPopup {
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
+            ) {
+                crate::warn_!("picker activation placement failed: {error}");
+            }
             let _ = ShowWindow(self.list, SW_SHOWNA);
             let _ = ShowWindow(self.hwnd, SW_SHOWNA);
             let _ = SetFocus(Some(self.list));

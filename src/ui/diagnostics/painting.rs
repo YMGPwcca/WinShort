@@ -15,7 +15,7 @@ use windows::Win32::Foundation::HWND;
 
 impl DiagnosticsUi {
     pub(super) fn paint(&mut self, hwnd: HWND) -> Result<()> {
-        let layout = self.layout(hwnd);
+        let layout = self.layout(hwnd)?;
         self.scroll = layout.scroll;
         let renderer = match self.renderer.take() {
             Some(renderer) => renderer,

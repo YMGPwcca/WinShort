@@ -46,11 +46,15 @@ impl SettingsUi {
     }
 
     pub(super) fn rebuild_layout(&mut self, hwnd: HWND) {
-        let (width, height) = self
+        let size = self
             .renderer
             .as_ref()
             .map(Renderer::client_size_dip)
-            .unwrap_or_else(|| client_size_dip(hwnd, self.dpi));
+            .or_else(|| client_size_dip(hwnd, self.dpi));
+        let (width, height) = size.unwrap_or_else(|| {
+            crate::warn_!("settings client size query failed; using last valid layout size");
+            (self.layout.width, self.layout.height)
+        });
         self.layout = SettingsLayout::build_shell_with_context(
             width,
             height,

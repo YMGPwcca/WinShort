@@ -4,17 +4,17 @@ use super::model::{Action, Layout};
 use super::native::client_size_dip;
 use super::state::DiagnosticsUi;
 use super::window::{FOOTER_HEIGHT, HEADER_HEIGHT, ROW_HEIGHT};
+use crate::error::Result;
 use crate::ui::layout::Rect;
-use crate::ui::renderer::Renderer;
 use windows::Win32::Foundation::HWND;
 
 impl DiagnosticsUi {
-    pub(super) fn layout(&self, hwnd: HWND) -> Layout {
-        let (width, height) = self
-            .renderer
-            .as_ref()
-            .map(Renderer::client_size_dip)
-            .unwrap_or_else(|| client_size_dip(hwnd, self.dpi));
+    pub(super) fn layout(&self, hwnd: HWND) -> Result<Layout> {
+        let (width, height) = if let Some(renderer) = self.renderer.as_ref() {
+            renderer.client_size_dip()
+        } else {
+            client_size_dip(hwnd, self.dpi)?
+        };
         let content = Rect::new(
             0.0,
             HEADER_HEIGHT,
@@ -38,7 +38,7 @@ impl DiagnosticsUi {
             buttons.push((action, Rect::new(x, y, button_width, 34.0)));
             x += button_width + gap;
         }
-        Layout {
+        Ok(Layout {
             width,
             content,
             footer,
@@ -46,6 +46,6 @@ impl DiagnosticsUi {
             max_scroll,
             scroll,
             buttons,
-        }
+        })
     }
 }

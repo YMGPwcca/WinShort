@@ -84,14 +84,16 @@ pub(crate) fn draw_search_box(
         },
     );
     if focused && caret_visible {
-        let caret = search_caret_rect(rect, r.text_width(text, TextStyle::Body, rect.w - 48.0));
-        r.line(
-            caret.x,
-            caret.y,
-            caret.x,
-            caret.bottom(),
-            BrushRole::Accent,
-            caret.w,
-        );
+        if let Some(text_width) = r.text_width(text, TextStyle::Body, rect.w - 48.0) {
+            let caret = search_caret_rect(rect, text_width);
+            r.line(
+                caret.x,
+                caret.y,
+                caret.x,
+                caret.bottom(),
+                BrushRole::Accent,
+                caret.w,
+            );
+        }
     }
 }

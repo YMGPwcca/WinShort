@@ -40,6 +40,7 @@ pub(crate) fn draw_section_header(r: &Renderer, rect: Rect, title: &str, descrip
                 title_rect.w,
                 (rect.h - 54.0).max(20.0),
             )
+            .unwrap_or_else(|| (rect.h - 54.0).max(20.0))
             .clamp(20.0, (rect.h - 54.0).max(20.0));
         r.text_clipped(
             description,
@@ -71,6 +72,7 @@ pub(crate) fn draw_page_header(r: &Renderer, rect: Rect, title: &str, descriptio
                 rect.w,
                 (rect.h - 46.0).max(30.0),
             )
+            .unwrap_or_else(|| (rect.h - 46.0).max(30.0))
             .clamp(22.0, (rect.h - 46.0).max(30.0));
         r.text_clipped(
             description,

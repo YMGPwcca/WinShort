@@ -57,6 +57,7 @@ pub(crate) fn draw_topology_choice(
     );
     let description_height = r
         .text_height(description, TextStyle::SectionDescription, left_width, 36.0)
+        .unwrap_or(36.0)
         .clamp(16.0, 36.0);
     r.text_clipped(
         description,

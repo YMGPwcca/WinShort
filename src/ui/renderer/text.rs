@@ -59,40 +59,32 @@ impl Renderer {
         style: TextStyle,
         width: f32,
         max_height: f32,
-    ) -> f32 {
+    ) -> Option<f32> {
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let Ok(layout) = (unsafe {
+        let layout = unsafe {
             self.dwrite.CreateTextLayout(
                 &wide,
                 self.format(style),
                 width.max(1.0),
                 max_height.max(1.0),
             )
-        }) else {
-            return 0.0;
-        };
-        let mut metrics = DWRITE_TEXT_METRICS::default();
-        if unsafe { layout.GetMetrics(&mut metrics) }.is_ok() {
-            metrics.height
-        } else {
-            0.0
         }
+        .ok()?;
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        unsafe { layout.GetMetrics(&mut metrics) }.ok()?;
+        Some(metrics.height)
     }
 
-    pub(crate) fn text_width(&self, text: &str, style: TextStyle, max_width: f32) -> f32 {
+    pub(crate) fn text_width(&self, text: &str, style: TextStyle, max_width: f32) -> Option<f32> {
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let Ok(layout) = (unsafe {
+        let layout = unsafe {
             self.dwrite
                 .CreateTextLayout(&wide, self.format(style), max_width.max(1.0), 64.0)
-        }) else {
-            return 0.0;
-        };
-        let mut metrics = DWRITE_TEXT_METRICS::default();
-        if unsafe { layout.GetMetrics(&mut metrics) }.is_ok() {
-            metrics.width
-        } else {
-            0.0
         }
+        .ok()?;
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        unsafe { layout.GetMetrics(&mut metrics) }.ok()?;
+        Some(metrics.width)
     }
 
     pub(super) fn draw_text(

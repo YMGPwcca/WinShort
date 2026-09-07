@@ -89,7 +89,9 @@ pub(super) unsafe fn handle_size(cell: &std::cell::RefCell<SettingsUi>, hwnd: HW
     }
     let mut ui = cell.borrow_mut();
     if let Some(renderer) = ui.renderer.as_mut() {
-        let _ = renderer.resize();
+        if let Err(error) = renderer.resize() {
+            crate::error_!("settings renderer resize failed: {error}");
+        }
     }
     ui.rebuild_layout(hwnd);
     ui.publish_automation_snapshot(hwnd);
@@ -120,12 +122,14 @@ pub(super) unsafe fn handle_dpichanged(
         let mut ui = cell.borrow_mut();
         ui.dpi = new_dpi;
         if let Some(renderer) = ui.renderer.as_mut() {
-            let _ = renderer.set_dpi(new_dpi);
+            if let Err(error) = renderer.set_dpi(new_dpi) {
+                crate::error_!("settings renderer DPI refresh failed: {error}");
+            }
         }
     }
     let suggested = unsafe { &*(lparam.0 as *const RECT) };
     let (fixed_width, fixed_height) = fixed_window_size(new_dpi);
-    let _ = unsafe {
+    if let Err(error) = unsafe {
         SetWindowPos(
             hwnd,
             None,
@@ -135,7 +139,9 @@ pub(super) unsafe fn handle_dpichanged(
             fixed_height,
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
-    };
+    } {
+        crate::warn_!("settings DPI window placement failed: {error}");
+    }
     let mut ui = cell.borrow_mut();
     ui.rebuild_layout(hwnd);
     ui.publish_automation_snapshot(hwnd);

@@ -32,15 +32,14 @@ pub(crate) struct Renderer {
     pub(super) theme: Theme,
 }
 
-fn client_size(hwnd: HWND) -> (u32, u32) {
+fn client_size(hwnd: HWND) -> Result<(u32, u32)> {
     let mut rect = RECT::default();
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
-    }
-    (
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) }
+        .map_err(|error| Error::win("GetClientRect(renderer)", &error))?;
+    Ok((
         (rect.right - rect.left).max(0) as u32,
         (rect.bottom - rect.top).max(0) as u32,
-    )
+    ))
 }
 
 impl Renderer {
@@ -55,7 +54,7 @@ impl Renderer {
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
                 .map_err(|e| Error::win("DWriteCreateFactory", &e))?;
 
-            let (width, height) = client_size(hwnd);
+            let (width, height) = client_size(hwnd)?;
             let rt_props = D2D1_RENDER_TARGET_PROPERTIES {
                 r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
                 pixelFormat: D2D1_PIXEL_FORMAT {
@@ -108,9 +107,11 @@ impl Renderer {
     }
 
     pub(crate) fn client_size_dip(&self) -> (f32, f32) {
-        let (w, h) = client_size(self.hwnd);
-        let scale = 96.0 / self.dpi as f32;
-        (w as f32 * scale, h as f32 * scale)
+        // Direct2D already tracks the HWND render target size in DIPs. Using
+        // that authoritative value avoids translating a failed native query
+        // into the same tuple as a genuinely minimized (0x0) window.
+        let size = unsafe { self.target.GetSize() };
+        (size.width, size.height)
     }
 
     pub(crate) fn push_clip(&self, rect: D2D_RECT_F) {
@@ -127,7 +128,7 @@ impl Renderer {
     }
 
     pub(crate) fn resize(&mut self) -> Result<()> {
-        let (width, height) = client_size(self.hwnd);
+        let (width, height) = client_size(self.hwnd)?;
         if width == 0 || height == 0 {
             return Ok(());
         }

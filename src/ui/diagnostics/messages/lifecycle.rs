@@ -37,11 +37,13 @@ pub(super) unsafe fn handle_dpichanged(
             let mut ui = cell.borrow_mut();
             ui.dpi = new_dpi;
             if let Some(renderer) = ui.renderer.as_mut() {
-                let _ = renderer.set_dpi(new_dpi);
+                if let Err(error) = renderer.set_dpi(new_dpi) {
+                    crate::error_!("diagnostics renderer DPI refresh failed: {error}");
+                }
             }
         }
         let suggested = unsafe { &*(lparam.0 as *const RECT) };
-        let _ = unsafe {
+        if let Err(error) = unsafe {
             SetWindowPos(
                 hwnd,
                 None,
@@ -51,7 +53,9 @@ pub(super) unsafe fn handle_dpichanged(
                 suggested.bottom - suggested.top,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             )
-        };
+        } {
+            crate::warn_!("diagnostics DPI window placement failed: {error}");
+        }
         invalidate(hwnd);
         LRESULT(0)
     }
@@ -66,10 +70,20 @@ pub(super) unsafe fn handle_settingchange(
 ) -> LRESULT {
     {
         let theme = Theme::current();
-        if let Some(renderer) = cell.borrow_mut().renderer.as_mut() {
-            let _ = renderer.set_theme(theme);
+        let theme_applied = if let Some(renderer) = cell.borrow_mut().renderer.as_mut() {
+            match renderer.set_theme(theme) {
+                Ok(()) => true,
+                Err(error) => {
+                    crate::error_!("diagnostics theme change failed: {error}");
+                    false
+                }
+            }
+        } else {
+            true
+        };
+        if theme_applied {
+            apply_chrome(hwnd, theme);
         }
-        apply_chrome(hwnd, theme);
         invalidate(hwnd);
         LRESULT(0)
     }
