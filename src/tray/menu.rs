@@ -8,12 +8,27 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::error::{Error, Result};
-pub mod cmd {
-    pub const OPEN_SETTINGS: u32 = 100;
-    pub const SHOW_STATUS: u32 = 101;
-    pub const SUSPEND_HOTKEYS: u32 = 102;
-    pub const SHOW_DIAGNOSTICS: u32 = 103;
-    pub const EXIT: u32 = 104;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum Command {
+    OpenSettings = 100,
+    ShowStatus = 101,
+    PauseShortcuts = 102,
+    Diagnostics = 103,
+    Exit = 104,
+}
+
+impl Command {
+    fn from_native(value: u32) -> Option<Self> {
+        match value {
+            100 => Some(Self::OpenSettings),
+            101 => Some(Self::ShowStatus),
+            102 => Some(Self::PauseShortcuts),
+            103 => Some(Self::Diagnostics),
+            104 => Some(Self::Exit),
+            _ => None,
+        }
+    }
 }
 
 /// Menu state reflecting the one frequently changed tray action.
@@ -21,26 +36,26 @@ pub struct MenuState {
     pub suspended: bool,
 }
 
-pub fn build(state: &MenuState) -> Result<HMENU> {
+fn build(state: &MenuState) -> Result<OwnedMenu> {
     unsafe {
-        let menu = CreatePopupMenu().map_err(|e| Error::win("CreatePopupMenu", &e))?;
-        append(menu, cmd::OPEN_SETTINGS, "&Open WinShort", false)?;
-        append(menu, cmd::SHOW_STATUS, "Show &status", false)?;
-        separator(menu)?;
+        let menu = OwnedMenu(CreatePopupMenu().map_err(|e| Error::win("CreatePopupMenu", &e))?);
+        append(menu.0, Command::OpenSettings, "&Open WinShort", false)?;
+        append(menu.0, Command::ShowStatus, "Show &status", false)?;
+        separator(menu.0)?;
         append(
-            menu,
-            cmd::SUSPEND_HOTKEYS,
+            menu.0,
+            Command::PauseShortcuts,
             "&Pause shortcuts",
             state.suspended,
         )?;
-        separator(menu)?;
-        append(menu, cmd::SHOW_DIAGNOSTICS, "&Diagnostics", false)?;
-        append(menu, cmd::EXIT, "E&xit", false)?;
+        separator(menu.0)?;
+        append(menu.0, Command::Diagnostics, "&Diagnostics", false)?;
+        append(menu.0, Command::Exit, "E&xit", false)?;
         Ok(menu)
     }
 }
 
-fn append(menu: HMENU, id: u32, text: &str, checked: bool) -> Result<()> {
+fn append(menu: HMENU, id: Command, text: &str, checked: bool) -> Result<()> {
     let flags = MF_STRING | if checked { MF_CHECKED } else { MF_ENABLED };
     // SAFETY: valid HMENU from CreatePopupMenu.
     let ok = unsafe {
@@ -82,13 +97,16 @@ impl Drop for OwnedMenu {
     }
 }
 
-pub fn track_tray_menu(hwnd: HWND, pt: POINT, state: &MenuState) -> Option<u32> {
+pub fn track_tray_menu(hwnd: HWND, pt: POINT, state: &MenuState) -> Option<Command> {
     // SAFETY: window owned by this thread; menu destroyed via OwnedMenu.
     unsafe {
         let _ = SetForegroundWindow(hwnd);
         let menu = match build(state) {
-            Ok(m) => OwnedMenu(m),
-            Err(_) => return None,
+            Ok(m) => m,
+            Err(error) => {
+                crate::warn_!("tray menu creation failed: {error}");
+                return None;
+            }
         };
         // With TPM_RETURNCMD the BOOL payload IS the chosen command id.
         let res = TrackPopupMenu(
@@ -108,10 +126,25 @@ pub fn track_tray_menu(hwnd: HWND, pt: POINT, state: &MenuState) -> Option<u32> 
         use windows::Win32::UI::WindowsAndMessaging::WM_NULL;
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
 
-        if cmd == 0 {
-            None
-        } else {
-            Some(cmd)
+        Command::from_native(cmd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Command;
+    #[test]
+    fn native_selection_rejects_cancellation_and_unknown_commands() {
+        assert_eq!(Command::from_native(0), None);
+        assert_eq!(Command::from_native(999), None);
+        for command in [
+            Command::OpenSettings,
+            Command::ShowStatus,
+            Command::PauseShortcuts,
+            Command::Diagnostics,
+            Command::Exit,
+        ] {
+            assert_eq!(Command::from_native(command as u32), Some(command));
         }
     }
 }

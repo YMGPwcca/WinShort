@@ -111,6 +111,38 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
         }
     }
 
+    let mut disabled_actions: HashMap<String, usize> = HashMap::new();
+    for (index, binding) in cfg.hotkeys.disabled.iter().enumerate() {
+        let field = format!("hotkeys.disabled[{index}]");
+        let action = binding.action.trim();
+        if action.is_empty() {
+            v.push(Violation::new(
+                &format!("{field}.action"),
+                "disabled shortcut action must not be empty",
+            ));
+            continue;
+        }
+        if cfg.canonical_disabled_action(action).is_none() {
+            v.push(Violation::new(
+                &format!("{field}.action"),
+                format!("unknown disabled shortcut action `{action}`"),
+            ));
+            continue;
+        }
+        if let Some(previous) = disabled_actions.insert(action.to_ascii_lowercase(), index) {
+            v.push(Violation::new(
+                &format!("{field}.action"),
+                format!("duplicates disabled shortcut action at index {previous}"),
+            ));
+        }
+        if cfg.has_active_hotkey_action(action) {
+            v.push(Violation::new(
+                &format!("{field}.action"),
+                "disabled shortcut must not also have an active binding",
+            ));
+        }
+    }
+
     // Numbered families reserve every digit with their configured modifier.
     // Family collisions and explicit-hotkey collisions are rejected instead
     // of being silently shadowed by build_bindings.

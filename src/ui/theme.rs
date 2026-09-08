@@ -41,24 +41,38 @@ pub struct UiTokens;
 
 impl UiTokens {
     pub const NAV_WIDTH: f32 = 216.0;
-    pub const TOP_BAR_HEIGHT: f32 = 80.0;
+    pub const TOP_BAR_HEIGHT: f32 = 40.0;
     pub const FOOTER_HEIGHT: f32 = 34.0;
     pub const PAGE_MARGIN: f32 = 32.0;
     pub const VIEWPORT_TOP_INSET: f32 = 8.0;
+    pub const TITLEBAR_BUTTON_WIDTH: f32 = 44.0;
+    pub const TITLEBAR_BUTTON_HEIGHT: f32 = 32.0;
+    pub const TITLEBAR_BUTTON_TOP: f32 = 4.0;
+    pub const TITLEBAR_BUTTON_RIGHT: f32 = 8.0;
+    pub const BRAND_ROW_HEIGHT: f32 = 80.0;
+    pub const BRAND_ROW_LEFT: f32 = 24.0;
+    pub const BRAND_ICON_SIZE: f32 = 34.0;
+    pub const BRAND_TEXT_GAP: f32 = 12.0;
+    pub const BRAND_TEXT_HEIGHT: f32 = 45.0;
+    pub const BRAND_ROW_RIGHT: f32 = 16.0;
+    pub const NAV_FIRST_ITEM_TOP: f32 = Self::BRAND_ROW_HEIGHT + Self::ROW_GAP;
+    pub const TOP_CHROME_SEARCH_GAP: f32 = 24.0;
     pub const ROW_HEIGHT: f32 = 58.0;
     pub const ROW_GAP: f32 = 8.0;
-    pub const GROUP_GAP: f32 = 18.0;
+    pub const SECTION_CONTENT_GAP: f32 = 12.0;
+    pub const SECTION_GAP: f32 = 20.0;
     pub const PAGE_HEADER_HEIGHT: f32 = 92.0;
-    pub const SECTION_HEADER_HEIGHT: f32 = 72.0;
+    pub const SECTION_HEADER_HEIGHT: f32 = 88.0;
     pub const CARD_RADIUS: f32 = 12.0;
     pub const CONTROL_RADIUS: f32 = 7.0;
     pub const NAV_RADIUS: f32 = 8.0;
-    pub const VALUE_WIDTH: f32 = 206.0;
-    pub const HOTKEY_WIDTH: f32 = 184.0;
+    pub const PICKER_INSET: f32 = 4.0;
+    pub const PICKER_RADIUS: f32 = Self::CONTROL_RADIUS;
+    pub const CONTROL_WIDTH: f32 = 206.0;
     pub const CARD_HEIGHT: f32 = 104.0;
-    pub const CARD_GAP: f32 = 16.0;
+    pub const CARD_COLUMN_GAP: f32 = 16.0;
     pub const PROFILE_CARD_HEIGHT: f32 = 120.0;
-    pub const PROFILE_ROW_STEP: f32 = 136.0;
+    pub const PROFILE_ROW_STEP: f32 = Self::PROFILE_CARD_HEIGHT + Self::ROW_GAP;
 
     pub const fn content_max_width(page: crate::ui::navigation::Page) -> f32 {
         match page {
@@ -101,7 +115,7 @@ pub struct Theme {
 
 impl Theme {
     pub fn current() -> Self {
-        match system_theme_mode() {
+        match acceptance_theme_mode().unwrap_or_else(system_theme_mode) {
             ThemeMode::Light => Self::light(),
             ThemeMode::Dark => Self::dark(),
         }
@@ -162,6 +176,16 @@ impl Theme {
     }
 }
 
+/// Process-local theme override used only by the isolated Windows acceptance
+/// harness; ordinary launches continue to read the Windows Personalize value.
+fn acceptance_theme_mode() -> Option<ThemeMode> {
+    let value = std::env::var_os("WINSHORT_UI_ACCEPTANCE_THEME")?;
+    match value.to_string_lossy().as_ref() {
+        "light" => Some(ThemeMode::Light),
+        "dark" => Some(ThemeMode::Dark),
+        _ => None,
+    }
+}
 /// System app theme from the documented Personalize registry value. Missing
 /// value defaults to dark because WinShort's launch scene is the tray at night.
 pub fn system_theme_mode() -> ThemeMode {

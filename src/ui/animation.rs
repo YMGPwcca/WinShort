@@ -51,7 +51,6 @@ impl Motion {
             fallback
         }
     }
-
     pub fn animate_to(
         &mut self,
         id: ElementId,
@@ -59,8 +58,8 @@ impl Motion {
         target: f32,
         duration_ms: u64,
     ) {
-        let current = self.value(id, channel, 1.0 - target);
-        if (current - target).abs() < 0.001 {
+        let from = self.value(id, channel, 1.0 - target);
+        if (from - target).abs() < 0.001 {
             return;
         }
         self.tweens.insert(
@@ -69,9 +68,9 @@ impl Motion {
                 channel,
             },
             Tween {
-                from: current,
+                from,
                 to: target,
-                value: current,
+                value: from,
                 started: Instant::now(),
                 duration: Duration::from_millis(duration_ms.max(1)),
             },
@@ -103,14 +102,6 @@ impl Motion {
             }
         });
         active
-    }
-
-    #[allow(dead_code)] // animation API surface
-    pub fn has_active(&self) -> bool {
-        let now = Instant::now();
-        self.tweens
-            .values()
-            .any(|t| now.saturating_duration_since(t.started) < t.duration)
     }
 }
 

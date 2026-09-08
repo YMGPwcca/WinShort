@@ -10,8 +10,8 @@ This file answers **what should be worked on next**. `docs/TEST_PLAN.md` remains
 - Do not describe automated/unit coverage as live Windows, accessibility, or hardware evidence.
 - Preserve the native Rust + Win32/COM + Direct2D/DirectWrite architecture. No Electron/WebView/framework rewrite.
 - Keep thread/COM ownership and UIA deferred-delivery invariants intact.
-- Do not resurrect removed Scratchpad hidden-window behavior. The supported model is the dedicated Special Workspace.
-- `DeviceSelection::Default` / `"default"` is a binding mode that follows the real Windows default endpoint, not a fake endpoint.
+- Do not resurrect removed Scratchpad hidden-window behavior. The supported model is the dedicated Special Desktop.
+- `DeviceSelection::Default` / `"default"` is an internal compatibility binding that tracks the real Windows default; the Control Center never exposes it as a selectable pseudo-device.
 - Rust **1.85 is the intentional MSRV** until the project explicitly decides to raise it.
 - Do not merge stale/WIP branches merely because they contain commits not reachable from `main`; compare behavior/tree first.
 
@@ -22,7 +22,7 @@ The following is implemented on `main` and is maintenance/release-validation wor
 - Native Control Center: Home, Shortcuts, Audio, Workspaces, Displays, Overlay, System/Advanced, search, onboarding, theme/high-contrast handling, keyboard focus, and custom UI Automation provider.
 - Global hotkeys with capture/conflict validation, AltGr handling, Win-number desktop switching, and event-driven runtime updates.
 - Audio mute controls, foreground-app mute/volume, actual Windows default input/output switching, and independent cycling allowlists.
-- Numbered virtual desktops, move/follow, silent move, Previous Desktop, and the dedicated recoverable Special Workspace.
+- Numbered virtual desktops, move/follow, silent move, Previous Desktop, and the dedicated recoverable Special Desktop.
 - Display profiles with stable route/profile identity, capture/edit/rename/duplicate/delete, per-profile hotkeys, Test Apply, Keep/Revert, and 15-second rollback.
 - Monitor-aware status overlay with draft preview, appearance/position/scale/opacity/duration controls, including the full 3x3 position set.
 - Diagnostics/logging/support bundle, startup control, single-instance/tray lifecycle, and sanitized support export.
@@ -48,10 +48,10 @@ Goal: turn implemented behavior into current release evidence. Use the exact pro
    - Next microphone / Next speaker changes all three Windows default roles and respects allowlists/offline IDs.
    - Foreground-app mute/volume across real multi-session applications and no-session cases.
 
-3. **Virtual Desktop / Special Workspace**
+3. **Virtual Desktop / Special Desktop**
    - Native backend validation on supported Windows build families documented in `VIRTUAL_DESKTOP_COMPAT.md`.
    - Numbered desktop creation/reorder/delete behavior, Previous Desktop, move/follow and silent move.
-   - Special Workspace multi-window use, exact return desktop, hard-kill/reboot GUID recovery, external deletion, clean removal.
+   - Special Desktop multi-window use, exact return desktop, hard-kill/reboot GUID recovery, external deletion, clean removal.
    - Unsupported build must fail closed for native-only operations.
 
 4. **Display profiles**

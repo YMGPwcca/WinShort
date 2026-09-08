@@ -8,7 +8,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 `write_all` → `flush` → `sync_all` → `rename` over the target; temp removed on rename failure.
 No backup copies are kept.
 
-schema_version = 9              # u8; CURRENT value is 9 (v1/v2/v3/v4/v5/v6/v7/v8 files migrate on load)
+schema_version = 10              # u8; CURRENT value is 10 (v1/v2/v3/v4/v5/v6/v7/v8/v9 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -18,7 +18,7 @@ start_with_windows = false      # LEGACY (#16): always false; registry owns star
 enabled = true
 duration_ms = 1300              # valid 500..=10000
 position = "bottom-center"      # top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right
-monitor = "foreground"          # foreground | primary | "device:\\\\.\\DISPLAY1"
+monitor = "cursor"              # cursor | primary (legacy device selectors remain readable)
 scale = 1.0                     # valid 0.7..=1.6
 opacity = 1.0                   # valid 0.3..=1.0
 appearance = "system"           # system | dark | light
@@ -40,6 +40,12 @@ cycle_input_device = ""         # unassigned by default
 cycle_output_device = ""
 foreground_volume_up = ""
 foreground_volume_down = ""
+
+# Disabled shortcuts keep their chord here while the active field stays empty.
+# This lets each shortcut be re-enabled without losing the user's assignment.
+[[hotkeys.disabled]]
+action = "cycle_output_device"
+hotkey = "Alt+Win+F2"
 # Each record binds one stable profile ID; profile names are not references.
 [[hotkeys.display_profiles]]
 profile_id = "gaming-id"
@@ -52,8 +58,8 @@ number_modifier = "Win"         # one modifier family for 1..9
 move_follow_modifier = ""       # optional modifier family
 move_silent_modifier = ""       # optional modifier family
 previous_desktop = ""           # optional ordinary hotkey
-scratchpad_assign = ""          # optional hotkey; legacy wire name: send foreground window to Special Workspace
-scratchpad_toggle = ""           # optional hotkey; legacy wire name: toggle Special Workspace / return desktop
+scratchpad_assign = ""          # optional hotkey; legacy wire name: send foreground window to Special Desktop
+scratchpad_toggle = ""          # optional hotkey; legacy wire name: toggle Special Desktop / return desktop
 
 [display_profiles]
 enabled = true
@@ -106,10 +112,10 @@ letters, digits 0–9, F1–F24, navigation/edit/OEM punctuation, CapsLock; no m
 `VdCfg` stores the numbered modifier family, optional move/follow and silent
 modifier families, an optional previous-desktop hotkey, and the two legacy-named
 `scratchpad_*` hotkeys. Those wire names are retained for schema compatibility, but
-the actions now send the foreground window to a dedicated Special Workspace and
-toggle that Virtual Desktop. Neither workspace identity nor return-desktop identity
+the actions now send the foreground window to a dedicated Special Desktop and
+toggle that Virtual Desktop. Neither desktop identity nor return-desktop identity
 is serialized into `config.toml`: the return GUID is process-only, while the exact
-Special Workspace GUID is stored separately as operational recovery state in
+Special Desktop GUID is stored separately as operational recovery state in
 `%LOCALAPPDATA%\WinShort\special-workspace.guid` so a surviving workspace can be
 reclaimed after a hard kill or Windows reboot. Legacy schema-v6 `routing_rules`
 tables are accepted only at the TOML boundary, ignored with a warning, and omitted
@@ -127,8 +133,9 @@ Route identity combines the target device path with source/target IDs; saved ada
 disambiguate same-panel connector collisions, while unresolved or missing routes fail closed.
 
 `HotkeysCfg` retains the three existing defaulted toggle bindings, four optional audio/volume
-fields, and `display_profiles`, a list of `{ profile_id, hotkey }` records. Profile IDs are stable
-references; renaming does not change them and deleting a profile removes its record.
+fields, `display_profiles`, a list of `{ profile_id, hotkey }` records, and `disabled`, a list
+of `{ action, hotkey }` records. A disabled record retains a chord while the corresponding
+active binding is empty; `display_profile:<id>` identifies a profile shortcut.
 
 ## Display profile lifecycle
 
@@ -141,14 +148,14 @@ discarding the change.
 
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 9` (`config/load.rs::load`):
+Loading a document with `schema_version > 10` (`config/load.rs::load`):
 
 An absent `schema_version` is treated as legacy source schema v1. New files
-serialized by `Config::to_toml()` always write schema v9.
+serialized by `Config::to_toml()` always write schema v10.
 
 Diagnostics separates `source_schema_version` from `effective_schema_version`:
-missing/corrupt input has no source version and effective v9; v1/v2/v3/v4/v5/v6/v7/v8 input has
-its source version and effective v9; v9 input has source and effective v9. A future source version
+missing/corrupt input has no source version and effective v10; v1/v2/v3/v4/v5/v6/v7/v8/v9 input has
+its source version and effective v10; v10 input has source and effective v10. A future source version
 is retained while runtime state falls back to safe defaults and the read-only latch remains active.
 
 * logs an error and warns "config written by a newer WinShort; not overwriting",
@@ -209,14 +216,14 @@ Center or the tray writes/deletes immediately — it does **not** wait for a glo
 ## Defaults (as coded)
 
 | Field | Default |
-| overlay | enabled, 1300 ms, bottom-center, foreground monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
+| overlay | enabled, 1300 ms, bottom-center, cursor-position monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
 | audio roles / devices | console / console, default devices |
 | audio cycle allowlists | omitted (`None`, all active endpoints) |
 | existing toggle hotkeys | Ctrl+Alt+M / Ctrl+Alt+O / Ctrl+Alt+P |
 | cycle and foreground-volume hotkeys | unassigned |
 | display profiles | enabled, no active profile, no stored profiles; profile hotkeys empty |
 | `start_hotkeys_enabled` | true |
-| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/Special Workspace hotkeys unassigned |
+| virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/Special Desktop hotkeys unassigned |
 
 Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
 
@@ -236,11 +243,13 @@ workflow fields, v5 defaults for the legacy-named `scratchpad_*` hotkeys (now Sp
 Workspace actions), v7 defaults for
 input/output allowlists, v8 defaults for display profiles, and v9 defaults for
 display profile hotkeys plus
-`confirmed = false` on profiles that predate the safety bit. Schema v2/v3/v4/v5/v6/v7/v8
+`confirmed = false` on profiles that predate the safety bit. Schema v10 adds the
+`hotkeys.disabled` records; v1 through v9 files default that list to empty.
+Schema v2/v3/v4/v5/v6/v7/v8/v9
 files preserve all existing values and default only the newly introduced fields.
 Schema-v6 executable-routing tables remain parse-compatible but are ignored as a removed,
 unreleased feature and are not serialized again. Load diagnostics records the source/effective
-transition. A successful Save writes schema v9
-and updates active load diagnostics to source v9. Legacy `overlay.monitor = "index:N"` still
+transition. A successful Save writes schema v10
+and updates active load diagnostics to source v10. Legacy `overlay.monitor = "index:N"` still
 maps to `primary`, and `general.start_with_windows` remains ignored because startup is
 registry-owned.

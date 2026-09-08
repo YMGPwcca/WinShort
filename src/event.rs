@@ -12,6 +12,10 @@ use std::sync::Mutex;
 pub const WM_APP_TRAY: u32 = 0x8000; // WM_APP + 0: tray callback notifications
 pub const WM_APP_ACTION: u32 = 0x8001; // keyboard hook recognized a binding
 pub const WM_APP_EVENT: u32 = 0x8002; // wake-only; payload lives in [`EVENTS`]
+/// Harness-only messages used to exercise the real UI paths in an isolated
+/// release-process acceptance run.
+pub const WM_APP_UI_ACCEPTANCE_SHOW: u32 = 0x8003;
+pub const WM_APP_UI_ACCEPTANCE_HIDE_OVERLAY: u32 = 0x8004;
 
 /// Actions produced by the keyboard engine. Small enough to pack into a WPARAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,9 +147,6 @@ pub enum AppEvent {
     // Commands executed on the main thread.
     ShowSettings,
     SwitchPreviousDesktopFromUi,
-    SwitchDesktopFromUi {
-        index: usize,
-    },
     ToggleSpecialWorkspaceFromUi,
     ShowDiagnostics,
     OpenSettingsPicker(crate::ui::picker::PickerKind),
@@ -158,8 +159,7 @@ pub enum AppEvent {
         reverse: bool,
     },
     CommitSettingsPicker {
-        kind: crate::ui::picker::PickerKind,
-        value: crate::ui::picker::PickerValue,
+        commit: crate::ui::picker::PickerCommit,
     },
     CancelSettingsPicker {
         popup_hwnd: isize,
@@ -219,14 +219,12 @@ pub enum AppEvent {
     // State published by workers / callbacks.
     MicrophoneStateChanged {
         state: AudioState,
-        origin: AudioEventOrigin,
     },
     OutputStateChanged {
         state: OutputState,
-        origin: AudioEventOrigin,
     },
-    /// Transient "default output changed" presentation (#17b): the overlay
-    /// shows a one-shot card; persistent state stays OutputState::Current.
+    /// Legacy default-output notification retained for worker compatibility.
+    /// The application deliberately does not surface a duplicate endpoint OSD.
     DefaultOutputChanged(crate::audio::state::DeviceId),
     ForegroundAudioChanged {
         state: AppAudioState,
@@ -243,6 +241,244 @@ pub enum AppEvent {
         path: Option<std::path::PathBuf>,
         error: Option<String>,
     },
+}
+
+#[derive(Debug)]
+pub(crate) enum RoutedAppEvent {
+    ControlCenter(ControlCenterEvent),
+    Display(DisplayEvent),
+    Diagnostics(DiagnosticsEvent),
+    Overlay(OverlayEvent),
+    Config(ConfigEvent),
+    Desktop(DesktopEvent),
+    Audio(AudioRuntimeEvent),
+}
+
+#[derive(Debug)]
+pub(crate) enum ControlCenterEvent {
+    Show,
+    OpenPicker(crate::ui::picker::PickerKind),
+    FocusFromPicker {
+        reverse: bool,
+    },
+    CommitPicker {
+        commit: crate::ui::picker::PickerCommit,
+    },
+    CancelPicker {
+        popup_hwnd: isize,
+        restore_focus: bool,
+    },
+    WindowClosed,
+}
+
+#[derive(Debug)]
+pub(crate) enum DisplayEvent {
+    OpenRenamePrompt {
+        profile_id: String,
+        current_name: String,
+    },
+    RenameSubmitted {
+        profile_id: String,
+        name: String,
+    },
+    RenameCancelled,
+    OpenRouteEditPrompt {
+        profile_id: String,
+        route_index: usize,
+        initial: String,
+    },
+    RouteEditSubmitted {
+        profile_id: String,
+        route_index: usize,
+        value: String,
+    },
+    TestApply {
+        profile: crate::config::model::DisplayProfile,
+    },
+    Apply {
+        profile: crate::config::model::DisplayProfile,
+    },
+    Keep,
+    Revert,
+}
+
+#[derive(Debug)]
+pub(crate) enum DiagnosticsEvent {
+    Show,
+    RunSelfTest,
+    Copy,
+    OpenLogs,
+    CreateSupportBundle,
+    SupportBundleFinished {
+        path: Option<std::path::PathBuf>,
+        error: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum OverlayEvent {
+    ShowStatus,
+    Preview {
+        config: crate::config::model::OverlayCfg,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum ConfigEvent {
+    Applied {
+        seq: u64,
+        stamp: crate::config::ConfigRevisionStamp,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum DesktopEvent {
+    SwitchPreviousFromUi,
+    ToggleSpecialFromUi,
+    ForegroundWindowChanged { hwnd_raw: isize },
+    ActionCompleted { kind: DesktopActionKind },
+    ActionFailed { action: String, reason: String },
+    BackendChanged(BackendStatus),
+}
+
+#[derive(Debug)]
+pub(crate) enum AudioRuntimeEvent {
+    DeviceCycleResolved {
+        request_id: u64,
+        result: DeviceCycleResult,
+    },
+    MicrophoneStateChanged {
+        state: AudioState,
+    },
+    OutputStateChanged {
+        state: OutputState,
+    },
+    DefaultOutputChanged(crate::audio::state::DeviceId),
+    DevicesChanged,
+    ForegroundAudioChanged {
+        state: AppAudioState,
+        origin: AudioEventOrigin,
+    },
+    ForegroundVolumeChanged {
+        state: AppVolumeState,
+        origin: AudioEventOrigin,
+    },
+}
+
+impl From<AppEvent> for RoutedAppEvent {
+    fn from(event: AppEvent) -> Self {
+        match event {
+            AppEvent::ShowSettings => Self::ControlCenter(ControlCenterEvent::Show),
+            AppEvent::OpenSettingsPicker(kind) => {
+                Self::ControlCenter(ControlCenterEvent::OpenPicker(kind))
+            }
+            AppEvent::FocusSettingsFromPicker { reverse } => {
+                Self::ControlCenter(ControlCenterEvent::FocusFromPicker { reverse })
+            }
+            AppEvent::CommitSettingsPicker { commit } => {
+                Self::ControlCenter(ControlCenterEvent::CommitPicker { commit })
+            }
+            AppEvent::CancelSettingsPicker {
+                popup_hwnd,
+                restore_focus,
+            } => Self::ControlCenter(ControlCenterEvent::CancelPicker {
+                popup_hwnd,
+                restore_focus,
+            }),
+            AppEvent::ControlCenterWindowClosed => {
+                Self::ControlCenter(ControlCenterEvent::WindowClosed)
+            }
+            AppEvent::OpenDisplayRenamePrompt {
+                profile_id,
+                current_name,
+            } => Self::Display(DisplayEvent::OpenRenamePrompt {
+                profile_id,
+                current_name,
+            }),
+            AppEvent::DisplayProfileRenameSubmitted { profile_id, name } => {
+                Self::Display(DisplayEvent::RenameSubmitted { profile_id, name })
+            }
+            AppEvent::DisplayProfileRenameCancelled => Self::Display(DisplayEvent::RenameCancelled),
+            AppEvent::OpenDisplayRouteEditPrompt {
+                profile_id,
+                route_index,
+                initial,
+            } => Self::Display(DisplayEvent::OpenRouteEditPrompt {
+                profile_id,
+                route_index,
+                initial,
+            }),
+            AppEvent::DisplayProfileRouteEditSubmitted {
+                profile_id,
+                route_index,
+                value,
+            } => Self::Display(DisplayEvent::RouteEditSubmitted {
+                profile_id,
+                route_index,
+                value,
+            }),
+            AppEvent::TestApplyDisplayProfile { profile } => {
+                Self::Display(DisplayEvent::TestApply { profile })
+            }
+            AppEvent::ApplyDisplayProfile { profile } => {
+                Self::Display(DisplayEvent::Apply { profile })
+            }
+            AppEvent::KeepDisplayProfile => Self::Display(DisplayEvent::Keep),
+            AppEvent::RevertDisplayProfile => Self::Display(DisplayEvent::Revert),
+            AppEvent::ShowDiagnostics => Self::Diagnostics(DiagnosticsEvent::Show),
+            AppEvent::RunDiagnosticsSelfTest => Self::Diagnostics(DiagnosticsEvent::RunSelfTest),
+            AppEvent::CopyDiagnostics => Self::Diagnostics(DiagnosticsEvent::Copy),
+            AppEvent::OpenDiagnosticsLogs => Self::Diagnostics(DiagnosticsEvent::OpenLogs),
+            AppEvent::CreateSupportBundle => {
+                Self::Diagnostics(DiagnosticsEvent::CreateSupportBundle)
+            }
+            AppEvent::SupportBundleFinished { path, error } => {
+                Self::Diagnostics(DiagnosticsEvent::SupportBundleFinished { path, error })
+            }
+            AppEvent::ShowStatusOverlay => Self::Overlay(OverlayEvent::ShowStatus),
+            AppEvent::PreviewOverlay { config } => Self::Overlay(OverlayEvent::Preview { config }),
+            AppEvent::ConfigApplied { seq, stamp } => {
+                Self::Config(ConfigEvent::Applied { seq, stamp })
+            }
+            AppEvent::SwitchPreviousDesktopFromUi => {
+                Self::Desktop(DesktopEvent::SwitchPreviousFromUi)
+            }
+            AppEvent::ToggleSpecialWorkspaceFromUi => {
+                Self::Desktop(DesktopEvent::ToggleSpecialFromUi)
+            }
+            AppEvent::ForegroundWindowChanged { hwnd_raw } => {
+                Self::Desktop(DesktopEvent::ForegroundWindowChanged { hwnd_raw })
+            }
+            AppEvent::DesktopActionCompleted { kind } => {
+                Self::Desktop(DesktopEvent::ActionCompleted { kind })
+            }
+            AppEvent::DesktopActionFailed { action, reason } => {
+                Self::Desktop(DesktopEvent::ActionFailed { action, reason })
+            }
+            AppEvent::DesktopBackendChanged(status) => {
+                Self::Desktop(DesktopEvent::BackendChanged(status))
+            }
+            AppEvent::DeviceCycleResolved { request_id, result } => {
+                Self::Audio(AudioRuntimeEvent::DeviceCycleResolved { request_id, result })
+            }
+            AppEvent::MicrophoneStateChanged { state } => {
+                Self::Audio(AudioRuntimeEvent::MicrophoneStateChanged { state })
+            }
+            AppEvent::OutputStateChanged { state } => {
+                Self::Audio(AudioRuntimeEvent::OutputStateChanged { state })
+            }
+            AppEvent::DefaultOutputChanged(device) => {
+                Self::Audio(AudioRuntimeEvent::DefaultOutputChanged(device))
+            }
+            AppEvent::DevicesChanged => Self::Audio(AudioRuntimeEvent::DevicesChanged),
+            AppEvent::ForegroundAudioChanged { state, origin } => {
+                Self::Audio(AudioRuntimeEvent::ForegroundAudioChanged { state, origin })
+            }
+            AppEvent::ForegroundVolumeChanged { state, origin } => {
+                Self::Audio(AudioRuntimeEvent::ForegroundVolumeChanged { state, origin })
+            }
+        }
+    }
 }
 
 /// Process-wide event queue. Producers push from any thread; the main thread
@@ -295,10 +531,15 @@ pub unsafe fn post_event(hwnd: windows::Win32::Foundation::HWND, ev: AppEvent) -
 }
 
 pub(crate) fn post_main(ev: AppEvent) {
-    if let Some(hwnd) = crate::app::main_hwnd() {
-        unsafe {
-            let _ = post_event(hwnd, ev);
-        }
+    let kind = std::mem::discriminant(&ev);
+    let Some(hwnd) = crate::app::main_hwnd() else {
+        crate::warn_!("dropping app event {kind:?}: main window is unavailable");
+        return;
+    };
+    // `post_event` queues before waking. A failed wake therefore delays delivery
+    // until another wake succeeds; it does not justify silently losing evidence.
+    if !unsafe { post_event(hwnd, ev) } {
+        crate::warn_!("app event {kind:?} queued but main-window wake failed");
     }
 }
 

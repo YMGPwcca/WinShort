@@ -4,19 +4,35 @@
 
 Every behavior in this plan is classified as one of:
 
-- **AUTOMATED IN CI** — deterministic `cargo test` coverage running on every push/PR.
-- **PROPERTY TEST** — proptest-generated coverage over an invariant domain (runs in CI).
+- **AUTOMATED IN LOCAL GATE** — deterministic `cargo test` coverage exercised by the required final local validation.
+- **PROPERTY TEST** — proptest-generated coverage over an invariant domain (runs in the local gate).
 - **FUZZ-STRATEGY / arbitrary-input property coverage** — bounded arbitrary-input tests inside
   `cargo test` (see Fuzzing note below); no separate libFuzzer job.
 - **MANUAL / HARDWARE-DEPENDENT** — requires a real desktop session, physical devices,
   or shell state; must be verified by hand per release.
 
-Current verified hosted baseline: Windows runners execute fmt, clippy `-D warnings`, the full
-`cargo test` suite (moving count; check CI for the live count), x86_64 release build with
-embedded-manifest byte-check, i686 and aarch64 compile checks, an MSRV 1.85 job, and cargo-deny.
-See `.github/workflows/ci.yml`.
+The canonical Windows verification entry point is `tools/final_validation.ps1`. From a clean
+worktree it executes fmt, all-target/all-feature check, strict Clippy, the full test suite,
+x86_64 release build plus embedded manifest/icon checks, the release nullable-UIA ABI regression,
+i686/aarch64 compile checks, Rust 1.85 MSRV, cargo-deny, machine UI acceptance, and the existing
+visual-sanity capture. The generated visual sheet still requires human review. Push/PR hosted CI
+is intentionally not used.
 
-## Diagnostics & support (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
+## Local Windows UI acceptance harness
+
+Run the isolated release-path Control Center acceptance loop with one command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ui_acceptance.ps1
+```
+
+The harness refuses to run beside an existing `winshort.exe`, uses
+`WINSHORT_DATA_DIR` for an isolated configuration root, exercises the real
+second-instance Control Center activation and Win32 overlay path, captures
+Control Center/picker/runtime-overlay PNGs, and writes a JSON summary below
+`target/ui-acceptance-results/`.
+
+## Diagnostics & support (AUTOMATED IN LOCAL GATE + MANUAL / HARDWARE-DEPENDENT)
 
 Automated coverage (`src/diagnostics/support.rs`) verifies:
 
@@ -53,20 +69,20 @@ flush integration, panic emergency persistence, and panic-path sanitization.
 The panic acceptance uses a deterministic child test process; no machine
 timezone mutation or production crash flag is used.
 
-## Control Center interaction and accessibility (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
+## Control Center interaction and accessibility (AUTOMATED IN LOCAL GATE + MANUAL / HARDWARE-DEPENDENT)
 
 Automated coverage:
 
-- Picker geometry chooses below/above placement and clamps to work areas, including negative
-  coordinates.
-- Explicit unavailable devices remain in picker choices; their opaque selection is not rewritten.
+- Picker geometry chooses below/above placement and clamps to the Control Center client
+  viewport, including DPI-scaled anchors.
+- Device pickers expose only active real endpoints; disconnected legacy explicit bindings remain configured but are not selectable system targets.
 - Endpoint roles are disabled when an explicit device is selected.
 - Reset requires two activations and changes draft state only.
-- Restored Control Center rectangles are fully contained in the selected work area and use
-  target-DPI scaling.
+- Restored Control Center rectangles retain the fixed logical window size, use
+  target-DPI scaling, and clamp only the saved position to the selected work area.
 - Custom Control Center UIA snapshot nodes expose logical control types, names/help, bounds,
-  offscreen, enabled/focus state, toggle state, and slider range/value semantics without child
-  HWND creation.
+  offscreen, enabled/focus state, toggle state, and slider range/value semantics without
+  inventing child HWNDs for painted rows.
 - Direct provider ABI tests verify S_OK/null unsupported patterns, navigation boundaries, hosted
   root and child RuntimeIds, root-only host providers, truthful Button/Invoke mappings, read-only
   ValuePattern failure, and root/child/outside point queries.
@@ -75,10 +91,11 @@ Automated coverage:
   events to actual focus, toggle, slider value, enabled, offscreen, bounds, name, and displayed
   value changes.
 - UIA actions are queued to the Control Center HWND; UIA `SetFocus` publishes actual Control
-  Center focus after Win32 confirms it, while an open picker publishes native LISTBOX focus.
+  Center focus after Win32 confirms it, while an open child picker publishes native LISTBOX
+  focus without transferring top-level foreground ownership.
 - Native picker/listbox retains fixed-order keyboard navigation, generation-checked close, and
-  idempotent commit/cancel behavior; picker typography, hover, geometry, and DPI policies are
-  pure-tested.
+  idempotent commit/cancel behavior; picker typography, hover, client placement, child-host
+  style, and DPI policies are pure-tested.
 
 - UIA publication is two-phase: the Control Center UI `RefCell` may commit and queue state
   changes, but only the later borrow-free Control Center flush may simulate UIA delivery. Tests
@@ -88,20 +105,55 @@ Automated coverage:
   and normal Boolean pattern-availability properties. COM identity tests verify root-only
   FragmentRoot support, shared root identity, and stable child navigation.
 - Invoke event tests verify one deferred Invoked notification per accepted Button action; picker
-  construction tests verify HWND registration before activation and direct Control-Center-to-
-  Picker focus.
+  construction tests verify HWND registration, `WS_CHILD` hosting, no foreground transfer, and
+  direct focus into the real Control-Center-owned LISTBOX.
 
 - Direct provider HRESULT tests distinguish disabled (`UIA_E_ELEMENTNOTENABLED`), stale
   (`UIA_E_ELEMENTNOTAVAILABLE`), unsupported (`UIA_E_NOTSUPPORTED`), and invalid argument
   (`E_INVALIDARG`) paths without changing the live unsupported-property `VT_EMPTY` contract.
 - The `nullable_provider_abi_regression` test calls each successful-null COM output path through
-  its raw vtable and runs in both normal and release profiles; hosted Windows CI runs the
-  release-profile case in the x86_64 release-build job.
-- Control Center regression seams verify parent-wheel picker dismissal, close ordering before
-  parent hide, pending activation blocking, and focus repair when a local mutation disables the
-  current control.
+  its raw vtable and runs in both normal and release profiles; the final local gate explicitly
+  runs the release-profile case.
+- Control Center regression seams verify direct parent-wheel picker dismissal, outside-click and
+  focus-loss closure, close ordering before parent hide, pending activation blocking, and focus
+  repair when a local mutation disables the current control.
+- Managed shortcut coverage verifies assigned, disabled, re-enabled, changed-while-disabled,
+  and unassigned chords; disabled chords stay out of the active binding table.
 - Bounded value rendering tests verify chevron reservation and DirectWrite trailing-character
   trimming; applied status text remains generic.
+- Control Center layout tests cover removal of the Workspaces desktop strip, Special Desktop
+  hierarchy, exact sibling ROW_GAP/SECTION_CONTENT_GAP geometry across Audio, Home, and
+  Workspaces, shared right-side control widths, the separate 80 DIP sidebar brand row,
+  one-row Search/Close chrome, one Close action, fixed-window capability geometry, the
+  side-by-side Overlay placement with equal Preview/Position dimensions, and the
+  equal-width Overlay status row.
+- Search caret geometry tests cover a visible empty-field caret and a text-end caret;
+  renderer palette tests cover complete dark/light brush tables and transactional theme
+  replacement.
+- Overlay show-plan coverage verifies mutable overlay state is released before
+  reentrant SetWindowPos/ShowWindow work; WM_SIZE remains the D2D resize path.
+- Top-chrome separator geometry starts at the content boundary and never intersects
+  the sidebar brand row.
+- Overlay preview coverage keeps the monitor frame content-free except for the
+  normalized status-card silhouette; Position moves only that silhouette.
+- Compact Monitor-row coverage verifies complete `Overlay location` helper text,
+  aligned picker geometry, and readable Primary/Cursor values.
+- Search focus coverage verifies blank-click clearing, transfer to another control,
+  external focus loss, stale Search guards, and caret/predicate agreement.
+- Overlay monitor picker tests expose exactly Primary and Cursor position; legacy foreground
+  config values parse to Cursor and serialize as `cursor`.
+- Overlay geometry tests cover equal Preview/Position columns, dynamic monitor aspect fitting,
+  monitor-as-preview containment, normalized position semantics, and the absence of a nested
+  preview-container surface.
+- Motion tests cover hover/toggle channels only; wheel and Page Up/Down scroll update the model
+  directly without a Scroll channel, target, or timer tween.
+- Fixed-window tests cover a DPI-scaled constant size, blocked minimize/maximize/resize system
+  commands, no non-client resize hit zones, no double-click maximize path, and Close-only UIA
+  Button/Invoke exposure.
+- Overlay policy tests cover opaque fallback for High Contrast, disabled overlapped content,
+  and unavailable DWM backdrop APIs.
+- Audio presentation tests cover canonical primary endpoint names with diagnostic-only adapter
+  metadata.
 - Navigation/search tests verify case-insensitive deterministic user-concept matching and reject
   internal configuration names from the normal search index.
 - Onboarding policy tests verify that a meaningful existing `config.toml` suppresses the
@@ -109,26 +161,57 @@ Automated coverage:
 
 Manual matrix:
 
-- Input/output picker: follow Windows default, available explicit device, disconnected explicit
-  device.
-- Hover/focus non-obvious controls and verify delayed native help text closes on pointer/focus
-  change.
-- Role rows enable only for Follow Windows default and announce the reason when disabled.
-- Overlay position and monitor picker: Foreground, Primary, each configured monitor, disconnected
-  configured monitor, long labels, popup above/below, and DPI changes.
-- Mouse and keyboard: Tab/Shift-Tab, Enter, Space, Escape, arrows, Home/End, Page Up/Down,
-  picker focus loss, hotkey recorder transitions, local commit/cancel, and reset confirmation.
-- Control Center restore after restart, removed monitor, negative coordinates, 100/125/150/200%
-  DPI.
-- Narrator or Accessibility Insights: Control Center navigation, page headings, toggle names/
-  values, picker selection, disabled role help, slider range/value, local action feedback, and
-  sensible focus order.
-- Dark/light themes, large DPI, focus visibility, and disconnected-device presentation.
+- Scroll behavior: wheel notches update the viewport immediately and accumulate across rapid
+  input with no queued/tweened motion; Page Up/Down update immediately; scrollbar dragging is
+  direct and reduced-motion settings do not alter scrolling.
+- Sidebar brand geometry: the app mark and one-line WinShort label share the exact brand-row
+  vertical center.
+- Top chrome: the search field and sole Close button share one row; the gap is draggable caption
+  space, while Search and Close remain HTCLIENT.
+- Section rhythm: each divider sits in whitespace between sections, every cyan accent is
+  vertically centered on its title line, and sibling cards/rows use exact ROW_GAP.
+- Workspaces page: no Normal desktops strip is present; numbered 1–9 shortcut configuration
+  remains available; Special Desktop has one heading, description, and two evenly spaced
+  shortcut cards.
+- Control widths: dropdowns, keycaps, and value controls share the same right-side width and
+  alignment; managed shortcut actions divide that same column.
+- Audio iconography: the microphone reads as a capsule microphone with stem/base, not a speaker,
+  and the same glyph is used on Home, Audio navigation, and overlay surfaces.
+- Shortcut iconography: the navigation glyph reads as a rounded keyboard with upper-row key
+  marks and a lower spacebar line, not arbitrary plus/hash marks or a dot box.
+- Audio naming: speaker/microphone controls consistently show only canonical primary names such
+  as GS25F2, SAMSUNG, and SIMGOT EW300 DSP; adapter metadata is absent from normal visible rows.
+- Current app audio: the section keeps its shortcut controls available but omits
+  a large empty status card when no external target is available.
+- Overlay preview: the fixed-size window always places the monitor preview beside Position.
+  The status row splits Show status overlay and Monitor into equal halves. Primary and Cursor
+  position targets use the correct work-area ratio without stretching, and the monitor frame
+  is the sole preview surface.
+- Overlay card styles: System, Dark, and Light each render one status card only,
+  with no outer slab, halo, or duplicate shadow.
+- Custom titlebar: the fixed-size window has one blank draggable top region and one compact Close
+  button. Minimize, Maximize/Restore, resize edges/corners, double-click maximize, and Snap
+  Layout are unavailable; DPI, dark/light/high-contrast themes, and rounded corners remain
+  intact. Switching between dark and light must leave the Control Center alive.
+- Close lifecycle: clicking Close cancels any picker first, discards only the uncommitted UI draft
+  under existing policy, hides Control Center with SW_HIDE, preserves the process/tray, and
+  allows the tray Open action to show the same fixed-size window again.
+- Overlay backdrop: with reduced opacity, content behind the overlay is visibly blurred by
+  documented DWM Desktop Acrylic (`DWMWA_SYSTEMBACKDROP_TYPE` /
+  `DWMSBT_TRANSIENTWINDOW`); High Contrast, disabled overlapped content, API failure, and
+  transparency-disabled states use an opaque accessible surface.
+- Picker focus: opening a picker keeps the Control Center as the sole active top-level HWND;
+  the child host appears above D2D content, the real LISTBOX owns keyboard focus, arrows/Home/End/
+  PageUp/PageDown/Tab/Escape remain deterministic, and outside click/focus loss closes it.
+- Focus and automation: pointer clicks avoid a lingering heavy ring; clicking Search shows a
+  visible caret and reports editable focus truthfully; Tab, Shift-Tab, keyboard activation,
+  titlebar commands, and UIA focus remain truthful; UIA events arrive only after mutable
+  SettingsUi borrows are released.
 
-If an interactive desktop is unavailable, GUI and Narrator results remain unverified; automated
-geometry/state tests must not be described as live accessibility evidence.
+If an interactive desktop is unavailable, GUI, blur, titlebar, and Narrator results remain
+unverified; automated geometry/state tests must not be described as live accessibility evidence.
 
-## A. Keyboard engine (AUTOMATED IN CI + PROPERTY TEST)
+## A. Keyboard engine (AUTOMATED IN LOCAL GATE + PROPERTY TEST)
 
 Pure harness: `KeyboardEngine` fed `RawKeyEvent`s, asserting emitted
 `EngineOutcome { Pass, Swallow, Dispatch { action, dirty_win_chord } }`.
@@ -160,41 +243,42 @@ state.
 Start-menu countermeasure: `dirty_win_chord` flag posted with the action; main-thread
 `dispatcher::dirty_win_chord()` injects the VK_CONTROL pair (KEYBOARD_HOOK_DESIGN.md).
 
-## B. Binding table / parsing (AUTOMATED IN CI)
+## B. Binding table / parsing (AUTOMATED IN LOCAL GATE)
 
 parse/display round-trips for every supported key; conflict detection errors name both actions;
 invalid combos rejected (modifier-only, no-modifier #35, empty token #58); case-insensitive
 parse; canonical display ordering; numpad distinct from top row (#11).
 
-## C. Config (AUTOMATED IN CI + PROPERTY TEST)
+## C. Config (AUTOMATED IN LOCAL GATE + PROPERTY TEST)
 
 defaults load when file missing; corrupt file → defaults + warning; schema v2 → v3 migration
-preserves existing values and leaves the four new hotkeys unassigned; validation violations and
-repair idempotence (`config_props.rs`: endpoint-ID round-trips over generated opaque IDs,
-boundary repair idempotence); future-schema read-only latch (deterministic + arbitrary TOML
-fuzz strategy proving latched configs never enable writes); atomic save leaves no temp residue;
-round-trip serialize→parse equality; unknown-field warnings; failed persistence never publishes a
-new `ConfigHandle` snapshot and successful persistence increments its revision once.
+preserves existing values and leaves the four new hotkeys unassigned; schema v9 → v10 migration
+preserves existing values and defaults the new disabled list to empty; schema-v10 disabled
+records round-trip with empty active fields; validation violations and repair idempotence
+(`config_props.rs`: endpoint-ID round-trips over generated opaque IDs, boundary repair
+idempotence); future-schema read-only latch (deterministic + arbitrary TOML fuzz strategy proving
+latched configs never enable writes); atomic save leaves no temp residue; round-trip
+serialize→parse equality; unknown-field warnings; failed persistence never publishes a new
+`ConfigHandle` snapshot and successful persistence increments its revision once.
 
 ## D. Audio matrix (MANUAL / HARDWARE-DEPENDENT)
 
 mute/unmute default mic · change default mic while running · disconnect mic (state event, no
-crash) · output device switch (overlay "Output changed") · external volume change arrives via
-callback (own events filtered) · foreground app mute · foreground app volume ±5% with clamping ·
-app without audio ("no audio session") · multi-session app (aggregate Mixed→mute-all) · app exits
-mid-enumeration · audio service restart (`net stop audiosrv`) → endpoints rebuild · same-basename
-different installations (ambiguous refusal) · same-full-path independent instances (accepted
-limitation) · input/output cycle through active real endpoints and
-set all three Windows default roles, including unavailable-endpoint recovery
-and duplicate friendly names.
+crash) · output device switch (Windows default/device-cycle feedback) · external volume change
+arrives via callback (own events filtered) · foreground app mute · foreground app volume ±5% with
+clamping · app without audio ("no audio session") · multi-session app (aggregate Mixed→mute-all) ·
+app exits mid-enumeration · audio service restart (`net stop audiosrv`) → endpoints rebuild ·
+same-basename different installations (ambiguous refusal) · same-full-path independent instances
+(accepted limitation) · input/output cycle through active real endpoints and set all three Windows
+default roles, including unavailable-endpoint recovery and duplicate friendly names.
 
-Policy-level properties run in CI: resolver ladder grouping invariants (#37).
+Policy-level properties run in the local gate: resolver ladder grouping invariants (#37).
 
-## E. Virtual desktop matrix (live; policy AUTOMATED IN CI)
+## E. Virtual desktop matrix (live; policy AUTOMATED IN LOCAL GATE)
 
 Win+1 from desktop N≠1 lands on 1 · already-there no-op · rapid sequences · desktop
 add/remove/reorder between switches · Task View switch then Win+number · unsupported build →
-fallback active + status line. Policy properties in CI: semantic errors never fall back,
+fallback active + status line. Policy properties in the local gate: semantic errors never fall back,
 only RPC/backend-unavailable permits one bounded retry then fallback (#37). Real COM switching
 remains MANUAL (build-pinned; see VIRTUAL_DESKTOP_COMPAT.md tested-results table).
 
@@ -204,13 +288,15 @@ crispness at DPI 100–200% · single/multi monitor · per-monitor DPI moves inc
 (#49) · foreground-monitor follow · over fullscreen game (never steals focus) · rapid updates
 coalesce with timer reset · negative virtual-screen coordinates · monitor unplug/replug.
 
-#30 accessibility/source matrix: System/Dark/Light appearance, Windows animation-off yields
-settled overlay with no fade/slide, high-contrast uses paired system colors with an opaque
-surface/strong border/no shadow, overlapped-content preference removes translucency, and
-setting changes refresh an already-visible overlay. Preview uses unsaved draft appearance,
-scale, opacity, position, monitor, and duration without saving. External audio changes obey
-the saved policy; WinShort actions and status requests remain visible. Delayed status results
-refresh the multi-row status presentation. Coalesced updates preserve the full settled hold.
+The runtime overlay uses a non-layered Direct2D HWND with documented DWM Desktop Acrylic
+(`DwmSetWindowAttribute` / `DWMWA_SYSTEMBACKDROP_TYPE` /
+`DWMSBT_TRANSIENTWINDOW`) and `DwmExtendFrameIntoClientArea`. Reduced opacity must reveal
+blurred, not sharp, background content. High Contrast, `SPI_GETDISABLEOVERLAPPEDCONTENT`, an
+unsupported DWM attribute, or a failed frame extension must produce the opaque fallback.
+Preview uses unsaved draft appearance, scale, opacity, position, monitor, and duration without
+saving. External audio changes obey the saved policy; WinShort actions and status requests remain
+visible. Delayed status results refresh the multi-row status presentation. Coalesced updates
+preserve the full settled hold.
 
 Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
 flag exists).
@@ -227,7 +313,7 @@ windows-msvc targets in this repository's setup. Implemented instead: **bounded
 arbitrary-input strategies via proptest** — keyboard event sequences (engine invariants) and
 arbitrary TOML documents against config loading (no panic, bounded time, latched configs never
 writable). Hotkey strings are exercised through those TOML documents; the hotkey parser itself
-has deterministic round-trip coverage. These run as normal tests on every push; no continuous
+has deterministic round-trip coverage. These run as normal tests in the local gate; no continuous
 fuzz campaign is claimed or running.
 
 ## Manual regression matrix
@@ -276,15 +362,15 @@ fuzz campaign is claimed or running.
 - Silent foreground move leaves the source desktop active
 - Per-desktop last-focused HWND tracking excludes WinShort, shell, invisible, stale, and cloaked windows
 - Previous-desktop toggles back and forth and clears deleted identities
-- Send foreground window → Special Workspace moves it off the current normal desktop without hiding it
-- Multiple sent windows coexist on the same dedicated Special Workspace
-- Toggle from a normal desktop → Special Workspace → toggle again returns to that exact normal desktop
-- Focus another application before entering the Special Workspace; the real desktop switch exposes usable workspace windows without hide/show focus hacks
-- Numbered Desktop 1..9 ordinals exclude the Special Workspace, including missing-normal-desktop creation
-- Previous Desktop history is not polluted by entering/leaving the Special Workspace
-- Disable the feature or exit cleanly removes the Special Workspace and Shell relocates its windows to a normal fallback desktop
-- External deletion of the Special Workspace clears stale runtime identity and the next use creates a fresh workspace
-- Unsupported/native-failed builds report Special Workspace unavailable; keyboard fallback never simulates its create/move/toggle semantics
+- Send foreground window → Special Desktop moves it off the current normal desktop without hiding it
+- Multiple sent windows coexist on the same dedicated Special Desktop
+- Toggle from a normal desktop → Special Desktop → toggle again returns to that exact normal desktop
+- Focus another application before entering the Special Desktop; the real desktop switch exposes usable workspace windows without hide/show focus hacks
+- Numbered Desktop 1..9 ordinals exclude the Special Desktop, including missing-normal-desktop creation
+- Previous Desktop history is not polluted by entering/leaving the Special Desktop
+- Disable the feature or exit cleanly removes the Special Desktop and Shell relocates its windows to a normal fallback desktop
+- External deletion of the Special Desktop clears stale runtime identity and the next use creates a fresh workspace
+- Unsupported/native-failed builds report Special Desktop unavailable; keyboard fallback never simulates its create/move/toggle semantics
 - Hard process termination or Windows reboot may leave the dedicated VD alive; relaunch must reclaim the exact persisted GUID without creating a duplicate, while a missing GUID is treated as external deletion
 
 ### Display profiles

@@ -141,6 +141,12 @@ fn run(role: PrimaryRole, _com: crate::platform::com::ComApartment) -> Result<()
     for f in &install_errors {
         error_!("degraded startup: {f}");
     }
+    if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
+        info!("UI acceptance trigger: showing status overlay");
+        unsafe {
+            let _ = event::post_event(main_hwnd, event::AppEvent::ShowStatusOverlay);
+        }
+    }
 
     // Owned watcher runtime (#24): joined after the loop exits; begin_shutdown
     // signals its shutdown event BEFORE destroying any window.

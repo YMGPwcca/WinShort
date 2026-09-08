@@ -170,8 +170,14 @@ impl ConfigHandle {
 }
 
 /// Authoritative process data root via the Known Folder API (#15e): no "."
-/// fallback — callers decide whether failure is fatal.
+/// fallback — callers decide whether failure is fatal. The
+/// `WINSHORT_DATA_DIR` override is a harness-only process isolation seam.
 pub fn try_data_dir() -> crate::error::Result<std::path::PathBuf> {
+    if let Some(override_dir) = std::env::var_os("WINSHORT_DATA_DIR") {
+        if !override_dir.is_empty() {
+            return Ok(std::path::PathBuf::from(override_dir));
+        }
+    }
     use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
     let path = unsafe {
         SHGetKnownFolderPath(

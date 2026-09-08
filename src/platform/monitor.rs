@@ -1,10 +1,11 @@
 //! Monitor enumeration / work area helpers (spec §33).
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO,
-    MONITORINFOEXW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HDC, HMONITOR,
+    MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 /// Geometry of one monitor relevant to the overlay.
 #[derive(Debug, Clone)]
@@ -16,17 +17,26 @@ pub struct MonitorGeometry {
     pub dpi: u32,
 }
 
-/// Monitor nearest to the given window.
-pub fn from_window(hwnd: HWND) -> HMONITOR {
-    unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }
-}
-
 pub fn primary() -> Option<MonitorGeometry> {
     let hmon = unsafe { MonitorFromWindow(HWND::default(), MONITOR_DEFAULTTOPRIMARY) };
     if hmon.is_invalid() {
         None
     } else {
         info_for(hmon)
+    }
+}
+/// Monitor containing the current pointer, falling back to the primary monitor
+/// when Windows cannot resolve the pointer position.
+pub fn cursor() -> Option<MonitorGeometry> {
+    let mut point = POINT::default();
+    if unsafe { GetCursorPos(&mut point) }.is_err() {
+        return primary();
+    }
+    let hmon = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    if hmon.is_invalid() {
+        primary()
+    } else {
+        info_for(hmon).or_else(primary)
     }
 }
 

@@ -144,6 +144,11 @@ pub enum AudioCommand {
         flow: DeviceCycleFlow,
         request_id: u64,
     },
+    SetDefaultDevice {
+        flow: DeviceCycleFlow,
+        endpoint: String,
+        request_id: u64,
+    },
     AdjustForegroundVolume {
         pid: Option<u32>,
         adjustment: crate::audio::sessions::VolumeAdjustment,
@@ -323,14 +328,8 @@ impl AudioController {
         }
         self.refresh_config_if_needed();
         match command {
-            AudioCommand::ToggleMicrophone(request_id) => self.toggle(
-                EndpointFlow::Capture,
-                crate::event::AudioEventOrigin::WinShortAction(request_id),
-            ),
-            AudioCommand::ToggleOutput(request_id) => self.toggle(
-                EndpointFlow::Render,
-                crate::event::AudioEventOrigin::WinShortAction(request_id),
-            ),
+            AudioCommand::ToggleMicrophone(_) => self.toggle(EndpointFlow::Capture),
+            AudioCommand::ToggleOutput(_) => self.toggle(EndpointFlow::Render),
             AudioCommand::ToggleForeground { pid, request_id } => {
                 let config = self.config.get();
                 let state =
@@ -348,6 +347,14 @@ impl AudioController {
             }
             AudioCommand::CycleDevice { flow, request_id } => {
                 let result = self.cycle_device(flow);
+                self.post(AppEvent::DeviceCycleResolved { request_id, result });
+            }
+            AudioCommand::SetDefaultDevice {
+                flow,
+                endpoint,
+                request_id,
+            } => {
+                let result = self.set_default_device(flow, &endpoint);
                 self.post(AppEvent::DeviceCycleResolved { request_id, result });
             }
             AudioCommand::AdjustForegroundVolume {
@@ -383,7 +390,7 @@ impl AudioController {
             }
             AudioCommand::RefreshEndpoint(flow) => {
                 crate::log_debug!("audio {:?} endpoint notification", flow);
-                self.publish(flow, crate::event::AudioEventOrigin::External);
+                self.publish(flow);
             }
             // ConfigChanged is consumed by handle() above; refresh_config_if_needed
             // covers any residual revision drift.
@@ -466,6 +473,59 @@ impl AudioController {
             pending.remove(index);
         }
         true
+    }
+
+    fn set_default_device(&mut self, flow: DeviceCycleFlow, endpoint: &str) -> DeviceCycleResult {
+        let active = {
+            let devices = self.devices.read().expect("audio device list");
+            match flow {
+                DeviceCycleFlow::Input => devices.inputs.clone(),
+                DeviceCycleFlow::Output => devices.outputs.clone(),
+            }
+        };
+        let endpoint_flow = match flow {
+            DeviceCycleFlow::Input => EndpointFlow::Capture,
+            DeviceCycleFlow::Output => EndpointFlow::Render,
+        };
+        let previous =
+            crate::audio::devices::current_default_device(&self.enumerator, endpoint_flow).ok();
+        let Some(device) = active
+            .into_iter()
+            .find(|device| device.endpoint.as_str() == endpoint)
+        else {
+            return DeviceCycleResult::Failed {
+                flow,
+                previous,
+                target: None,
+                error: "selected endpoint is no longer active".into(),
+            };
+        };
+        if let Err(error) =
+            crate::audio::devices::set_system_default(&self.enumerator, endpoint_flow, &device)
+        {
+            return DeviceCycleResult::Failed {
+                flow,
+                previous,
+                target: Some(device),
+                error: error.to_string(),
+            };
+        }
+        self.pending_default_switches.push(PendingDefaultSwitch {
+            flow: endpoint_flow,
+            endpoint: device.endpoint.clone(),
+            observed_roles: 0,
+        });
+        let snapshot = self.config.snapshot();
+        self.rebuild_all(
+            false,
+            snapshot.value,
+            crate::event::AudioEventOrigin::Config(crate::event::ConfigCommitOrigin::DeviceCycle),
+        );
+        DeviceCycleResult::Changed {
+            flow,
+            previous,
+            device,
+        }
     }
 
     fn cycle_device(&mut self, flow: DeviceCycleFlow) -> DeviceCycleResult {
@@ -589,8 +649,8 @@ impl AudioController {
             }
             self.post(AppEvent::DevicesChanged);
         }
-        self.publish(EndpointFlow::Capture, origin);
-        self.publish(EndpointFlow::Render, origin);
+        self.publish(EndpointFlow::Capture);
+        self.publish(EndpointFlow::Render);
     }
 
     fn rebuild(&mut self, flow: EndpointFlow, config: &crate::config::Config) {
@@ -647,7 +707,7 @@ impl AudioController {
         }
     }
 
-    fn toggle(&mut self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
+    fn toggle(&mut self, flow: EndpointFlow) {
         let missing = match flow {
             EndpointFlow::Capture => self.capture.is_none(),
             EndpointFlow::Render => self.render.is_none(),
@@ -666,10 +726,10 @@ impl AudioController {
         if let Err(e) = result {
             crate::warn_!("audio toggle {:?} failed: {e}", flow);
         }
-        self.publish(flow, origin);
+        self.publish(flow);
     }
 
-    fn publish(&self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
+    fn publish(&self, flow: EndpointFlow) {
         match flow {
             EndpointFlow::Capture => {
                 let state = self
@@ -680,7 +740,7 @@ impl AudioController {
                     .unwrap_or_else(|e| AudioState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::MicrophoneStateChanged { state, origin });
+                self.post(AppEvent::MicrophoneStateChanged { state });
             }
             EndpointFlow::Render => {
                 let state = self
@@ -691,7 +751,7 @@ impl AudioController {
                     .unwrap_or_else(|e| OutputState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::OutputStateChanged { state, origin });
+                self.post(AppEvent::OutputStateChanged { state });
             }
         }
     }

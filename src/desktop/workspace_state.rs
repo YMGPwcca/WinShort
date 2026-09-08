@@ -1,4 +1,4 @@
-//! Durable identity for the dedicated Special Workspace.
+//! Durable identity for the dedicated Special Desktop.
 //!
 //! The GUID is runtime state, not user configuration. Windows preserves Virtual
 //! Desktop GUIDs across a reboot, so keeping the identity in LocalAppData lets a
@@ -37,7 +37,7 @@ fn load_from(data_dir: &Path) -> Result<Option<GUID>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(Error::desktop(format!(
-                "read special workspace identity {}: {error}",
+                "read Special Desktop identity {}: {error}",
                 path.display()
             )))
         }
@@ -45,15 +45,15 @@ fn load_from(data_dir: &Path) -> Result<Option<GUID>> {
     let value = text.trim();
     if value.len() != 32 {
         return Err(Error::desktop(format!(
-            "special workspace identity has invalid length {}",
+            "Special Desktop identity has invalid length {}",
             value.len()
         )));
     }
     let raw = u128::from_str_radix(value, 16)
-        .map_err(|error| Error::desktop(format!("parse special workspace identity: {error}")))?;
+        .map_err(|error| Error::desktop(format!("parse Special Desktop identity: {error}")))?;
     if raw == 0 {
         return Err(Error::desktop(
-            "special workspace identity cannot be the zero GUID",
+            "Special Desktop identity cannot be the zero GUID",
         ));
     }
     Ok(Some(GUID::from_u128(raw)))
@@ -62,12 +62,12 @@ fn load_from(data_dir: &Path) -> Result<Option<GUID>> {
 fn store_in(data_dir: &Path, id: GUID) -> Result<()> {
     if id == GUID::zeroed() {
         return Err(Error::desktop(
-            "refusing to persist the zero GUID as a special workspace identity",
+            "refusing to persist the zero GUID as a Special Desktop identity",
         ));
     }
     std::fs::create_dir_all(data_dir).map_err(|error| {
         Error::desktop(format!(
-            "create special workspace state directory {}: {error}",
+            "create Special Desktop state directory {}: {error}",
             data_dir.display()
         ))
     })?;
@@ -77,25 +77,25 @@ fn store_in(data_dir: &Path, id: GUID) -> Result<()> {
     {
         let mut file = std::fs::File::create(&tmp).map_err(|error| {
             Error::desktop(format!(
-                "create special workspace temp state {}: {error}",
+                "create Special Desktop temp state {}: {error}",
                 tmp.display()
             ))
         })?;
         file.write_all(text.as_bytes()).map_err(|error| {
             Error::desktop(format!(
-                "write special workspace temp state {}: {error}",
+                "write Special Desktop temp state {}: {error}",
                 tmp.display()
             ))
         })?;
         file.flush().map_err(|error| {
             Error::desktop(format!(
-                "flush special workspace temp state {}: {error}",
+                "flush Special Desktop temp state {}: {error}",
                 tmp.display()
             ))
         })?;
         file.sync_all().map_err(|error| {
             Error::desktop(format!(
-                "sync special workspace temp state {}: {error}",
+                "sync Special Desktop temp state {}: {error}",
                 tmp.display()
             ))
         })?;
@@ -103,7 +103,7 @@ fn store_in(data_dir: &Path, id: GUID) -> Result<()> {
     std::fs::rename(&tmp, &path).map_err(|error| {
         let _ = std::fs::remove_file(&tmp);
         Error::desktop(format!(
-            "commit special workspace identity {}: {error}",
+            "commit Special Desktop identity {}: {error}",
             path.display()
         ))
     })?;
@@ -116,7 +116,7 @@ fn clear_in(data_dir: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(Error::desktop(format!(
-            "remove special workspace identity {}: {error}",
+            "remove Special Desktop identity {}: {error}",
             path.display()
         ))),
     }

@@ -11,8 +11,8 @@ WinShort remains a resident native Windows utility. The primary user-facing surf
 | Window | User32 overlapped window, DWM rounded chrome, `WinShort.ControlCenter` class |
 | Rendering | Direct2D `ID2D1HwndRenderTarget` with DirectWrite text |
 | Typography | Segoe UI Variable Text with Segoe UI fallback |
-| Overlay | Existing WIC/DIB layered window; no activation, taskbar, or Alt-Tab entry |
-| Pickers | Existing native LISTBOX popup with keyboard selection and generation-safe teardown |
+| Overlay | DWM system backdrop via `DWMWA_SYSTEMBACKDROP_TYPE`/`DWMSBT_TRANSIENTWINDOW` with a Direct2D `ID2D1HwndRenderTarget`; opaque accessible fallback |
+| Pickers | Temporary `WS_CHILD` host with a native LISTBOX, keyboard selection, and generation-safe teardown |
 | Accessibility | Custom UI Automation fragment provider with a snapshot/action boundary |
 | State | Cached event-driven runtime snapshot plus typed configuration draft for risky display work |
 
@@ -36,27 +36,28 @@ Control Center
 
 Diagnostics & Support remains a separate native owner-drawn window because it has a dense read-only technical surface and its existing support actions are already isolated safely.
 
-The shell starts at 960 × 660 DIP with a 760 × 540 DIP minimum. A fixed navigation rail and top search bar remain visible while the selected page scrolls independently. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; vector line icons are secondary scanning aids.
+The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dimensions. A fixed navigation rail, an 80 DIP sidebar brand row, a single custom top-chrome row, and page content remain stable while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. Navigation begins 8 DIP below the brand row without an extra title band. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
 
-`src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, desktop-strip, slider-cluster, and icon vocabulary.
+`src/ui/control_center.rs` is the feature facade; its private modules separate state, commands, presentation and native message handling. `src/ui/layout.rs` exposes the shared element model and domain page builders used by painting, hit testing, focus traversal and UI Automation. `src/ui/controls.rs` exposes stateless control families. See [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md) for dependency direction, native ownership and state invariants.
 
 ## Design tokens
 
 `src/ui/theme.rs::UiTokens` centralizes the shell geometry and spacing language:
 
 - 216 DIP navigation rail;
-- 80 DIP top bar;
 - 34 DIP status footer;
 - 32 DIP page margins;
-- 92 DIP page headers and 72 DIP section headers with independent line boxes;
+- 40 DIP single top-chrome row with one 44 × 32 DIP Close hit target and a blank draggable caption gap; the sidebar brand remains in its separate 80 DIP row;
+- 92 DIP page headers and 88 DIP section headers; non-page headings share one 20 DIP inter-section breathing-room token;
+- 12 DIP section-content gap before a section's first control and 8 DIP ROW_GAP between sibling rows/cards;
 - 58 DIP setting rows with an 8 DIP rhythm;
-- 7–12 DIP control/card radii;
-- 184 DIP shortcut keycaps and 206 DIP picker controls;
+- one shared 206 DIP right-side control column for dropdowns, keycaps, and equivalent value controls, with a compact 136 DIP Monitor variant for the split Overlay status row;
+- 32 DIP native picker rows with GDI-metric-sized text envelopes;
 - compact slider tracks sized from the content column rather than the window edge.
 
 All coordinates are 96-DPI logical units. The renderer retargets Direct2D/DirectWrite to the window's current PMv2 DPI. The visual system uses the existing light/dark semantic theme pairs and high-contrast system pairs.
 
-Every shared interactive control has idle, hover, pressed, focus, and disabled treatment. Focus is a visible outline rather than a color-only state. Shadows are disabled automatically in high contrast.
+Every shared interactive control has idle, hover, pressed, keyboard-visible focus, and disabled treatment. Pointer focus remains available to UI Automation and keyboard navigation but does not add a heavy painted ring. Shadows are disabled automatically in high contrast.
 
 ## Page experience
 
@@ -67,11 +68,13 @@ Home answers “What is WinShort doing right now?” with real cached runtime st
 - current speaker name and mute/volume status;
 - current microphone name and mute/input-volume status;
 - current normal desktop when the native backend can resolve it;
-- Special Workspace state (`Ready`, `Off`, or `Unavailable`);
-- previous-desktop and Special quick actions;
+- Special Desktop state (`Available`, `Off`, or `Unavailable`; normal content is centered without a redundant status badge);
+- previous-desktop and Special Desktop quick actions;
 - selected display profile summary without claiming that it matches the active topology;
 - shortcut count and conflict health;
 - degraded subsystem notice with a Details route to Diagnostics.
+
+Home actions use `Choose` only for cards that open a device picker and `Open` for navigation; Special Desktop uses `Enable` only when its master switch is off.
 
 The page does not display endpoint identifiers, roles, GUIDs, HRESULTs, or backend names.
 
@@ -80,22 +83,21 @@ The page does not display endpoint identifiers, roles, GUIDs, HRESULTs, or backe
 Shortcuts are grouped by actions:
 
 - Audio: Mute microphone, Mute speakers, Next microphone, Next speaker, Mute current app, and current-app volume up/down;
-- Workspaces: Desktop 1–9, Previous desktop, Move window to Special, and Open / close Special;
+- Workspaces: Desktop 1–9, Previous desktop, Move window to Special Desktop, and Open / close Special Desktop;
 - Display profiles: shortcut for the selected profile.
 
-Selecting a shortcut enters the existing global capture mode. Captured chords are validated against the canonical conflict and reserved-family rules, persisted through the atomic config path, and published as one coherent runtime change. Escape cancels capture. A failed save restores the previous draft and reports a human recovery message; the hook is not reinstalled.
+Each shortcut card exposes its keycap, an Enable/Disable action, and an explicit Unassign action. Selecting the keycap enters the existing global capture mode. Disabled shortcuts keep their chord so they can be re-enabled without recording again. Captured chords are validated against the canonical conflict and reserved-family rules, persisted through the atomic config path, and published as one coherent runtime change. Escape cancels capture. A failed save restores the previous draft and reports a human recovery message; the hook is not reinstalled.
 
 ### Audio
 
-Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. Device choices use a presentation-layer label: `Follow Windows default` is distinct from an explicit endpoint that happens to be the current default; opaque endpoint strings stay internal.
-
+Audio is divided into Speakers, Microphones, and Current app audio. Current speaker/microphone values come from cached worker state and current default metadata. Every normal control uses one canonical primary endpoint name (`GS25F2`, `SAMSUNG`, `SIMGOT EW300 DSP`); adapter/driver suffixes remain available only through accessibility/diagnostic detail. The speaker and microphone pickers expose only active real endpoints; selecting one changes the Windows system default through the audio worker. The selected row itself identifies the current endpoint, so the Control Center does not add redundant default/explicit badges. System speaker/microphone mute and volume feedback is left to Windows instead of stacking a duplicate WinShort OSD. Opaque endpoint strings and the internal follow-default binding stay out of the picker.
 Next speaker and Next microphone use three mutually exclusive modes: all available devices, selected devices, or don't cycle. Selecting the middle mode progressively reveals a real device checkbox list. The native LISTBOX fallback uses the same mode model and preserves `None`, explicit endpoint sets, and `Some(empty)` semantics.
 
-Current app audio explains that WinShort itself is excluded: users switch to another app before controlling its sessions. Windows default roles remain available in Advanced and are enabled only while the corresponding direction follows the Windows default.
+Current app audio explains that WinShort itself is excluded: users switch to another app before controlling its sessions. When no external target is available, the page keeps the current-app shortcut controls without rendering a large empty status card. Windows default roles remain available in Advanced and are enabled only while the corresponding direction follows the Windows default.
 
 ### Workspaces
 
-The page starts with a compact visual strip of the runtime normal desktops when the backend provides a count. Each item is an ordinal status/switch target; Special Workspace is never included. One master Workspace shortcuts switch owns the dependent desktop and Special actions. When it is off, the page explains the dependency and exposes the master switch rather than dimming a wall of dead rows. Special Workspace has its own readiness surface and keeps its configured action keycaps nearby.
+The page configures workspace behavior only. Numbered desktop switching remains available through the configured 1–9 shortcut family, while Home may show the current normal desktop. One master Workspace shortcuts switch owns the dependent desktop and Special actions. When it is off, the page explains the dependency and exposes disabled Special shortcut cards. Special Desktop is a normal heading with its description followed by the Move window to Special Desktop and Open / close Special Desktop cards; no desktop switcher strip or standalone status card is rendered.
 
 ### Displays
 
@@ -112,19 +114,23 @@ Output/topology edits remain local until Test and Keep. Moving between steps nev
 
 ### Overlay
 
-Overlay has a visual schematic preview and concise controls:
+Overlay uses one fixed side-by-side placement area at the supported Control Center size:
 
-- enabled;
-- System, Light, or Dark appearance;
+- the monitor preview sits beside Position's 3×3 selector;
+- Preview and Position use the same column width, height, top edge, and bottom edge;
+- the Position heading is compact, with no explanatory description beneath it;
+- the monitor frame itself is the preview surface; there is no outer preview card around it;
+- a same-row, equal-width pair for Show status overlay and Monitor;
 - a 3×3 position grid with accessible Top left through Bottom right cells;
-- monitor;
-- Show Windows audio changes;
+- Overlay style: Follow Windows, Light, or Dark for the status card;
 - Small/Normal/Large size;
 - Low/Normal/High opacity;
 - Short/Normal/Long duration;
 - Show on screen.
 
-The schematic preview moves and scales the draft card with position, size, appearance, and opacity. `Show on screen` sends the edited `OverlayCfg` to the existing layered overlay without persisting or replacing the live `ConfigHandle`; exact slider ranges remain available through truthful UI Automation RangeValue semantics.
+Monitor targeting exposes only Primary and Cursor position. The preview derives its simulated monitor ratio from the selected work area, using the monitor containing the pointer for Cursor position. Missing monitor information uses a 16:9 fallback. The monitor is fit inside bounded content geometry without stretching, and the frame contains only a minimal status-card silhouette whose normalized placement matches runtime overlay placement; it has no illustrative text. The Monitor helper uses concise `Overlay location` copy so the complete description remains visible beside its selector. `Show on screen` sends the edited `OverlayCfg` without saving it.
+
+The runtime overlay is a non-layered, click-through HWND rendered through Direct2D and backed by documented DWM Desktop Acrylic: `DwmSetWindowAttribute` with `DWMWA_SYSTEMBACKDROP_TYPE` and `DWMSBT_TRANSIENTWINDOW`, plus `DwmExtendFrameIntoClientArea` for the client surface. Overlay opacity scales the drawn card over the blurred DWM material. Windows 10/API failure, High Contrast, and `SPI_GETDISABLEOVERLAPPEDCONTENT` fall back to a fully opaque accessible surface. Topmost, no-activate, tool-window, monitor placement, DPI, and bounded event-driven animation remain intact.
 
 ### System
 
@@ -154,7 +160,7 @@ It is not a dump of runtime diagnostics. Dense implementation state remains in D
 
 The shell search box is a local, case-insensitive deterministic index in `src/ui/navigation.rs`. Descriptors contain human titles, keywords, page, section, and target control. Search results rank exact/title matches before keyword matches, prefer common user destinations, and are capped to a small result set.
 
-Typing is handled by the owner-drawn shell; UI Automation exposes the search control as an editable Edit/ValuePattern node. Enter opens the first result, while selecting a result navigates to its page and stable target. No network, telemetry, or raw config-key labels are involved.
+Typing is handled by the owner-drawn shell; a focused Search field shows a real text caret that blinks while the Control Center owns editing focus. UI Automation exposes the search control as an editable Edit/ValuePattern node. Enter opens the first result, while selecting a result navigates to its page and stable target. No network, telemetry, or raw config-key labels are involved.
 
 ## First run
 
@@ -194,21 +200,18 @@ The Control Center preserves the established custom provider rules:
 - toggles and device checkbox options expose TogglePattern;
 - mutually exclusive audio modes, topology choices, and overlay positions expose RadioButton/SelectionItem semantics;
 - sliders expose RangeValuePattern;
-- desktop-strip items expose named Button/Invoke targets;
 - picker triggers remain Button/Invoke with read-only displayed values;
-- unsupported patterns return successful null/empty results rather than fabricated interfaces;
+- the custom titlebar Close node remains a UIA Button with truthful Invoke semantics;
 - stale providers return `UIA_E_ELEMENTNOTAVAILABLE`;
 - UIA reads consume immutable snapshots only;
 - actions are posted back to the Control Center HWND;
 - UIA event delivery is deferred until state borrows are released;
 - focus is repaired when a mutation disables the focused control;
-- native picker LISTBOX focus is distinct from logical shell focus;
-- popup teardown is idempotent and happens before the owner hides;
+- native picker LISTBOX focus is distinct from logical shell focus, while the child host remains under the active Control Center top-level window;
+- child picker teardown is idempotent and happens before the owner hides;
 - no child HWND is invented for painted Control Center rows.
 
-The owner window remains PMv2-aware, responds to `WM_DPICHANGED`, persists/restores reachable bounds, and stops its timer when motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; the layered runtime overlay retains its established reduced-motion policy.
-
-## Diagnostics & Support
+The owner window is PMv2-aware, fixed-size, and uses a blank custom top-chrome row with a Close hit target and DWM rounded corners. It responds to `WM_DPICHANGED` by preserving the logical client size, persists/restores only its reachable position, hides to the tray on Close, and stops its timer when hover/toggle motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; scrolling is always direct. The DWM-backed overlay retains its reduced-motion policy and falls back to an opaque surface when acrylic is unavailable or disabled.
 
 Diagnostics remains a separate native window backed by `App::diagnostics_snapshot`. It preserves Copy Diagnostics, Open Logs, Support Bundle, Self-Test, sanitized endpoint/path/config projections, bounded log collection, and no telemetry. The Home and System pages route friendly Details actions there instead of leaking technical state into normal controls.
 

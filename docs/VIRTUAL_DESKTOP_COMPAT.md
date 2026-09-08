@@ -111,18 +111,18 @@ corroborate the application-view move path and workspace-management slots used b
 * Native window move → `GetViewForHwnd` resolves the foreign HWND, `CanViewMoveDesktops` rejects
   pinned/unmovable views, then `MoveViewToDesktop` performs the move. No synthetic-input fallback
   exists for moving a window.
-* The dedicated Special Workspace is named **`WinShort Special Workspace`** and excluded from
+* The dedicated Special Desktop is named **`WinShort Special Desktop`** and excluded from
   WinShort's numbered Desktop 1–9 ordinals. WinShort keeps it at the end of Shell ordering; when
   normal desktops are created after it, `MoveDesktop` re-pins Special to the tail before a
   numbered target is resolved. This keeps Windows' visible Desktop 1..N names aligned with
   WinShort's logical 1..N normal-desktop numbering.
-* The Special Workspace GUID is persisted as `%LOCALAPPDATA%\WinShort\special-workspace.guid`.
+* The Special Desktop GUID is persisted as `%LOCALAPPDATA%\WinShort\special-workspace.guid`.
   On process startup or Shell-proxy rebuild, WinShort adopts that desktop only if the exact GUID
   is still present in `GetDesktops`. A hard kill or Windows reboot therefore reclaims the same
-  workspace instead of creating another one. If the user deletes that desktop externally,
-  reconciliation clears both runtime and persisted identity; the next Special Workspace action
+  desktop instead of creating another one. If the user deletes that desktop externally,
+  reconciliation clears both runtime and persisted identity; the next Special Desktop action
   creates a new one. The desktop name is presentation only and is never used as identity.
-* Disabling the Special Workspace feature or an orderly WinShort shutdown still removes the
+* Disabling the Special Desktop feature or an orderly WinShort shutdown still removes the
   dedicated desktop with a normal-desktop fallback and then clears the persisted GUID. Persistence
   is crash/reboot recovery, not a reason to leave a workspace behind after successful teardown.
 * Unknown build or native setup failure → status `UnsupportedBuild { build }`/`Failed`,
@@ -190,17 +190,17 @@ it unchanged.
 | `SwitchDesktop` 1↔2 | registry `CurrentVirtualDesktop` GUID changed both ways |
 | Startup log | `virtual desktop backend: Native Shell` |
 | Win+1..9 routing | binding table → `SwitchDesktop(n)` → Native Shell |
-| Cross-process Special Workspace move | PASS — send → enter → return on real Windows after application-view fix |
+| Cross-process Special Desktop move | PASS — send → enter → return on real Windows after application-view fix |
 | Virtual Desktop GUID reboot persistence | PASS — 10/10 GUIDs unchanged and in the same order across a Windows reboot |
-| Special Workspace naming + tail pinning | PASS — workspace named correctly; two manually-created desktops and Win+9 both caused Special to re-pin to the tail while normal ordinals stayed aligned |
-| Abrupt-exit GUID reclaim | PASS — `Stop-Process -Force` → relaunch → Toggle reused the existing workspace without increasing desktop count |
-| External workspace deletion recovery | PASS — deleting Special in Task View caused the next Toggle to discard the stale GUID, create exactly one replacement, and pin it to the tail |
+| Special Desktop naming + tail pinning | PASS — desktop named correctly; two manually-created desktops and Win+9 both caused Special to re-pin to the tail while normal ordinals stayed aligned |
+| Abrupt-exit GUID reclaim | PASS — `Stop-Process -Force` → relaunch → Toggle reused the existing desktop without increasing desktop count |
+| External desktop deletion recovery | PASS — deleting Special in Task View caused the next Toggle to discard the stale GUID, create exactly one replacement, and pin it to the tail |
 | Orderly exit / feature disable cleanup | PASS — Special was removed and contained windows survived on the selected normal fallback desktop |
-| Multiple Special Workspace windows | PASS — multiple assigned windows remained together and survived enter/leave transitions |
+| Multiple Special Desktop windows | PASS — multiple assigned windows remained together and survived enter/leave transitions |
 | Previous Desktop isolation | PASS — `VD1 → VD3 → VDS → Toggle out → Previous Desktop` returned through `VDS → VD3 → VD1`, leaving the normal VD1↔VD3 history intact |
 | Fallback path | compiled in; active only when native setup fails (fail closed) |
 
-Original switching checks were tested 2026-08-24. Cross-process Special Workspace movement,
-GUID reboot persistence, naming/tail ordering, abrupt-exit reclaim, external-deletion recovery,
-cleanup, multiple-window behavior, and Previous Desktop isolation were manually verified on
+Original switching checks were tested 2026-08-24. Cross-process Special Desktop movement,
+GUID reboot persistence, naming/tail ordering, abrupt-reclaim, external-deletion recovery,
+cleanup, multiple-desktop behavior, and Previous Desktop isolation were manually verified on
 2026-08-31 on the whitelisted 26200 build family.

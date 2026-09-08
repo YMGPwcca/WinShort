@@ -152,17 +152,17 @@ static SEARCH_ITEMS: &[SearchItem] = &[
         target: ElementId::PreviousDesktopHotkey,
     },
     SearchItem {
-        title: "Move window to Special shortcut",
-        keywords: "special workspace window move away",
+        title: "Move window to Special Desktop shortcut",
+        keywords: "special desktop workspace window move away",
         page: Page::Workspaces,
-        section: "Special Workspace",
+        section: "Special Desktop",
         target: ElementId::AssignScratchpadHotkey,
     },
     SearchItem {
-        title: "Open / close Special shortcut",
-        keywords: "special workspace open close toggle return",
+        title: "Open / close Special Desktop shortcut",
+        keywords: "special desktop workspace open close toggle return",
         page: Page::Workspaces,
-        section: "Special Workspace",
+        section: "Special Desktop",
         target: ElementId::ToggleScratchpadHotkey,
     },
     SearchItem {
@@ -173,10 +173,10 @@ static SEARCH_ITEMS: &[SearchItem] = &[
         target: ElementId::NewDisplayProfile,
     },
     SearchItem {
-        title: "Overlay appearance",
-        keywords: "status card toast hud light dark system",
+        title: "Overlay style",
+        keywords: "status card toast hud light dark system appearance",
         page: Page::Overlay,
-        section: "Appearance",
+        section: "Overlay",
         target: ElementId::OverlayAppearance,
     },
     SearchItem {
@@ -311,5 +311,45 @@ mod tests {
             assert!(!item.title.contains("scratchpad"));
             assert!(!item.keywords.contains("scratchpad"));
         }
+    }
+
+    #[test]
+    fn workspaces_product_copy_uses_special_desktop_terminology() {
+        let forbidden = ["special", "workspace"].join(" ");
+        let layout = crate::ui::layout::SettingsLayout::build_shell(
+            960.0,
+            900.0,
+            0.0,
+            Page::Workspaces,
+            "",
+            0,
+            None,
+        );
+        let mut copy = vec![Page::Workspaces.description().to_string()];
+        copy.extend(
+            search_items()
+                .iter()
+                .filter(|item| item.page == Page::Workspaces)
+                .flat_map(|item| [item.title, item.section, item.keywords])
+                .map(str::to_string),
+        );
+        copy.extend(
+            layout
+                .sections
+                .iter()
+                .flat_map(|section| [section.title.clone(), section.description.clone()]),
+        );
+        copy.extend(
+            layout
+                .elements
+                .iter()
+                .flat_map(|element| [element.label.clone(), element.description.clone()]),
+        );
+        assert!(copy
+            .iter()
+            .all(|text| !text.to_ascii_lowercase().contains(&forbidden)));
+        assert!(search("special desktop")
+            .iter()
+            .any(|result| result.item.page == Page::Workspaces));
     }
 }

@@ -490,7 +490,7 @@ impl InternalBackend {
     ) -> std::result::Result<(), DesktopError> {
         if id == fallback_id {
             return Err(DesktopError::NavigationUnavailable(
-                "special workspace fallback cannot be the workspace itself".into(),
+                "Special Desktop fallback cannot be the desktop itself".into(),
             ));
         }
         let desktop = self.desktop_for_id(id)?;

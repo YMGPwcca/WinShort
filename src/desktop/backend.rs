@@ -53,7 +53,7 @@ pub struct BackendStatus {
     pub active: BackendKind,
     pub desktop_count: Option<usize>,
     /// Zero-based current normal desktop when the native backend can resolve it.
-    /// The Special Workspace is excluded from this ordinal.
+    /// The Special Desktop is excluded from this ordinal.
     pub current_desktop: Option<usize>,
     /// Backend that actually completed the most recent switch, including via
     /// fallback (#21). `None` until the first successful switch.
