@@ -65,7 +65,7 @@ pub enum EngineOutcome {
     Dispatch {
         action: HotkeyAction,
         /// True when the shell has observed nothing but a bare Win-down so far;
-        /// unless a harmless chord-dirtying injection happens before Win release,
+        /// unless the non-semantic chord-dirtying injection happens before Win release,
         /// the shell will pop the Start menu (spec §17).
         dirty_win_chord: bool,
     },

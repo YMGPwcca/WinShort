@@ -243,7 +243,8 @@ D modifier-release permutations never dispatch, E reset from any reachable prefi
 state.
 
 Start-menu countermeasure: `dirty_win_chord` flag posted with the action; main-thread
-`dispatcher::dirty_win_chord()` injects the VK_CONTROL pair (KEYBOARD_HOOK_DESIGN.md).
+`dispatcher::dirty_win_chord()` injects exactly one `INPUT_KEYBOARD` dummy key-up
+(`wVk = 0xFF`, `KEYEVENTF_KEYUP`) (KEYBOARD_HOOK_DESIGN.md).
 
 ## B. Binding table / parsing (AUTOMATED IN LOCAL GATE)
 
