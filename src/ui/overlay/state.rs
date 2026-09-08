@@ -31,7 +31,8 @@ pub(super) struct OverlayState {
     pub(super) base_position: POINT,
     pub(super) phase: Phase,
     pub(super) phase_started: Instant,
-    pub(super) hold_until: Instant,
+    /// Expiry for transient content; sticky ownership prunes rows instead of hiding.
+    pub(super) transient_until: Option<Instant>,
     pub(super) last_presented: Instant,
     pub(super) dpi: u32,
     pub(super) last_target_monitor: Option<String>,
@@ -57,7 +58,7 @@ impl OverlayState {
             base_position: POINT::default(),
             phase: Phase::Hidden,
             phase_started: now,
-            hold_until: now,
+            transient_until: None,
             last_presented: now,
             dpi: 96,
             last_target_monitor: None,
@@ -81,8 +82,12 @@ impl OverlayState {
         let notifications = config.notifications;
         self.config = config;
         let now = Instant::now();
+        let sticky_owner_visible =
+            self.phase != Phase::Hidden && self.model.sticky_owner().is_some();
         let coalesce = self.phase != Phase::Hidden
-            && now.duration_since(self.last_presented) <= Duration::from_millis(COALESCE_WINDOW_MS);
+            && (now.duration_since(self.last_presented)
+                <= Duration::from_millis(COALESCE_WINDOW_MS)
+                || sticky_owner_visible);
         self.model = if model.bypass_categories {
             model
         } else if coalesce {
@@ -115,13 +120,17 @@ impl OverlayState {
             appearance_elapsed_ms,
             self.motion,
             coalesce,
+            self.model.lifetime,
+            self.model.has_transient_rows(),
             self.config.duration_ms as u64,
         );
         self.phase = timing.phase;
         if timing.restart_phase {
             self.phase_started = now;
         }
-        self.hold_until = now + Duration::from_millis(timing.hold_after_now_ms);
+        self.transient_until = timing
+            .hold_after_now_ms
+            .map(|duration| now + Duration::from_millis(duration));
         Ok(Some(self.frame_plan()))
     }
 
@@ -142,10 +151,14 @@ impl OverlayState {
 
     pub(super) fn timer_interval(&self) -> u32 {
         if self.motion == MotionPolicy::Reduced {
-            self.hold_until
-                .saturating_duration_since(Instant::now())
-                .as_millis()
-                .clamp(1, u32::MAX as u128) as u32
+            self.transient_until
+                .map(|transient_until| {
+                    transient_until
+                        .saturating_duration_since(Instant::now())
+                        .as_millis()
+                        .clamp(1, u32::MAX as u128) as u32
+                })
+                .unwrap_or(TIMER_MS)
         } else {
             TIMER_MS
         }
@@ -208,8 +221,19 @@ impl OverlayState {
 
     pub(super) fn prepare_tick(&mut self) -> Option<TickPlan> {
         let now = Instant::now();
+        if self.phase != Phase::Hidden
+            && self
+                .transient_until
+                .is_some_and(|transient_until| now >= transient_until)
+            && self.model.sticky_owner().is_some()
+        {
+            return Some(TickPlan::PruneToStickyOwner);
+        }
         if self.motion == MotionPolicy::Reduced {
-            if now >= self.hold_until {
+            if self
+                .transient_until
+                .is_some_and(|transient_until| now >= transient_until)
+            {
                 self.phase = Phase::Hidden;
                 return Some(TickPlan::Hide);
             }
@@ -223,7 +247,10 @@ impl OverlayState {
                 }
             }
             Phase::Holding => {
-                if now >= self.hold_until {
+                if self
+                    .transient_until
+                    .is_some_and(|transient_until| now >= transient_until)
+                {
                     self.phase = Phase::Leaving;
                     self.phase_started = now;
                 }
@@ -237,6 +264,38 @@ impl OverlayState {
             Phase::Hidden => return None,
         }
         Some(TickPlan::Frame(self.frame_plan()))
+    }
+
+    pub(super) fn prepare_prune_to_sticky_owner(
+        &mut self,
+        monitor: Option<crate::platform::monitor::MonitorGeometry>,
+    ) -> Option<ShowPlan> {
+        self.model = self.model.clone().retain_sticky_owner();
+        if self.model.rows.is_empty() {
+            self.transient_until = None;
+            self.phase = Phase::Hidden;
+            return None;
+        }
+
+        let now = Instant::now();
+        self.transient_until = None;
+        self.phase = Phase::Holding;
+        self.phase_started = now;
+        self.dpi =
+            crate::platform::dpi::effective_render_dpi(monitor.as_ref().map(|value| value.dpi));
+        self.last_target_monitor = monitor.as_ref().map(|value| value.device_name.clone());
+        self.last_render_dpi = Some(self.dpi);
+        self.last_shown = Some(SystemTime::now());
+        self.refresh_palette();
+        self.surface_size =
+            surface_geometry(self.config.scale, self.model.rows.len()).pixel_size(self.dpi);
+        self.base_position = position_for(
+            monitor.map(|value| value.work).unwrap_or(RECT_FALLBACK),
+            self.surface_size,
+            self.config.position,
+            self.dpi,
+        );
+        Some(self.frame_plan())
     }
 
     pub(super) fn frame_values(&self) -> (f32, f32) {

@@ -1,5 +1,6 @@
 //! Pure overlay timing and coalescing policy.
 
+use super::model::OverlayLifetime;
 use crate::platform::visual::SystemVisualPreferences;
 use windows::Win32::Foundation::{POINT, SIZE};
 
@@ -29,7 +30,7 @@ pub(super) fn motion_policy(preferences: SystemVisualPreferences) -> MotionPolic
 pub(super) struct ShowTiming {
     pub(super) phase: Phase,
     pub(super) restart_phase: bool,
-    pub(super) hold_after_now_ms: u64,
+    pub(super) hold_after_now_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +53,7 @@ pub(super) struct WindowRegion {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum TickPlan {
     Hide,
+    PruneToStickyOwner,
     Frame(ShowPlan),
 }
 
@@ -75,38 +77,56 @@ pub(super) fn timing_after_show(
     appearance_elapsed_ms: u64,
     motion: MotionPolicy,
     coalesced: bool,
+    lifetime: OverlayLifetime,
+    has_transient_rows: bool,
     duration_ms: u64,
 ) -> ShowTiming {
     if motion == MotionPolicy::Reduced {
         return ShowTiming {
             phase: Phase::Holding,
             restart_phase: true,
-            hold_after_now_ms: duration_ms,
+            hold_after_now_ms: hold_after(lifetime, has_transient_rows, duration_ms),
         };
     }
     if !coalesced {
         return ShowTiming {
             phase: Phase::Appearing,
             restart_phase: true,
-            hold_after_now_ms: APPEAR_MS + duration_ms,
+            hold_after_now_ms: hold_after(lifetime, has_transient_rows, APPEAR_MS + duration_ms),
         };
     }
     match phase {
         Phase::Appearing => ShowTiming {
             phase: Phase::Appearing,
             restart_phase: false,
-            hold_after_now_ms: APPEAR_MS.saturating_sub(appearance_elapsed_ms) + duration_ms,
+            hold_after_now_ms: hold_after(
+                lifetime,
+                has_transient_rows,
+                APPEAR_MS.saturating_sub(appearance_elapsed_ms) + duration_ms,
+            ),
         },
         Phase::Holding => ShowTiming {
             phase: Phase::Holding,
             restart_phase: false,
-            hold_after_now_ms: duration_ms,
+            hold_after_now_ms: hold_after(lifetime, has_transient_rows, duration_ms),
         },
         Phase::Leaving | Phase::Hidden => ShowTiming {
             phase: Phase::Holding,
             restart_phase: true,
-            hold_after_now_ms: duration_ms,
+            hold_after_now_ms: hold_after(lifetime, has_transient_rows, duration_ms),
         },
+    }
+}
+
+fn hold_after(
+    lifetime: OverlayLifetime,
+    has_transient_rows: bool,
+    duration_ms: u64,
+) -> Option<u64> {
+    if lifetime.is_sticky() && !has_transient_rows {
+        None
+    } else {
+        Some(duration_ms)
     }
 }
 

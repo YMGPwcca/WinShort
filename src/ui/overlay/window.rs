@@ -253,10 +253,38 @@ impl OverlayWindow {
         render_prepared_frame(cell, self.hwnd, plan)
     }
 
+    pub(crate) fn refresh_notifications(&self, config: OverlayCfg) -> Result<()> {
+        if !config.enabled {
+            self.hide();
+            return Ok(());
+        }
+        let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
+            return Err(Error::internal("overlay state missing"));
+        };
+        let (active, changed, model) = {
+            let state = cell.borrow();
+            (
+                state.phase != Phase::Hidden,
+                state.config.notifications != config.notifications,
+                state.model.clone().filter_enabled(config.notifications),
+            )
+        };
+        if !active || !changed {
+            return Ok(());
+        }
+        if model.rows.is_empty() {
+            self.hide();
+            return Ok(());
+        }
+        self.show(model, config)
+    }
+
     pub(crate) fn hide(&self) {
         if let Some(cell) = unsafe { win::state_cell::<OverlayState>(self.hwnd) } {
             {
-                cell.borrow_mut().phase = Phase::Hidden;
+                let mut state = cell.borrow_mut();
+                state.phase = Phase::Hidden;
+                state.transient_until = None;
             }
         }
         apply_hide_window(self.hwnd);

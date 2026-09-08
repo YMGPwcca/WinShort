@@ -51,6 +51,24 @@ pub(super) unsafe fn handle_timer(cell: &std::cell::RefCell<OverlayState>, hwnd:
         let plan = prepare_state_plan(cell, |state| state.prepare_tick());
         match plan {
             Some(TickPlan::Hide) => apply_hide_window(hwnd),
+            Some(TickPlan::PruneToStickyOwner) => {
+                let monitor_choice = { cell.borrow().config.monitor.clone() };
+                let monitor = select_monitor(monitor_choice);
+                let plan =
+                    prepare_state_plan(cell, |state| state.prepare_prune_to_sticky_owner(monitor));
+                match plan {
+                    Some(plan) => {
+                        let apply_region = cell.borrow().requires_window_region();
+                        if let Err(error) = apply_frame_plan(hwnd, plan, apply_region) {
+                            crate::warn_!("overlay sticky-owner prune placement failed: {error}");
+                        }
+                        if let Err(error) = render_prepared_frame(cell, hwnd, plan) {
+                            crate::warn_!("overlay sticky-owner prune render failed: {error}");
+                        }
+                    }
+                    None => apply_hide_window(hwnd),
+                }
+            }
             Some(TickPlan::Frame(plan)) => {
                 if let Err(error) = apply_frame_plan(hwnd, plan, false) {
                     crate::warn_!("overlay frame placement failed: {error}");

@@ -166,6 +166,15 @@ impl App {
                                 || config.virtual_desktops.scratchpad_toggle.is_some()),
                     );
                 }
+                if !config.overlay.enabled {
+                    if let Some(overlay) = &self.overlay {
+                        overlay.hide();
+                    }
+                } else if let Some(overlay) = &self.overlay {
+                    if let Err(error) = overlay.refresh_notifications(config.overlay.clone()) {
+                        crate::warn_!("overlay notification refresh failed: {error}");
+                    }
+                }
                 crate::info!("config applied (seq {seq}, origin {:?})", stamp.origin);
                 self.refresh_settings_runtime();
             }
@@ -281,8 +290,8 @@ impl App {
                 self.microphone_seen = true;
                 self.refresh_settings_runtime();
                 if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::microphone_row(&self.microphone_state),
+                    self.show_overlay_model(crate::ui::overlay::microphone_overlay_model(
+                        &self.microphone_state,
                     ));
                 }
             }

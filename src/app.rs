@@ -1314,6 +1314,9 @@ impl App {
         config: crate::config::model::OverlayCfg,
     ) {
         if !config.enabled {
+            if let Some(overlay) = &self.overlay {
+                overlay.hide();
+            }
             return;
         }
         #[cfg(test)]
@@ -1920,6 +1923,30 @@ mod shutdown_gate_tests {
             model.rows[0].category,
             Some(crate::config::model::OverlayNotificationCategory::Microphone)
         );
+        assert!(model.is_sticky());
+        assert_eq!(model.rows[0].title, "Microphone muted");
+    }
+
+    #[test]
+    fn winshort_microphone_unmute_action_is_transient_and_explicit() {
+        let mut app = test_app();
+        app.route_event(AppEvent::MicrophoneStateChanged {
+            state: crate::audio::AudioState::Muted { volume_pct: 20 },
+            origin: AudioEventOrigin::WinShortAction(44),
+        });
+        app.test_last_overlay_model = None;
+
+        app.route_event(AppEvent::MicrophoneStateChanged {
+            state: crate::audio::AudioState::Active { volume_pct: 20 },
+            origin: AudioEventOrigin::WinShortAction(45),
+        });
+
+        let model = app
+            .test_last_overlay_model
+            .take()
+            .expect("microphone unmute action should show an overlay");
+        assert!(!model.is_sticky());
+        assert_eq!(model.rows[0].title, "Microphone unmuted");
     }
 
     #[test]
@@ -1951,6 +1978,7 @@ mod shutdown_gate_tests {
             model.rows[0].category,
             Some(crate::config::model::OverlayNotificationCategory::Speaker)
         );
+        assert!(!model.is_sticky());
     }
 
     #[test]
@@ -2044,13 +2072,16 @@ mod shutdown_gate_tests {
         let mut app = test_app();
         let mut config = crate::config::Config::default().overlay;
         config.enabled = false;
-        app.show_overlay_model_with_config(
-            crate::ui::overlay::OverlayModel::single(crate::ui::overlay::microphone_row(
-                &crate::audio::AudioState::Muted { volume_pct: 10 },
-            )),
-            config,
-        );
-        assert!(app.test_last_overlay_model.is_none());
+        for state in [
+            crate::audio::AudioState::Muted { volume_pct: 10 },
+            crate::audio::AudioState::Active { volume_pct: 10 },
+        ] {
+            app.show_overlay_model_with_config(
+                crate::ui::overlay::microphone_overlay_model(&state),
+                config.clone(),
+            );
+            assert!(app.test_last_overlay_model.is_none());
+        }
     }
 
     #[test]
@@ -2150,6 +2181,16 @@ mod shutdown_gate_tests {
         });
         assert_eq!(app.status_request_id, None);
         assert_eq!(app.status_overlay_model().rows.len(), 3);
+    }
+
+    #[test]
+    fn status_overlay_is_transient_while_microphone_is_muted() {
+        let mut app = test_app();
+        app.microphone_state = crate::audio::AudioState::Muted { volume_pct: 20 };
+
+        let model = app.status_overlay_model();
+
+        assert!(!model.is_sticky());
     }
 
     #[test]

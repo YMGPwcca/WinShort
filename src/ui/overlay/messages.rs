@@ -44,7 +44,9 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
                 if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() =>
             {
                 {
-                    cell.borrow_mut().phase = Phase::Hidden;
+                    let mut state = cell.borrow_mut();
+                    state.phase = Phase::Hidden;
+                    state.transient_until = None;
                 }
                 apply_hide_window(hwnd);
                 LRESULT(0)

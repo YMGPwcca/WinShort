@@ -1,3 +1,4 @@
+use super::model::OverlayLifetime;
 use super::*;
 use windows::Win32::Foundation::RECT;
 
@@ -156,11 +157,17 @@ fn composition_tint_levels_follow_blur_intensity() {
 
 #[test]
 fn coalescer_replaces_same_icon_and_keeps_deterministic_order() {
-    let current = OverlayModel::from_rows(vec![
-        row(OverlayIcon::Output, "old output"),
-        row(OverlayIcon::Application, "app"),
-    ]);
-    let incoming = OverlayModel::single(row(OverlayIcon::Microphone, "mic"));
+    let current = OverlayModel::from_rows_with_lifetime(
+        vec![
+            row(OverlayIcon::Output, "old output"),
+            row(OverlayIcon::Application, "app"),
+        ],
+        OverlayLifetime::Transient,
+    );
+    let incoming = OverlayModel::single_with_lifetime(
+        row(OverlayIcon::Microphone, "mic"),
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+    );
     let merged = merge_overlay_models(&current, &incoming);
     assert_eq!(
         merged
@@ -181,14 +188,69 @@ fn coalescer_replaces_same_icon_and_keeps_deterministic_order() {
     );
     assert_eq!(replaced.rows.len(), 3);
     assert_eq!(replaced.rows[1].title, "new output");
+    assert!(replaced.is_sticky());
 }
+
+#[test]
+fn repeated_sticky_microphone_updates_replace_one_row_and_keep_sticky_lifetime() {
+    let muted = OverlayModel::single_with_lifetime(
+        row(OverlayIcon::Microphone, "muted"),
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+    );
+    let refreshed = OverlayModel::single_with_lifetime(
+        row(OverlayIcon::Microphone, "still muted"),
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+    );
+
+    let merged = merge_overlay_models(&muted, &refreshed);
+
+    assert_eq!(merged.rows.len(), 1);
+    assert_eq!(merged.rows[0].title, "still muted");
+    assert!(merged.is_sticky());
+}
+
+#[test]
+fn sticky_microphone_owner_prunes_speaker_and_workspace_rows() {
+    for transient_icon in [OverlayIcon::Output, OverlayIcon::Workspace] {
+        let sticky = OverlayModel::from_rows_with_lifetime(
+            vec![
+                row(OverlayIcon::Microphone, "muted"),
+                row(transient_icon, "transient"),
+            ],
+            OverlayLifetime::Sticky(OverlayIcon::Microphone),
+        );
+
+        let pruned = sticky.retain_sticky_owner();
+
+        assert_eq!(pruned.rows.len(), 1);
+        assert_eq!(pruned.rows[0].icon, OverlayIcon::Microphone);
+        assert!(pruned.is_sticky());
+    }
+}
+
+#[test]
+fn unmuted_microphone_update_changes_sticky_lifetime_to_transient() {
+    let muted = OverlayModel::single_with_lifetime(
+        row(OverlayIcon::Microphone, "muted"),
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+    );
+    let unmuted = OverlayModel::single(row(OverlayIcon::Microphone, "unmuted"));
+
+    let merged = merge_overlay_models(&muted, &unmuted);
+
+    assert!(!merged.is_sticky());
+}
+
 #[test]
 fn disabled_notification_categories_are_removed_before_rendering() {
-    let model = OverlayModel::from_rows(vec![
-        row(OverlayIcon::Microphone, "mic"),
-        row(OverlayIcon::Output, "speaker"),
-        row(OverlayIcon::Application, "app"),
-    ]);
+    let model = OverlayModel::from_rows_with_lifetime(
+        vec![
+            row(OverlayIcon::Microphone, "mic"),
+            row(OverlayIcon::Output, "speaker"),
+            row(OverlayIcon::Application, "app"),
+        ],
+        OverlayLifetime::Transient,
+    );
     let notifications = crate::config::model::OverlayNotifications {
         microphone: false,
         ..Default::default()
@@ -208,6 +270,44 @@ fn disabled_notification_categories_are_removed_before_rendering() {
         filtered.rows.iter().map(|row| row.icon).collect::<Vec<_>>(),
         vec![OverlayIcon::Microphone, OverlayIcon::Application]
     );
+}
+
+#[test]
+fn microphone_category_filter_suppresses_muted_and_unmuted_states() {
+    let notifications = crate::config::model::OverlayNotifications {
+        microphone: false,
+        ..Default::default()
+    };
+
+    for state in [
+        crate::audio::AudioState::Muted { volume_pct: 42 },
+        crate::audio::AudioState::Active { volume_pct: 42 },
+    ] {
+        let filtered = microphone_overlay_model(&state).filter_enabled(notifications);
+        assert!(filtered.rows.is_empty());
+        assert!(!filtered.is_sticky());
+    }
+}
+
+#[test]
+fn microphone_filter_removes_sticky_owner_but_keeps_enabled_transient_rows() {
+    let sticky = OverlayModel::from_rows_with_lifetime(
+        vec![
+            row(OverlayIcon::Microphone, "muted"),
+            row(OverlayIcon::Output, "speaker"),
+        ],
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+    );
+    let notifications = crate::config::model::OverlayNotifications {
+        microphone: false,
+        ..Default::default()
+    };
+
+    let filtered = sticky.filter_enabled(notifications);
+
+    assert_eq!(filtered.rows.len(), 1);
+    assert_eq!(filtered.rows[0].icon, OverlayIcon::Output);
+    assert!(!filtered.is_sticky());
 }
 #[test]
 fn explicit_preview_bypasses_notification_categories() {
@@ -239,35 +339,157 @@ fn microphone_row_uses_volume_terminology() {
 
 #[test]
 fn coalesced_timing_preserves_full_settled_hold() {
-    let appearing_early =
-        timing_after_show(Phase::Appearing, 10, MotionPolicy::Animated, true, 1300);
+    let appearing_early = timing_after_show(
+        Phase::Appearing,
+        10,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Transient,
+        true,
+        1300,
+    );
     assert_eq!(appearing_early.phase, Phase::Appearing);
     assert!(!appearing_early.restart_phase);
-    assert_eq!(appearing_early.hold_after_now_ms, 1430);
+    assert_eq!(appearing_early.hold_after_now_ms, Some(1430));
 
-    let appearing_late =
-        timing_after_show(Phase::Appearing, 139, MotionPolicy::Animated, true, 1300);
-    assert_eq!(appearing_late.hold_after_now_ms, 1301);
+    let appearing_late = timing_after_show(
+        Phase::Appearing,
+        139,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Transient,
+        true,
+        1300,
+    );
+    assert_eq!(appearing_late.hold_after_now_ms, Some(1301));
 
-    let holding = timing_after_show(Phase::Holding, 0, MotionPolicy::Animated, true, 1300);
+    let holding = timing_after_show(
+        Phase::Holding,
+        0,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Transient,
+        true,
+        1300,
+    );
     assert_eq!(holding.phase, Phase::Holding);
     assert!(!holding.restart_phase);
-    assert_eq!(holding.hold_after_now_ms, 1300);
+    assert_eq!(holding.hold_after_now_ms, Some(1300));
 
-    let leaving = timing_after_show(Phase::Leaving, 40, MotionPolicy::Animated, true, 1300);
+    let leaving = timing_after_show(
+        Phase::Leaving,
+        40,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Transient,
+        true,
+        1300,
+    );
     assert_eq!(leaving.phase, Phase::Holding);
     assert!(leaving.restart_phase);
-    assert_eq!(leaving.hold_after_now_ms, 1300);
+    assert_eq!(leaving.hold_after_now_ms, Some(1300));
 
-    let reduced = timing_after_show(Phase::Appearing, 10, MotionPolicy::Reduced, true, 1300);
+    let reduced = timing_after_show(
+        Phase::Appearing,
+        10,
+        MotionPolicy::Reduced,
+        true,
+        OverlayLifetime::Transient,
+        true,
+        1300,
+    );
     assert_eq!(reduced.phase, Phase::Holding);
     assert!(reduced.restart_phase);
-    assert_eq!(reduced.hold_after_now_ms, 1300);
+    assert_eq!(reduced.hold_after_now_ms, Some(1300));
 
-    let fresh = timing_after_show(Phase::Hidden, 0, MotionPolicy::Animated, false, 1300);
+    let fresh = timing_after_show(
+        Phase::Hidden,
+        0,
+        MotionPolicy::Animated,
+        false,
+        OverlayLifetime::Transient,
+        true,
+        1300,
+    );
     assert_eq!(fresh.phase, Phase::Appearing);
     assert!(fresh.restart_phase);
-    assert_eq!(fresh.hold_after_now_ms, 1440);
+    assert_eq!(fresh.hold_after_now_ms, Some(1440));
+}
+
+#[test]
+fn sticky_microphone_timing_has_no_auto_hide_deadline() {
+    let timing = timing_after_show(
+        Phase::Holding,
+        0,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+        false,
+        1300,
+    );
+
+    assert_eq!(timing.phase, Phase::Holding);
+    assert_eq!(timing.hold_after_now_ms, None);
+}
+
+#[test]
+fn sticky_microphone_with_transient_rows_uses_configured_expiry() {
+    let timing = timing_after_show(
+        Phase::Holding,
+        0,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+        true,
+        1300,
+    );
+
+    assert_eq!(timing.hold_after_now_ms, Some(1300));
+}
+
+#[test]
+fn repeated_transient_updates_refresh_sticky_owner_expiry() {
+    let first = timing_after_show(
+        Phase::Holding,
+        0,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+        true,
+        1300,
+    );
+    let refreshed = timing_after_show(
+        Phase::Holding,
+        0,
+        MotionPolicy::Animated,
+        true,
+        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+        true,
+        2200,
+    );
+
+    assert_eq!(first.hold_after_now_ms, Some(1300));
+    assert_eq!(refreshed.hold_after_now_ms, Some(2200));
+}
+
+#[test]
+fn transient_status_and_unmuted_microphone_use_normal_expiry() {
+    for model in [
+        OverlayModel::from_rows(vec![row(OverlayIcon::Microphone, "muted")]),
+        OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
+    ] {
+        assert!(!model.is_sticky());
+        let timing = timing_after_show(
+            Phase::Holding,
+            0,
+            MotionPolicy::Animated,
+            true,
+            OverlayLifetime::Transient,
+            false,
+            1300,
+        );
+        assert_eq!(timing.hold_after_now_ms, Some(1300));
+    }
 }
 
 #[test]
