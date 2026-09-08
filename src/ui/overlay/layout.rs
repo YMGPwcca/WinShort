@@ -2,7 +2,7 @@
 
 use super::timeline::WindowRegion;
 use crate::config::model::{MonitorChoice, OverlayPosition};
-use windows::Win32::Foundation::{POINT, SIZE};
+use windows::Win32::Foundation::{POINT, RECT, SIZE};
 
 const BASE_WIDTH: f32 = 372.0;
 
@@ -12,6 +12,11 @@ pub(super) const PAD: f32 = 16.0;
 
 pub(super) const CARD_CORNER_RADIUS_DIP: f32 = 14.0;
 
+/// The existing card padding is also the separation between independent
+/// cards. This keeps the stack rhythm aligned with the renderer's content
+/// geometry instead of introducing a second spacing scale.
+pub(super) const STACK_GAP_DIP: f32 = PAD;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct SurfaceGeometry {
     pub(super) width: f32,
@@ -20,6 +25,16 @@ pub(super) struct SurfaceGeometry {
     pub(super) body_top: f32,
     pub(super) body_right: f32,
     pub(super) body_bottom: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LayoutInput {
+    pub(super) size: SIZE,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CardPlacement {
+    pub(super) position: POINT,
 }
 
 pub(super) fn surface_geometry(scale: f32, row_count: usize) -> SurfaceGeometry {
@@ -91,6 +106,47 @@ pub(super) fn position_for(
     let x = x.clamp(work.left, (work.right - size.cx).max(work.left));
     let y = y.clamp(work.top, (work.bottom - size.cy).max(work.top));
     POINT { x, y }
+}
+
+/// Lay out a stable permanent lane followed by a newest-first toast lane.
+///
+/// Top and center anchors stack down; bottom anchors stack up. For all three
+/// center positions, downward stacking is the deterministic direction away
+/// from the center anchor. The caller supplies permanent entries first and
+/// toasts in newest-first order, so inserting or removing a toast never
+/// changes a permanent card's slot.
+pub(super) fn layout_cards(
+    work: RECT,
+    size_position: OverlayPosition,
+    dpi: u32,
+    scale: f32,
+    inputs: &[LayoutInput],
+) -> Vec<CardPlacement> {
+    let down = !matches!(
+        size_position,
+        OverlayPosition::BottomLeft | OverlayPosition::BottomCenter | OverlayPosition::BottomRight
+    );
+    let gap = (STACK_GAP_DIP * scale.clamp(0.7, 1.6) * dpi as f32 / 96.0)
+        .round()
+        .max(1.0) as i32;
+    let mut cursor = None;
+
+    inputs
+        .iter()
+        .map(|input| {
+            let anchor = position_for(work, input.size, size_position, dpi);
+            let y = match cursor {
+                None => anchor.y,
+                Some(previous_edge) if down => previous_edge + gap,
+                Some(previous_edge) => previous_edge - gap - input.size.cy,
+            };
+            let placement = CardPlacement {
+                position: POINT { x: anchor.x, y },
+            };
+            cursor = Some(if down { y + input.size.cy } else { y });
+            placement
+        })
+        .collect()
 }
 
 impl SurfaceGeometry {

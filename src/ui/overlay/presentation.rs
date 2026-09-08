@@ -1,6 +1,6 @@
 //! Presentation for the overlay.
 
-use super::model::{concise, OverlayIcon, OverlayLifetime, OverlayModel, OverlayRow, OverlayTone};
+use super::model::{concise, OverlayIcon, OverlayRow, OverlayTone};
 
 use crate::config::model::OverlayNotificationCategory;
 use crate::ui::presentation::{friendly_device, AudioDeviceKind};
@@ -30,14 +30,6 @@ pub(crate) fn microphone_row(state: &crate::audio::AudioState) -> OverlayRow {
             detail: "Windows Audio is not available".into(),
         },
     }
-}
-
-pub(crate) fn microphone_overlay_model(state: &crate::audio::AudioState) -> OverlayModel {
-    let lifetime = match state {
-        crate::audio::AudioState::Muted { .. } => OverlayLifetime::Sticky(OverlayIcon::Microphone),
-        _ => OverlayLifetime::Transient,
-    };
-    OverlayModel::single_with_lifetime(microphone_row(state), lifetime)
 }
 
 pub(crate) fn output_row(state: &crate::audio::OutputState) -> OverlayRow {

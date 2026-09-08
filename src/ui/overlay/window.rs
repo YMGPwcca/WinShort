@@ -2,13 +2,11 @@
 
 use super::backend::{render_prepared_frame, OverlayGraphics, OverlaySurface};
 use super::composition::CompositionHost;
-use super::layout::{select_monitor, surface_geometry};
+use super::layout::surface_geometry;
 use super::messages::overlay_wndproc;
-use super::model::OverlayModel;
 use super::palette::{acceptance_forces_composition_failure, resolved_theme_mode};
-use super::state::OverlayState;
+use super::state::{OverlayState, ShowRequest};
 use super::timeline::{prepare_state_plan, Phase, ShowPlan, WindowRegion};
-use crate::config::model::OverlayCfg;
 use crate::error::{Error, Result};
 use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
@@ -20,11 +18,11 @@ use windows::Win32::Foundation::{HWND, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, GetClientRect, GetWindowLongPtrW, KillTimer, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DestroyWindow, GetClientRect, GetWindowLongPtrW, KillTimer, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
+    SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const CLASS_NAME: &str = "WinShort.Overlay";
@@ -62,13 +60,18 @@ fn apply_show_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -> Result<()>
     Ok(())
 }
 
-pub(super) fn set_timer(hwnd: HWND, interval: u32) -> Result<()> {
-    let timer = unsafe { SetTimer(Some(hwnd), TIMER_ID, interval, None) };
-    if timer == 0 {
-        Err(Error::internal("SetTimer(overlay) returned zero"))
+pub(super) fn set_timer(hwnd: HWND, interval: Option<u32>) -> Result<()> {
+    if let Some(interval) = interval {
+        let timer = unsafe { SetTimer(Some(hwnd), TIMER_ID, interval, None) };
+        if timer == 0 {
+            return Err(Error::internal("SetTimer(overlay) returned zero"));
+        }
     } else {
-        Ok(())
+        unsafe {
+            let _ = KillTimer(Some(hwnd), TIMER_ID);
+        }
     }
+    Ok(())
 }
 
 pub(super) fn apply_window_region(hwnd: HWND, region: WindowRegion) {
@@ -163,10 +166,9 @@ pub(super) fn client_size(hwnd: HWND) -> Result<Option<SIZE>> {
 }
 
 impl OverlayWindow {
-    pub(crate) fn create() -> Result<Self> {
+    pub(super) fn create_with_graphics(entry_id: u64, graphics: OverlayGraphics) -> Result<Self> {
         let _atom = win::register_class_once(&REGISTERED, CLASS_NAME, Some(overlay_wndproc))?;
-        let graphics = OverlayGraphics::create()?;
-        let mut state = win::WindowCreation::new(OverlayState::new(graphics.clone()));
+        let mut state = win::WindowCreation::new(OverlayState::new(graphics.clone(), entry_id));
         let no_redirection = if acceptance_forces_composition_failure() {
             0
         } else {
@@ -233,18 +235,15 @@ impl OverlayWindow {
         Ok(Self { hwnd })
     }
 
-    pub(crate) fn show(&self, model: OverlayModel, config: OverlayCfg) -> Result<()> {
-        if model.rows.is_empty() || !config.enabled {
+    pub(crate) fn show_at(&self, request: ShowRequest) -> Result<()> {
+        if request.model.rows.is_empty() || !request.config.enabled {
             return Ok(());
         }
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
             return Err(Error::internal("overlay state missing"));
         };
         let preferences = SystemVisualPreferences::query();
-        let monitor = select_monitor(config.monitor.clone());
-        let plan = prepare_state_plan(cell, |state| {
-            state.prepare_show(model, config, preferences, monitor)
-        })?;
+        let plan = prepare_state_plan(cell, |state| state.prepare_show(request, preferences))?;
         let Some(plan) = plan else {
             return Ok(());
         };
@@ -253,30 +252,20 @@ impl OverlayWindow {
         render_prepared_frame(cell, self.hwnd, plan)
     }
 
-    pub(crate) fn refresh_notifications(&self, config: OverlayCfg) -> Result<()> {
-        if !config.enabled {
-            self.hide();
-            return Ok(());
-        }
+    pub(super) fn set_entry_id(&self, entry_id: u64) -> Result<()> {
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
             return Err(Error::internal("overlay state missing"));
         };
-        let (active, changed, model) = {
-            let state = cell.borrow();
-            (
-                state.phase != Phase::Hidden,
-                state.config.notifications != config.notifications,
-                state.model.clone().filter_enabled(config.notifications),
-            )
-        };
-        if !active || !changed {
-            return Ok(());
+        cell.borrow_mut().entry_id = entry_id;
+        Ok(())
+    }
+
+    pub(super) fn destroy(self) {
+        let hwnd = self.hwnd;
+        self.hide();
+        unsafe {
+            let _ = DestroyWindow(hwnd);
         }
-        if model.rows.is_empty() {
-            self.hide();
-            return Ok(());
-        }
-        self.show(model, config)
     }
 
     pub(crate) fn hide(&self) {
@@ -284,7 +273,7 @@ impl OverlayWindow {
             {
                 let mut state = cell.borrow_mut();
                 state.phase = Phase::Hidden;
-                state.transient_until = None;
+                state.expires_at = None;
             }
         }
         apply_hide_window(self.hwnd);

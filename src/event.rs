@@ -156,6 +156,12 @@ pub enum AppEvent {
     PreviewOverlay {
         config: crate::config::model::OverlayCfg,
     },
+    /// A card's own native timer completed its leave animation.
+    OverlayCardExpired {
+        entry_id: u64,
+    },
+    /// Recompute all card geometry after a system visual/DPI change.
+    OverlayVisualRefresh,
     FocusSettingsFromPicker {
         reverse: bool,
     },
@@ -331,6 +337,10 @@ pub(crate) enum OverlayEvent {
     Preview {
         config: crate::config::model::OverlayCfg,
     },
+    CardExpired {
+        entry_id: u64,
+    },
+    VisualRefresh,
 }
 
 #[derive(Debug)]
@@ -453,6 +463,10 @@ impl From<AppEvent> for RoutedAppEvent {
             }
             AppEvent::ShowStatusOverlay => Self::Overlay(OverlayEvent::ShowStatus),
             AppEvent::PreviewOverlay { config } => Self::Overlay(OverlayEvent::Preview { config }),
+            AppEvent::OverlayCardExpired { entry_id } => {
+                Self::Overlay(OverlayEvent::CardExpired { entry_id })
+            }
+            AppEvent::OverlayVisualRefresh => Self::Overlay(OverlayEvent::VisualRefresh),
             AppEvent::ConfigApplied { seq, stamp } => {
                 Self::Config(ConfigEvent::Applied { seq, stamp })
             }
@@ -689,6 +703,18 @@ mod tests {
                 origin: AudioEventOrigin::External,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn overlay_lifecycle_events_route_as_typed_overlay_events() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OverlayCardExpired { entry_id: 7 }),
+            RoutedAppEvent::Overlay(OverlayEvent::CardExpired { entry_id: 7 })
+        ));
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OverlayVisualRefresh),
+            RoutedAppEvent::Overlay(OverlayEvent::VisualRefresh)
         ));
     }
 

@@ -46,13 +46,13 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
                 {
                     let mut state = cell.borrow_mut();
                     state.phase = Phase::Hidden;
-                    state.transient_until = None;
+                    state.expires_at = None;
                 }
                 apply_hide_window(hwnd);
                 LRESULT(0)
             }
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
-                lifecycle::handle_settingchange(cell, hwnd)
+                lifecycle::handle_settingchange()
             }
             WM_TIMER if wparam.0 == TIMER_ID => lifecycle::handle_timer(cell, hwnd),
             WM_PAINT => lifecycle::handle_paint(cell, hwnd),
@@ -65,7 +65,7 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
             WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_ERASEBKGND => LRESULT(1),
-            WM_DPICHANGED => lifecycle::handle_dpichanged(cell, hwnd, wparam),
+            WM_DPICHANGED => lifecycle::handle_dpichanged(),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }

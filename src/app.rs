@@ -76,7 +76,7 @@ pub struct App {
     tray: Option<Tray>,
     settings: Option<ControlCenterWindow>,
     diagnostics: Option<crate::ui::diagnostics::DiagnosticsWindow>,
-    overlay: Option<crate::ui::overlay::OverlayWindow>,
+    overlay: Option<crate::ui::overlay::OverlayManager>,
     foreground: Option<crate::platform::foreground::ForegroundTracker>,
     keyboard: Option<crate::keyboard::hook::KeyboardService>,
     audio: Option<crate::audio::AudioService>,
@@ -234,7 +234,7 @@ impl App {
     }
 
     pub fn install_overlay(&mut self) -> Result<()> {
-        self.overlay = Some(crate::ui::overlay::OverlayWindow::create()?);
+        self.overlay = Some(crate::ui::overlay::OverlayManager::create()?);
         Ok(())
     }
     pub fn install_foreground_tracker(&mut self) -> Result<()> {
@@ -557,14 +557,16 @@ impl App {
         title: impl Into<String>,
         detail: impl Into<String>,
     ) {
-        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-            crate::ui::overlay::OverlayRow {
+        self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+            crate::ui::overlay::OverlayKey::DisplayProfile,
+            crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
                 category: Some(crate::config::model::OverlayNotificationCategory::DisplayProfile),
                 icon: crate::ui::overlay::OverlayIcon::Info,
                 tone,
                 title: title.into(),
                 detail: detail.into(),
-            },
+            }),
+            crate::ui::overlay::ToastPolicy::StackDistinct,
         ));
     }
 
@@ -1267,22 +1269,46 @@ impl App {
     ) {
         match result {
             crate::audio::DeviceCycleResult::Changed { flow, device, .. } => {
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                    crate::ui::overlay::device_cycle_row(flow, &device),
+                let key = Self::device_cycle_overlay_key(flow);
+                self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                    key,
+                    crate::ui::overlay::OverlayModel::single(crate::ui::overlay::device_cycle_row(
+                        flow, &device,
+                    )),
+                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
                 crate::log_debug!("device cycle request {request_id} applied for {flow:?}");
             }
             crate::audio::DeviceCycleResult::NoDevices { flow, .. } => {
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                    crate::ui::overlay::device_cycle_no_devices_row(flow),
+                let key = Self::device_cycle_overlay_key(flow);
+                self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                    key,
+                    crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::device_cycle_no_devices_row(flow),
+                    ),
+                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
             }
             crate::audio::DeviceCycleResult::Failed { flow, error, .. } => {
                 crate::warn_!("device cycle request {request_id} failed: {error}");
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                    crate::ui::overlay::device_cycle_error_row(flow, &error),
+                let key = Self::device_cycle_overlay_key(flow);
+                self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                    key,
+                    crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::device_cycle_error_row(flow, &error),
+                    ),
+                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
             }
+        }
+    }
+
+    fn device_cycle_overlay_key(
+        flow: crate::audio::DeviceCycleFlow,
+    ) -> crate::ui::overlay::OverlayKey {
+        match flow {
+            crate::audio::DeviceCycleFlow::Input => crate::ui::overlay::OverlayKey::InputDevice,
+            crate::audio::DeviceCycleFlow::Output => crate::ui::overlay::OverlayKey::OutputDevice,
         }
     }
 
@@ -1308,14 +1334,23 @@ impl App {
             });
         }
     }
-    fn show_overlay_model_with_config(
+    fn show_overlay_with_config(
         &mut self,
-        model: crate::ui::overlay::OverlayModel,
+        request: crate::ui::overlay::OverlayRequest,
         config: crate::config::model::OverlayCfg,
     ) {
         if !config.enabled {
-            if let Some(overlay) = &self.overlay {
-                overlay.hide();
+            if let Some(overlay) = &mut self.overlay {
+                overlay.clear();
+            }
+            return;
+        }
+        let model = request.model.filter_enabled(config.notifications);
+        if model.rows.is_empty() {
+            if let Some(overlay) = &mut self.overlay {
+                if let Err(error) = overlay.remove_key(request.key, &config) {
+                    error_!("overlay empty-entry removal failed: {error}");
+                }
             }
             return;
         }
@@ -1323,25 +1358,116 @@ impl App {
         {
             self.test_last_overlay_model = (!model.rows.is_empty()).then(|| model.clone());
         }
-        if let Some(overlay) = &self.overlay {
-            if let Err(error) = overlay.show(model, config) {
+        if let Some(overlay) = &mut self.overlay {
+            if let Err(error) = overlay.present(
+                crate::ui::overlay::OverlayRequest { model, ..request },
+                config,
+            ) {
                 error_!("overlay show failed: {error}");
             }
         }
     }
 
-    fn show_overlay_model(&mut self, model: crate::ui::overlay::OverlayModel) {
+    fn show_overlay(&mut self, request: crate::ui::overlay::OverlayRequest) {
         let config = crate::app::config();
-        let model = model.filter_enabled(config.overlay.notifications);
-        self.show_overlay_model_with_config(model, config.overlay.clone());
+        self.show_overlay_with_config(request, config.overlay.clone());
     }
+
+    fn remove_overlay_key(
+        &mut self,
+        key: crate::ui::overlay::OverlayKey,
+        config: &crate::config::model::OverlayCfg,
+    ) {
+        if let Some(overlay) = &mut self.overlay {
+            if let Err(error) = overlay.remove_key(key, config) {
+                error_!("overlay entry removal failed: {error}");
+            }
+        }
+    }
+
+    fn reconcile_microphone_overlay(&mut self, show_unmute_feedback: bool) {
+        let config = crate::app::config();
+        if !config.overlay.enabled || !config.overlay.notifications.microphone {
+            self.remove_overlay_key(
+                crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                &config.overlay,
+            );
+            self.remove_overlay_key(
+                crate::ui::overlay::OverlayKey::MicrophoneToast,
+                &config.overlay,
+            );
+            return;
+        }
+
+        match self.microphone_state {
+            crate::audio::AudioState::Muted { .. } => {
+                self.remove_overlay_key(
+                    crate::ui::overlay::OverlayKey::MicrophoneToast,
+                    &config.overlay,
+                );
+                self.show_overlay_with_config(
+                    crate::ui::overlay::OverlayRequest::permanent(
+                        crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                        crate::ui::overlay::OverlayModel::single(
+                            crate::ui::overlay::microphone_row(&self.microphone_state),
+                        ),
+                    ),
+                    config.overlay.clone(),
+                );
+            }
+            crate::audio::AudioState::Active { .. } => {
+                self.remove_overlay_key(
+                    crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                    &config.overlay,
+                );
+                if show_unmute_feedback {
+                    self.show_overlay_with_config(
+                        crate::ui::overlay::OverlayRequest::toast(
+                            crate::ui::overlay::OverlayKey::MicrophoneToast,
+                            crate::ui::overlay::OverlayModel::single(
+                                crate::ui::overlay::microphone_row(&self.microphone_state),
+                            ),
+                            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
+                        ),
+                        config.overlay.clone(),
+                    );
+                }
+            }
+            crate::audio::AudioState::Unavailable { .. } => {
+                self.remove_overlay_key(
+                    crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                    &config.overlay,
+                );
+                if show_unmute_feedback {
+                    self.show_overlay_with_config(
+                        crate::ui::overlay::OverlayRequest::toast(
+                            crate::ui::overlay::OverlayKey::MicrophoneToast,
+                            crate::ui::overlay::OverlayModel::single(
+                                crate::ui::overlay::microphone_row(&self.microphone_state),
+                            ),
+                            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
+                        ),
+                        config.overlay.clone(),
+                    );
+                }
+            }
+        }
+    }
+
     fn show_preview_overlay(&mut self, config: crate::config::model::OverlayCfg) {
         let model =
             crate::ui::overlay::OverlayModel::preview(crate::ui::overlay::OverlayRow::preview(
                 "WinShort overlay preview",
                 "Previewing the current overlay settings",
             ));
-        self.show_overlay_model_with_config(model, config);
+        self.show_overlay_with_config(
+            crate::ui::overlay::OverlayRequest::toast(
+                crate::ui::overlay::OverlayKey::Preview,
+                model,
+                crate::ui::overlay::ToastPolicy::ReplaceSameKey,
+            ),
+            config,
+        );
     }
 
     fn status_overlay_model(&self) -> crate::ui::overlay::OverlayModel {
@@ -1370,7 +1496,11 @@ impl App {
         }
         // Cached rows show immediately; a matching delayed query result
         // refreshes this same multi-row presentation (#18, #72).
-        self.show_overlay_model(self.status_overlay_model());
+        self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+            crate::ui::overlay::OverlayKey::Status,
+            self.status_overlay_model(),
+            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
+        ));
     }
     /// Route a cross-thread transport event into one main-thread domain handler.
     pub(crate) fn route_event(&mut self, event: AppEvent) -> Option<DeferredShellAction> {
@@ -1420,7 +1550,7 @@ impl App {
         let overlay_status = self
             .overlay
             .as_ref()
-            .map(crate::ui::overlay::OverlayWindow::status)
+            .map(crate::ui::overlay::OverlayManager::status)
             .unwrap_or_default();
         crate::diagnostics::app_snapshot::build(crate::diagnostics::app_snapshot::SnapshotInputs {
             config: (*crate::app::config()).clone(),
@@ -1507,10 +1637,8 @@ impl App {
             }
         }
         if let Some(overlay) = self.overlay.take() {
-            overlay.hide();
-            unsafe {
-                let _ = DestroyWindow(overlay.hwnd);
-            }
+            let mut overlay = overlay;
+            overlay.shutdown();
         }
 
         if let Some(t) = self.tray.take() {
@@ -1866,7 +1994,7 @@ mod shutdown_gate_tests {
     }
 
     #[test]
-    fn system_endpoint_events_refresh_state_without_winshort_osd() {
+    fn system_endpoint_events_refresh_state_and_keep_permanent_mic_indicator() {
         let mut app = test_app();
         let microphone = crate::audio::AudioState::Muted { volume_pct: 20 };
         let output = crate::audio::OutputState::Current {
@@ -1896,6 +2024,11 @@ mod shutdown_gate_tests {
         assert!(app.microphone_seen);
         assert!(app.output_seen);
         assert!(app.overlay.is_none());
+        let model = app
+            .test_last_overlay_model
+            .take()
+            .expect("muted runtime state should restore the permanent microphone card");
+        assert_eq!(model.rows[0].title, "Microphone muted");
     }
 
     #[test]
@@ -1923,7 +2056,6 @@ mod shutdown_gate_tests {
             model.rows[0].category,
             Some(crate::config::model::OverlayNotificationCategory::Microphone)
         );
-        assert!(model.is_sticky());
         assert_eq!(model.rows[0].title, "Microphone muted");
     }
 
@@ -1945,7 +2077,6 @@ mod shutdown_gate_tests {
             .test_last_overlay_model
             .take()
             .expect("microphone unmute action should show an overlay");
-        assert!(!model.is_sticky());
         assert_eq!(model.rows[0].title, "Microphone unmuted");
     }
 
@@ -1978,7 +2109,6 @@ mod shutdown_gate_tests {
             model.rows[0].category,
             Some(crate::config::model::OverlayNotificationCategory::Speaker)
         );
-        assert!(!model.is_sticky());
     }
 
     #[test]
@@ -2076,8 +2206,13 @@ mod shutdown_gate_tests {
             crate::audio::AudioState::Muted { volume_pct: 10 },
             crate::audio::AudioState::Active { volume_pct: 10 },
         ] {
-            app.show_overlay_model_with_config(
-                crate::ui::overlay::microphone_overlay_model(&state),
+            app.show_overlay_with_config(
+                crate::ui::overlay::OverlayRequest::permanent(
+                    crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                    crate::ui::overlay::OverlayModel::single(crate::ui::overlay::microphone_row(
+                        &state,
+                    )),
+                ),
                 config.clone(),
             );
             assert!(app.test_last_overlay_model.is_none());
@@ -2184,13 +2319,13 @@ mod shutdown_gate_tests {
     }
 
     #[test]
-    fn status_overlay_is_transient_while_microphone_is_muted() {
+    fn status_overlay_snapshot_includes_microphone_while_muted() {
         let mut app = test_app();
         app.microphone_state = crate::audio::AudioState::Muted { volume_pct: 20 };
 
         let model = app.status_overlay_model();
 
-        assert!(!model.is_sticky());
+        assert_eq!(model.rows.len(), 2);
     }
 
     #[test]

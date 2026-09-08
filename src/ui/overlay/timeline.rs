@@ -1,12 +1,9 @@
-//! Pure overlay timing and coalescing policy.
+//! Pure per-card animation timing policy.
 
-use super::model::OverlayLifetime;
 use crate::platform::visual::SystemVisualPreferences;
 use windows::Win32::Foundation::{POINT, SIZE};
 
 pub(super) const TIMER_MS: u32 = 16;
-
-pub(super) const COALESCE_WINDOW_MS: u64 = 180;
 
 pub(super) const APPEAR_MS: u64 = 140;
 
@@ -30,7 +27,6 @@ pub(super) fn motion_policy(preferences: SystemVisualPreferences) -> MotionPolic
 pub(super) struct ShowTiming {
     pub(super) phase: Phase,
     pub(super) restart_phase: bool,
-    pub(super) hold_after_now_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,7 +35,7 @@ pub(super) struct ShowPlan {
     pub(super) size: SIZE,
     pub(super) region: WindowRegion,
     pub(super) alpha: f32,
-    pub(super) timer_interval: u32,
+    pub(super) timer_interval: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,8 +49,14 @@ pub(super) struct WindowRegion {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum TickPlan {
     Hide,
-    PruneToStickyOwner,
+    StopTimer,
     Frame(ShowPlan),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ShowMode {
+    Present,
+    Relayout,
 }
 
 /// Return an owned plan before any caller performs HWND work.
@@ -72,61 +74,39 @@ where
     prepare(&mut state)
 }
 
-pub(super) fn timing_after_show(
-    phase: Phase,
-    appearance_elapsed_ms: u64,
-    motion: MotionPolicy,
-    coalesced: bool,
-    lifetime: OverlayLifetime,
-    has_transient_rows: bool,
-    duration_ms: u64,
-) -> ShowTiming {
+pub(super) fn timing_after_show(phase: Phase, motion: MotionPolicy, mode: ShowMode) -> ShowTiming {
+    if mode == ShowMode::Relayout && phase != Phase::Hidden {
+        return ShowTiming {
+            phase,
+            restart_phase: false,
+        };
+    }
     if motion == MotionPolicy::Reduced {
         return ShowTiming {
             phase: Phase::Holding,
             restart_phase: true,
-            hold_after_now_ms: hold_after(lifetime, has_transient_rows, duration_ms),
         };
     }
-    if !coalesced {
+    if phase == Phase::Hidden {
         return ShowTiming {
             phase: Phase::Appearing,
             restart_phase: true,
-            hold_after_now_ms: hold_after(lifetime, has_transient_rows, APPEAR_MS + duration_ms),
         };
     }
     match phase {
         Phase::Appearing => ShowTiming {
             phase: Phase::Appearing,
             restart_phase: false,
-            hold_after_now_ms: hold_after(
-                lifetime,
-                has_transient_rows,
-                APPEAR_MS.saturating_sub(appearance_elapsed_ms) + duration_ms,
-            ),
         },
         Phase::Holding => ShowTiming {
             phase: Phase::Holding,
             restart_phase: false,
-            hold_after_now_ms: hold_after(lifetime, has_transient_rows, duration_ms),
         },
-        Phase::Leaving | Phase::Hidden => ShowTiming {
+        Phase::Leaving => ShowTiming {
             phase: Phase::Holding,
             restart_phase: true,
-            hold_after_now_ms: hold_after(lifetime, has_transient_rows, duration_ms),
         },
-    }
-}
-
-fn hold_after(
-    lifetime: OverlayLifetime,
-    has_transient_rows: bool,
-    duration_ms: u64,
-) -> Option<u64> {
-    if lifetime.is_sticky() && !has_transient_rows {
-        None
-    } else {
-        Some(duration_ms)
+        Phase::Hidden => unreachable!("hidden phase handled above"),
     }
 }
 

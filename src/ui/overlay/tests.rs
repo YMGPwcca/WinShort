@@ -1,5 +1,6 @@
-use super::model::OverlayLifetime;
+use super::manager::{OverlayKey, OverlayLifetime, OverlayRegistry};
 use super::*;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::RECT;
 
 fn row(icon: OverlayIcon, title: &str) -> OverlayRow {
@@ -156,101 +157,350 @@ fn composition_tint_levels_follow_blur_intensity() {
 }
 
 #[test]
-fn coalescer_replaces_same_icon_and_keeps_deterministic_order() {
-    let current = OverlayModel::from_rows_with_lifetime(
-        vec![
-            row(OverlayIcon::Output, "old output"),
-            row(OverlayIcon::Application, "app"),
-        ],
-        OverlayLifetime::Transient,
+fn permanent_microphone_entry_is_unique_and_never_expires() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let first = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
     );
-    let incoming = OverlayModel::single_with_lifetime(
-        row(OverlayIcon::Microphone, "mic"),
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+    let refreshed = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "still muted")),
+        ),
+        Duration::from_millis(1300),
+        now + Duration::from_secs(2),
     );
-    let merged = merge_overlay_models(&current, &incoming);
+
+    assert!(first.inserted);
+    assert!(!refreshed.inserted);
+    assert_eq!(first.id, refreshed.id);
+    assert_eq!(registry.entries().len(), 1);
+    let entry = &registry.entries()[0];
+    assert_eq!(entry.key(), OverlayKey::MicrophonePermanent);
+    assert_eq!(entry.lifetime(), OverlayLifetime::Permanent);
+    assert_eq!(entry.expires_at(), None);
+    assert_eq!(entry.model().rows[0].title, "still muted");
+}
+
+#[test]
+fn unmute_removes_permanent_entry_before_creating_a_new_toast() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
     assert_eq!(
-        merged
-            .rows
-            .iter()
-            .map(|value| value.icon)
-            .collect::<Vec<_>>(),
-        vec![
-            OverlayIcon::Microphone,
-            OverlayIcon::Output,
-            OverlayIcon::Application
-        ]
+        registry.remove_key(OverlayKey::MicrophonePermanent),
+        vec![1]
+    );
+    let toast = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::MicrophoneToast,
+            OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1300),
+        now,
     );
 
-    let replaced = merge_overlay_models(
-        &merged,
-        &OverlayModel::single(row(OverlayIcon::Output, "new output")),
-    );
-    assert_eq!(replaced.rows.len(), 3);
-    assert_eq!(replaced.rows[1].title, "new output");
-    assert!(replaced.is_sticky());
+    assert!(toast.inserted);
+    assert_eq!(registry.entries().len(), 1);
+    assert_eq!(registry.entries()[0].key(), OverlayKey::MicrophoneToast);
+    assert!(matches!(
+        registry.entries()[0].lifetime(),
+        OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey)
+    ));
 }
 
 #[test]
-fn repeated_sticky_microphone_updates_replace_one_row_and_keep_sticky_lifetime() {
-    let muted = OverlayModel::single_with_lifetime(
-        row(OverlayIcon::Microphone, "muted"),
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+fn permanent_microphone_and_speaker_toast_are_independent() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let microphone = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
     );
-    let refreshed = OverlayModel::single_with_lifetime(
-        row(OverlayIcon::Microphone, "still muted"),
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+    let speaker = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Speaker,
+            OverlayModel::single(row(OverlayIcon::Output, "speaker")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1300),
+        now,
     );
 
-    let merged = merge_overlay_models(&muted, &refreshed);
-
-    assert_eq!(merged.rows.len(), 1);
-    assert_eq!(merged.rows[0].title, "still muted");
-    assert!(merged.is_sticky());
+    assert_eq!(registry.entries().len(), 2);
+    assert_eq!(
+        registry
+            .remove_expired(now + Duration::from_millis(1300))
+            .len(),
+        1
+    );
+    assert!(registry.entries().iter().any(|entry| {
+        entry.id() == microphone.id
+            && entry.key() == OverlayKey::MicrophonePermanent
+            && entry.expires_at().is_none()
+    }));
+    assert_eq!(speaker.id, 2);
 }
 
 #[test]
-fn sticky_microphone_owner_prunes_speaker_and_workspace_rows() {
-    for transient_icon in [OverlayIcon::Output, OverlayIcon::Workspace] {
-        let sticky = OverlayModel::from_rows_with_lifetime(
-            vec![
-                row(OverlayIcon::Microphone, "muted"),
-                row(transient_icon, "transient"),
-            ],
-            OverlayLifetime::Sticky(OverlayIcon::Microphone),
-        );
+fn permanent_microphone_and_workspace_toast_are_independent() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let microphone = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    let workspace = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Workspace,
+            OverlayModel::single(row(OverlayIcon::Workspace, "workspace")),
+            ToastPolicy::StackDistinct,
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
 
-        let pruned = sticky.retain_sticky_owner();
-
-        assert_eq!(pruned.rows.len(), 1);
-        assert_eq!(pruned.rows[0].icon, OverlayIcon::Microphone);
-        assert!(pruned.is_sticky());
-    }
+    assert_eq!(registry.entries().len(), 2);
+    assert_eq!(
+        registry.remove_id(workspace.id).unwrap().key(),
+        OverlayKey::Workspace
+    );
+    assert_eq!(registry.entries().len(), 1);
+    assert_eq!(registry.entries()[0].id(), microphone.id);
+    assert!(registry.entries()[0].expires_at().is_none());
 }
 
 #[test]
-fn unmuted_microphone_update_changes_sticky_lifetime_to_transient() {
-    let muted = OverlayModel::single_with_lifetime(
-        row(OverlayIcon::Microphone, "muted"),
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
+fn workspace_toast_stacks_as_a_distinct_entry() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let first = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Workspace,
+            OverlayModel::single(row(OverlayIcon::Workspace, "first")),
+            ToastPolicy::StackDistinct,
+        ),
+        Duration::from_millis(1300),
+        now,
     );
-    let unmuted = OverlayModel::single(row(OverlayIcon::Microphone, "unmuted"));
+    let second = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Workspace,
+            OverlayModel::single(row(OverlayIcon::Workspace, "second")),
+            ToastPolicy::StackDistinct,
+        ),
+        Duration::from_millis(1300),
+        now + Duration::from_millis(100),
+    );
 
-    let merged = merge_overlay_models(&muted, &unmuted);
+    assert!(first.inserted && second.inserted);
+    assert_ne!(first.id, second.id);
+    assert_eq!(registry.entries().len(), 2);
+}
 
-    assert!(!merged.is_sticky());
+#[test]
+fn one_toast_expiry_does_not_remove_another_toast() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Speaker,
+            OverlayModel::single(row(OverlayIcon::Output, "speaker")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1000),
+        now,
+    );
+    registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Workspace,
+            OverlayModel::single(row(OverlayIcon::Workspace, "workspace")),
+            ToastPolicy::StackDistinct,
+        ),
+        Duration::from_millis(1000),
+        now + Duration::from_millis(300),
+    );
+
+    let expired = registry.remove_expired(now + Duration::from_millis(1100));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].key(), OverlayKey::Speaker);
+    assert_eq!(registry.entries().len(), 1);
+    assert_eq!(registry.entries()[0].key(), OverlayKey::Workspace);
+}
+
+#[test]
+fn replace_same_key_updates_one_toast_and_resets_only_its_deadline() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let first = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Speaker,
+            OverlayModel::single(row(OverlayIcon::Output, "old speaker")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1000),
+        now,
+    );
+    let other = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Workspace,
+            OverlayModel::single(row(OverlayIcon::Workspace, "workspace")),
+            ToastPolicy::StackDistinct,
+        ),
+        Duration::from_millis(1600),
+        now,
+    );
+    let replaced = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Speaker,
+            OverlayModel::single(row(OverlayIcon::Output, "new speaker")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(2000),
+        now + Duration::from_millis(500),
+    );
+
+    assert!(!replaced.inserted);
+    assert_eq!(replaced.id, first.id);
+    assert_eq!(registry.entries().len(), 2);
+    let speaker = registry
+        .entries()
+        .iter()
+        .find(|entry| entry.key() == OverlayKey::Speaker)
+        .unwrap();
+    let workspace = registry
+        .entries()
+        .iter()
+        .find(|entry| entry.key() == OverlayKey::Workspace)
+        .unwrap();
+    assert_eq!(speaker.model().rows[0].title, "new speaker");
+    assert_eq!(
+        speaker.expires_at(),
+        Some(now + Duration::from_millis(2500))
+    );
+    assert_eq!(workspace.id(), other.id);
+    assert_eq!(
+        workspace.expires_at(),
+        Some(now + Duration::from_millis(1600))
+    );
+}
+
+#[test]
+fn status_and_preview_are_separate_transient_entries() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Status,
+            OverlayModel::from_rows(vec![
+                row(OverlayIcon::Microphone, "mic"),
+                row(OverlayIcon::Output, "speaker"),
+            ]),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Preview,
+            OverlayModel::preview(OverlayRow::preview("preview", "preview detail")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+
+    assert_eq!(registry.entries().len(), 3);
+    assert_eq!(registry.entries()[0].key(), OverlayKey::MicrophonePermanent);
+    assert_eq!(registry.entries()[1].model().rows.len(), 2);
+    assert_eq!(registry.entries()[2].key(), OverlayKey::Preview);
+    assert!(registry.entries()[0].expires_at().is_none());
+    assert!(registry.entries()[1].expires_at().is_some());
+    assert!(registry.entries()[2].expires_at().is_some());
+}
+
+#[test]
+fn status_and_preview_expiry_leave_permanent_microphone_untouched() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Status,
+            OverlayModel::from_rows(vec![row(OverlayIcon::Microphone, "mic")]),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1000),
+        now,
+    );
+    registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Preview,
+            OverlayModel::preview(OverlayRow::preview("preview", "detail")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1500),
+        now,
+    );
+
+    let expired = registry.remove_expired(now + Duration::from_millis(1100));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].key(), OverlayKey::Status);
+    assert!(registry
+        .entries()
+        .iter()
+        .any(|entry| entry.key() == OverlayKey::MicrophonePermanent));
+    assert!(registry
+        .entries()
+        .iter()
+        .any(|entry| entry.key() == OverlayKey::Preview));
 }
 
 #[test]
 fn disabled_notification_categories_are_removed_before_rendering() {
-    let model = OverlayModel::from_rows_with_lifetime(
-        vec![
-            row(OverlayIcon::Microphone, "mic"),
-            row(OverlayIcon::Output, "speaker"),
-            row(OverlayIcon::Application, "app"),
-        ],
-        OverlayLifetime::Transient,
-    );
+    let model = OverlayModel::from_rows(vec![
+        row(OverlayIcon::Microphone, "mic"),
+        row(OverlayIcon::Output, "speaker"),
+        row(OverlayIcon::Application, "app"),
+    ]);
     let notifications = crate::config::model::OverlayNotifications {
         microphone: false,
         ..Default::default()
@@ -283,31 +533,20 @@ fn microphone_category_filter_suppresses_muted_and_unmuted_states() {
         crate::audio::AudioState::Muted { volume_pct: 42 },
         crate::audio::AudioState::Active { volume_pct: 42 },
     ] {
-        let filtered = microphone_overlay_model(&state).filter_enabled(notifications);
+        let filtered = OverlayModel::single(microphone_row(&state)).filter_enabled(notifications);
         assert!(filtered.rows.is_empty());
-        assert!(!filtered.is_sticky());
     }
 }
 
 #[test]
-fn microphone_filter_removes_sticky_owner_but_keeps_enabled_transient_rows() {
-    let sticky = OverlayModel::from_rows_with_lifetime(
-        vec![
-            row(OverlayIcon::Microphone, "muted"),
-            row(OverlayIcon::Output, "speaker"),
-        ],
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
-    );
+fn microphone_category_filter_removes_the_permanent_entry() {
+    let model = OverlayModel::single(row(OverlayIcon::Microphone, "muted"));
     let notifications = crate::config::model::OverlayNotifications {
         microphone: false,
         ..Default::default()
     };
 
-    let filtered = sticky.filter_enabled(notifications);
-
-    assert_eq!(filtered.rows.len(), 1);
-    assert_eq!(filtered.rows[0].icon, OverlayIcon::Output);
-    assert!(!filtered.is_sticky());
+    assert!(model.filter_enabled(notifications).rows.is_empty());
 }
 #[test]
 fn explicit_preview_bypasses_notification_categories() {
@@ -331,6 +570,105 @@ fn explicit_preview_bypasses_notification_categories() {
 }
 
 #[test]
+fn category_filter_removes_matching_entries_but_keeps_preview() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let microphone = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    let microphone_toast = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::MicrophoneToast,
+            OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    let speaker = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Speaker,
+            OverlayModel::single(row(OverlayIcon::Output, "speaker")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    let preview = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Preview,
+            OverlayModel::preview(OverlayRow::preview("preview", "detail")),
+            ToastPolicy::ReplaceSameKey,
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+
+    let notifications = crate::config::model::OverlayNotifications {
+        microphone: false,
+        ..Default::default()
+    };
+    assert_eq!(
+        registry.filter_notifications(notifications),
+        vec![microphone.id, microphone_toast.id]
+    );
+    assert!(!registry
+        .entries()
+        .iter()
+        .any(|entry| entry.key() == OverlayKey::MicrophonePermanent));
+    assert!(registry
+        .entries()
+        .iter()
+        .any(|entry| entry.id() == speaker.id));
+    assert!(registry
+        .entries()
+        .iter()
+        .any(|entry| entry.id() == preview.id));
+}
+
+#[test]
+fn global_clear_then_restore_rebuilds_permanent_state_without_old_toasts() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Workspace,
+            OverlayModel::single(row(OverlayIcon::Workspace, "expired later")),
+            ToastPolicy::StackDistinct,
+        ),
+        Duration::from_millis(1300),
+        now,
+    );
+    registry.clear();
+    assert!(registry.entries().is_empty());
+
+    registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        ),
+        Duration::from_millis(1300),
+        now + Duration::from_secs(2),
+    );
+    assert_eq!(registry.entries().len(), 1);
+    assert_eq!(registry.entries()[0].key(), OverlayKey::MicrophonePermanent);
+    assert!(registry.entries()[0].expires_at().is_none());
+}
+
+#[test]
 fn microphone_row_uses_volume_terminology() {
     let rendered = microphone_row(&crate::audio::AudioState::Active { volume_pct: 42 });
     assert!(rendered.detail.contains("input volume"));
@@ -338,158 +676,62 @@ fn microphone_row_uses_volume_terminology() {
 }
 
 #[test]
-fn coalesced_timing_preserves_full_settled_hold() {
-    let appearing_early = timing_after_show(
-        Phase::Appearing,
-        10,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Transient,
-        true,
-        1300,
-    );
-    assert_eq!(appearing_early.phase, Phase::Appearing);
-    assert!(!appearing_early.restart_phase);
-    assert_eq!(appearing_early.hold_after_now_ms, Some(1430));
-
-    let appearing_late = timing_after_show(
-        Phase::Appearing,
-        139,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Transient,
-        true,
-        1300,
-    );
-    assert_eq!(appearing_late.hold_after_now_ms, Some(1301));
-
-    let holding = timing_after_show(
-        Phase::Holding,
-        0,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Transient,
-        true,
-        1300,
-    );
-    assert_eq!(holding.phase, Phase::Holding);
-    assert!(!holding.restart_phase);
-    assert_eq!(holding.hold_after_now_ms, Some(1300));
-
-    let leaving = timing_after_show(
-        Phase::Leaving,
-        40,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Transient,
-        true,
-        1300,
-    );
-    assert_eq!(leaving.phase, Phase::Holding);
-    assert!(leaving.restart_phase);
-    assert_eq!(leaving.hold_after_now_ms, Some(1300));
-
-    let reduced = timing_after_show(
-        Phase::Appearing,
-        10,
-        MotionPolicy::Reduced,
-        true,
-        OverlayLifetime::Transient,
-        true,
-        1300,
-    );
-    assert_eq!(reduced.phase, Phase::Holding);
-    assert!(reduced.restart_phase);
-    assert_eq!(reduced.hold_after_now_ms, Some(1300));
-
-    let fresh = timing_after_show(
-        Phase::Hidden,
-        0,
-        MotionPolicy::Animated,
-        false,
-        OverlayLifetime::Transient,
-        true,
-        1300,
-    );
+fn card_timing_is_independent_and_relayout_does_not_restart_animation() {
+    let fresh = timing_after_show(Phase::Hidden, MotionPolicy::Animated, ShowMode::Present);
     assert_eq!(fresh.phase, Phase::Appearing);
     assert!(fresh.restart_phase);
-    assert_eq!(fresh.hold_after_now_ms, Some(1440));
+
+    let moved = timing_after_show(Phase::Holding, MotionPolicy::Animated, ShowMode::Relayout);
+    assert_eq!(moved.phase, Phase::Holding);
+    assert!(!moved.restart_phase);
+
+    let replaced = timing_after_show(Phase::Leaving, MotionPolicy::Animated, ShowMode::Present);
+    assert_eq!(replaced.phase, Phase::Holding);
+    assert!(replaced.restart_phase);
+
+    let reduced = timing_after_show(Phase::Hidden, MotionPolicy::Reduced, ShowMode::Present);
+    assert_eq!(reduced.phase, Phase::Holding);
+    assert!(reduced.restart_phase);
 }
 
 #[test]
-fn sticky_microphone_timing_has_no_auto_hide_deadline() {
-    let timing = timing_after_show(
-        Phase::Holding,
-        0,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
-        false,
-        1300,
-    );
+fn permanent_and_toast_layout_has_stable_slots_and_no_overlap() {
+    let work = RECT {
+        left: 0,
+        top: 0,
+        right: 1000,
+        bottom: 800,
+    };
+    let inputs = [
+        LayoutInput {
+            size: SIZE { cx: 100, cy: 60 },
+        },
+        LayoutInput {
+            size: SIZE { cx: 100, cy: 60 },
+        },
+        LayoutInput {
+            size: SIZE { cx: 100, cy: 90 },
+        },
+    ];
+    let top = layout_cards(work, OverlayPosition::TopLeft, 96, 1.0, &inputs);
+    let top_without_toasts = layout_cards(work, OverlayPosition::TopLeft, 96, 1.0, &inputs[..1]);
 
-    assert_eq!(timing.phase, Phase::Holding);
-    assert_eq!(timing.hold_after_now_ms, None);
-}
-
-#[test]
-fn sticky_microphone_with_transient_rows_uses_configured_expiry() {
-    let timing = timing_after_show(
-        Phase::Holding,
-        0,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
-        true,
-        1300,
-    );
-
-    assert_eq!(timing.hold_after_now_ms, Some(1300));
-}
-
-#[test]
-fn repeated_transient_updates_refresh_sticky_owner_expiry() {
-    let first = timing_after_show(
-        Phase::Holding,
-        0,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
-        true,
-        1300,
-    );
-    let refreshed = timing_after_show(
-        Phase::Holding,
-        0,
-        MotionPolicy::Animated,
-        true,
-        OverlayLifetime::Sticky(OverlayIcon::Microphone),
-        true,
-        2200,
-    );
-
-    assert_eq!(first.hold_after_now_ms, Some(1300));
-    assert_eq!(refreshed.hold_after_now_ms, Some(2200));
-}
-
-#[test]
-fn transient_status_and_unmuted_microphone_use_normal_expiry() {
-    for model in [
-        OverlayModel::from_rows(vec![row(OverlayIcon::Microphone, "muted")]),
-        OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
-    ] {
-        assert!(!model.is_sticky());
-        let timing = timing_after_show(
-            Phase::Holding,
-            0,
-            MotionPolicy::Animated,
-            true,
-            OverlayLifetime::Transient,
-            false,
-            1300,
-        );
-        assert_eq!(timing.hold_after_now_ms, Some(1300));
+    assert_eq!(top[0].position, top_without_toasts[0].position);
+    assert!(top[0].position.y < top[1].position.y);
+    assert!(top[1].position.y < top[2].position.y);
+    for (index, pair) in top.windows(2).enumerate() {
+        let height = [60, 60][index];
+        assert!(pair[0].position.y + height + 16 <= pair[1].position.y);
     }
+
+    let bottom_inputs = [inputs[1], inputs[2]];
+    let bottom = layout_cards(work, OverlayPosition::BottomRight, 96, 1.0, &bottom_inputs);
+    assert!(bottom[0].position.y > bottom[1].position.y);
+    assert!(bottom[1].position.y + 90 + 16 <= bottom[0].position.y);
+
+    let center = layout_cards(work, OverlayPosition::Center, 96, 1.0, &inputs[..2]);
+    assert!(center[1].position.y > center[0].position.y);
+    assert!(center[0].position.y + 60 + 16 <= center[1].position.y);
 }
 
 #[test]
@@ -507,7 +749,7 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
                 corner_diameter: 28,
             },
             alpha: 1.0,
-            timer_interval: TIMER_MS,
+            timer_interval: Some(TIMER_MS),
         }
     });
 
