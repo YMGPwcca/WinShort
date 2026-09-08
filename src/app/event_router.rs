@@ -1,6 +1,6 @@
 //! Main-thread application event routing by domain.
 
-use super::App;
+use super::{App, DeferredShellAction};
 use crate::event::{
     AudioEventOrigin, AudioRuntimeEvent, ConfigEvent, ControlCenterEvent, DesktopEvent,
     DiagnosticsEvent, DisplayEvent, OverlayEvent,
@@ -8,21 +8,39 @@ use crate::event::{
 use windows::Win32::Foundation::HWND;
 
 impl App {
-    pub(super) fn handle_control_center_event(&mut self, event: ControlCenterEvent) {
+    pub(super) fn handle_control_center_event(
+        &mut self,
+        event: ControlCenterEvent,
+    ) -> Option<DeferredShellAction> {
         match event {
-            ControlCenterEvent::Show => self.show_settings(),
-            ControlCenterEvent::OpenPicker(kind) => self.open_settings_picker(kind),
-            ControlCenterEvent::FocusFromPicker { reverse } => {
-                self.focus_settings_from_picker(reverse)
+            ControlCenterEvent::Show => {
+                self.show_settings();
+                None
             }
-            ControlCenterEvent::CommitPicker { commit } => self.commit_settings_picker(commit),
+            ControlCenterEvent::OpenPicker(kind) => {
+                self.open_settings_picker(kind);
+                None
+            }
+            ControlCenterEvent::OpenConfigFolder => Some(self.prepare_config_folder_open()),
+            ControlCenterEvent::FocusFromPicker { reverse } => {
+                self.focus_settings_from_picker(reverse);
+                None
+            }
+            ControlCenterEvent::CommitPicker { commit } => {
+                self.commit_settings_picker(commit);
+                None
+            }
             ControlCenterEvent::CancelPicker {
                 popup_hwnd,
                 restore_focus,
-            } => self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus),
+            } => {
+                self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus);
+                None
+            }
             ControlCenterEvent::WindowClosed => {
                 self.close_settings_window();
                 self.remember_settings_position();
+                None
             }
         }
     }
@@ -80,13 +98,32 @@ impl App {
         }
     }
 
-    pub(super) fn handle_diagnostics_event(&mut self, event: DiagnosticsEvent) {
+    pub(super) fn handle_diagnostics_event(
+        &mut self,
+        event: DiagnosticsEvent,
+    ) -> Option<DeferredShellAction> {
         match event {
-            DiagnosticsEvent::Show => self.show_diagnostics(),
-            DiagnosticsEvent::RunSelfTest => self.run_diagnostics_self_test(),
-            DiagnosticsEvent::Copy => self.copy_diagnostics(),
-            DiagnosticsEvent::OpenLogs => self.open_diagnostics_logs(),
-            DiagnosticsEvent::CreateSupportBundle => self.start_support_bundle(),
+            DiagnosticsEvent::Show => {
+                self.show_diagnostics();
+                None
+            }
+            DiagnosticsEvent::RunSelfTest => {
+                self.run_diagnostics_self_test();
+                None
+            }
+            DiagnosticsEvent::Copy => {
+                self.copy_diagnostics();
+                None
+            }
+            DiagnosticsEvent::OpenLogs => Some(self.prepare_diagnostics_logs_open()),
+            DiagnosticsEvent::LogsOpenFinished { error } => {
+                self.finish_diagnostics_logs_open(error);
+                None
+            }
+            DiagnosticsEvent::CreateSupportBundle => {
+                self.start_support_bundle();
+                None
+            }
             DiagnosticsEvent::SupportBundleFinished { path, error } => {
                 if let Some(join) = self.support_bundle.take() {
                     if join.join().is_err() {
@@ -102,6 +139,7 @@ impl App {
                     };
                     window.set_action_status(status);
                 }
+                None
             }
         }
     }

@@ -37,13 +37,15 @@ pub(crate) struct TopChromeGeometry {
     pub caption: Rect,
 }
 
-pub(crate) fn top_chrome_geometry(width: f32, nav_width: f32) -> TopChromeGeometry {
-    let row = Rect::new(
-        nav_width,
-        0.0,
-        (width - nav_width).max(1.0),
-        UiTokens::TOP_BAR_HEIGHT,
-    );
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TitlebarGeometry {
+    pub row: Rect,
+    pub close: Rect,
+    pub caption: Rect,
+}
+
+pub(crate) fn titlebar_geometry(width: f32, left: f32) -> TitlebarGeometry {
+    let row = Rect::new(left, 0.0, (width - left).max(1.0), UiTokens::TOP_BAR_HEIGHT);
     let control_y = row.y + UiTokens::TITLEBAR_BUTTON_TOP;
     let close = Rect::new(
         width - UiTokens::TITLEBAR_BUTTON_RIGHT - UiTokens::TITLEBAR_BUTTON_WIDTH,
@@ -51,6 +53,19 @@ pub(crate) fn top_chrome_geometry(width: f32, nav_width: f32) -> TopChromeGeomet
         UiTokens::TITLEBAR_BUTTON_WIDTH,
         UiTokens::TITLEBAR_BUTTON_HEIGHT,
     );
+    let caption = Rect::new(row.x, row.y, (close.x - row.x).max(0.0), row.h);
+    TitlebarGeometry {
+        row,
+        close,
+        caption,
+    }
+}
+
+pub(crate) fn top_chrome_geometry(width: f32, nav_width: f32) -> TopChromeGeometry {
+    let titlebar = titlebar_geometry(width, nav_width);
+    let row = titlebar.row;
+    let close = titlebar.close;
+    let control_y = row.y + UiTokens::TITLEBAR_BUTTON_TOP;
     let search_x = nav_width + 32.0;
     let search_available = (close.x - search_x - UiTokens::TOP_CHROME_SEARCH_GAP).max(1.0);
     let search_width = search_available.clamp(180.0_f32.min(search_available), 440.0);

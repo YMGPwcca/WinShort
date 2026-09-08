@@ -150,6 +150,7 @@ pub enum AppEvent {
     ToggleSpecialWorkspaceFromUi,
     ShowDiagnostics,
     OpenSettingsPicker(crate::ui::picker::PickerKind),
+    OpenConfigFolder,
     ShowStatusOverlay,
     /// Render the Settings draft overlay without persisting it.
     PreviewOverlay {
@@ -196,6 +197,9 @@ pub enum AppEvent {
     RunDiagnosticsSelfTest,
     CopyDiagnostics,
     OpenDiagnosticsLogs,
+    DiagnosticsLogsOpenFinished {
+        error: Option<String>,
+    },
     CreateSupportBundle,
     ConfigApplied {
         seq: u64,
@@ -258,6 +262,7 @@ pub(crate) enum RoutedAppEvent {
 pub(crate) enum ControlCenterEvent {
     Show,
     OpenPicker(crate::ui::picker::PickerKind),
+    OpenConfigFolder,
     FocusFromPicker {
         reverse: bool,
     },
@@ -308,6 +313,9 @@ pub(crate) enum DiagnosticsEvent {
     RunSelfTest,
     Copy,
     OpenLogs,
+    LogsOpenFinished {
+        error: Option<String>,
+    },
     CreateSupportBundle,
     SupportBundleFinished {
         path: Option<std::path::PathBuf>,
@@ -372,6 +380,7 @@ impl From<AppEvent> for RoutedAppEvent {
             AppEvent::OpenSettingsPicker(kind) => {
                 Self::ControlCenter(ControlCenterEvent::OpenPicker(kind))
             }
+            AppEvent::OpenConfigFolder => Self::ControlCenter(ControlCenterEvent::OpenConfigFolder),
             AppEvent::FocusSettingsFromPicker { reverse } => {
                 Self::ControlCenter(ControlCenterEvent::FocusFromPicker { reverse })
             }
@@ -429,6 +438,9 @@ impl From<AppEvent> for RoutedAppEvent {
             AppEvent::RunDiagnosticsSelfTest => Self::Diagnostics(DiagnosticsEvent::RunSelfTest),
             AppEvent::CopyDiagnostics => Self::Diagnostics(DiagnosticsEvent::Copy),
             AppEvent::OpenDiagnosticsLogs => Self::Diagnostics(DiagnosticsEvent::OpenLogs),
+            AppEvent::DiagnosticsLogsOpenFinished { error } => {
+                Self::Diagnostics(DiagnosticsEvent::LogsOpenFinished { error })
+            }
             AppEvent::CreateSupportBundle => {
                 Self::Diagnostics(DiagnosticsEvent::CreateSupportBundle)
             }
@@ -640,6 +652,34 @@ mod tests {
         ));
         assert!(matches!(drained[2], AppEvent::DevicesChanged));
         assert!(q.drain().is_empty());
+    }
+
+    #[test]
+    fn open_config_folder_routes_as_a_typed_control_center_event() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OpenConfigFolder),
+            RoutedAppEvent::ControlCenter(ControlCenterEvent::OpenConfigFolder)
+        ));
+    }
+
+    #[test]
+    fn open_diagnostics_logs_routes_as_a_typed_diagnostics_event() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OpenDiagnosticsLogs),
+            RoutedAppEvent::Diagnostics(DiagnosticsEvent::OpenLogs)
+        ));
+    }
+
+    #[test]
+    fn diagnostics_logs_completion_routes_as_a_typed_diagnostics_event() {
+        let event = AppEvent::DiagnosticsLogsOpenFinished {
+            error: Some("test failure".into()),
+        };
+        assert!(matches!(
+            RoutedAppEvent::from(event),
+            RoutedAppEvent::Diagnostics(DiagnosticsEvent::LogsOpenFinished { error })
+                if error.as_deref() == Some("test failure")
+        ));
     }
 
     #[test]

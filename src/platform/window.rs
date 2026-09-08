@@ -16,6 +16,43 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWLP_USERDATA, WNDCLASSEXW, WNDPROC,
 };
 
+pub(crate) fn apply_chrome(hwnd: HWND, theme: crate::ui::theme::Theme) {
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+
+    unsafe {
+        let dark: u32 = if theme.mode == crate::ui::theme::ThemeMode::Dark {
+            1
+        } else {
+            0
+        };
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&dark as *const u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+        let preference = DWMWCP_ROUND.0;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            (&preference as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+        let color = theme.bg;
+        let caption = COLORREF(color.r as u32 | ((color.g as u32) << 8) | ((color.b as u32) << 16));
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            (&caption as *const COLORREF).cast(),
+            std::mem::size_of::<COLORREF>() as u32,
+        );
+    }
+}
+
 /// Interior-mutable per-window state stored (boxed) in `GWLP_USERDATA`.
 ///
 /// The WndProc recovers the cell with [`state_cell`] and scopes a

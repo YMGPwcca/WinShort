@@ -24,7 +24,10 @@ mod legacy;
 
 #[cfg(test)]
 pub(crate) use chrome::brand_row_geometry;
-pub(crate) use chrome::{top_chrome_geometry, top_chrome_separator_rect, TopChromeGeometry};
+pub(crate) use chrome::{
+    titlebar_geometry, top_chrome_geometry, top_chrome_separator_rect, TitlebarGeometry,
+    TopChromeGeometry,
+};
 pub(crate) use domain::{
     AudioElement, DisplayElement, ElementDomain, HomeElement, OverlayElement, ShellElement,
     ShortcutCaptureElement, ShortcutElement, SystemElement, WorkspaceElement,

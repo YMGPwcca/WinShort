@@ -6,15 +6,6 @@ use crate::ui::theme::Color;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT;
 
-pub(crate) fn rect(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
-    D2D_RECT_F {
-        left,
-        top,
-        right,
-        bottom,
-    }
-}
-
 impl Renderer {
     pub(crate) fn fill_rect(&self, rect: D2D_RECT_F, role: BrushRole) {
         unsafe { self.target.FillRectangle(&rect, self.brush(role)) }

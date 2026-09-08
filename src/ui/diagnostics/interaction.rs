@@ -9,8 +9,11 @@ use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
 
 impl DiagnosticsUi {
     pub(super) fn action_at(&self, hwnd: HWND, x: f32, y: f32) -> Option<Action> {
-        self.layout(hwnd)
-            .ok()?
+        let layout = self.layout(hwnd).ok()?;
+        if layout.chrome.close.contains(x, y) {
+            return Some(Action::Close);
+        }
+        layout
             .buttons
             .into_iter()
             .find(|(_, rect)| rect.contains(x, y))

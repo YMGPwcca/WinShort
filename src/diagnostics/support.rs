@@ -1248,35 +1248,10 @@ fn add_file<W: Write + std::io::Seek>(
     Ok(())
 }
 
-pub fn open_logs(directory: Option<&Path>) -> Result<()> {
-    use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let directory = directory
+pub(crate) fn log_directory(directory: Option<&Path>) -> PathBuf {
+    directory
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| crate::config::data_dir().join("logs"));
-    fs::create_dir_all(&directory)
-        .map_err(|error| Error::config(format!("create log directory: {error}")))?;
-    let operation = HSTRING::from("open");
-    let target = HSTRING::from(directory.to_string_lossy().as_ref());
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(operation.as_ptr()),
-            PCWSTR(target.as_ptr()),
-            None,
-            None,
-            SW_SHOWNORMAL,
-        )
-    };
-    if result.0 as usize <= 32 {
-        return Err(Error::config(format!(
-            "open log directory failed ({})",
-            result.0 as usize
-        )));
-    }
-    Ok(())
+        .unwrap_or_else(|| crate::config::data_dir().join("logs"))
 }
 
 pub fn copy_diagnostics(

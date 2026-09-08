@@ -25,7 +25,9 @@ pub(crate) use audio::device_value_rect;
 pub(crate) use audio::draw_device_row;
 #[cfg(test)]
 pub(crate) use buttons::titlebar_glyph_bounds;
-pub(crate) use buttons::{draw_button, draw_button_style, draw_close_button};
+pub(crate) use buttons::{
+    draw_button, draw_button_style, draw_close_button, draw_close_button_rect,
+};
 pub(crate) use cards::{draw_home_card, draw_profile_card, draw_profile_name_row};
 pub(crate) use choices::{draw_choice, draw_labeled_choice};
 pub(crate) use displays::draw_display_route_card;
@@ -50,6 +52,8 @@ pub(crate) use search::draw_search_box;
 #[cfg(test)]
 pub(crate) use search::{search_caret_rect, search_text_rect};
 pub(crate) use shortcuts::{draw_hotkey_card, draw_hotkey_keycap};
+#[cfg(test)]
+pub(crate) use sliders::slider_cluster_geometry;
 pub(crate) use sliders::slider_track_rect;
 #[cfg(test)]
 pub(crate) use state::{interaction_state, InteractionState};

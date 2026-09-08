@@ -4,7 +4,7 @@ use super::native::invalidate;
 use super::state::SettingsUi;
 use crate::config::model::OverlayBlur;
 use crate::ui::controls;
-use crate::ui::layout::ElementId;
+use crate::ui::layout::{ElementId, Rect};
 use windows::Win32::Foundation::HWND;
 
 impl SettingsUi {
@@ -41,9 +41,12 @@ impl SettingsUi {
         let Some(element) = self.layout.element(id) else {
             return;
         };
-        let track = controls::slider_track_rect(element.rect);
-        let ratio = (x - track.x) / track.w;
-        self.set_slider_from_ratio(id, ratio);
+        self.set_slider_from_ratio(id, Self::slider_ratio_from_x(element.rect, x));
+    }
+
+    pub(super) fn slider_ratio_from_x(row: Rect, x: f32) -> f32 {
+        let track = controls::slider_track_rect(row);
+        (x - track.x) / track.w
     }
 
     pub(super) fn slider_value(id: ElementId, current: f32, step: f32) -> f32 {
@@ -112,5 +115,26 @@ impl SettingsUi {
         }
         invalidate(hwnd);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_mapping_uses_the_shared_slider_track_geometry() {
+        let row = Rect::new(248.0, 100.0, 680.0, 56.0);
+        let geometry = controls::slider_cluster_geometry(row);
+
+        assert!((SettingsUi::slider_ratio_from_x(row, geometry.track.x)).abs() < f32::EPSILON);
+        assert!(
+            (SettingsUi::slider_ratio_from_x(row, geometry.track.right()) - 1.0).abs()
+                < f32::EPSILON
+        );
+        assert_eq!(
+            SettingsUi::slider_ratio_from_x(row, geometry.track.x + geometry.track.w * 0.25),
+            0.25
+        );
     }
 }

@@ -2,7 +2,7 @@
 
 use super::super::native::invalidate;
 use super::super::state::DiagnosticsUi;
-use super::super::window::apply_chrome;
+use crate::platform::window::apply_chrome;
 
 use crate::ui::theme::Theme;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};

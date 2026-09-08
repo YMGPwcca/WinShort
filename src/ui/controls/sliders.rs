@@ -6,17 +6,58 @@ use super::surface::draw_surface;
 use crate::ui::layout::{Element, Rect};
 use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
 
-pub(crate) fn slider_track_rect(row: Rect) -> Rect {
+const SLIDER_DESCRIPTION_WIDTH: f32 = 300.0;
+const SLIDER_DESCRIPTION_TRACK_GAP: f32 = 24.0;
+const SLIDER_TRACK_VALUE_GAP: f32 = 18.0;
+const SLIDER_TRACK_REDUCTION: f32 = 2.0 / 3.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SliderClusterGeometry {
+    pub(crate) label: Rect,
+    pub(crate) description: Rect,
+    pub(crate) track: Rect,
+    pub(crate) value: Rect,
+}
+
+pub(crate) fn slider_cluster_geometry(row: Rect) -> SliderClusterGeometry {
     let rect = row.inset(1.0);
-    let label_end = (rect.x + rect.w * 0.34).clamp(rect.x + 150.0, rect.x + 230.0);
-    let value_width = 74.0;
-    let right = rect.right() - 18.0 - value_width;
-    Rect::new(
-        label_end,
-        rect.y + rect.h * 0.5 - 3.0,
-        (right - label_end - 14.0).max(100.0),
-        6.0,
-    )
+    let stack_top = rect.y + (rect.h - 40.0) * 0.5;
+    let text_x = rect.x + BODY_LEFT;
+    let value = Rect::new(rect.right() - 88.0, rect.y, 70.0, rect.h);
+    let description_width =
+        SLIDER_DESCRIPTION_WIDTH.min((value.x - SLIDER_DESCRIPTION_TRACK_GAP - text_x).max(1.0));
+    let label = Rect::new(text_x, stack_top, description_width, 20.0);
+    let description = Rect::new(text_x, stack_top + 22.0, description_width, 18.0);
+
+    // Keep the existing slider column as the reference span, then center the
+    // shortened track inside the space left by the wider help text and value.
+    let reference_left = (rect.x + rect.w * 0.34).clamp(rect.x + 150.0, rect.x + 230.0);
+    let reference_right = value.x - 14.0;
+    let reference_width = (reference_right - reference_left).max(1.0);
+    let track_width = (reference_width * SLIDER_TRACK_REDUCTION).min(
+        (value.x - SLIDER_TRACK_VALUE_GAP - description.right() - SLIDER_DESCRIPTION_TRACK_GAP)
+            .max(1.0),
+    );
+    let available_left = description.right() + SLIDER_DESCRIPTION_TRACK_GAP;
+    let available_right = value.x - SLIDER_TRACK_VALUE_GAP;
+    let centered_left = reference_left + (reference_width - track_width) * 0.5;
+    let track_x = if available_right >= available_left + track_width {
+        centered_left.clamp(available_left, available_right - track_width)
+    } else {
+        available_left.min(available_right)
+    };
+    let track = Rect::new(track_x, rect.y + rect.h * 0.5 - 3.0, track_width, 6.0);
+
+    SliderClusterGeometry {
+        label,
+        description,
+        track,
+        value,
+    }
+}
+
+pub(crate) fn slider_track_rect(row: Rect) -> Rect {
+    slider_cluster_geometry(row).track
 }
 
 pub(super) fn draw_slider_cluster(
@@ -42,10 +83,10 @@ pub(super) fn draw_slider_cluster(
         state,
         ROW_RADIUS,
     );
-    let stack_top = rect.y + (rect.h - 40.0) * 0.5;
+    let geometry = slider_cluster_geometry(element.rect);
     r.text_clipped(
         &element.label,
-        Rect::new(rect.x + BODY_LEFT, stack_top, 150.0, 20.0).d2d(),
+        geometry.label.d2d(),
         TextStyle::BodyStrong,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -55,7 +96,7 @@ pub(super) fn draw_slider_cluster(
     );
     r.text_clipped(
         &element.description,
-        Rect::new(rect.x + BODY_LEFT, stack_top + 22.0, 150.0, 18.0).d2d(),
+        geometry.description.d2d(),
         TextStyle::Caption,
         if interaction.disabled {
             BrushRole::TextDisabled
@@ -106,10 +147,9 @@ pub(super) fn draw_slider_cluster(
         true,
         0.0,
     );
-    let value_rect = Rect::new(rect.right() - 88.0, rect.y, 70.0, rect.h);
     r.text_clipped(
         label,
-        value_rect.d2d(),
+        geometry.value.d2d(),
         TextStyle::CaptionRight,
         if interaction.disabled {
             BrushRole::TextDisabled

@@ -99,6 +99,13 @@ pub struct App {
     /// up with tray/Settings and surfaces why a subsystem is dark.
     degraded: Vec<(&'static str, String)>,
 }
+
+#[derive(Debug)]
+pub(crate) enum DeferredShellAction {
+    OpenConfigFolder { directory: std::path::PathBuf },
+    OpenDiagnosticsLogs { directory: std::path::PathBuf },
+}
+
 struct PendingDisplayRollback {
     profile: crate::display::DisplayProfile,
     rollback: crate::display::DisplayRollback,
@@ -862,14 +869,30 @@ impl App {
         }
     }
 
-    fn open_diagnostics_logs(&mut self) {
+    fn prepare_diagnostics_logs_open(&mut self) -> DeferredShellAction {
         crate::diagnostics::logging::flush();
         let snapshot = self.diagnostics_snapshot();
-        let status =
-            match crate::diagnostics::support::open_logs(snapshot.logging.directory.as_deref()) {
-                Ok(()) => "Opened the WinShort log directory".into(),
-                Err(error) => format!("Open Logs failed — {error}"),
-            };
+        DeferredShellAction::OpenDiagnosticsLogs {
+            directory: crate::diagnostics::support::log_directory(
+                snapshot.logging.directory.as_deref(),
+            ),
+        }
+    }
+
+    fn prepare_config_folder_open(&self) -> DeferredShellAction {
+        DeferredShellAction::OpenConfigFolder {
+            directory: crate::config::data_dir(),
+        }
+    }
+
+    fn finish_diagnostics_logs_open(&mut self, error: Option<String>) {
+        let status = match error {
+            Some(error) => {
+                crate::error_!("open diagnostics logs failed: {error}");
+                format!("Open Logs failed — {error}")
+            }
+            None => "Opened the WinShort log directory".into(),
+        };
         if let Some(window) = &mut self.diagnostics {
             window.set_action_status(status);
         }
@@ -1337,26 +1360,41 @@ impl App {
         self.show_overlay_model(self.status_overlay_model());
     }
     /// Route a cross-thread transport event into one main-thread domain handler.
-    pub fn route_event(&mut self, event: AppEvent) {
+    pub(crate) fn route_event(&mut self, event: AppEvent) -> Option<DeferredShellAction> {
         if self.shutting_down {
             crate::log_debug!(
                 "dropping {:?} during shutdown",
                 std::mem::discriminant(&event)
             );
-            return;
+            return None;
         }
         match crate::event::RoutedAppEvent::from(event) {
             crate::event::RoutedAppEvent::ControlCenter(event) => {
                 self.handle_control_center_event(event)
             }
-            crate::event::RoutedAppEvent::Display(event) => self.handle_display_event(event),
+            crate::event::RoutedAppEvent::Display(event) => {
+                self.handle_display_event(event);
+                None
+            }
             crate::event::RoutedAppEvent::Diagnostics(event) => {
                 self.handle_diagnostics_event(event)
             }
-            crate::event::RoutedAppEvent::Overlay(event) => self.handle_overlay_event(event),
-            crate::event::RoutedAppEvent::Config(event) => self.handle_config_event(event),
-            crate::event::RoutedAppEvent::Desktop(event) => self.handle_desktop_event(event),
-            crate::event::RoutedAppEvent::Audio(event) => self.handle_audio_event(event),
+            crate::event::RoutedAppEvent::Overlay(event) => {
+                self.handle_overlay_event(event);
+                None
+            }
+            crate::event::RoutedAppEvent::Config(event) => {
+                self.handle_config_event(event);
+                None
+            }
+            crate::event::RoutedAppEvent::Desktop(event) => {
+                self.handle_desktop_event(event);
+                None
+            }
+            crate::event::RoutedAppEvent::Audio(event) => {
+                self.handle_audio_event(event);
+                None
+            }
         }
     }
 
@@ -1541,14 +1579,14 @@ unsafe extern "system" fn main_wndproc(
 
         event::WM_APP_UI_ACCEPTANCE_SHOW => {
             if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
-                with_app(|app| app.route_event(AppEvent::ShowStatusOverlay));
+                dispatch_main_event(AppEvent::ShowStatusOverlay);
             }
             LRESULT(0)
         }
 
         WM_APP_EVENT => {
             for ev in event::EVENTS.get_or_init(event::EventQueue::new).drain() {
-                with_app(|app| app.route_event(ev));
+                dispatch_main_event(ev);
             }
             LRESULT(0)
         }
@@ -1612,6 +1650,42 @@ unsafe extern "system" fn main_wndproc(
     }
 }
 
+/// Route one event under the App borrow, then execute any native shell action
+/// only after that borrow has ended. A completion event is routed through a
+/// fresh App borrow after the reentrant native call returns.
+fn dispatch_main_event(event: AppEvent) {
+    let action = with_app(|app| app.route_event(event)).flatten();
+    let Some(action) = action else {
+        return;
+    };
+    let Some(completion) = execute_deferred_shell_action(action) else {
+        return;
+    };
+    with_app(|app| {
+        let _ = app.route_event(completion);
+    });
+}
+
+fn execute_deferred_shell_action(action: DeferredShellAction) -> Option<AppEvent> {
+    match action {
+        DeferredShellAction::OpenConfigFolder { directory } => {
+            if let Err(error) = crate::platform::shell::open_folder(&directory) {
+                crate::error_!("open config folder failed: {error}");
+            }
+            None
+        }
+        DeferredShellAction::OpenDiagnosticsLogs { directory } => {
+            let error = crate::platform::shell::open_folder(&directory)
+                .map_err(|error| {
+                    crate::error::Error::config(format!("open log directory: {error}"))
+                })
+                .err()
+                .map(|error| error.to_string());
+            Some(AppEvent::DiagnosticsLogsOpenFinished { error })
+        }
+    }
+}
+
 unsafe fn handle_tray(wparam: WPARAM, lparam: LPARAM) {
     match crate::tray::decode_callback(wparam, lparam) {
         TrayEvent::DoubleClick { .. } => {
@@ -1637,7 +1711,9 @@ fn apply_menu_command(app: &mut App, command: Option<tray_menu::Command>) {
     use tray_menu::Command;
     match command {
         Some(Command::OpenSettings) => app.show_settings(),
-        Some(Command::ShowStatus) => app.route_event(AppEvent::ShowStatusOverlay),
+        Some(Command::ShowStatus) => {
+            let _ = app.route_event(AppEvent::ShowStatusOverlay);
+        }
         Some(Command::PauseShortcuts) => app.toggle_suspended(),
         Some(Command::Diagnostics) => app.show_diagnostics(),
         Some(Command::Exit) => {
@@ -1710,6 +1786,48 @@ mod shutdown_gate_tests {
         app.route_event(AppEvent::ControlCenterWindowClosed);
         assert!(!app.shutting_down);
         assert!(app.settings.is_none());
+    }
+
+    #[test]
+    fn config_folder_event_prepares_a_deferred_shell_action() {
+        let mut app = test_app();
+        assert!(matches!(
+            app.route_event(AppEvent::OpenConfigFolder),
+            Some(DeferredShellAction::OpenConfigFolder { .. })
+        ));
+    }
+
+    #[test]
+    fn diagnostics_open_logs_uses_the_same_deferred_shell_action_boundary() {
+        let mut app = test_app();
+        assert!(matches!(
+            app.route_event(AppEvent::OpenDiagnosticsLogs),
+            Some(DeferredShellAction::OpenDiagnosticsLogs { .. })
+        ));
+    }
+
+    #[test]
+    fn shell_execution_stays_outside_ui_and_app_domain_handlers() {
+        let app_source = include_str!("app.rs");
+        let app_domain_source = include_str!("app/event_router.rs");
+        let settings_activation_source = include_str!("ui/control_center/commands.rs");
+        let diagnostics_activation_source = include_str!("ui/diagnostics/interaction.rs");
+        let executor = app_source
+            .split("fn execute_deferred_shell_action(")
+            .nth(1)
+            .and_then(|source| source.split("unsafe fn handle_tray").next())
+            .expect("deferred shell executor must remain a distinct function");
+
+        assert!(
+            app_source.contains("let action = with_app(|app| app.route_event(event)).flatten();")
+        );
+        assert!(executor.contains("platform::shell::open_folder"));
+        assert!(!app_domain_source.contains("execute_deferred_shell_action"));
+        assert!(!app_domain_source.contains("platform::shell::open_folder"));
+        assert!(!settings_activation_source.contains("execute_deferred_shell_action"));
+        assert!(!settings_activation_source.contains("platform::shell::open_folder"));
+        assert!(!diagnostics_activation_source.contains("execute_deferred_shell_action"));
+        assert!(!diagnostics_activation_source.contains("platform::shell::open_folder"));
     }
 
     #[test]

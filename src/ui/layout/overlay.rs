@@ -246,19 +246,19 @@ pub(super) fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) 
             ElementId::OverlayScale,
             ElementKind::Slider,
             "Size",
-            "0.7× to 1.6×",
+            "Adjust the size of the status card",
         ),
         (
             ElementId::OverlayBlur,
             ElementKind::Slider,
             "Blur",
-            "Five-stop background treatment",
+            "Control how strongly the background is blurred",
         ),
         (
             ElementId::OverlayDuration,
             ElementKind::Slider,
             "Duration",
-            "Show for the configured seconds",
+            "Choose how long the overlay stays visible",
         ),
     ] {
         let slider_y = y;

@@ -11,6 +11,25 @@ fn overlay_layout_has_no_duplicate_windows_audio_toggle() {
     assert!(layout.element(ElementId::OverlayWorkspace).is_some());
     assert!(layout.element(ElementId::OverlayDisplayProfile).is_some());
     assert!(layout.element(ElementId::OverlayBlur).is_some());
+    for (id, description) in [
+        (
+            ElementId::OverlayScale,
+            "Adjust the size of the status card",
+        ),
+        (
+            ElementId::OverlayBlur,
+            "Control how strongly the background is blurred",
+        ),
+        (
+            ElementId::OverlayDuration,
+            "Choose how long the overlay stays visible",
+        ),
+    ] {
+        assert_eq!(
+            layout.element(id).expect("overlay slider").description,
+            description
+        );
+    }
 
     let system = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::System, "", 0, None);
     assert!(system.element(ElementId::OverlayAppearance).is_none());

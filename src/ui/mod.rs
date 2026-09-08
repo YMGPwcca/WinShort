@@ -2,6 +2,7 @@
 //! shared rendering/theme/layout, and native picker semantics.
 
 pub(crate) mod animation;
+pub(crate) mod chrome;
 pub(crate) mod control_center;
 pub(crate) mod control_center_automation;
 pub(crate) mod controls;

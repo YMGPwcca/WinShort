@@ -136,6 +136,16 @@ pub(crate) fn draw_close_button(
     pressed: bool,
     focused: bool,
 ) {
+    draw_close_button_rect(r, element.rect, hovered, pressed, focused);
+}
+
+pub(crate) fn draw_close_button_rect(
+    r: &Renderer,
+    rect: Rect,
+    hovered: bool,
+    pressed: bool,
+    focused: bool,
+) {
     let state = interaction_state(Interaction {
         hovered,
         pressed,
@@ -145,17 +155,17 @@ pub(crate) fn draw_close_button(
         state_t: 0.0,
     });
     if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
-        r.fill_rounded(element.rect.d2d(), 4.0, BrushRole::Danger);
+        r.fill_rounded(rect.d2d(), 4.0, BrushRole::Danger);
     }
     if focused {
-        r.stroke_rounded(element.rect.inset(-2.0).d2d(), 6.0, BrushRole::Focus, 1.5);
+        r.stroke_rounded(rect.inset(-2.0).d2d(), 6.0, BrushRole::Focus, 1.5);
     }
     let role = if matches!(state, InteractionState::Hovered | InteractionState::Pressed) {
         BrushRole::AccentText
     } else {
         BrushRole::TextSecondary
     };
-    let glyph = titlebar_glyph_bounds(element.rect);
+    let glyph = titlebar_glyph_bounds(rect);
     r.line(
         glyph.x + 1.5,
         glyph.y + 1.5,

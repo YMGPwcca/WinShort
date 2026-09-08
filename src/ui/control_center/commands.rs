@@ -1,7 +1,7 @@
 //! Domain-routed activation for the Control Center.
 
 use super::config_toggle::ConfigToggle;
-use super::native::{invalidate, open_config_folder, post_main, start_timer};
+use super::native::{invalidate, post_main, start_timer};
 use super::state::{ConfirmationTarget, SettingsUi};
 use crate::audio::DeviceCycleFlow;
 use crate::ui::control_center_automation::node_has_invoke;
@@ -282,17 +282,40 @@ impl SettingsUi {
                 ConfigToggle::PauseShortcuts,
             ),
             SystemElement::DebugLogging => self.toggle_debug_logging(hwnd, ElementId::DebugLogging),
-            SystemElement::DiagnosticsStatus => post_main(crate::event::AppEvent::ShowDiagnostics),
-            SystemElement::OpenConfigFolder => {
-                if let Err(error) = open_config_folder(&self.access.data_dir()) {
-                    crate::error_!("open config folder failed: {error}");
+            SystemElement::DiagnosticsStatus | SystemElement::OpenConfigFolder => {
+                if let Some(event) = Self::system_command_event(element) {
+                    post_main(event);
                 }
             }
             SystemElement::ResetSettings => self.activate_reset_settings(hwnd),
         }
     }
 
+    fn system_command_event(element: SystemElement) -> Option<crate::event::AppEvent> {
+        match element {
+            SystemElement::DiagnosticsStatus => Some(crate::event::AppEvent::ShowDiagnostics),
+            SystemElement::OpenConfigFolder => Some(crate::event::AppEvent::OpenConfigFolder),
+            SystemElement::StartWithWindows
+            | SystemElement::StartHotkeysEnabled
+            | SystemElement::DebugLogging
+            | SystemElement::ResetSettings => None,
+        }
+    }
+
     fn request_picker(kind: PickerKind) {
         post_main(crate::event::AppEvent::OpenSettingsPicker(kind));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_folder_activation_is_only_a_deferred_typed_event() {
+        assert!(matches!(
+            SettingsUi::system_command_event(SystemElement::OpenConfigFolder),
+            Some(crate::event::AppEvent::OpenConfigFolder)
+        ));
     }
 }
