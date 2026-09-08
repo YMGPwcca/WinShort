@@ -5,8 +5,8 @@ pub mod menu;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW,
-    NOTIFYICON_VERSION_4, NOTIFY_ICON_DATA_FLAGS,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4, NOTIFY_ICON_DATA_FLAGS,
 };
 
 use crate::error::{Error, Result};
@@ -70,29 +70,13 @@ impl Tray {
         };
         nid.hWnd = hwnd;
         nid.uID = TRAY_UID;
-        nid.uFlags = NOTIFY_ICON_DATA_FLAGS(NIF_MESSAGE | NIF_ICON | NIF_TIP);
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_APP_TRAY;
         nid.hIcon = icons.0.handle();
         set_tip(&mut nid, "WinShort");
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
 
-        unsafe {
-            bool_ok(
-                Shell_NotifyIconW(NIM_ADD, &nid),
-                "Shell_NotifyIconW(NIM_ADD)",
-            )?;
-            // Ask for version-4 semantics AFTER adding (documented order).
-            let mut v = nid;
-            v.uFlags = NOTIFY_ICON_DATA_FLAGS::default();
-            if let Err(e) = bool_ok(
-                Shell_NotifyIconW(NIM_SETVERSION, &v),
-                "Shell_NotifyIconW(NIM_SETVERSION)",
-            ) {
-                // Roll back the half-installed icon (#23).
-                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-                return Err(e);
-            }
-        }
+        add_versioned_icon(&nid)?;
 
         Ok(Tray {
             nid_base: nid,
@@ -108,7 +92,7 @@ impl Tray {
             return Ok(());
         }
         let mut nid = self.nid_base;
-        nid.uFlags = NOTIFY_ICON_DATA_FLAGS(NIF_ICON);
+        nid.uFlags = NIF_ICON;
         nid.hIcon = match state {
             TrayState::Normal => self._icon_normal.handle(),
             TrayState::HotkeysSuspended => self._icon_suspended.handle(),
@@ -126,28 +110,14 @@ impl Tray {
     /// Recreate the icon after Explorer restart (TaskbarCreated broadcast).
     pub fn recreate(&mut self) -> Result<()> {
         let mut nid = self.nid_base;
-        nid.uFlags = NOTIFY_ICON_DATA_FLAGS(NIF_MESSAGE | NIF_ICON | NIF_TIP);
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.hIcon = match self.state {
             TrayState::Normal => self._icon_normal.handle(),
             TrayState::HotkeysSuspended => self._icon_suspended.handle(),
         };
-        unsafe {
-            // Ignore "already exists": Explorer may have resurrected us partially.
-            let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-            bool_ok(
-                Shell_NotifyIconW(NIM_ADD, &nid),
-                "Shell_NotifyIconW(re-add)",
-            )?;
-            let mut v = nid;
-            v.uFlags = NOTIFY_ICON_DATA_FLAGS::default();
-            v.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-
-            bool_ok(
-                Shell_NotifyIconW(NIM_SETVERSION, &v),
-                "Shell_NotifyIconW(NIM_SETVERSION)",
-            )?;
-        }
-        Ok(())
+        // Explorer may already have partially resurrected this same icon.
+        let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
+        add_versioned_icon(&nid)
     }
 
     pub fn remove(&self) {
@@ -217,9 +187,28 @@ pub fn decode_callback(wparam: WPARAM, lparam: LPARAM) -> TrayEvent {
 }
 
 // NIF_* constants re-exported locally (bitflag values).
-const NIF_MESSAGE: u32 = 0x01;
-const NIF_ICON: u32 = 0x02;
-const NIF_TIP: u32 = 0x04;
+
+/// Version negotiation is part of installation, including after Explorer restart.
+fn add_versioned_icon(nid: &NOTIFYICONDATAW) -> Result<()> {
+    // SAFETY: the structure names our live owner window and owned icon handle.
+    unsafe {
+        bool_ok(
+            Shell_NotifyIconW(NIM_ADD, nid),
+            "Shell_NotifyIconW(NIM_ADD)",
+        )?;
+        let mut version = *nid;
+        version.uFlags = NOTIFY_ICON_DATA_FLAGS::default();
+        version.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        if let Err(error) = bool_ok(
+            Shell_NotifyIconW(NIM_SETVERSION, &version),
+            "Shell_NotifyIconW(NIM_SETVERSION)",
+        ) {
+            let _ = Shell_NotifyIconW(NIM_DELETE, nid);
+            return Err(error);
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

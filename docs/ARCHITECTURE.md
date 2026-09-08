@@ -290,7 +290,11 @@ independently on failure (logged, surfaced in the Control Center → Advanced pa
 
 ## Verification infrastructure
 
-GitHub Actions (`.github/workflows/ci.yml`) independently verifies every push/PR on Windows
-hosted runners: fmt, clippy `-D warnings`, full test suite, x86_64 release build with manifest
-byte-check, i686/aarch64 compile checks, MSRV job (Rust 1.85), cargo-deny dependency/security
-gate. Tag-driven `release.yml` packages signed-ready x86_64/i686 ZIPs with SHA256SUMS.
+Pushes and pull requests intentionally do not use GitHub-hosted CI. The canonical verification
+entry point is `tools/final_validation.ps1`, run locally on Windows from a clean worktree. It
+covers fmt, all-target/all-feature check, strict Clippy, the full regression suite, x86_64 release
+build and manifest/icon checks, the nullable UIA ABI regression, i686/aarch64 compile checks,
+Rust 1.85 MSRV, cargo-deny, machine UI acceptance, and the existing visual-sanity capture. The
+visual sheet still requires human review. Tag/manual `release.yml` remains separate and packages
+signed-ready x86_64/i686 ZIPs with SHA256SUMS; a successful local final gate is required before
+tagging.

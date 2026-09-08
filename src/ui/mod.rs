@@ -1,17 +1,18 @@
 //! UI subsystem: the WinShort Control Center, transient overlay, diagnostics,
 //! shared rendering/theme/layout, and native picker semantics.
 
-pub mod animation;
-pub mod control_center;
-pub mod control_center_automation;
-pub mod controls;
-pub mod diagnostics;
-pub mod first_run;
-pub mod layout;
-pub mod navigation;
-pub mod overlay;
-pub mod picker;
-pub mod presentation;
-pub mod prompt;
-pub mod renderer;
-pub mod theme;
+pub(crate) mod animation;
+pub(crate) mod control_center;
+pub(crate) mod control_center_automation;
+pub(crate) mod controls;
+pub(crate) mod diagnostics;
+pub(crate) mod first_run;
+pub(crate) mod focus;
+pub(crate) mod layout;
+pub(crate) mod navigation;
+pub(crate) mod overlay;
+pub(crate) mod picker;
+pub(crate) mod presentation;
+pub(crate) mod prompt;
+pub(crate) mod renderer;
+pub(crate) mod theme;

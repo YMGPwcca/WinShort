@@ -15,6 +15,8 @@ use crate::platform::window as win;
 use crate::tray::{menu as tray_menu, Tray, TrayEvent, TrayState};
 use crate::ui::control_center::ControlCenterWindow;
 
+mod event_router;
+
 pub static CONFIG: std::sync::OnceLock<std::sync::Arc<crate::config::ConfigHandle>> =
     std::sync::OnceLock::new();
 
@@ -668,7 +670,13 @@ impl App {
         devices: crate::audio::devices::DeviceLists,
     ) -> Result<&mut ControlCenterWindow> {
         if self.settings.is_none() {
-            self.settings = Some(ControlCenterWindow::create(devices)?);
+            self.settings = Some(ControlCenterWindow::create(
+                devices,
+                crate::ui::control_center::ConfigAccess::new(config, |candidate| {
+                    commit_config(candidate, crate::event::ConfigCommitOrigin::Settings)
+                }),
+                crate::ui::control_center::ControlCenterAccess::system(),
+            )?);
             info!("settings window created");
         }
         let active = self.display_rollback.is_some();
@@ -681,7 +689,11 @@ impl App {
             settings.set_display_rollback_state(active, keep_available);
             settings.set_runtime_snapshot(runtime);
         }
-        Ok(self.settings.as_mut().expect("just created"))
+        self.settings.as_mut().ok_or_else(|| {
+            crate::error::Error::internal(
+                "Control Center state missing after successful window construction",
+            )
+        })
     }
 
     pub fn show_settings(&mut self) {
@@ -705,7 +717,11 @@ impl App {
             self.diagnostics = Some(crate::ui::diagnostics::DiagnosticsWindow::create(snapshot)?);
             info!("diagnostics window created");
         }
-        Ok(self.diagnostics.as_mut().expect("just created"))
+        self.diagnostics.as_mut().ok_or_else(|| {
+            crate::error::Error::internal(
+                "Diagnostics state missing after successful window construction",
+            )
+        })
     }
 
     pub fn show_diagnostics(&mut self) {
@@ -722,43 +738,58 @@ impl App {
     }
     fn open_settings_picker(&mut self, kind: crate::ui::picker::PickerKind) {
         let devices = self.audio_devices();
-        let monitors = crate::platform::monitor::all();
         if let Some(settings) = &mut self.settings {
-            if let Err(error) = settings.open_picker(kind, devices, monitors) {
+            if let Err(error) = settings.open_picker(kind, devices) {
                 error_!("open settings picker failed: {error}");
             }
         }
     }
 
-    pub(crate) fn commit_settings_picker(
-        &mut self,
-        kind: crate::ui::picker::PickerKind,
-        value: crate::ui::picker::PickerValue,
-    ) {
-        let system_target = match (&kind, &value) {
-            (
-                crate::ui::picker::PickerKind::InputDevice,
-                crate::ui::picker::PickerValue::Device(
-                    crate::config::model::DeviceSelection::Endpoint(endpoint),
+    pub(crate) fn commit_settings_picker(&mut self, commit: crate::ui::picker::PickerCommit) {
+        let system_target = match &commit {
+            crate::ui::picker::PickerCommit::InputDevice(
+                crate::config::model::DeviceSelection::Endpoint(endpoint),
+            ) => Some((
+                crate::audio::DeviceCycleFlow::Input,
+                endpoint.clone(),
+                crate::ui::picker::PickerCommit::InputDevice(
+                    crate::config::model::DeviceSelection::Default,
                 ),
-            ) => Some((crate::audio::DeviceCycleFlow::Input, endpoint.clone())),
-            (
-                crate::ui::picker::PickerKind::OutputDevice,
-                crate::ui::picker::PickerValue::Device(
-                    crate::config::model::DeviceSelection::Endpoint(endpoint),
+            )),
+            crate::ui::picker::PickerCommit::OutputDevice(
+                crate::config::model::DeviceSelection::Endpoint(endpoint),
+            ) => Some((
+                crate::audio::DeviceCycleFlow::Output,
+                endpoint.clone(),
+                crate::ui::picker::PickerCommit::OutputDevice(
+                    crate::config::model::DeviceSelection::Default,
                 ),
-            ) => Some((crate::audio::DeviceCycleFlow::Output, endpoint.clone())),
-            _ => None,
+            )),
+            crate::ui::picker::PickerCommit::InputDevice(
+                crate::config::model::DeviceSelection::Default,
+            )
+            | crate::ui::picker::PickerCommit::OutputDevice(
+                crate::config::model::DeviceSelection::Default,
+            )
+            | crate::ui::picker::PickerCommit::InputAllowlist(_)
+            | crate::ui::picker::PickerCommit::OutputAllowlist(_)
+            | crate::ui::picker::PickerCommit::DisplayProfile(_)
+            | crate::ui::picker::PickerCommit::DisplayOutputs(_)
+            | crate::ui::picker::PickerCommit::DisplayTopology(_)
+            | crate::ui::picker::PickerCommit::DisplayRoute(_)
+            | crate::ui::picker::PickerCommit::InputRole(_)
+            | crate::ui::picker::PickerCommit::OutputRole(_)
+            | crate::ui::picker::PickerCommit::DesktopNumberModifier(_)
+            | crate::ui::picker::PickerCommit::MoveDesktopModifier(_)
+            | crate::ui::picker::PickerCommit::SilentMoveDesktopModifier(_)
+            | crate::ui::picker::PickerCommit::OverlayPosition(_)
+            | crate::ui::picker::PickerCommit::OverlayAppearance(_)
+            | crate::ui::picker::PickerCommit::OverlayMonitor(_) => None,
         };
 
-        if let Some((flow, endpoint)) = system_target {
+        if let Some((flow, endpoint, persisted_commit)) = system_target {
             if let Some(settings) = &mut self.settings {
-                settings.commit_picker(
-                    kind,
-                    crate::ui::picker::PickerValue::Device(
-                        crate::config::model::DeviceSelection::Default,
-                    ),
-                );
+                settings.commit_picker(persisted_commit);
             }
             let live = crate::app::config();
             let follows_system_default = match flow {
@@ -779,7 +810,7 @@ impl App {
         }
 
         if let Some(settings) = &mut self.settings {
-            settings.commit_picker(kind, value);
+            settings.commit_picker(commit);
         }
     }
 
@@ -884,8 +915,8 @@ impl App {
                     },
                 };
                 let hwnd = windows::Win32::Foundation::HWND(hwnd_raw as *mut _);
-                unsafe {
-                    let _ = crate::event::post_event(hwnd, event);
+                if !unsafe { crate::event::post_event(hwnd, event) } {
+                    crate::warn_!("support bundle completion queued but main-window wake failed");
                 }
             }) {
             Ok(join) => self.support_bundle = Some(join),
@@ -1301,609 +1332,60 @@ impl App {
         // refreshes this same multi-row presentation (#18, #72).
         self.show_overlay_model(self.status_overlay_model());
     }
-    /// Route an event posted from any thread.
-    pub fn route_event(&mut self, ev: AppEvent) {
-        // Fail-closed during teardown (#43): late ShowSettings/overlay/config
-        // events must not create or resurrect user-facing state.
+    /// Route a cross-thread transport event into one main-thread domain handler.
+    pub fn route_event(&mut self, event: AppEvent) {
         if self.shutting_down {
-            crate::log_debug!("dropping {:?} during shutdown", std::mem::discriminant(&ev));
+            crate::log_debug!(
+                "dropping {:?} during shutdown",
+                std::mem::discriminant(&event)
+            );
             return;
         }
-        match ev {
-            AppEvent::ShowSettings => self.show_settings(),
-            AppEvent::SwitchPreviousDesktopFromUi => {
-                if let Some(desktop) = &self.desktop {
-                    desktop.switch_previous();
-                } else {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::OverlayRow {
-                            icon: crate::ui::overlay::OverlayIcon::Info,
-                            tone: crate::ui::overlay::OverlayTone::Unavailable,
-                            title: "Previous desktop unavailable".into(),
-                            detail: "Workspace service is not available right now".into(),
-                        },
-                    ));
-                }
+        match crate::event::RoutedAppEvent::from(event) {
+            crate::event::RoutedAppEvent::ControlCenter(event) => {
+                self.handle_control_center_event(event)
             }
-            AppEvent::ToggleSpecialWorkspaceFromUi => {
-                if let Some(desktop) = &self.desktop {
-                    desktop.toggle_scratchpad();
-                } else {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::OverlayRow {
-                            icon: crate::ui::overlay::OverlayIcon::Info,
-                            tone: crate::ui::overlay::OverlayTone::Unavailable,
-                            title: "Special Desktop unavailable".into(),
-                            detail: "Workspace service is not available right now".into(),
-                        },
-                    ));
-                }
+            crate::event::RoutedAppEvent::Display(event) => self.handle_display_event(event),
+            crate::event::RoutedAppEvent::Diagnostics(event) => {
+                self.handle_diagnostics_event(event)
             }
-            AppEvent::ShowDiagnostics => self.show_diagnostics(),
-            AppEvent::OpenSettingsPicker(kind) => self.open_settings_picker(kind),
-            AppEvent::ShowStatusOverlay => self.show_status_overlay(),
-            AppEvent::PreviewOverlay { config } => self.show_preview_overlay(config),
-            AppEvent::FocusSettingsFromPicker { reverse } => {
-                self.focus_settings_from_picker(reverse);
-            }
-            AppEvent::CommitSettingsPicker { kind, value } => {
-                self.commit_settings_picker(kind, value);
-            }
-            AppEvent::CancelSettingsPicker {
-                popup_hwnd,
-                restore_focus,
-            } => {
-                self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus);
-            }
-            AppEvent::ControlCenterWindowClosed => {
-                self.close_settings_window();
-                self.remember_settings_position();
-            }
-            AppEvent::OpenDisplayRenamePrompt {
-                profile_id,
-                current_name,
-            } => {
-                if let Some(settings) = &mut self.settings {
-                    if let Err(error) =
-                        settings.open_display_profile_rename(profile_id, current_name)
-                    {
-                        error_!("display profile rename prompt failed: {error}");
-                    }
-                }
-            }
-            AppEvent::DisplayProfileRenameSubmitted { profile_id, name } => {
-                if let Some(settings) = &mut self.settings {
-                    settings.rename_display_profile(&profile_id, &name);
-                }
-            }
-            AppEvent::DisplayProfileRenameCancelled => {
-                if let Some(settings) = &mut self.settings {
-                    settings.cancel_display_profile_rename();
-                }
-            }
-            AppEvent::OpenDisplayRouteEditPrompt {
-                profile_id,
-                route_index,
-                initial,
-            } => {
-                if let Some(settings) = &mut self.settings {
-                    if let Err(error) =
-                        settings.open_display_route_edit(profile_id, route_index, initial)
-                    {
-                        error_!("display route editor prompt failed: {error}");
-                    }
-                }
-            }
-            AppEvent::DisplayProfileRouteEditSubmitted {
-                profile_id,
-                route_index,
-                value,
-            } => {
-                if let Some(settings) = &mut self.settings {
-                    settings.edit_display_route(&profile_id, route_index, &value);
-                }
-            }
-            AppEvent::TestApplyDisplayProfile { profile } => {
-                self.apply_display_profile(profile, true)
-            }
-            AppEvent::ApplyDisplayProfile { profile } => self.apply_display_profile(profile, false),
-            AppEvent::KeepDisplayProfile => self.keep_display_profile(),
-            AppEvent::RevertDisplayProfile => self.revert_display_profile(),
-            AppEvent::RunDiagnosticsSelfTest => self.run_diagnostics_self_test(),
-            AppEvent::CopyDiagnostics => self.copy_diagnostics(),
-            AppEvent::OpenDiagnosticsLogs => self.open_diagnostics_logs(),
-            AppEvent::CreateSupportBundle => self.start_support_bundle(),
-            AppEvent::SupportBundleFinished { path, error } => {
-                if let Some(join) = self.support_bundle.take() {
-                    let _ = join.join();
-                }
-                if let Some(window) = &mut self.diagnostics {
-                    window.set_bundle_running(false);
-                    let status = match (path, error) {
-                        (Some(path), None) => format!("Support bundle created: {}", path.display()),
-                        (_, Some(error)) => format!("Support bundle failed — {error}"),
-                        _ => "Support bundle finished without a result".into(),
-                    };
-                    window.set_action_status(status);
-                }
-            }
-            AppEvent::ConfigApplied { seq, stamp } => {
-                let config = crate::app::config();
-                self.set_suspended(!config.general.start_hotkeys_enabled);
-                if let Some(audio) = &self.audio {
-                    audio.send(crate::audio::AudioCommand::ConfigChanged { stamp });
-                }
-                if let Some(desktop) = &self.desktop {
-                    desktop.configure_scratchpad(
-                        config.virtual_desktops.enabled
-                            && (config.virtual_desktops.scratchpad_assign.is_some()
-                                || config.virtual_desktops.scratchpad_toggle.is_some()),
-                    );
-                }
-                info!("config applied (seq {seq}, origin {:?})", stamp.origin);
-                self.refresh_settings_runtime();
-            }
-            AppEvent::ForegroundWindowChanged { hwnd_raw } => {
-                if let Some(desktop) = &self.desktop {
-                    desktop.foreground_changed(hwnd_raw);
-                }
-            }
-            AppEvent::DesktopActionCompleted { kind } => {
-                let (title, detail) = match kind {
-                    crate::event::DesktopActionKind::Switched => {
-                        ("Desktop changed", "Switched to the selected desktop")
-                    }
-                    crate::event::DesktopActionKind::MovedAndFollowed => {
-                        ("Window moved", "Moved to the selected desktop")
-                    }
-                    crate::event::DesktopActionKind::MovedSilently => {
-                        ("Window moved", "Moved without changing desktops")
-                    }
-                    crate::event::DesktopActionKind::Previous => {
-                        ("Previous desktop", "Returned to the last normal desktop")
-                    }
-                    crate::event::DesktopActionKind::SentToSpecial => {
-                        ("Special Desktop", "Window moved")
-                    }
-                    crate::event::DesktopActionKind::EnteredSpecial => {
-                        ("Special Desktop", "Desktop opened")
-                    }
-                    crate::event::DesktopActionKind::LeftSpecial => {
-                        ("Special Desktop", "Returned to the previous desktop")
-                    }
-                };
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                    crate::ui::overlay::OverlayRow {
-                        icon: crate::ui::overlay::OverlayIcon::Workspace,
-                        tone: crate::ui::overlay::OverlayTone::Changed,
-                        title: title.into(),
-                        detail: detail.into(),
-                    },
-                ));
-                self.refresh_settings_runtime();
-            }
-            AppEvent::DesktopActionFailed { action, reason } => {
-                error_!("desktop action {action} failed: {reason}");
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                    crate::ui::overlay::OverlayRow {
-                        icon: crate::ui::overlay::OverlayIcon::Info,
-                        tone: crate::ui::overlay::OverlayTone::Unavailable,
-                        title: "Couldn't change workspace".into(),
-                        detail: "Try again or open Diagnostics for help".into(),
-                    },
-                ));
-            }
-            AppEvent::DeviceCycleResolved { request_id, result } => {
-                self.handle_device_cycle_result(request_id, result);
-            }
-            AppEvent::MicrophoneStateChanged { state } => {
-                self.microphone_state = state;
-                self.microphone_seen = true;
-                self.refresh_settings_runtime();
-            }
-            AppEvent::OutputStateChanged { state } => {
-                self.output_state = state;
-                self.output_seen = true;
-                self.refresh_settings_runtime();
-            }
-            AppEvent::DefaultOutputChanged(_device) => {}
-            AppEvent::DevicesChanged => {
-                let devices = self.audio_devices();
-                if let Some(settings) = &mut self.settings {
-                    settings.refresh_devices(devices);
-                }
-                self.refresh_settings_runtime();
-            }
-            AppEvent::ForegroundAudioChanged { state, origin } => {
-                let changed = self.foreground_state != state;
-                let is_status_request = matches!(origin, AudioEventOrigin::StatusRequest(_));
-                let status_request_matches = match origin {
-                    AudioEventOrigin::StatusRequest(request_id) => {
-                        self.status_request_id == Some(request_id)
-                    }
-                    _ => false,
-                };
-                if is_status_request && !status_request_matches {
-                    crate::log_debug!("dropping stale foreground status result");
-                    return;
-                }
-                let should_show = Self::should_show_audio_overlay(
-                    origin,
-                    self.foreground_seen,
-                    changed,
-                    crate::app::config().overlay.show_external_audio_changes,
-                    status_request_matches,
-                );
-                self.foreground_state = state;
-                self.foreground_seen = true;
-                self.status_request_id = None;
-                if should_show {
-                    if is_status_request {
-                        self.show_overlay_model(self.status_overlay_model());
-                    } else {
-                        let row = crate::ui::overlay::application_row(&self.foreground_state);
-                        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
-                    }
-                }
-                self.refresh_settings_runtime();
-            }
-            AppEvent::ForegroundVolumeChanged { state, origin } => {
-                if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::application_volume_row(&state),
-                    ));
-                }
-                self.refresh_settings_runtime();
-            }
-            AppEvent::DesktopBackendChanged(status) => {
-                self.desktop_status = status;
-                self.refresh_settings_runtime();
-            }
+            crate::event::RoutedAppEvent::Overlay(event) => self.handle_overlay_event(event),
+            crate::event::RoutedAppEvent::Config(event) => self.handle_config_event(event),
+            crate::event::RoutedAppEvent::Desktop(event) => self.handle_desktop_event(event),
+            crate::event::RoutedAppEvent::Audio(event) => self.handle_audio_event(event),
         }
     }
+
     pub(crate) fn diagnostics_snapshot(&self) -> crate::diagnostics::snapshot::DiagnosticsSnapshot {
-        use crate::audio::state::Aggregate;
-        use crate::desktop::{BackendAvailability, BackendKind};
-        use crate::diagnostics::snapshot::{
-            aggregate_label, ApplicationDiagnostics, AudioDiagnostics, ConfigDiagnostics,
-            DegradedSubsystem, DesktopDiagnostics, DiagnosticsSnapshot, ForegroundAudioDiagnostics,
-            Health, KeyboardDiagnostics, LoggingDiagnostics, OverlayDiagnostics,
-            StartupDiagnostics, WindowsDiagnostics,
-        };
-
-        let config = crate::app::config();
-        let raw_config = (*config).clone();
-        let load = crate::config::load_diagnostics();
-        let validation = crate::config::validate(&raw_config);
-        let validation_messages: Vec<String> = validation
-            .iter()
-            .map(|violation| format!("{}: {}", violation.field, violation.message))
-            .collect();
-        let config_health = if load
-            .source_schema_version
-            .is_some_and(|version| version > crate::config::model::CURRENT_SCHEMA_VERSION)
-            || crate::config::config_readonly()
-        {
-            Health::Error
-        } else if !load.warnings.is_empty() || !load.repaired_fields.is_empty() {
-            Health::Warning
-        } else if !validation_messages.is_empty() {
-            Health::Error
-        } else {
-            Health::Healthy
-        };
-
-        let runtime: crate::audio::AudioRuntimeSnapshot = self
+        let audio_runtime = self
             .audio
             .as_ref()
             .map(crate::audio::AudioService::runtime_snapshot)
             .unwrap_or_default();
-        let input = crate::diagnostics::snapshot::endpoint_diagnostic(
-            &raw_config.audio.input_device,
-            raw_config.audio.input_role.label(),
-            runtime.capture.as_ref(),
-            runtime.capture_error.as_deref(),
-        );
-        let output = crate::diagnostics::snapshot::endpoint_diagnostic(
-            &raw_config.audio.output_device,
-            raw_config.audio.output_role.label(),
-            runtime.render.as_ref(),
-            runtime.render_error.as_deref(),
-        );
-        let foreground_health = match self.foreground_state.aggregate {
-            Aggregate::Error => Health::Error,
-            Aggregate::NoExternalApp | Aggregate::NoSession => Health::Warning,
-            _ => Health::Healthy,
-        };
-        let audio = AudioDiagnostics {
-            input,
-            output,
-            microphone_state: audio_state_label(&self.microphone_state),
-            output_state: output_state_label(&self.output_state),
-            foreground: ForegroundAudioDiagnostics {
-                health: foreground_health,
-                aggregate: aggregate_label(self.foreground_state.aggregate).into(),
-                app_name: self.foreground_state.app_name.clone(),
-                sessions: self.foreground_state.sessions,
-                error: self.foreground_state.error.clone(),
-            },
-        };
-
-        let keyboard_health = if self.keyboard.is_none() {
-            Health::Unavailable
-        } else if self.suspended {
-            Health::Warning
-        } else if !crate::keyboard::hook::hook_active() {
-            Health::Error
-        } else {
-            Health::Healthy
-        };
-        let mut bindings = vec![
-            (
-                "Microphone".into(),
-                raw_config
-                    .hotkeys
-                    .toggle_microphone
-                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
-            ),
-            (
-                "Output".into(),
-                raw_config
-                    .hotkeys
-                    .toggle_output
-                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
-            ),
-            (
-                "Foreground app".into(),
-                raw_config
-                    .hotkeys
-                    .toggle_foreground_audio
-                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
-            ),
-            (
-                "Cycle input device".into(),
-                raw_config
-                    .hotkeys
-                    .cycle_input_device
-                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
-            ),
-            (
-                "Cycle output device".into(),
-                raw_config
-                    .hotkeys
-                    .cycle_output_device
-                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
-            ),
-            (
-                "Foreground volume up".into(),
-                raw_config
-                    .hotkeys
-                    .foreground_volume_up
-                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
-            ),
-            (
-                "Foreground volume down".into(),
-                raw_config
-                    .hotkeys
-                    .foreground_volume_down
-                    .map_or_else(|| "Not assigned".into(), |value| value.to_string()),
-            ),
-        ];
-        bindings.extend(raw_config.hotkeys.display_profiles.iter().map(|binding| {
-            (
-                format!("Display profile {}", binding.profile_id),
-                binding.hotkey.to_string(),
-            )
-        }));
-        let keyboard = KeyboardDiagnostics {
-            health: keyboard_health,
-            installed: self.keyboard.is_some(),
-            hook_active: crate::keyboard::hook::hook_active(),
-            suspended: self.suspended,
-            capture_active: crate::keyboard::hook::capture_active(),
-            bindings: bindings.into_iter().collect(),
-            conflicts: validation_messages.clone(),
-            reserved_win_numbers: raw_config.virtual_desktops.enabled
-                && raw_config.virtual_desktops.win_number_switching,
-        };
-
-        let os = crate::desktop::detect::detect();
-        let (build, update_revision, windows_error) = match os {
-            Ok(value) => (Some(value.build), Some(value.update_revision), None),
-            Err(error) => (None, None, Some(error.to_string())),
-        };
-        let desktop_native_error = match &self.desktop_status.native {
-            BackendAvailability::Available => None,
-            BackendAvailability::Failed { reason } => Some(reason.clone()),
-            BackendAvailability::UnsupportedBuild { build } => {
-                Some(format!("unsupported build {build}"))
-            }
-        };
-        let desktop_health = if self.desktop.is_none() {
-            Health::Unavailable
-        } else if matches!(self.desktop_status.native, BackendAvailability::Available) {
-            Health::Healthy
-        } else {
-            Health::Warning
-        };
-        let desktop = DesktopDiagnostics {
-            health: desktop_health,
-            native: self.desktop_status.native.label(),
-            fallback: self.desktop_status.fallback.label(),
-            active: self.desktop_status.active.label().into(),
-            last_served: self
-                .desktop_status
-                .last_served
-                .map(BackendKind::label)
-                .unwrap_or("none yet")
-                .into(),
-            desktop_count: self.desktop_status.desktop_count,
-            build,
-            update_revision,
-            error: desktop_native_error,
-        };
-
         let overlay_status = self
             .overlay
             .as_ref()
             .map(crate::ui::overlay::OverlayWindow::status)
             .unwrap_or_default();
-        let overlay_health = if !overlay_status.window_available {
-            Health::Unavailable
-        } else {
-            Health::Healthy
-        };
-        let overlay = OverlayDiagnostics {
-            health: overlay_health,
-            enabled: raw_config.overlay.enabled,
-            appearance: raw_config.overlay.appearance.as_str().into(),
-            resolved_appearance: overlay_status.resolved_appearance,
-            external_audio_changes: raw_config.overlay.show_external_audio_changes,
-            animations_enabled: overlay_status.animations_enabled,
-            high_contrast: overlay_status.high_contrast,
-            disable_overlapped_content: overlay_status.disable_overlapped_content,
-            position: raw_config.overlay.position.label().into(),
-            monitor_selector: raw_config.overlay.monitor.as_str(),
-            target_monitor: overlay_status.target_monitor,
-            render_dpi: overlay_status.render_dpi,
-            last_shown: overlay_status.last_shown,
-            window_available: overlay_status.window_available,
-        };
-
-        let startup = crate::platform::startup::details();
-        let (startup_state, startup_health) = match &startup.state {
-            crate::platform::startup::StartupState::Enabled => ("Enabled".into(), Health::Healthy),
-            crate::platform::startup::StartupState::Disabled => {
-                ("Disabled".into(), Health::Healthy)
-            }
-            crate::platform::startup::StartupState::Stale { .. } => {
-                ("Stale".into(), Health::Warning)
-            }
-        };
-        let startup = StartupDiagnostics {
-            health: if startup.error.is_some() {
-                Health::Error
-            } else {
-                startup_health
-            },
-            state: startup_state,
-            registered_command: startup.registered_command,
-            current_command: startup.current_command,
-            error: startup.error,
-        };
-
-        let logger = crate::diagnostics::logging::info();
-        let logging = LoggingDiagnostics {
-            health: if logger
-                .as_ref()
-                .and_then(|value| value.directory.as_ref())
-                .is_some()
-            {
-                Health::Healthy
-            } else {
-                Health::Unavailable
-            },
-            directory: logger.as_ref().and_then(|value| value.directory.clone()),
-            current_file: logger
-                .as_ref()
-                .and_then(|value| value.current_file.clone())
-                .or_else(crate::diagnostics::logging::current_log_path),
-            level: logger.as_ref().map_or_else(
-                || "unavailable".into(),
-                |value| {
-                    if value.temporary_debug {
-                        format!("{} (temporary)", value.level.as_str())
-                    } else {
-                        value.level.as_str().into()
-                    }
-                },
-            ),
-            default_level: logger.as_ref().map_or_else(
-                || "unavailable".into(),
-                |value| value.default_level.as_str().into(),
-            ),
-            temporary_debug: logger.as_ref().is_some_and(|value| value.temporary_debug),
-            retention_days: logger
-                .as_ref()
-                .map_or(crate::diagnostics::logging::LOG_RETENTION_DAYS, |value| {
-                    value.retention_days
-                }),
-            buffering: logger.as_ref().map_or_else(
-                || "unavailable".into(),
-                |value| {
-                    if value.buffered {
-                        format!(
-                            "BufWriter; Warn/Error + {}s dirty flush",
-                            crate::diagnostics::logging::FLUSH_TIMER_MS / 1000
-                        )
-                    } else {
-                        "unbuffered".into()
-                    }
-                },
-            ),
-        };
-
-        let degraded: Vec<DegradedSubsystem> = self
-            .degraded
-            .iter()
-            .map(|(name, reason)| DegradedSubsystem {
-                name: (*name).into(),
-                reason: reason.clone(),
-            })
-            .collect();
-        DiagnosticsSnapshot {
-            generated_at: std::time::SystemTime::now(),
-            application: ApplicationDiagnostics {
-                version: env!("CARGO_PKG_VERSION").into(),
-                profile: if cfg!(debug_assertions) {
-                    "debug".into()
-                } else {
-                    "release".into()
-                },
-                architecture: std::env::consts::ARCH.into(),
-            },
-            windows: WindowsDiagnostics {
-                architecture: std::env::consts::ARCH.into(),
-                build,
-                update_revision,
-                error: windows_error,
-            },
-            keyboard,
-            audio,
-            desktop,
-            config: ConfigDiagnostics {
-                warnings: load.warnings,
-                health: config_health,
-                path: if load.path.as_os_str().is_empty() {
-                    crate::config::load::config_path(&crate::config::data_dir())
-                } else {
-                    load.path
-                },
-                source_schema_version: load.source_schema_version,
-                effective_schema_version: load.effective_schema_version,
-                read_only: crate::config::config_readonly(),
-                repaired_fields: load.repaired_fields,
-                migrations: load.migrations,
-                validation: validation_messages,
-                hotkey_count: [
-                    raw_config.hotkeys.toggle_microphone,
-                    raw_config.hotkeys.toggle_output,
-                    raw_config.hotkeys.toggle_foreground_audio,
-                    raw_config.hotkeys.cycle_input_device,
-                    raw_config.hotkeys.cycle_output_device,
-                    raw_config.hotkeys.foreground_volume_up,
-                    raw_config.hotkeys.foreground_volume_down,
-                ]
-                .into_iter()
-                .flatten()
-                .count(),
-                raw: raw_config,
-            },
-            overlay,
-            startup,
-            logging,
-            degraded,
-        }
+        crate::diagnostics::app_snapshot::build(crate::diagnostics::app_snapshot::SnapshotInputs {
+            config: (*crate::app::config()).clone(),
+            audio_runtime,
+            microphone_state: self.microphone_state.clone(),
+            output_state: self.output_state.clone(),
+            foreground_state: self.foreground_state.clone(),
+            keyboard_installed: self.keyboard.is_some(),
+            keyboard_hook_active: crate::keyboard::hook::hook_active(),
+            keyboard_capture_active: crate::keyboard::hook::capture_active(),
+            suspended: self.suspended,
+            desktop_installed: self.desktop.is_some(),
+            desktop_status: self.desktop_status.clone(),
+            overlay_status,
+            degraded: self
+                .degraded
+                .iter()
+                .map(|(name, reason)| ((*name).into(), reason.clone()))
+                .collect(),
+        })
     }
     fn begin_shutdown(&mut self) -> bool {
         if self.shutting_down {
@@ -1960,7 +1442,9 @@ impl App {
         }
         self.foreground.take();
         if let Some(join) = self.support_bundle.take() {
-            let _ = join.join();
+            if join.join().is_err() {
+                crate::error_!("support bundle worker panicked during shutdown");
+            }
         }
         if let Some(diagnostics) = self.diagnostics.take() {
             unsafe {
@@ -1988,37 +1472,18 @@ impl App {
         // Never DestroyWindow the borrowed main window here (reentrancy);
         // post WM_CLOSE so destruction happens outside any App borrow.
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            if windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                 Some(self.hwnd),
                 windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
                 windows::Win32::Foundation::WPARAM(0),
                 windows::Win32::Foundation::LPARAM(0),
-            );
+            )
+            .is_err()
+            {
+                crate::warn_!("failed to post main-window close after shutdown cleanup");
+            }
         }
         true
-    }
-}
-
-fn audio_state_label(state: &crate::audio::AudioState) -> String {
-    match state {
-        crate::audio::AudioState::Unavailable { reason } => format!("Unavailable — {reason}"),
-        crate::audio::AudioState::Muted { volume_pct } => format!("Muted ({volume_pct}%)"),
-        crate::audio::AudioState::Active { volume_pct } => format!("Active ({volume_pct}%)"),
-    }
-}
-
-fn output_state_label(state: &crate::audio::OutputState) -> String {
-    match state {
-        crate::audio::OutputState::Unavailable { reason } => format!("Unavailable — {reason}"),
-        crate::audio::OutputState::Current {
-            device,
-            muted,
-            volume_pct,
-        } => format!(
-            "{} ({volume_pct}%) — {}",
-            device.name,
-            if *muted { "muted" } else { "active" }
-        ),
     }
 }
 
@@ -2164,17 +1629,17 @@ unsafe fn handle_tray(wparam: WPARAM, lparam: LPARAM) {
     }
 }
 
-fn apply_menu_command(app: &mut App, cmd: Option<u32>) {
-    use tray_menu::cmd;
-    match cmd {
-        Some(cmd::OPEN_SETTINGS) => app.show_settings(),
-        Some(cmd::SHOW_STATUS) => app.route_event(AppEvent::ShowStatusOverlay),
-        Some(cmd::SUSPEND_HOTKEYS) => app.toggle_suspended(),
-        Some(cmd::SHOW_DIAGNOSTICS) => app.show_diagnostics(),
-        Some(cmd::EXIT) => {
+fn apply_menu_command(app: &mut App, command: Option<tray_menu::Command>) {
+    use tray_menu::Command;
+    match command {
+        Some(Command::OpenSettings) => app.show_settings(),
+        Some(Command::ShowStatus) => app.route_event(AppEvent::ShowStatusOverlay),
+        Some(Command::PauseShortcuts) => app.toggle_suspended(),
+        Some(Command::Diagnostics) => app.show_diagnostics(),
+        Some(Command::Exit) => {
             let _ = app.begin_shutdown();
         }
-        _ => {}
+        None => {}
     }
 }
 

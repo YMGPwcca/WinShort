@@ -1,6 +1,8 @@
 //! Tray icon rendering: Direct2D vector art into an HICON at the current
 //! small-icon size. No asset files; crisp on every scale factor.
 
+mod bitmap;
+
 use windows::core::{Interface, GUID};
 use windows::Win32::Graphics::Direct2D::Common::D2D1_PIXEL_FORMAT;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -57,8 +59,8 @@ fn render_one(
     size: u32,
     state: TrayState,
 ) -> Result<windows::Win32::UI::WindowsAndMessaging::HICON> {
-    use windows::Win32::Graphics::Gdi as gdi;
-    use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, ICONINFO};
+    let size = bitmap::IconSize::new(size)?;
+    let extent = size.pixels();
 
     let factory = d2d_factory()?;
     let wic = wic_factory()?;
@@ -67,8 +69,8 @@ fn render_one(
     unsafe {
         let bitmap: IWICBitmap = wic
             .CreateBitmap(
-                size,
-                size,
+                extent,
+                extent,
                 &WIC_FMT_PBGRA,
                 windows::Win32::Graphics::Imaging::WICBitmapCreateCacheOption(1),
             )
@@ -89,63 +91,18 @@ fn render_one(
             .map_err(|e| Error::win("CreateWicBitmapRenderTarget", &e))?;
 
         rt.BeginDraw();
-        draw_glyphs(&factory, &rt, size as f32, state)?;
-        rt.EndDraw(None, None)
-            .map_err(|e| Error::win("icon EndDraw", &e))?;
+        let drawing = draw_glyphs(&factory, &rt, extent as f32, state);
+        let end = rt
+            .EndDraw(None, None)
+            .map_err(|e| Error::win("icon EndDraw", &e));
+        drawing?;
+        end?;
 
-        let stride = size * 4;
-        let mut pixels = vec![0u8; (stride * size) as usize];
+        let mut pixels = vec![0u8; size.byte_count()];
         bitmap
-            .CopyPixels(std::ptr::null(), stride, &mut pixels)
+            .CopyPixels(std::ptr::null(), size.stride(), &mut pixels)
             .map_err(|e| Error::win("WIC CopyPixels", &e))?;
-
-        let hdc_screen = gdi::GetDC(None);
-        let bmi = gdi::BITMAPINFO {
-            bmiHeader: gdi::BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<gdi::BITMAPINFOHEADER>() as u32,
-                biWidth: size as i32,
-                biHeight: -(size as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        let hbm_color = gdi::CreateDIBSection(
-            Some(hdc_screen),
-            &bmi,
-            gdi::DIB_RGB_COLORS,
-            &mut bits,
-            None,
-            0,
-        )
-        .map_err(|e| Error::win("CreateDIBSection", &e))?;
-        std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
-
-        let mask_row = (size.div_ceil(16) * 2) as usize;
-        let mask_bits = vec![0u8; mask_row * size as usize];
-        let hbm_mask = gdi::CreateBitmap(
-            size as i32,
-            size as i32,
-            1,
-            1,
-            Some(mask_bits.as_ptr().cast()),
-        );
-
-        let info = ICONINFO {
-            fIcon: true.into(),
-            xHotspot: 0,
-            yHotspot: 0,
-            hbmMask: hbm_mask,
-            hbmColor: hbm_color,
-        };
-        let hicon = CreateIconIndirect(&info).map_err(|e| Error::win("CreateIconIndirect", &e))?;
-
-        let _ = gdi::DeleteObject(gdi::HGDIOBJ(hbm_mask.0));
-        let _ = gdi::DeleteObject(gdi::HGDIOBJ(hbm_color.0));
-        let _ = gdi::ReleaseDC(None, hdc_screen);
-        Ok(hicon)
+        bitmap::icon_from_pixels(size, &pixels)
     }
 }
 
@@ -173,7 +130,7 @@ fn draw_glyphs(
 
         rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-        let bg_brush = create_solid(rt, bg_color);
+        let bg_brush = create_solid(rt, bg_color)?;
         let rr = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
                 left: s,
@@ -196,7 +153,7 @@ fn draw_glyphs(
             pt(6.0 * s, 14.4 * s),
         ];
         let speaker = line_figure(factory, &speaker_pts, D2D1_FIGURE_BEGIN_FILLED)?;
-        let fg_brush = create_solid(rt, rgba(255, 255, 255, fg_alpha));
+        let fg_brush = create_solid(rt, rgba(255, 255, 255, fg_alpha))?;
         let speaker_geom: ID2D1Geometry = speaker
             .cast()
             .map_err(|e| Error::win("cast geometry", &e))?;
@@ -204,14 +161,14 @@ fn draw_glyphs(
 
         match state {
             TrayState::Normal => {
-                let wave = create_solid(rt, rgba(255, 255, 255, 225));
+                let wave = create_solid(rt, rgba(255, 255, 255, 225))?;
                 for radius in [3.4 * s, 6.2 * s] {
                     let arc = arc_wave(factory, 13.8 * s, 12.0 * s, radius)?;
                     rt.DrawGeometry(&arc, &wave, 1.9 * s, None);
                 }
             }
             TrayState::HotkeysSuspended => {
-                let slash = create_solid(rt, rgba(0xff, 0x8a, 0x6b, 235));
+                let slash = create_solid(rt, rgba(0xff, 0x8a, 0x6b, 235))?;
                 let line = open_figure(factory, &[pt(5.5 * s, 18.5 * s), pt(18.5 * s, 5.5 * s)])?;
                 rt.DrawGeometry(&line, &slash, 2.2 * s, None);
             }
@@ -220,18 +177,16 @@ fn draw_glyphs(
     }
 }
 
-unsafe fn create_solid(rt: &ID2D1RenderTarget, c: D2D1_COLOR_F) -> ID2D1SolidColorBrush {
-    // SAFETY: COM call on a live render target created above.
-    unsafe {
-        rt.CreateSolidColorBrush(std::ptr::from_ref(&c), None)
-            .expect("solid brush")
-    }
+fn create_solid(rt: &ID2D1RenderTarget, c: D2D1_COLOR_F) -> Result<ID2D1SolidColorBrush> {
+    // SAFETY: a live render target and an initialized color value.
+    unsafe { rt.CreateSolidColorBrush(&c, None) }
+        .map_err(|e| Error::win("icon CreateSolidColorBrush", &e))
 }
 
 /// Closed polyline figure.
 unsafe fn line_figure(
     factory: &ID2D1Factory1,
-    pts: &[Vector2],
+    pts: &[Vector2; 6],
     begin: D2D1_FIGURE_BEGIN,
 ) -> Result<ID2D1PathGeometry1> {
     // SAFETY: all calls operate on COM objects created within this function.
@@ -254,7 +209,7 @@ unsafe fn line_figure(
 }
 
 /// Open two-point figure.
-unsafe fn open_figure(factory: &ID2D1Factory1, pts: &[Vector2]) -> Result<ID2D1PathGeometry1> {
+unsafe fn open_figure(factory: &ID2D1Factory1, pts: &[Vector2; 2]) -> Result<ID2D1PathGeometry1> {
     // SAFETY: all calls operate on COM objects created within this function.
     unsafe {
         let geom = factory

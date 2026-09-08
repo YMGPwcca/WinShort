@@ -103,14 +103,6 @@ impl Motion {
         });
         active
     }
-
-    #[allow(dead_code)] // animation API surface
-    pub fn has_active(&self) -> bool {
-        let now = Instant::now();
-        self.tweens
-            .values()
-            .any(|t| now.saturating_duration_since(t.started) < t.duration)
-    }
 }
 
 #[cfg(test)]

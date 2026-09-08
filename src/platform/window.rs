@@ -5,6 +5,9 @@
 //! [`WindowState`], whose interior mutability makes reentrant Win32 dispatch
 //! panic loudly instead of aliasing mutable state.
 
+mod creation;
+pub(crate) use creation::{WindowConstructionGuard, WindowCreation};
+
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -19,9 +22,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// `borrow_mut()` per message arm. A second borrow while one is live means
 /// reentrant dispatch into the same WndProc — that panics by design.
 pub struct WindowState<T> {
-    /// Read through the GWLP_USERDATA raw pointer (state_cell/take_state);
-    /// rustc cannot see that access, hence the allow.
-    #[allow(dead_code)]
     pub cell: std::cell::RefCell<T>,
 }
 
@@ -37,7 +37,7 @@ impl<T> WindowState<T> {
 /// NOT handled here — call once per class at startup.
 ///
 /// `proc` must be a plain function; it recovers its state via
-/// [`userdata`](Self::userdata).
+/// [`state_cell`].
 pub fn register_class(name: &str, wndproc: WNDPROC) -> Result<u16, crate::error::Error> {
     let hinstance = unsafe { GetModuleHandleW(None) }
         .map_err(|e| crate::error::Error::win("GetModuleHandleW", &e))?;
@@ -98,11 +98,11 @@ pub unsafe fn state_cell<'a, T>(hwnd: HWND) -> Option<&'a std::cell::RefCell<T>>
     // SAFETY: caller guarantees the slot holds a valid Box<WindowState<T>>;
     // the raw deref only reads the pointer.
     unsafe {
-        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const std::cell::RefCell<T>;
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowState<T>;
         if ptr.is_null() {
             None
         } else {
-            Some(&*ptr)
+            Some(&(*ptr).cell)
         }
     }
 }
@@ -131,3 +131,21 @@ pub unsafe fn take_state<T>(hwnd: HWND) -> Option<Box<WindowState<T>>> {
 pub fn def_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
+
+/// Cache successful class registration without panicking on a recoverable OS error.
+/// UI window constructors call this on their owning message-loop thread.
+pub fn register_class_once(
+    cache: &std::sync::OnceLock<u16>,
+    name: &str,
+    wndproc: WNDPROC,
+) -> Result<u16, crate::error::Error> {
+    if let Some(atom) = cache.get() {
+        return Ok(*atom);
+    }
+    let atom = register_class(name, wndproc)?;
+    let _ = cache.set(atom);
+    Ok(atom)
+}
+
+mod paint;
+pub(crate) use paint::PaintSession;

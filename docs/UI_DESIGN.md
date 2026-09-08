@@ -38,7 +38,7 @@ Diagnostics & Support remains a separate native owner-drawn window because it ha
 
 The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dimensions. A fixed navigation rail, an 80 DIP sidebar brand row, a single custom top-chrome row, and page content remain stable while the selected page scrolls independently with immediate wheel and Page Up/Down updates. Scrollbar dragging stays direct and never competes with a tween. Navigation begins 8 DIP below the brand row without an extra title band. Ordinary pages use a page-aware leading content column capped between 860 and 1260 DIP; Home and Displays can use wider grids intentionally. Navigation labels remain text-first; authored vector icons use one compact stroke vocabulary and the app mark shares the audio/microphone motif.
 
-`src/ui/control_center.rs` owns the window state and message lifecycle. `src/ui/layout.rs` produces one logical element model plus task-shaped visual regions used by painting, hit testing, focus traversal, and UI Automation. `src/ui/controls.rs` contains the shared surface, spaced section header, semantic button, navigation, search, dashboard-card, profile-card, choice, shortcut-card, Close-button, slider-cluster, and icon vocabulary.
+`src/ui/control_center.rs` is the feature facade; its private modules separate state, commands, presentation and native message handling. `src/ui/layout.rs` exposes the shared element model and domain page builders used by painting, hit testing, focus traversal and UI Automation. `src/ui/controls.rs` exposes stateless control families. See [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md) for dependency direction, native ownership and state invariants.
 
 ## Design tokens
 

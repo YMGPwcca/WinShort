@@ -88,6 +88,8 @@ Special Desktop creation, movement, and GUID-addressed navigation require the na
 
 ## Development
 
+Fast development checks can be run directly:
+
 ```powershell
 cargo fmt --all -- --check
 cargo check --all-targets --all-features
@@ -95,7 +97,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
 
-Hosted CI additionally verifies the x86_64 release build and embedded manifest/icon resources, the release UIA nullable ABI regression, i686 and aarch64 checks, Rust 1.85 MSRV, and cargo-deny. See `.github/workflows/ci.yml`.
+Before merge or release, run the canonical Windows local gate:
+
+```powershell
+.\tools\final_validation.ps1
+```
+
+The gate adds the x86_64 release build and embedded manifest/icon checks, the release nullable-UIA ABI regression, i686 and aarch64 compile checks, Rust 1.85 MSRV, `cargo deny check`, machine UI acceptance, and a visual-sanity capture. The generated visual sheet still needs human review. Pushes and pull requests intentionally do not use GitHub-hosted CI; tag/manual release automation remains separate.
 
 ## Privacy and support
 
@@ -107,7 +115,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Support matrix
 
-| Architecture | Compile / CI | Release artifact |
+| Architecture | Compile / local gate | Release artifact |
 |---|---|---|
 | x86_64 | yes | yes |
 | i686 | yes | yes |
