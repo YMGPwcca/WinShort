@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn published_provider_exposes_toggle_pattern_and_state() {
     let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
-    automation.publish(snapshot_from_settings(
+    automation.publish(test_snapshot_from_settings(
         HWND(std::ptr::null_mut()),
         &layout(),
         &values(),
@@ -45,7 +45,7 @@ fn published_provider_exposes_slider_range_pattern() {
         *ratio = 0.5;
     }
     let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
-    automation.publish(snapshot_from_settings(
+    automation.publish(test_snapshot_from_settings(
         HWND(std::ptr::null_mut()),
         &layout(),
         &input,

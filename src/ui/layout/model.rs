@@ -76,7 +76,6 @@ pub(crate) enum ElementId {
     RenameDisplayProfile,
     DuplicateDisplayProfile,
     TestApplyDisplayProfile,
-    ApplyDisplayProfile,
     DeleteDisplayProfile,
     KeepDisplayChange,
     UndoDisplayChange,
@@ -104,8 +103,6 @@ pub(crate) enum ElementId {
     OverlayPreview,
     OpenConfigFolder,
     ResetSettings,
-    Cancel,
-    Save,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,66 +223,4 @@ impl HotkeySlot {
             _ => return None,
         })
     }
-}
-
-impl ElementId {
-    /// Compatibility order retained for policy tests and stable UIA indices.
-    /// The active shell uses `SettingsLayout::focus_order` so new task controls
-    /// are included without inventing a second hit-test model.
-    #[allow(dead_code)]
-    pub(crate) const FOCUS_ORDER: [ElementId; 53] = [
-        ElementId::StartWithWindows,
-        ElementId::StartHotkeysEnabled,
-        ElementId::MicHotkey,
-        ElementId::OutputHotkey,
-        ElementId::ForegroundHotkey,
-        ElementId::CycleInputHotkey,
-        ElementId::CycleOutputHotkey,
-        ElementId::ForegroundVolumeUpHotkey,
-        ElementId::ForegroundVolumeDownHotkey,
-        ElementId::InputDevice,
-        ElementId::OutputDevice,
-        ElementId::InputAllowlist,
-        ElementId::OutputAllowlist,
-        ElementId::InputRole,
-        ElementId::OutputRole,
-        ElementId::DisplayProfilesEnabled,
-        ElementId::DisplayProfile,
-        ElementId::DisplayProfileHotkey,
-        ElementId::DisplayOutputs,
-        ElementId::DisplayTopology,
-        ElementId::DisplayRoute,
-        ElementId::EditDisplayRoute,
-        ElementId::NewDisplayProfile,
-        ElementId::UpdateDisplayProfile,
-        ElementId::RenameDisplayProfile,
-        ElementId::DuplicateDisplayProfile,
-        ElementId::TestApplyDisplayProfile,
-        ElementId::ApplyDisplayProfile,
-        ElementId::DeleteDisplayProfile,
-        ElementId::KeepDisplayChange,
-        ElementId::UndoDisplayChange,
-        ElementId::DesktopsEnabled,
-        ElementId::WinNumberEnabled,
-        ElementId::DesktopNumberModifier,
-        ElementId::MoveDesktopModifier,
-        ElementId::SilentMoveDesktopModifier,
-        ElementId::PreviousDesktopHotkey,
-        ElementId::AssignScratchpadHotkey,
-        ElementId::ToggleScratchpadHotkey,
-        ElementId::OverlayEnabled,
-        ElementId::OverlayAppearance,
-        ElementId::OverlayExternalChanges,
-        ElementId::OverlayPosition,
-        ElementId::OverlayMonitor,
-        ElementId::OverlayDuration,
-        ElementId::OverlayOpacity,
-        ElementId::OverlayScale,
-        ElementId::OverlayPreview,
-        ElementId::DebugLogging,
-        ElementId::OpenConfigFolder,
-        ElementId::ResetSettings,
-        ElementId::Cancel,
-        ElementId::Save,
-    ];
 }

@@ -18,5 +18,6 @@ fn wheel_and_page_scroll_are_immediate_and_accumulate_without_tween() {
     assert_eq!(scroll, 0.0);
     assert_eq!(page_scroll_target(128.0, 300.0, 512.0, true), 428.0);
     assert_eq!(page_scroll_target(128.0, 300.0, 512.0, false), 0.0);
-    assert!(!Motion::default().has_active());
+    let mut motion = Motion::default();
+    assert!(!motion.tick());
 }

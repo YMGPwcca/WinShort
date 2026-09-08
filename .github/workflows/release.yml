@@ -25,7 +25,10 @@ defaults:
 
 jobs:
   gates-and-build:
-    name: gates + build (${{ matrix.target }})
+    # The full validation gate is local (tools/final_validation.ps1) and must
+    # pass before tagging. This workflow only reproduces release builds and
+    # packaging on GitHub infrastructure.
+    name: build (${{ matrix.target }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -52,9 +55,6 @@ jobs:
           [ "$TAG" = "$CRATE" ] || { echo "tag version != Cargo.toml version"; exit 1; }
         env:
           G_REF: ${{ github.ref_name }}
-
-      - name: Gates (fmt/clippy/test/deny are enforced by CI on main before tagging)
-        run: cargo test
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}

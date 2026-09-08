@@ -30,8 +30,19 @@ impl SettingsUi {
             return;
         };
 
-        let mut snapshot =
-            snapshot_from_settings(hwnd, &self.layout, &values, self.focus.target(), self.dpi);
+        let mut snapshot = match snapshot_from_settings(
+            hwnd,
+            &self.layout,
+            &values,
+            self.focus.target(),
+            self.dpi,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                crate::warn_!("accessibility snapshot geometry unavailable: {error}");
+                return;
+            }
+        };
         for node in &mut snapshot.nodes {
             self.enrich_automation_node(node);
         }
@@ -95,9 +106,7 @@ impl SettingsUi {
             | ShellElement::SearchResult(_)
             | ShellElement::WindowClose
             | ShellElement::OnboardingContinue
-            | ShellElement::OnboardingOpen
-            | ShellElement::Cancel
-            | ShellElement::Save => {}
+            | ShellElement::OnboardingOpen => {}
         }
     }
 
@@ -275,7 +284,6 @@ impl SettingsUi {
             | DisplayElement::UpdateProfile
             | DisplayElement::DuplicateProfile
             | DisplayElement::TestApply
-            | DisplayElement::Apply
             | DisplayElement::DeleteProfile
             | DisplayElement::KeepChange
             | DisplayElement::UndoChange

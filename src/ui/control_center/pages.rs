@@ -84,10 +84,9 @@ impl SettingsUi {
             | ShellElement::Nav(_)
             | ShellElement::SearchResult(_)
             | ShellElement::WindowClose => {}
-            ShellElement::OnboardingContinue
-            | ShellElement::OnboardingOpen
-            | ShellElement::Cancel
-            | ShellElement::Save => self.draw_standard_element(renderer, element, interaction),
+            ShellElement::OnboardingContinue | ShellElement::OnboardingOpen => {
+                self.draw_standard_element(renderer, element, interaction)
+            }
         }
     }
 
@@ -266,7 +265,6 @@ impl SettingsUi {
             | DisplayElement::EditProfile
             | DisplayElement::UpdateProfile
             | DisplayElement::DuplicateProfile
-            | DisplayElement::Apply
             | DisplayElement::UndoChange => self.paint_action_element(
                 renderer,
                 element,

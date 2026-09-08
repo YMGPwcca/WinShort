@@ -21,13 +21,16 @@ pub(super) fn defer_focus_loss(parent: HWND, next: HWND) {
     if inside {
         return;
     }
-    unsafe {
-        let _ = PostMessageW(
+    let result = unsafe {
+        PostMessageW(
             Some(parent),
             WM_APP_PICKER_FOCUS_LOST,
             WPARAM(next.0 as usize),
             LPARAM(generation as isize),
-        );
+        )
+    };
+    if let Err(error) = result {
+        crate::warn_!("could not defer picker focus-loss handling: {error}");
     }
 }
 

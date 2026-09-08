@@ -4,17 +4,19 @@
 
 Every behavior in this plan is classified as one of:
 
-- **AUTOMATED IN CI** — deterministic `cargo test` coverage running on every push/PR.
-- **PROPERTY TEST** — proptest-generated coverage over an invariant domain (runs in CI).
+- **AUTOMATED IN LOCAL GATE** — deterministic `cargo test` coverage exercised by the required final local validation.
+- **PROPERTY TEST** — proptest-generated coverage over an invariant domain (runs in the local gate).
 - **FUZZ-STRATEGY / arbitrary-input property coverage** — bounded arbitrary-input tests inside
   `cargo test` (see Fuzzing note below); no separate libFuzzer job.
 - **MANUAL / HARDWARE-DEPENDENT** — requires a real desktop session, physical devices,
   or shell state; must be verified by hand per release.
 
-Current verified hosted baseline: Windows runners execute fmt, clippy `-D warnings`, the full
-`cargo test` suite (moving count; check CI for the live count), x86_64 release build with
-embedded-manifest byte-check, i686 and aarch64 compile checks, an MSRV 1.85 job, and cargo-deny.
-See `.github/workflows/ci.yml`.
+The canonical Windows verification entry point is `tools/final_validation.ps1`. From a clean
+worktree it executes fmt, all-target/all-feature check, strict Clippy, the full test suite,
+x86_64 release build plus embedded manifest/icon checks, the release nullable-UIA ABI regression,
+i686/aarch64 compile checks, Rust 1.85 MSRV, cargo-deny, machine UI acceptance, and the existing
+visual-sanity capture. The generated visual sheet still requires human review. Push/PR hosted CI
+is intentionally not used.
 
 ## Local Windows UI acceptance harness
 
@@ -30,7 +32,7 @@ second-instance Control Center activation and Win32 overlay path, captures
 Control Center/picker/runtime-overlay PNGs, and writes a JSON summary below
 `target/ui-acceptance-results/`.
 
-## Diagnostics & support (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
+## Diagnostics & support (AUTOMATED IN LOCAL GATE + MANUAL / HARDWARE-DEPENDENT)
 
 Automated coverage (`src/diagnostics/support.rs`) verifies:
 
@@ -67,7 +69,7 @@ flush integration, panic emergency persistence, and panic-path sanitization.
 The panic acceptance uses a deterministic child test process; no machine
 timezone mutation or production crash flag is used.
 
-## Control Center interaction and accessibility (AUTOMATED IN CI + MANUAL / HARDWARE-DEPENDENT)
+## Control Center interaction and accessibility (AUTOMATED IN LOCAL GATE + MANUAL / HARDWARE-DEPENDENT)
 
 Automated coverage:
 
@@ -110,8 +112,8 @@ Automated coverage:
   (`UIA_E_ELEMENTNOTAVAILABLE`), unsupported (`UIA_E_NOTSUPPORTED`), and invalid argument
   (`E_INVALIDARG`) paths without changing the live unsupported-property `VT_EMPTY` contract.
 - The `nullable_provider_abi_regression` test calls each successful-null COM output path through
-  its raw vtable and runs in both normal and release profiles; hosted Windows CI runs the
-  release-profile case in the x86_64 release-build job.
+  its raw vtable and runs in both normal and release profiles; the final local gate explicitly
+  runs the release-profile case.
 - Control Center regression seams verify direct parent-wheel picker dismissal, outside-click and
   focus-loss closure, close ordering before parent hide, pending activation blocking, and focus
   repair when a local mutation disables the current control.
@@ -209,7 +211,7 @@ Manual matrix:
 If an interactive desktop is unavailable, GUI, blur, titlebar, and Narrator results remain
 unverified; automated geometry/state tests must not be described as live accessibility evidence.
 
-## A. Keyboard engine (AUTOMATED IN CI + PROPERTY TEST)
+## A. Keyboard engine (AUTOMATED IN LOCAL GATE + PROPERTY TEST)
 
 Pure harness: `KeyboardEngine` fed `RawKeyEvent`s, asserting emitted
 `EngineOutcome { Pass, Swallow, Dispatch { action, dirty_win_chord } }`.
@@ -241,13 +243,13 @@ state.
 Start-menu countermeasure: `dirty_win_chord` flag posted with the action; main-thread
 `dispatcher::dirty_win_chord()` injects the VK_CONTROL pair (KEYBOARD_HOOK_DESIGN.md).
 
-## B. Binding table / parsing (AUTOMATED IN CI)
+## B. Binding table / parsing (AUTOMATED IN LOCAL GATE)
 
 parse/display round-trips for every supported key; conflict detection errors name both actions;
 invalid combos rejected (modifier-only, no-modifier #35, empty token #58); case-insensitive
 parse; canonical display ordering; numpad distinct from top row (#11).
 
-## C. Config (AUTOMATED IN CI + PROPERTY TEST)
+## C. Config (AUTOMATED IN LOCAL GATE + PROPERTY TEST)
 
 defaults load when file missing; corrupt file → defaults + warning; schema v2 → v3 migration
 preserves existing values and leaves the four new hotkeys unassigned; schema v9 → v10 migration
@@ -270,13 +272,13 @@ same-basename different installations (ambiguous refusal) · same-full-path inde
 (accepted limitation) · input/output cycle through active real endpoints and set all three Windows
 default roles, including unavailable-endpoint recovery and duplicate friendly names.
 
-Policy-level properties run in CI: resolver ladder grouping invariants (#37).
+Policy-level properties run in the local gate: resolver ladder grouping invariants (#37).
 
-## E. Virtual desktop matrix (live; policy AUTOMATED IN CI)
+## E. Virtual desktop matrix (live; policy AUTOMATED IN LOCAL GATE)
 
 Win+1 from desktop N≠1 lands on 1 · already-there no-op · rapid sequences · desktop
 add/remove/reorder between switches · Task View switch then Win+number · unsupported build →
-fallback active + status line. Policy properties in CI: semantic errors never fall back,
+fallback active + status line. Policy properties in the local gate: semantic errors never fall back,
 only RPC/backend-unavailable permits one bounded retry then fallback (#37). Real COM switching
 remains MANUAL (build-pinned; see VIRTUAL_DESKTOP_COMPAT.md tested-results table).
 
@@ -311,7 +313,7 @@ windows-msvc targets in this repository's setup. Implemented instead: **bounded
 arbitrary-input strategies via proptest** — keyboard event sequences (engine invariants) and
 arbitrary TOML documents against config loading (no panic, bounded time, latched configs never
 writable). Hotkey strings are exercised through those TOML documents; the hotkey parser itself
-has deterministic round-trip coverage. These run as normal tests on every push; no continuous
+has deterministic round-trip coverage. These run as normal tests in the local gate; no continuous
 fuzz campaign is claimed or running.
 
 ## Manual regression matrix

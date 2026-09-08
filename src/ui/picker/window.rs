@@ -13,7 +13,7 @@ use crate::ui::theme::Theme;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 
 use windows::Win32::UI::Controls::SetWindowTheme;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -46,6 +46,9 @@ pub(super) const LB_GETCOUNT: u32 = 0x018A;
 pub(super) const LB_GETSELCOUNT: u32 = 0x0190;
 
 pub(super) const LB_GETSELITEMS: u32 = 0x0191;
+
+const LB_ERR: isize = -1;
+const LB_ERRSPACE: isize = -2;
 
 pub(crate) const fn loword(value: usize) -> u16 {
     (value & 0xFFFF) as u16
@@ -108,6 +111,46 @@ pub(super) fn picker_item_height_px(dpi: u32) -> u32 {
     (ITEM_HEIGHT_DIP * dpi.max(96) as f32 / 96.0)
         .ceil()
         .max(1.0) as u32
+}
+
+fn ensure_listbox_result(
+    operation: &'static str,
+    result: LRESULT,
+    allow_no_space: bool,
+) -> Result<()> {
+    if result.0 == LB_ERR || (allow_no_space && result.0 == LB_ERRSPACE) {
+        Err(Error::internal(format!(
+            "{operation} failed with {}",
+            result.0
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn add_label(list: HWND, label: &str) -> Result<()> {
+    let text = HSTRING::from(label);
+    let result = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_ADDSTRING,
+            Some(WPARAM(0)),
+            Some(LPARAM(text.as_ptr() as isize)),
+        )
+    };
+    ensure_listbox_result("LB_ADDSTRING(settings picker)", result, true)
+}
+
+fn select_index(list: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> Result<()> {
+    let result = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            message,
+            Some(wparam),
+            Some(lparam),
+        )
+    };
+    ensure_listbox_result("settings picker selection", result, false)
 }
 
 impl PickerPopup {
@@ -211,40 +254,27 @@ impl PickerPopup {
         };
 
         for label in labels {
-            let text = HSTRING::from(label);
-            unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                    list,
-                    LB_ADDSTRING,
-                    Some(WPARAM(0)),
-                    Some(LPARAM(text.as_ptr() as isize)),
-                );
-            }
+            add_label(list, &label)?;
         }
-        unsafe {
-            if kind.is_multi_select() {
-                for index in selected_indices {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                        list,
-                        LB_SETSEL,
-                        Some(WPARAM(1)),
-                        Some(LPARAM(index as isize)),
-                    );
-                }
-            } else if let Some(selected) = current {
-                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                    list,
-                    LB_SETCURSEL,
-                    Some(WPARAM(selected)),
-                    Some(LPARAM(0)),
-                );
+        if kind.is_multi_select() {
+            for index in selected_indices {
+                select_index(list, LB_SETSEL, WPARAM(1), LPARAM(index as isize))?;
             }
-            let _ = SetWindowSubclass(
+        } else if let Some(selected) = current {
+            select_index(list, LB_SETCURSEL, WPARAM(selected), LPARAM(0))?;
+        }
+        let subclassed = unsafe {
+            SetWindowSubclass(
                 list,
                 Some(picker_list_subclass),
                 SUBCLASS_ID,
                 hwnd.0 as usize,
-            );
+            )
+        };
+        if !subclassed.as_bool() {
+            return Err(Error::internal(
+                "SetWindowSubclass(settings picker) returned false",
+            ));
         }
         let hwnd = construction.complete();
         Ok(Self { hwnd, list })
@@ -266,6 +296,8 @@ impl PickerPopup {
             ) {
                 crate::warn_!("picker activation placement failed: {error}");
             }
+            // ShowWindow reports previous visibility and SetFocus returns the
+            // previous focus owner, so neither return value is a failure code.
             let _ = ShowWindow(self.list, SW_SHOWNA);
             let _ = ShowWindow(self.hwnd, SW_SHOWNA);
             let _ = SetFocus(Some(self.list));

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn provider_events_are_filtered_to_meaningful_changes() {
     let snapshot =
-        snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 96);
+        test_snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 96);
     let toggle = snapshot
         .nodes
         .iter()

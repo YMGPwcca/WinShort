@@ -9,10 +9,58 @@ use crate::ui::presentation::{AllowlistMode, DeviceCycleSelection};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 
 const ALLOWLIST_MODE_COUNT: usize = 3;
+const LB_ERR: isize = -1;
 
-pub(super) fn normalize_multi_selection(kind: PickerKind, list: HWND) {
+fn list_count(list: HWND) -> Result<usize, &'static str> {
+    let count = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_GETCOUNT,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        )
+    }
+    .0;
+    usize::try_from(count).map_err(|_| "could not read picker item count")
+}
+
+fn selected_at(list: HWND, index: usize) -> Result<bool, &'static str> {
+    let result = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_GETSEL,
+            Some(WPARAM(index)),
+            Some(LPARAM(0)),
+        )
+    }
+    .0;
+    if result == LB_ERR {
+        Err("could not read picker item selection")
+    } else {
+        Ok(result != 0)
+    }
+}
+
+fn set_selected(list: HWND, index: usize, selected: bool) -> Result<(), &'static str> {
+    let result = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+            list,
+            LB_SETSEL,
+            Some(WPARAM(usize::from(selected))),
+            Some(LPARAM(index as isize)),
+        )
+    }
+    .0;
+    if result == LB_ERR {
+        Err("could not update picker item selection")
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn normalize_multi_selection(kind: PickerKind, list: HWND) -> Result<(), &'static str> {
     if !kind.is_allowlist() {
-        return;
+        return Ok(());
     }
     let focused = unsafe {
         windows::Win32::UI::WindowsAndMessaging::SendMessageW(
@@ -24,84 +72,37 @@ pub(super) fn normalize_multi_selection(kind: PickerKind, list: HWND) {
     }
     .0;
     if focused < 0 {
-        return;
+        return Ok(());
     }
     let focused = focused as usize;
-    let count = unsafe {
-        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-            list,
-            LB_GETCOUNT,
-            Some(WPARAM(0)),
-            Some(LPARAM(0)),
-        )
-    }
-    .0
-    .max(0) as usize;
-    let selected_at = |index: usize| unsafe {
-        windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-            list,
-            LB_GETSEL,
-            Some(WPARAM(index)),
-            Some(LPARAM(0)),
-        )
-    }
-    .0
-        != 0;
+    let count = list_count(list)?;
 
     if focused < ALLOWLIST_MODE_COUNT {
-        let had_device_selection = (ALLOWLIST_MODE_COUNT..count).any(selected_at);
-        for index in 0..count {
-            unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                    list,
-                    LB_SETSEL,
-                    Some(WPARAM(0)),
-                    Some(LPARAM(index as isize)),
-                );
+        let mut had_device_selection = false;
+        for index in ALLOWLIST_MODE_COUNT..count {
+            if selected_at(list, index)? {
+                had_device_selection = true;
+                break;
             }
         }
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                list,
-                LB_SETSEL,
-                Some(WPARAM(1)),
-                Some(LPARAM(focused as isize)),
-            );
+        for index in 0..count {
+            set_selected(list, index, false)?;
         }
+        set_selected(list, focused, true)?;
         if focused == 1 && !had_device_selection {
             for index in ALLOWLIST_MODE_COUNT..count {
-                unsafe {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                        list,
-                        LB_SETSEL,
-                        Some(WPARAM(1)),
-                        Some(LPARAM(index as isize)),
-                    );
-                }
+                set_selected(list, index, true)?;
             }
         }
-    } else if selected_at(focused) {
+    } else if selected_at(list, focused)? {
         // Device clicks select the explicit mode but retain the other device
         // checks, allowing a real multi-device allowlist.
         for index in 0..ALLOWLIST_MODE_COUNT.min(count) {
-            unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                    list,
-                    LB_SETSEL,
-                    Some(WPARAM(0)),
-                    Some(LPARAM(index as isize)),
-                );
-            }
+            set_selected(list, index, false)?;
         }
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
-                list,
-                LB_SETSEL,
-                Some(WPARAM(1)),
-                Some(LPARAM(1)),
-            );
-        }
+        set_selected(list, 1, true)?;
     }
+    Ok(())
 }
 
 pub(super) fn selected_commit(

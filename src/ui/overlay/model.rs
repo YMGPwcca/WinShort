@@ -6,8 +6,6 @@ pub(crate) enum OverlayIcon {
     Output,
     Application,
     Workspace,
-    /// Reserved for informational rows (tone ladder completeness).
-    #[allow(dead_code)]
     Info,
 }
 

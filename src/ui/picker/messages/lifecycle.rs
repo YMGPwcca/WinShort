@@ -125,7 +125,9 @@ pub(super) unsafe fn handle_command(
             LRESULT(0)
         } else if source == list && notification == LBN_SELCHANGE {
             if kind.is_multi_select() {
-                normalize_multi_selection(kind, source);
+                if let Err(error) = normalize_multi_selection(kind, source) {
+                    crate::warn_!("picker multi-selection normalization failed: {error}");
+                }
             }
             LRESULT(0)
         } else {

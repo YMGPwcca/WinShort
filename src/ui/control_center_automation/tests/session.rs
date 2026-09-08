@@ -2,14 +2,14 @@ use super::*;
 
 #[test]
 fn snapshot_contains_logical_nodes_without_child_windows() {
-    let snapshot = snapshot_from_settings(
+    let snapshot = test_snapshot_from_settings(
         HWND(std::ptr::null_mut()),
         &layout(),
         &values(),
         Some(ElementId::OverlayEnabled),
         96,
     );
-    assert_eq!(snapshot.nodes.len(), ElementId::FOCUS_ORDER.len());
+    assert_eq!(snapshot.nodes.len(), focus_order().len());
     assert_eq!(
         snapshot
             .nodes
@@ -27,7 +27,7 @@ fn snapshot_contains_logical_nodes_without_child_windows() {
 #[test]
 fn phase_one_hotkey_nodes_expose_names_and_help_text() {
     let snapshot =
-        snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 96);
+        test_snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 96);
     let expected = [
         (
             ElementId::CycleInputHotkey,
@@ -65,7 +65,7 @@ fn phase_one_hotkey_nodes_expose_names_and_help_text() {
 #[test]
 fn snapshot_clips_scrolled_nodes_and_marks_them_offscreen() {
     let snapshot =
-        snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 144);
+        test_snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 144);
     assert!(snapshot.nodes.iter().any(|node| node.offscreen));
     assert!(snapshot.nodes.iter().any(|node| !node.offscreen));
 }
@@ -81,7 +81,8 @@ fn control_types_and_ranges_are_truthful() {
     assert!(!node_has_invoke(ElementKind::Toggle));
     assert!(!node_has_invoke(ElementKind::Slider));
     let ranges = values();
-    let snapshot = snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &ranges, None, 96);
+    let snapshot =
+        test_snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &ranges, None, 96);
     assert!(snapshot
         .nodes
         .iter()
@@ -92,7 +93,7 @@ fn control_types_and_ranges_are_truthful() {
 #[test]
 fn pointer_snapshot_uses_screen_space_origin_when_available() {
     let snapshot =
-        snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 96);
+        test_snapshot_from_settings(HWND(std::ptr::null_mut()), &layout(), &values(), None, 96);
     assert_eq!(snapshot.window.left, 0.0);
     assert_eq!(snapshot.window.top, 0.0);
 }
@@ -164,7 +165,7 @@ fn published_provider_exposes_selection_item_for_choice() {
         })
         .collect::<Vec<_>>();
     let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
-    automation.publish(snapshot_from_settings(
+    automation.publish(test_snapshot_from_settings(
         HWND(std::ptr::null_mut()),
         &layout,
         &values,
@@ -207,13 +208,13 @@ fn navigation_boundaries_return_s_ok_and_null() {
     assert_raw_null_navigation(&root, NavigateDirection_Parent);
 
     let first_simple = automation
-        .provider_for(ElementId::FOCUS_ORDER[0])
+        .provider_for(focus_order()[0])
         .expect("test provider initialization");
     let first: IRawElementProviderFragment = first_simple.cast().expect("first fragment");
     assert_raw_null_navigation(&first, NavigateDirection_PreviousSibling);
 
     let last_simple = automation
-        .provider_for(*ElementId::FOCUS_ORDER.last().expect("last id"))
+        .provider_for(*focus_order().last().expect("last id"))
         .expect("test provider initialization");
     let last: IRawElementProviderFragment = last_simple.cast().expect("last fragment");
     assert_raw_null_navigation(&last, NavigateDirection_NextSibling);
@@ -229,11 +230,11 @@ fn runtime_ids_use_uia_append_runtime_id_and_unique_child_values() {
     assert!(unsafe { root.GetRuntimeId().expect("root runtime id") }.is_null());
 
     let first_simple = automation
-        .provider_for(ElementId::FOCUS_ORDER[0])
+        .provider_for(focus_order()[0])
         .expect("test provider initialization");
     let first: IRawElementProviderFragment = first_simple.cast().expect("first fragment");
     let second_simple = automation
-        .provider_for(ElementId::FOCUS_ORDER[1])
+        .provider_for(focus_order()[1])
         .expect("test provider initialization");
     let second: IRawElementProviderFragment = second_simple.cast().expect("second fragment");
     let first_id = read_runtime_id(&first);

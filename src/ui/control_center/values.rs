@@ -46,7 +46,6 @@ impl SettingsUi {
             ShellElement::WindowClose => ControlValue::Action(Cow::Borrowed("Close")),
             ShellElement::OnboardingContinue => ControlValue::Action(Cow::Borrowed("Continue")),
             ShellElement::OnboardingOpen => ControlValue::Action(Cow::Borrowed("Open WinShort")),
-            ShellElement::Cancel | ShellElement::Save => ControlValue::Action(Cow::Borrowed("")),
         }
     }
 
@@ -190,7 +189,6 @@ impl SettingsUi {
             DisplayElement::RenameProfile => ControlValue::Action(Cow::Borrowed("Edit name")),
             DisplayElement::DuplicateProfile => ControlValue::Action(Cow::Borrowed("Duplicate")),
             DisplayElement::TestApply => ControlValue::Action(Cow::Borrowed("Test")),
-            DisplayElement::Apply => ControlValue::Action(Cow::Borrowed("Activate")),
             DisplayElement::DeleteProfile => ControlValue::Action(Cow::Borrowed(
                 if self
                     .interaction

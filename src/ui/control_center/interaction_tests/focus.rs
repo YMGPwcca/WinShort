@@ -203,7 +203,7 @@ fn search_caret_visibility_uses_the_editing_focus_predicate() {
 }
 
 #[test]
-fn disabled_save_focus_is_repaired_before_snapshot_publication() {
+fn disabled_keep_focus_is_repaired_before_snapshot_publication() {
     let hwnd = HWND(std::ptr::dangling_mut());
     let mut ui = empty_settings_ui();
     ui.install_automation(hwnd);
@@ -212,14 +212,14 @@ fn disabled_save_focus_is_repaired_before_snapshot_publication() {
         ui.focus.set_owner(value);
     };
     {
-        let value = Some(ElementId::Save);
+        let value = Some(ElementId::KeepDisplayChange);
         ui.focus.set_target(value);
     };
-    assert!(ui.is_disabled(ElementId::Save));
+    assert!(ui.is_disabled(ElementId::KeepDisplayChange));
 
     ui.publish_automation_snapshot(hwnd);
     let snapshot = ui.automation.as_ref().expect("automation").snapshot();
-    assert_ne!(snapshot.focused, Some(ElementId::Save));
+    assert_ne!(snapshot.focused, Some(ElementId::KeepDisplayChange));
     assert!(snapshot
         .nodes
         .iter()
@@ -250,14 +250,16 @@ fn dependent_disable_repairs_focus_and_preserves_tab_navigation() {
     assert_ne!(repaired, ElementId::WinNumberEnabled);
     assert!(!ui.is_disabled(repaired));
 
-    let next =
-        crate::ui::focus::next_focus_target(&ElementId::FOCUS_ORDER, Some(repaired), false, |id| {
-            ui.is_disabled(id)
-        })
-        .expect("enabled next target");
+    let next = crate::ui::focus::next_focus_target(
+        &ui.layout.focus_order(),
+        Some(repaired),
+        false,
+        |id| ui.is_disabled(id),
+    )
+    .expect("enabled next target");
     assert!(!ui.is_disabled(next));
     let previous =
-        crate::ui::focus::next_focus_target(&ElementId::FOCUS_ORDER, Some(next), true, |id| {
+        crate::ui::focus::next_focus_target(&ui.layout.focus_order(), Some(next), true, |id| {
             ui.is_disabled(id)
         });
     assert_eq!(previous, Some(repaired));
@@ -275,7 +277,7 @@ fn focus_repair_does_not_duplicate_notifications() {
         ui.focus.set_owner(value);
     };
     {
-        let value = Some(ElementId::Save);
+        let value = Some(ElementId::KeepDisplayChange);
         ui.focus.set_target(value);
     };
     ui.publish_automation_snapshot(hwnd);
@@ -299,9 +301,8 @@ fn phase_one_hotkey_rows_are_in_focus_order_and_layout() {
         ElementId::ForegroundVolumeUpHotkey,
         ElementId::ForegroundVolumeDownHotkey,
     ] {
-        assert!(ElementId::FOCUS_ORDER.contains(&id));
-        assert!(SettingsLayout::build(610.0, 720.0, 0.0)
-            .element(id)
-            .is_some());
+        let layout = SettingsLayout::build(610.0, 720.0, 0.0);
+        assert!(layout.focus_order().contains(&id));
+        assert!(layout.element(id).is_some());
     }
 }

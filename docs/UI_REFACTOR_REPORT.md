@@ -65,10 +65,51 @@ registries solely to improve a number would make behavior harder to audit and we
 - Final anti-overengineering pass removed four one-purpose split modules that did not improve a
   domain boundary.
 
+## Final static acceptance review
+
+The final pre-validation audit rechecked the Task 11 acceptance groups against the current PR tree,
+using PR #103 only as the accepted behavior baseline. It did not restart or replace the #104
+refactor.
+
+- State correlations are represented by cohesive typed session/interaction/hotkey/confirmation
+  models rather than independent booleans or magic no-selection values.
+- Picker commits and device-cycle selection are domain-typed; invalid kind/value pairings and empty
+  selected allowlists are rejected at construction/boundary points.
+- Availability, commands, values, page painting and accessibility enrichment share the exhaustive
+  `ElementDomain` taxonomy instead of maintaining unrelated giant family classifiers.
+- Application events route through focused domain handlers; diagnostics snapshots compose focused
+  subsystem builders rather than a single application-owned report procedure.
+- Recoverable native/user-action failures use explicit results or diagnostics. Renderer text
+  measurement uses `Option`, and total renderer resource sets remove missing-map-entry assumptions.
+- HWND construction, paint sessions, picker fonts, tray menus and intermediate native resources use
+  ownership/RAII boundaries where lifetime invariants justify them. UIA nullable interface ABI logic
+  remains isolated and preserves successful null returns.
+- The audit deliberately did **not** change an audio presentation behavior that initially looked
+  suspicious because comparison with PR #103 confirmed it is accepted baseline behavior.
+- One genuine final-audit finding was corrected: `ControlCenterWindow::create` now treats a missing
+  post-`WM_NCCREATE` `SettingsUi` handoff as an internal construction failure while the rollback
+  guard still owns the HWND, instead of completing a partially initialized window.
+- No runtime dependency or Cargo feature was added by the UI refactor. Hosted push/PR CI has been
+  removed by project decision; release automation remains tag/manual only.
+
+At this point the static/architecture acceptance review has no unresolved structural blocker. This
+is **not** a claim that Phase 11 has passed: compiler, test, cross-target, MSRV, dependency, live UI
+and visual evidence must still be produced by the local final gate on the final commit.
+
 ## Verification boundary
 
-The final source tree must pass the repository's Windows CI: formatting, strict Clippy, existing
-regression tests, release build and nullable-provider ABI regression, x86/ARM64 type checks, declared
-MSRV and dependency checks. Hosted build/test results are not a claim that a human interactive desktop
-visual review was performed. Layout and overlay-material parameters were not retuned. No runtime crate
-or Cargo feature was added. Temporary refactor transport/workflow files are not part of the handoff.
+Hosted push/PR CI is intentionally not used. The canonical final gate is
+`tools/final_validation.ps1`, run locally on Windows from a clean worktree. It covers formatting,
+all-target/all-feature compilation, strict Clippy, the existing regression suite, the x86_64 release
+build, embedded manifest/icon checks, the release nullable-provider ABI regression, i686/aarch64
+compile checks, Rust 1.85 MSRV compatibility, `cargo deny check`, machine UI acceptance, and the
+existing visual-sanity capture.
+
+The generated visual sheet still requires human review; source metrics and machine checks are not a
+substitute for inspecting the accepted UI material on real Windows. Layout and overlay-material
+parameters were not retuned by this refactor. No runtime crate or Cargo feature was added. Temporary
+refactor transport/workflow files are not part of the handoff.
+
+This report does **not** claim final validation has passed merely because the static architecture
+audit is complete. Final acceptance is only green after the local gate has run on the final commit and
+the generated visual sheet has been reviewed.

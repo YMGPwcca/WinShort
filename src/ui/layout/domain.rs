@@ -27,8 +27,6 @@ pub(crate) enum ShellElement {
     WindowClose,
     OnboardingContinue,
     OnboardingOpen,
-    Cancel,
-    Save,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +76,6 @@ pub(crate) enum DisplayElement {
     RenameProfile,
     DuplicateProfile,
     TestApply,
-    Apply,
     DeleteProfile,
     KeepChange,
     UndoChange,
@@ -168,8 +165,6 @@ impl ElementId {
             Self::WindowClose => ElementDomain::Shell(ShellElement::WindowClose),
             Self::OnboardingContinue => ElementDomain::Shell(ShellElement::OnboardingContinue),
             Self::OnboardingOpen => ElementDomain::Shell(ShellElement::OnboardingOpen),
-            Self::Cancel => ElementDomain::Shell(ShellElement::Cancel),
-            Self::Save => ElementDomain::Shell(ShellElement::Save),
 
             Self::HomeSpeaker => ElementDomain::Home(HomeElement::Speaker),
             Self::HomeCurrentDesktop => ElementDomain::Home(HomeElement::CurrentDesktop),
@@ -228,7 +223,6 @@ impl ElementId {
                 ElementDomain::Displays(DisplayElement::DuplicateProfile)
             }
             Self::TestApplyDisplayProfile => ElementDomain::Displays(DisplayElement::TestApply),
-            Self::ApplyDisplayProfile => ElementDomain::Displays(DisplayElement::Apply),
             Self::DeleteDisplayProfile => ElementDomain::Displays(DisplayElement::DeleteProfile),
             Self::KeepDisplayChange => ElementDomain::Displays(DisplayElement::KeepChange),
             Self::UndoDisplayChange => ElementDomain::Displays(DisplayElement::UndoChange),

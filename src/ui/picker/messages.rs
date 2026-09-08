@@ -82,7 +82,9 @@ pub(super) unsafe extern "system" fn picker_list_subclass(
             let kind =
                 unsafe { win::state_cell::<PickerUi>(parent) }.map(|cell| cell.borrow().kind);
             if let Some(kind) = kind.filter(|kind| kind.is_multi_select()) {
-                normalize_multi_selection(kind, hwnd);
+                if let Err(reason) = normalize_multi_selection(kind, hwnd) {
+                    crate::warn_!("picker multi-selection normalization failed: {reason}");
+                }
             } else {
                 commit_selected(parent, hwnd);
             }
@@ -134,8 +136,8 @@ pub(super) unsafe extern "system" fn picker_wndproc(
                 LRESULT(1)
             }
             WM_PAINT => {
-                let _paint = crate::platform::window::PaintSession::begin(hwnd);
-                draw_picker_surface(hwnd, _paint.dc());
+                let paint = crate::platform::window::PaintSession::begin(hwnd);
+                draw_picker_surface(hwnd, paint.dc());
                 LRESULT(0)
             }
             WM_MEASUREITEM => lifecycle::handle_measureitem(hwnd, msg, wparam, lparam),

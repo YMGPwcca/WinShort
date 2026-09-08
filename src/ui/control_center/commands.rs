@@ -95,12 +95,6 @@ impl SettingsUi {
                 self.onboarding_step = None;
                 self.set_page(Page::Home);
             }
-            ShellElement::Cancel => {
-                self.replace_draft((*self.config_access.current()).clone());
-                self.validation.clear();
-                self.stop_capture();
-            }
-            ShellElement::Save => {}
         }
     }
 
@@ -188,11 +182,6 @@ impl SettingsUi {
             DisplayElement::TestApply => {
                 if let Some(profile) = self.draft.display_profiles.active().cloned() {
                     post_main(crate::event::AppEvent::TestApplyDisplayProfile { profile });
-                }
-            }
-            DisplayElement::Apply => {
-                if let Some(profile) = self.draft.display_profiles.active().cloned() {
-                    post_main(crate::event::AppEvent::ApplyDisplayProfile { profile });
                 }
             }
             DisplayElement::DeleteProfile => self.activate_display_profile_delete(hwnd),

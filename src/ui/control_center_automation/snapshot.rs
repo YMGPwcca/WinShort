@@ -5,7 +5,12 @@ use super::model::{
     AutomationFocusOwner, AutomationRange, AutomationRect, SettingsAutomationNode,
     SettingsAutomationSnapshot,
 };
+#[cfg(not(test))]
+use crate::error::Error;
+use crate::error::Result;
 use crate::ui::layout::{ElementId, ElementKind, Rect as UiRect, SettingsLayout};
+#[cfg(not(test))]
+use windows::Win32::Foundation::GetLastError;
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 
@@ -15,12 +20,50 @@ pub(crate) fn snapshot_from_settings(
     values: &[(ElementId, String, bool, f32)],
     focused: Option<ElementId>,
     dpi: u32,
+) -> Result<SettingsAutomationSnapshot> {
+    #[cfg(test)]
+    let origin = test_settings_client_origin(hwnd);
+    #[cfg(not(test))]
+    let origin = settings_client_origin(hwnd)?;
+
+    Ok(snapshot_from_settings_at_origin(
+        layout, values, focused, dpi, origin,
+    ))
+}
+
+#[cfg(not(test))]
+fn settings_client_origin(hwnd: HWND) -> Result<POINT> {
+    let mut origin = POINT::default();
+    if unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool() {
+        Ok(origin)
+    } else {
+        Err(Error::os(
+            "ClientToScreen(settings automation)",
+            unsafe { GetLastError() }.0,
+        ))
+    }
+}
+
+#[cfg(test)]
+fn test_settings_client_origin(hwnd: HWND) -> POINT {
+    let mut origin = POINT::default();
+    if !unsafe { ClientToScreen(hwnd, &mut origin) }.as_bool() {
+        // Interaction tests intentionally use synthetic HWND values so they do
+        // not touch a real desktop window. Keep their geometry deterministic;
+        // production still fails closed in settings_client_origin above.
+        return POINT::default();
+    }
+    origin
+}
+
+pub(super) fn snapshot_from_settings_at_origin(
+    layout: &SettingsLayout,
+    values: &[(ElementId, String, bool, f32)],
+    focused: Option<ElementId>,
+    dpi: u32,
+    origin: POINT,
 ) -> SettingsAutomationSnapshot {
     let scale = dpi.max(96) as f64 / 96.0;
-    let mut origin = POINT::default();
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut origin);
-    }
     let window = AutomationRect {
         left: origin.x as f64,
         top: origin.y as f64,

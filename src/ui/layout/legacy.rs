@@ -168,12 +168,6 @@ pub(super) fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'stat
             "Try safely",
         ),
         (
-            ElementId::ApplyDisplayProfile,
-            ElementKind::Action,
-            "Activate profile",
-            "Apply",
-        ),
-        (
             ElementId::DeleteDisplayProfile,
             ElementKind::ButtonDanger,
             "Delete profile",
@@ -310,18 +304,6 @@ pub(super) fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'stat
             ElementKind::ButtonDanger,
             "Reset",
             "Restore defaults",
-        ),
-        (
-            ElementId::Cancel,
-            ElementKind::ButtonSecondary,
-            "Cancel",
-            "Cancel the current action",
-        ),
-        (
-            ElementId::Save,
-            ElementKind::ButtonPrimary,
-            "Save",
-            "Save the current changes",
         ),
     ]
 }

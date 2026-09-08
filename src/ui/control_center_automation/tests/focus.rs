@@ -22,7 +22,7 @@ fn review_summary_is_exposed_as_non_focusable_text() {
         .map(|element| (element.id, "Off".into(), true, 0.0))
         .collect::<Vec<_>>();
     let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
-    automation.publish(snapshot_from_settings(
+    automation.publish(test_snapshot_from_settings(
         HWND(std::ptr::null_mut()),
         &layout,
         &values,
@@ -59,7 +59,7 @@ fn review_summary_is_exposed_as_non_focusable_text() {
 #[test]
 fn root_focus_returns_logical_child_fragment() {
     let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
-    let mut snapshot = snapshot_from_settings(
+    let mut snapshot = test_snapshot_from_settings(
         HWND(std::ptr::null_mut()),
         &layout(),
         &values(),
@@ -155,7 +155,7 @@ fn disabled_set_focus_returns_element_not_enabled() {
 #[test]
 fn valid_set_focus_queues_exactly_one_action() {
     let automation = SettingsAutomation::new(unsafe { GetDesktopWindow() });
-    automation.publish(snapshot_from_settings(
+    automation.publish(test_snapshot_from_settings(
         HWND(std::ptr::null_mut()),
         &layout(),
         &values(),

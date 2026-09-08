@@ -29,14 +29,12 @@ impl SettingsUi {
 
     fn shell_disabled(&self, element: ShellElement) -> bool {
         match element {
-            ShellElement::Save => !self.dirty(),
             ShellElement::Search
             | ShellElement::Nav(_)
             | ShellElement::SearchResult(_)
             | ShellElement::WindowClose
             | ShellElement::OnboardingContinue
-            | ShellElement::OnboardingOpen
-            | ShellElement::Cancel => false,
+            | ShellElement::OnboardingOpen => false,
         }
     }
 
@@ -113,15 +111,6 @@ impl SettingsUi {
                         .display_profiles
                         .active()
                         .is_none_or(|profile| profile.routes.is_empty())
-            }
-            DisplayElement::Apply => {
-                !self.draft.display_profiles.enabled
-                    || self
-                        .draft
-                        .display_profiles
-                        .active()
-                        .is_none_or(|profile| !profile.confirmed)
-                    || rollback_active
             }
             DisplayElement::ProfileCard(index) => {
                 index as usize >= self.draft.display_profiles.profiles.len()

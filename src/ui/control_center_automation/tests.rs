@@ -1,3 +1,4 @@
+use super::model::SettingsAutomationSnapshot;
 use super::*;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::System::Ole::{
@@ -105,10 +106,31 @@ fn layout() -> SettingsLayout {
 }
 
 fn values() -> Vec<(ElementId, String, bool, f32)> {
-    ElementId::FOCUS_ORDER
+    layout()
+        .focus_order()
         .into_iter()
         .map(|id| (id, String::from("Off"), true, 0.5))
         .collect()
+}
+
+fn focus_order() -> Vec<ElementId> {
+    layout().focus_order()
+}
+
+fn test_snapshot_from_settings(
+    _hwnd: HWND,
+    layout: &SettingsLayout,
+    values: &[(ElementId, String, bool, f32)],
+    focused: Option<ElementId>,
+    dpi: u32,
+) -> SettingsAutomationSnapshot {
+    super::snapshot::snapshot_from_settings_at_origin(
+        layout,
+        values,
+        focused,
+        dpi,
+        POINT::default(),
+    )
 }
 
 fn automation_with_disabled(id: ElementId) -> SettingsAutomation {
@@ -147,7 +169,13 @@ fn published_automation() -> SettingsAutomation {
 
 fn published_automation_for(hwnd: HWND) -> SettingsAutomation {
     let automation = SettingsAutomation::new(hwnd);
-    automation.publish(snapshot_from_settings(hwnd, &layout(), &values(), None, 96));
+    automation.publish(test_snapshot_from_settings(
+        hwnd,
+        &layout(),
+        &values(),
+        None,
+        96,
+    ));
     automation
 }
 

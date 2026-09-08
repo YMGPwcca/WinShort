@@ -100,15 +100,15 @@ impl ControlCenterWindow {
         .map_err(|e| Error::win("CreateWindowExW(settings)", &e))?;
         // SAFETY: this constructor exclusively owns the newly created HWND.
         let construction = unsafe { win::WindowConstructionGuard::new(hwnd) };
+        let cell = (unsafe { win::state_cell::<SettingsUi>(hwnd) })
+            .ok_or_else(|| Error::internal("settings state missing after creation"))?;
 
         let actual_dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96);
         if actual_dpi != dpi {
-            if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(hwnd) } {
-                cell.borrow_mut().dpi = actual_dpi;
-            }
+            cell.borrow_mut().dpi = actual_dpi;
         }
         apply_chrome(hwnd, settings_theme());
-        if let Some(cell) = unsafe { win::state_cell::<SettingsUi>(hwnd) } {
+        {
             let mut ui = cell.borrow_mut();
             ui.refresh_overlay_preview_aspect();
             ui.rebuild_layout(hwnd);
