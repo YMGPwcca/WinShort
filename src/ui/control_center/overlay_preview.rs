@@ -169,3 +169,15 @@ impl SettingsUi {
         self.commit_local_change(hwnd, before);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_duration_label;
+
+    #[test]
+    fn overlay_duration_label_removes_redundant_decimals() {
+        assert_eq!(overlay_duration_label(1000), "1 s");
+        assert_eq!(overlay_duration_label(1300), "1.3 s");
+        assert_eq!(overlay_duration_label(5000), "5 s");
+    }
+}

@@ -4,6 +4,7 @@ use super::audio::allowlist_label;
 use super::config_toggle::ConfigToggle;
 use super::overlay_preview::{overlay_duration_label, overlay_position, overlay_scale_label};
 use super::state::{ConfirmationTarget, SettingsUi};
+use crate::config::model::{OVERLAY_DURATION_MAX_MS, OVERLAY_DURATION_MIN_MS};
 use crate::ui::controls::ControlValue;
 use crate::ui::layout::{
     AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, HotkeySlot,
@@ -297,7 +298,12 @@ impl SettingsUi {
                 crate::ui::presentation::monitor_choice_label(&self.draft.overlay.monitor),
             )),
             OverlayElement::Duration => ControlValue::Slider {
-                ratio: (self.draft.overlay.duration_ms.saturating_sub(500) as f32 / 9500.0)
+                ratio: (self
+                    .draft
+                    .overlay
+                    .duration_ms
+                    .saturating_sub(OVERLAY_DURATION_MIN_MS) as f32
+                    / (OVERLAY_DURATION_MAX_MS - OVERLAY_DURATION_MIN_MS) as f32)
                     .clamp(0.0, 1.0),
                 label: Cow::Owned(overlay_duration_label(self.draft.overlay.duration_ms)),
             },

@@ -16,7 +16,7 @@ start_with_windows = false      # LEGACY (#16): always false; registry owns star
 
 [overlay]
 enabled = true
-duration_ms = 1300              # valid 500..=10000
+duration_ms = 1300              # valid 1000..=5000; 100 ms steps
 position = "bottom-center"      # top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right
 monitor = "cursor"              # cursor | primary (legacy device selectors remain readable)
 scale = 1.0                     # valid 0.7..=1.6
@@ -196,7 +196,7 @@ Serde does not deny unknown fields; instead load performs a manual double-parse 
 * display profile hotkeys require existing profile IDs, unique stable ID keys, and no conflict with any ordinary or virtual-desktop binding
 
 `Config::repair` then fixes violations in-memory so the app stays usable:
-out-of-range `duration_ms → 2000`, `scale → 1.0`; conflicting hotkey binding
+out-of-range `duration_ms` is clamped to `1000..=5000`, `scale → 1.0`; conflicting hotkey binding
 → `None`; an invalid numbered modifier returns to `Win`; invalid allowlist entries,
 malformed/duplicate display profiles, and stale/conflicting display profile hotkeys are removed
 while preserving the first valid entry. Repair is idempotent (repaired values are
@@ -233,7 +233,7 @@ Center or the tray writes/deletes immediately — it does **not** wait for a glo
 | `start_hotkeys_enabled` | true |
 | virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/Special Desktop hotkeys unassigned |
 
-Repair fallbacks are `duration_ms → 2000` and `scale → 1.0`.
+Repair behavior is `duration_ms.clamp(1000, 5000)` and `scale → 1.0`.
 
 ## Logging policy
 

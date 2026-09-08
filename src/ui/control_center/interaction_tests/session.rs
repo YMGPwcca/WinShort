@@ -1,4 +1,7 @@
 use super::*;
+use crate::config::model::{
+    OVERLAY_DURATION_MAX_MS, OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_STEP_MS,
+};
 
 #[test]
 fn reset_requires_two_explicit_activations() {
@@ -30,18 +33,67 @@ fn endpoint_roles_apply_only_to_default_selection() {
 }
 
 #[test]
-fn slider_keyboard_steps_stay_within_validation_ranges() {
+fn duration_slider_pointer_mapping_uses_100ms_snapping() {
+    let mut ui = empty_settings_ui();
+    let row = ui
+        .layout
+        .element(ElementId::OverlayDuration)
+        .expect("duration slider row")
+        .rect;
+    let track = crate::ui::controls::slider_track_rect(row);
+    ui.set_slider_from_x(ElementId::OverlayDuration, track.x);
+    assert_eq!(ui.draft.overlay.duration_ms, OVERLAY_DURATION_MIN_MS);
+    ui.set_slider_from_x(ElementId::OverlayDuration, track.right());
+    assert_eq!(ui.draft.overlay.duration_ms, OVERLAY_DURATION_MAX_MS);
+    ui.set_slider_from_ratio(ElementId::OverlayDuration, 0.5);
+    assert_eq!(ui.draft.overlay.duration_ms, 3000);
+    ui.set_slider_from_ratio(ElementId::OverlayDuration, 0.512);
+    assert_eq!(ui.draft.overlay.duration_ms, 3000);
+    ui.set_slider_from_ratio(ElementId::OverlayDuration, 0.513);
+    assert_eq!(ui.draft.overlay.duration_ms, 3100);
+}
+
+#[test]
+fn duration_slider_keyboard_steps_stay_within_validation_ranges() {
     assert_eq!(
-        SettingsUi::slider_value(ElementId::OverlayDuration, 500.0, -1.0),
-        500.0
+        SettingsUi::slider_value(ElementId::OverlayDuration, 1000.0, -1.0),
+        1000.0
     );
     assert_eq!(
-        SettingsUi::slider_value(ElementId::OverlayDuration, 500.0, 1.0),
-        600.0
+        SettingsUi::slider_value(ElementId::OverlayDuration, 1000.0, 1.0),
+        1100.0
     );
     assert_eq!(
-        SettingsUi::slider_value(ElementId::OverlayDuration, 500.0, f32::INFINITY),
-        10_000.0
+        SettingsUi::slider_value(ElementId::OverlayDuration, 1300.0, -1.0),
+        1200.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayDuration, 1300.0, 1.0),
+        1400.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayDuration, 3200.0, f32::NEG_INFINITY),
+        1000.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayDuration, 3200.0, f32::INFINITY),
+        5000.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayDuration, 2300.0, 5.0),
+        2300.0 + 5.0 * OVERLAY_DURATION_STEP_MS as f32
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayDuration, 2300.0, -5.0),
+        1800.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayDuration, 4800.0, 5.0),
+        5000.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayDuration, 1200.0, -5.0),
+        1000.0
     );
     assert!(
         (SettingsUi::slider_value(ElementId::OverlayScale, 0.7, -1.0) - 0.7).abs() < f32::EPSILON

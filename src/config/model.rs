@@ -40,6 +40,11 @@ pub struct OverlayCfg {
     pub notifications: OverlayNotifications,
 }
 
+pub const OVERLAY_DURATION_MIN_MS: u32 = 1_000;
+pub const OVERLAY_DURATION_MAX_MS: u32 = 5_000;
+pub const OVERLAY_DURATION_STEP_MS: u32 = 100;
+pub const OVERLAY_DURATION_PAGE_STEP_MS: u32 = 500;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayBlur {
     Transparent,
@@ -1347,7 +1352,12 @@ impl Config {
             .any(|violation| violation.field.starts_with("hotkeys.disabled["));
         for v in violations {
             match v.field.as_str() {
-                "overlay.duration_ms" => self.overlay.duration_ms = 2000,
+                "overlay.duration_ms" => {
+                    self.overlay.duration_ms = self
+                        .overlay
+                        .duration_ms
+                        .clamp(OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_MAX_MS)
+                }
                 "overlay.scale" => self.overlay.scale = 1.0,
 
                 "virtual_desktops.number_modifier" => {
@@ -1565,6 +1575,21 @@ mod hotkey_schema_tests {
         assert!(config.hotkeys.cycle_output_device.is_none());
         assert!(config.hotkeys.foreground_volume_up.is_none());
         assert!(config.hotkeys.foreground_volume_down.is_none());
+    }
+
+    #[test]
+    fn overlay_duration_repair_clamps_legacy_values() {
+        for (duration_ms, expected) in [
+            (500, OVERLAY_DURATION_MIN_MS),
+            (10_000, OVERLAY_DURATION_MAX_MS),
+            (1300, 1300),
+        ] {
+            let mut config = Config::default();
+            config.overlay.duration_ms = duration_ms;
+            let violations = crate::config::validate(&config);
+            config.repair(&violations);
+            assert_eq!(config.overlay.duration_ms, expected);
+        }
     }
 
     #[test]

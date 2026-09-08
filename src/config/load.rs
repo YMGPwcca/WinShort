@@ -227,6 +227,7 @@ mod tests {
         let (cfg, warnings) = load(&dir);
         let diagnostics = crate::config::load_diagnostics();
         assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(cfg.overlay.duration_ms, 1000);
         assert_eq!(cfg.overlay.appearance, OverlayAppearance::System);
         assert!(cfg.overlay.notifications.current_app_audio);
         assert_eq!(diagnostics.source_schema_version, Some(1));

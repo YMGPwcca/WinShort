@@ -131,9 +131,9 @@ fn automation_rects_are_screen_space_and_dpi_scaled() {
 fn slider_ranges_expose_model_units() {
     let range =
         slider_range(ElementId::OverlayDuration, ElementKind::Slider, 0.5).expect("duration range");
-    assert_eq!(range.minimum, 500.0);
-    assert_eq!(range.maximum, 10_000.0);
-    assert!((range.value - 5250.0).abs() < f64::EPSILON);
+    assert_eq!(range.minimum, 1000.0);
+    assert_eq!(range.maximum, 5000.0);
+    assert!((range.value - 3000.0).abs() < f64::EPSILON);
     assert_eq!(range.small_change, 100.0);
     assert_eq!(range.large_change, 500.0);
     let blur = slider_range(ElementId::OverlayBlur, ElementKind::Slider, 0.5).expect("blur range");

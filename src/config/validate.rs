@@ -3,7 +3,9 @@
 
 use std::collections::HashMap;
 
-use crate::config::model::{Config, DeviceSelection};
+use crate::config::model::{
+    Config, DeviceSelection, OVERLAY_DURATION_MAX_MS, OVERLAY_DURATION_MIN_MS,
+};
 use crate::keyboard::binding::{numbered_desktop_family, Hotkey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,10 +27,13 @@ impl Violation {
 pub fn validate(cfg: &Config) -> Vec<Violation> {
     let mut v = Vec::new();
 
-    if !(500..=10_000).contains(&cfg.overlay.duration_ms) {
+    if !(OVERLAY_DURATION_MIN_MS..=OVERLAY_DURATION_MAX_MS).contains(&cfg.overlay.duration_ms) {
         v.push(Violation::new(
             "overlay.duration_ms",
-            format!("must be 500–10000 (got {})", cfg.overlay.duration_ms),
+            format!(
+                "must be {OVERLAY_DURATION_MIN_MS}–{OVERLAY_DURATION_MAX_MS} (got {})",
+                cfg.overlay.duration_ms
+            ),
         ));
     }
     if !(0.7..=1.6).contains(&cfg.overlay.scale) {
@@ -408,6 +413,29 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         assert!(validate(&Config::default()).is_empty());
+    }
+
+    #[test]
+    fn overlay_duration_accepts_supported_boundaries_and_default() {
+        for duration_ms in [OVERLAY_DURATION_MIN_MS, 1300, OVERLAY_DURATION_MAX_MS] {
+            let mut config = Config::default();
+            config.overlay.duration_ms = duration_ms;
+            assert!(
+                validate(&config).is_empty(),
+                "duration {duration_ms} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_duration_rejects_values_outside_supported_range() {
+        for duration_ms in [OVERLAY_DURATION_MIN_MS - 1, OVERLAY_DURATION_MAX_MS + 1] {
+            let mut config = Config::default();
+            config.overlay.duration_ms = duration_ms;
+            let violations = validate(&config);
+            assert_eq!(violations.len(), 1, "duration {duration_ms}");
+            assert_eq!(violations[0].field, "overlay.duration_ms");
+        }
     }
 
     #[test]
