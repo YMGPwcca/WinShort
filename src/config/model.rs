@@ -10,7 +10,7 @@ use crate::keyboard::binding::{numbered_desktop_family, Hotkey, ModifierMask};
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 10;
+pub const CURRENT_SCHEMA_VERSION: u8 = 11;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,9 +35,138 @@ pub struct OverlayCfg {
     pub position: OverlayPosition,
     pub monitor: MonitorChoice,
     pub scale: f32,
-    pub opacity: f32,
+    pub blur: OverlayBlur,
     pub appearance: OverlayAppearance,
-    pub show_external_audio_changes: bool,
+    pub notifications: OverlayNotifications,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayBlur {
+    Transparent,
+    BlurLight,
+    BlurMedium,
+    BlurHeavy,
+    Solid,
+}
+
+impl OverlayBlur {
+    pub const ALL: [Self; 5] = [
+        Self::Transparent,
+        Self::BlurLight,
+        Self::BlurMedium,
+        Self::BlurHeavy,
+        Self::Solid,
+    ];
+    pub fn index(self) -> usize {
+        match self {
+            Self::Transparent => 0,
+            Self::BlurLight => 1,
+            Self::BlurMedium => 2,
+            Self::BlurHeavy => 3,
+            Self::Solid => 4,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index.min(Self::ALL.len() - 1)]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Transparent => "Transparent",
+            Self::BlurLight => "Light blur",
+            Self::BlurMedium => "Medium blur",
+            Self::BlurHeavy => "Heavy blur",
+            Self::Solid => "Solid",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transparent => "transparent",
+            Self::BlurLight => "blur-light",
+            Self::BlurMedium => "blur-medium",
+            Self::BlurHeavy => "blur-heavy",
+            Self::Solid => "solid",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "transparent" => Self::Transparent,
+            "blur-light" | "light" => Self::BlurLight,
+            "blur-medium" | "medium" => Self::BlurMedium,
+            "blur-heavy" | "heavy" => Self::BlurHeavy,
+            "solid" => Self::Solid,
+            _ => return None,
+        })
+    }
+
+    pub fn blur_amount(self) -> Option<f32> {
+        match self {
+            Self::Transparent | Self::Solid => None,
+            Self::BlurLight => Some(8.0),
+            Self::BlurMedium => Some(18.0),
+            Self::BlurHeavy => Some(32.0),
+        }
+    }
+
+    pub fn from_legacy_opacity(opacity: f32) -> Self {
+        let opacity = if opacity.is_finite() {
+            opacity.clamp(0.3, 1.0)
+        } else {
+            0.85
+        };
+        if opacity <= 0.45 {
+            Self::Transparent
+        } else if opacity <= 0.65 {
+            Self::BlurLight
+        } else {
+            Self::BlurMedium
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayNotificationCategory {
+    Microphone,
+    Speaker,
+    CurrentAppAudio,
+    Workspace,
+    DisplayProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayNotifications {
+    pub microphone: bool,
+    pub speaker: bool,
+    pub current_app_audio: bool,
+    pub workspace: bool,
+    pub display_profile: bool,
+}
+
+impl OverlayNotifications {
+    pub fn is_enabled(self, category: OverlayNotificationCategory) -> bool {
+        match category {
+            OverlayNotificationCategory::Microphone => self.microphone,
+            OverlayNotificationCategory::Speaker => self.speaker,
+            OverlayNotificationCategory::CurrentAppAudio => self.current_app_audio,
+            OverlayNotificationCategory::Workspace => self.workspace,
+            OverlayNotificationCategory::DisplayProfile => self.display_profile,
+        }
+    }
+}
+
+impl Default for OverlayNotifications {
+    fn default() -> Self {
+        Self {
+            microphone: true,
+            speaker: true,
+            current_app_audio: true,
+            workspace: true,
+            display_profile: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,9 +480,9 @@ impl Default for Config {
                 position: OverlayPosition::BottomCenter,
                 monitor: MonitorChoice::Cursor,
                 scale: 1.0,
-                opacity: 1.0,
+                blur: OverlayBlur::BlurMedium,
                 appearance: OverlayAppearance::System,
-                show_external_audio_changes: true,
+                notifications: OverlayNotifications::default(),
             },
             audio: AudioCfg {
                 input_role: EndpointRole::Console,
@@ -457,12 +586,27 @@ pub struct OverlayToml {
     pub monitor: String,
     #[serde(default = "default_scale")]
     pub scale: f32,
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
+    #[serde(default = "default_blur")]
+    pub blur: String,
     #[serde(default = "default_appearance")]
     pub appearance: String,
-    #[serde(default = "default_show_external_audio_changes")]
-    pub show_external_audio_changes: bool,
+    #[serde(default = "default_true")]
+    pub show_microphone: bool,
+    #[serde(default = "default_true")]
+    pub show_speaker: bool,
+    #[serde(default = "default_true")]
+    pub show_current_app_audio: bool,
+    #[serde(default = "default_true")]
+    pub show_workspace: bool,
+    #[serde(default = "default_true")]
+    pub show_display_profile: bool,
+    /// Legacy opacity field. It is read only to migrate schema-v10 and older
+    /// documents, then omitted from every subsequent save.
+    #[serde(default, skip_serializing)]
+    pub opacity: Option<f32>,
+    /// Legacy external-audio toggle. It maps to current-app audio notices.
+    #[serde(default, skip_serializing)]
+    pub show_external_audio_changes: Option<bool>,
 }
 
 impl Default for OverlayToml {
@@ -473,9 +617,15 @@ impl Default for OverlayToml {
             position: default_position(),
             monitor: default_monitor(),
             scale: default_scale(),
-            opacity: default_opacity(),
+            blur: default_blur(),
             appearance: default_appearance(),
-            show_external_audio_changes: default_show_external_audio_changes(),
+            show_microphone: true,
+            show_speaker: true,
+            show_current_app_audio: true,
+            show_workspace: true,
+            show_display_profile: true,
+            opacity: None,
+            show_external_audio_changes: None,
         }
     }
 }
@@ -624,14 +774,11 @@ fn default_monitor() -> String {
 fn default_scale() -> f32 {
     1.0
 }
-fn default_opacity() -> f32 {
-    1.0
+fn default_blur() -> String {
+    "blur-medium".into()
 }
 fn default_appearance() -> String {
     "system".into()
-}
-fn default_show_external_audio_changes() -> bool {
-    true
 }
 fn default_role() -> String {
     "console".into()
@@ -754,9 +901,15 @@ impl Config {
                 position: self.overlay.position.as_str().into(),
                 monitor: self.overlay.monitor.as_str(),
                 scale: self.overlay.scale,
-                opacity: self.overlay.opacity,
+                blur: self.overlay.blur.as_str().into(),
                 appearance: self.overlay.appearance.as_str().into(),
-                show_external_audio_changes: self.overlay.show_external_audio_changes,
+                show_microphone: self.overlay.notifications.microphone,
+                show_speaker: self.overlay.notifications.speaker,
+                show_current_app_audio: self.overlay.notifications.current_app_audio,
+                show_workspace: self.overlay.notifications.workspace,
+                show_display_profile: self.overlay.notifications.display_profile,
+                opacity: None,
+                show_external_audio_changes: None,
             },
             audio: AudioToml {
                 input_role: self.audio.input_role.as_str().into(),
@@ -867,6 +1020,10 @@ impl Config {
 
         c.overlay.enabled = t.overlay.enabled;
         c.overlay.duration_ms = t.overlay.duration_ms;
+        match OverlayBlur::parse(&t.overlay.blur) {
+            Some(blur) => c.overlay.blur = blur,
+            None => warnings.push(format!("overlay.blur: unknown `{}`", t.overlay.blur)),
+        }
         match OverlayPosition::parse(&t.overlay.position) {
             Some(p) => c.overlay.position = p,
             None if t.overlay.position.is_empty() => {}
@@ -881,7 +1038,15 @@ impl Config {
             None => warnings.push(format!("overlay.monitor: unknown `{}`", t.overlay.monitor)),
         }
         c.overlay.scale = t.overlay.scale;
-        c.overlay.opacity = t.overlay.opacity;
+        if t.schema_version < CURRENT_SCHEMA_VERSION {
+            if let Some(opacity) = t.overlay.opacity {
+                c.overlay.blur = OverlayBlur::from_legacy_opacity(opacity);
+                warnings.push(format!(
+                    "overlay.opacity migrated to overlay.blur `{}`",
+                    c.overlay.blur.as_str()
+                ));
+            }
+        }
         match OverlayAppearance::parse(&t.overlay.appearance) {
             Some(appearance) => c.overlay.appearance = appearance,
             None => warnings.push(format!(
@@ -889,7 +1054,25 @@ impl Config {
                 t.overlay.appearance
             )),
         }
-        c.overlay.show_external_audio_changes = t.overlay.show_external_audio_changes;
+        c.overlay.notifications = OverlayNotifications {
+            microphone: t.overlay.show_microphone,
+            speaker: t.overlay.show_speaker,
+            current_app_audio: if t.schema_version < CURRENT_SCHEMA_VERSION {
+                if let Some(value) = t.overlay.show_external_audio_changes {
+                    warnings.push(
+                        "overlay.show_external_audio_changes migrated to overlay.show_current_app_audio"
+                            .into(),
+                    );
+                    value
+                } else {
+                    t.overlay.show_current_app_audio
+                }
+            } else {
+                t.overlay.show_current_app_audio
+            },
+            workspace: t.overlay.show_workspace,
+            display_profile: t.overlay.show_display_profile,
+        };
 
         match EndpointRole::parse(&t.audio.input_role) {
             Some(r) => c.audio.input_role = r,
@@ -1093,9 +1276,15 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "position",
             "monitor",
             "duration_ms",
+            "blur",
             "opacity",
             "scale",
             "appearance",
+            "show_microphone",
+            "show_speaker",
+            "show_current_app_audio",
+            "show_workspace",
+            "show_display_profile",
             "show_external_audio_changes",
         ]),
         "audio" => Some(&[
@@ -1161,7 +1350,6 @@ impl Config {
                 "overlay.duration_ms" => self.overlay.duration_ms = 2000,
                 "overlay.scale" => self.overlay.scale = 1.0,
 
-                "overlay.opacity" => self.overlay.opacity = 0.85,
                 "virtual_desktops.number_modifier" => {
                     self.virtual_desktops.number_modifier = ModifierMask::WIN;
                     // A repaired default family must not collide with an
@@ -1401,10 +1589,12 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
 "#;
         let boundary: ConfigToml = toml::from_str(raw).unwrap();
         let (config, warnings) = Config::from_toml(&boundary);
-        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("show_external_audio_changes")));
         assert!(!config.general.start_hotkeys_enabled);
         assert_eq!(config.overlay.appearance, OverlayAppearance::Dark);
-        assert!(!config.overlay.show_external_audio_changes);
+        assert!(!config.overlay.notifications.current_app_audio);
         assert_eq!(
             config.audio.output_device,
             DeviceSelection::Endpoint("opaque-output-id".into())
@@ -1425,6 +1615,49 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
         assert!(config.hotkeys.cycle_output_device.is_none());
         assert!(config.hotkeys.foreground_volume_up.is_none());
         assert!(config.hotkeys.foreground_volume_down.is_none());
+    }
+    #[test]
+    fn schema_v10_migrates_opacity_and_external_audio_policy() {
+        let raw = r#"
+schema_version = 10
+[overlay]
+opacity = 0.5
+show_external_audio_changes = false
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert_eq!(config.overlay.blur, OverlayBlur::BlurLight);
+        assert!(!config.overlay.notifications.current_app_audio);
+        assert!(warnings.iter().any(|warning| warning.contains("opacity")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("show_external_audio_changes")));
+        let saved = toml::to_string_pretty(&config.to_toml()).unwrap();
+        assert!(saved.contains("blur = \"blur-light\""));
+        assert!(!saved.contains("opacity"));
+        assert!(!saved.contains("show_external_audio_changes"));
+    }
+    #[test]
+    fn legacy_opacity_boundaries_never_introduce_new_treatments() {
+        let cases = [
+            (0.30, OverlayBlur::Transparent),
+            (0.45, OverlayBlur::Transparent),
+            (0.50, OverlayBlur::BlurLight),
+            (0.65, OverlayBlur::BlurLight),
+            (0.85, OverlayBlur::BlurMedium),
+            (1.00, OverlayBlur::BlurMedium),
+        ];
+        for (opacity, expected) in cases {
+            assert_eq!(OverlayBlur::from_legacy_opacity(opacity), expected);
+        }
+        assert_eq!(
+            OverlayBlur::from_legacy_opacity(f32::NAN),
+            OverlayBlur::BlurMedium
+        );
+        assert_eq!(
+            OverlayBlur::from_legacy_opacity(f32::INFINITY),
+            OverlayBlur::BlurMedium
+        );
     }
 
     #[test]

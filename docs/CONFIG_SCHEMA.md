@@ -8,7 +8,7 @@ File: `%LOCALAPPDATA%\WinShort\config.toml` (resolved via `SHGetKnownFolderPath`
 `write_all` → `flush` → `sync_all` → `rename` over the target; temp removed on rename failure.
 No backup copies are kept.
 
-schema_version = 10              # u8; CURRENT value is 10 (v1/v2/v3/v4/v5/v6/v7/v8/v9 files migrate on load)
+schema_version = 11              # u8; CURRENT value is 11 (v1/v2/v3/v4/v5/v6/v7/v8/v9/v10 files migrate on load)
 
 [general]
 start_hotkeys_enabled = true    # engine starts unsuspended
@@ -20,9 +20,13 @@ duration_ms = 1300              # valid 500..=10000
 position = "bottom-center"      # top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right
 monitor = "cursor"              # cursor | primary (legacy device selectors remain readable)
 scale = 1.0                     # valid 0.7..=1.6
-opacity = 1.0                   # valid 0.3..=1.0
-appearance = "system"           # system | dark | light
-show_external_audio_changes = true
+blur = "blur-medium"             # transparent | blur-light | blur-medium | blur-heavy | solid
+appearance = "system"            # system | dark | light
+show_microphone = true           # show microphone notifications
+show_speaker = true              # show speaker notifications
+show_current_app_audio = true    # show current app audio notifications
+show_workspace = true            # show workspace notifications
+show_display_profile = true      # show display profile notifications
 
 [audio]
 input_role = "console"          # console|multimedia|communications (default console)
@@ -85,9 +89,13 @@ Raw strings exist only at the TOML boundary (`config/load.rs`). After parsing:
 
 ```rust
 struct Hotkey { modifiers: ModifierMask /*u8 bitflags*/, key: VirtualKey }
-enum OverlayPosition { TopLeft, TopCenter, TopRight, CenterLeft, Center, CenterRight, BottomLeft, BottomCenter, BottomRight }
+enum OverlayBlur { Transparent, BlurLight, BlurMedium, BlurHeavy, Solid }
 enum OverlayAppearance { System, Dark, Light }
-enum MonitorChoice { Foreground, Primary, Device(String) }   // Device = stable monitor name "\\.\DISPLAYn" (#26)
+enum OverlayNotificationCategory { Microphone, Speaker, CurrentAppAudio, Workspace, DisplayProfile }
+struct OverlayNotifications {
+  microphone: bool, speaker: bool, current_app_audio: bool,
+  workspace: bool, display_profile: bool
+}
 enum EndpointRole { Console, Multimedia, Communications }
 struct AudioCfg {
   cycle_input_allowlist: Option<Vec<String>>,
@@ -148,14 +156,14 @@ discarding the change.
 
 ## Future-schema read-only latch
 
-Loading a document with `schema_version > 10` (`config/load.rs::load`):
+Loading a document with `schema_version > 11` (`config/load.rs::load`):
 
 An absent `schema_version` is treated as legacy source schema v1. New files
-serialized by `Config::to_toml()` always write schema v10.
+serialized by `Config::to_toml()` always write schema v11.
 
 Diagnostics separates `source_schema_version` from `effective_schema_version`:
-missing/corrupt input has no source version and effective v10; v1/v2/v3/v4/v5/v6/v7/v8/v9 input has
-its source version and effective v10; v10 input has source and effective v10. A future source version
+missing/corrupt input has no source version and effective v11; v1/v2/v3/v4/v5/v6/v7/v8/v9/v10 input has
+its source version and effective v11; v11 input has source and effective v11. A future source version
 is retained while runtime state falls back to safe defaults and the read-only latch remains active.
 
 * logs an error and warns "config written by a newer WinShort; not overwriting",
@@ -188,7 +196,7 @@ Serde does not deny unknown fields; instead load performs a manual double-parse 
 * display profile hotkeys require existing profile IDs, unique stable ID keys, and no conflict with any ordinary or virtual-desktop binding
 
 `Config::repair` then fixes violations in-memory so the app stays usable:
-out-of-range `duration_ms → 2000`, `scale → 1.0`, `opacity → 0.85`; conflicting hotkey binding
+out-of-range `duration_ms → 2000`, `scale → 1.0`; conflicting hotkey binding
 → `None`; an invalid numbered modifier returns to `Win`; invalid allowlist entries,
 malformed/duplicate display profiles, and stale/conflicting display profile hotkeys are removed
 while preserving the first valid entry. Repair is idempotent (repaired values are
@@ -216,7 +224,7 @@ Center or the tray writes/deletes immediately — it does **not** wait for a glo
 ## Defaults (as coded)
 
 | Field | Default |
-| overlay | enabled, 1300 ms, bottom-center, cursor-position monitor, scale 1.0, opacity 1.0, System appearance, external audio changes shown |
+| overlay | enabled, 1300 ms, bottom-center, cursor-position monitor, scale 1.0, medium blur, System appearance, all notification categories shown |
 | audio roles / devices | console / console, default devices |
 | audio cycle allowlists | omitted (`None`, all active endpoints) |
 | existing toggle hotkeys | Ctrl+Alt+M / Ctrl+Alt+O / Ctrl+Alt+P |
@@ -225,7 +233,7 @@ Center or the tray writes/deletes immediately — it does **not** wait for a glo
 | `start_hotkeys_enabled` | true |
 | virtual desktops | enabled, `win_number_switching` true, number family `Win`, move families/previous/Special Desktop hotkeys unassigned |
 
-Repair fallbacks (2000 / 1.0 / 0.85) differ from these defaults by design.
+Repair fallbacks are `duration_ms → 2000` and `scale → 1.0`.
 
 ## Logging policy
 
@@ -241,15 +249,24 @@ Schema v1 files, including versionless legacy files, load with the v2 defaults f
 v3 defaults for the four Phase-1 hotkeys, v4 defaults for the Virtual Desktop
 workflow fields, v5 defaults for the legacy-named `scratchpad_*` hotkeys (now Special
 Workspace actions), v7 defaults for
-input/output allowlists, v8 defaults for display profiles, and v9 defaults for
+input/output allowlists, v8 defaults for display profiles, v9 defaults for
 display profile hotkeys plus
-`confirmed = false` on profiles that predate the safety bit. Schema v10 adds the
-`hotkeys.disabled` records; v1 through v9 files default that list to empty.
-Schema v2/v3/v4/v5/v6/v7/v8/v9
-files preserve all existing values and default only the newly introduced fields.
-Schema-v6 executable-routing tables remain parse-compatible but are ignored as a removed,
-unreleased feature and are not serialized again. Load diagnostics records the source/effective
-transition. A successful Save writes schema v10
-and updates active load diagnostics to source v10. Legacy `overlay.monitor = "index:N"` still
-maps to `primary`, and `general.start_with_windows` remains ignored because startup is
-registry-owned.
+`confirmed = false` on profiles that predate the safety bit, and v10 defaults for
+`hotkeys.disabled`. Schema v11 adds the typed `overlay.blur` treatment and the
+per-category notification toggles; v1 through v10 default those new fields to
+medium blur and enabled.
+
+Schema v2/v3/v4/v5/v6/v7/v8/v9/v10 files preserve all existing values and default only the newly
+introduced fields. Legacy `overlay.opacity` is migrated to `overlay.blur` before the next save:
+
+| Legacy opacity | New blur treatment |
+|---|---|
+| `0.30..=0.45` | `transparent` |
+| `(0.45, 0.65]` | `blur-light` |
+| `(0.65, 1.00]` | `blur-medium` |
+
+Legacy migration never selects `blur-heavy` or `solid`; those are new opt-in treatments.
+The legacy `overlay.show_external_audio_changes` key maps to
+`overlay.show_current_app_audio`. Both legacy keys are read for migration,
+reported in load diagnostics, and omitted from the next Save. A successful Save
+writes schema v11 and updates active load diagnostics to source v11.

@@ -70,6 +70,7 @@ fn null_pointer<T>() -> windows::core::Result<T> {
 #[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
 pub(super) struct GaussianBlurEffectGraph {
     pub(super) source: IGraphicsEffectSource,
+    pub(super) blur_amount: f32,
 }
 
 impl IGraphicsEffectSource_Impl for GaussianBlurEffectGraph_Impl {}
@@ -129,7 +130,7 @@ impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffectGraph_Impl {
             return null_pointer();
         }
         let property: IPropertyValue = match index {
-            0 => PropertyValue::CreateSingle(18.0)?.cast()?,
+            0 => PropertyValue::CreateSingle(self.blur_amount)?.cast()?,
             1 | 2 => PropertyValue::CreateUInt32(1)?.cast()?,
             _ => return invalid_argument(),
         };

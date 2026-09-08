@@ -549,22 +549,40 @@ fn format_diagnostics(
         &mut out,
         &format!("Appearance: {}", snapshot.overlay.appearance),
     );
+    line(&mut out, &format!("Blur: {}", snapshot.overlay.blur));
     line(
         &mut out,
         &format!(
-            "Resolved appearance: {}",
-            snapshot
-                .overlay
-                .resolved_appearance
-                .as_deref()
-                .unwrap_or("unknown")
+            "Microphone notifications: {}",
+            yes_no(snapshot.overlay.notifications.microphone)
         ),
     );
     line(
         &mut out,
         &format!(
-            "External audio changes: {}",
-            yes_no(snapshot.overlay.external_audio_changes)
+            "Speaker notifications: {}",
+            yes_no(snapshot.overlay.notifications.speaker)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Current app audio notifications: {}",
+            yes_no(snapshot.overlay.notifications.current_app_audio)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Workspace notifications: {}",
+            yes_no(snapshot.overlay.notifications.workspace)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Display profile notifications: {}",
+            yes_no(snapshot.overlay.notifications.display_profile)
         ),
     );
     line(
@@ -782,9 +800,13 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
             position: config.overlay.position.as_str().into(),
             monitor: safe_monitor(&config.overlay.monitor),
             scale: config.overlay.scale,
-            opacity: config.overlay.opacity,
+            blur: config.overlay.blur.as_str().into(),
             appearance: config.overlay.appearance.as_str().into(),
-            show_external_audio_changes: config.overlay.show_external_audio_changes,
+            show_microphone: config.overlay.notifications.microphone,
+            show_speaker: config.overlay.notifications.speaker,
+            show_current_app_audio: config.overlay.notifications.current_app_audio,
+            show_workspace: config.overlay.notifications.workspace,
+            show_display_profile: config.overlay.notifications.display_profile,
         },
         audio: SafeAudio {
             input_role: config.audio.input_role.as_str().into(),
@@ -950,9 +972,13 @@ struct SafeOverlay {
     position: String,
     monitor: String,
     scale: f32,
-    opacity: f32,
+    blur: String,
     appearance: String,
-    show_external_audio_changes: bool,
+    show_microphone: bool,
+    show_speaker: bool,
+    show_current_app_audio: bool,
+    show_workspace: bool,
+    show_display_profile: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1561,7 +1587,7 @@ safe=1"#,
                 health: Health::Healthy,
                 path: config_path,
                 source_schema_version: Some(1),
-                effective_schema_version: 2,
+                effective_schema_version: crate::config::model::CURRENT_SCHEMA_VERSION,
                 read_only: false,
                 warnings: Vec::new(),
                 repaired_fields: Vec::new(),
@@ -1573,9 +1599,10 @@ safe=1"#,
             overlay: OverlayDiagnostics {
                 health: Health::Healthy,
                 enabled: true,
+                blur: "blur-medium".into(),
                 appearance: "system".into(),
                 resolved_appearance: Some("dark".into()),
-                external_audio_changes: true,
+                notifications: crate::config::model::OverlayNotifications::default(),
                 animations_enabled: Some(true),
                 high_contrast: Some(false),
                 disable_overlapped_content: Some(false),

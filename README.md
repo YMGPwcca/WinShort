@@ -25,7 +25,7 @@ WinShort
 - **Status overlay** — per-pixel-alpha, monitor-aware HUD with human-readable speaker, microphone, current-app, and workspace feedback. It never steals focus.
 - **Workspaces** — numbered Desktop 1–9 switching, optional move-and-follow and silent move, Previous desktop, and a dedicated Special Desktop excluded from normal ordinals.
 - **Display profiles** — visual profile cards, capture/update/rename/duplicate/delete, stable profile-ID shortcuts, documented DisplayConfig validation, and temporary Test profile with explicit Keep, Revert, and automatic 15-second rollback.
-- **Overlay settings** — System/Light/Dark appearance, position, monitor, Small/Normal/Large size, Low/Normal/High opacity, Short/Normal/Long duration, and non-persistent draft Preview.
+- **Overlay settings** — System/Light/Dark appearance, position, monitor, actual 0.7x–1.6x size multiplier, five-stop Blur slider (Transparent, Light blur, Medium blur, Heavy blur, Solid), duration shown in seconds, per-category notification toggles for Microphone, Speaker, Current app audio, Workspace, and Display profile, and non-persistent draft Preview.
 - **Diagnostics & support** — separate native technical status page, passive Self-Test, Unicode diagnostics copy, direct log-folder opening, and a bounded sanitized support ZIP. No upload or telemetry.
 - **Event-driven idle** — no polling loops; device, desktop, foreground, theme, and runtime updates are event-driven.
 

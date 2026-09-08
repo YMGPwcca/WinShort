@@ -142,6 +142,9 @@ impl App {
                 } else {
                     self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
                         crate::ui::overlay::OverlayRow {
+                            category: Some(
+                                crate::config::model::OverlayNotificationCategory::Workspace,
+                            ),
                             icon: crate::ui::overlay::OverlayIcon::Info,
                             tone: crate::ui::overlay::OverlayTone::Unavailable,
                             title: "Previous desktop unavailable".into(),
@@ -156,6 +159,9 @@ impl App {
                 } else {
                     self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
                         crate::ui::overlay::OverlayRow {
+                            category: Some(
+                                crate::config::model::OverlayNotificationCategory::Workspace,
+                            ),
                             icon: crate::ui::overlay::OverlayIcon::Info,
                             tone: crate::ui::overlay::OverlayTone::Unavailable,
                             title: "Special Desktop unavailable".into(),
@@ -195,6 +201,9 @@ impl App {
                 };
                 self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
                     crate::ui::overlay::OverlayRow {
+                        category: Some(
+                            crate::config::model::OverlayNotificationCategory::Workspace,
+                        ),
                         icon: crate::ui::overlay::OverlayIcon::Workspace,
                         tone: crate::ui::overlay::OverlayTone::Changed,
                         title: title.into(),
@@ -207,6 +216,9 @@ impl App {
                 crate::error_!("desktop action {action} failed: {reason}");
                 self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
                     crate::ui::overlay::OverlayRow {
+                        category: Some(
+                            crate::config::model::OverlayNotificationCategory::Workspace,
+                        ),
                         icon: crate::ui::overlay::OverlayIcon::Info,
                         tone: crate::ui::overlay::OverlayTone::Unavailable,
                         title: "Couldn't change workspace".into(),
@@ -261,7 +273,7 @@ impl App {
                     origin,
                     self.foreground_seen,
                     changed,
-                    crate::app::config().overlay.show_external_audio_changes,
+                    crate::app::config().overlay.notifications.current_app_audio,
                     status_request_matches,
                 );
                 self.foreground_state = state;

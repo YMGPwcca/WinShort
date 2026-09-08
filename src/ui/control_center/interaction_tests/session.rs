@@ -44,16 +44,45 @@ fn slider_keyboard_steps_stay_within_validation_ranges() {
         10_000.0
     );
     assert!(
-        (SettingsUi::slider_value(ElementId::OverlayOpacity, 0.3, -1.0) - 0.3).abs() < f32::EPSILON
-    );
-    assert!(
-        (SettingsUi::slider_value(ElementId::OverlayOpacity, 0.3, 1.0) - 0.35).abs() < f32::EPSILON
-    );
-    assert!(
         (SettingsUi::slider_value(ElementId::OverlayScale, 0.7, -1.0) - 0.7).abs() < f32::EPSILON
     );
     assert!(
         (SettingsUi::slider_value(ElementId::OverlayScale, 0.7, 1.0) - 0.8).abs() < f32::EPSILON
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayBlur, 2.0, -1.0),
+        1.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayBlur, 2.0, 1.0),
+        3.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayBlur, 2.0, f32::NEG_INFINITY),
+        0.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayBlur, 2.0, f32::INFINITY),
+        4.0
+    );
+}
+#[test]
+fn blur_slider_snaps_to_discrete_treatments() {
+    let mut ui = empty_settings_ui();
+    ui.set_slider_from_ratio(ElementId::OverlayBlur, 0.74);
+    assert_eq!(
+        ui.draft.overlay.blur,
+        crate::config::model::OverlayBlur::BlurHeavy
+    );
+    assert!(ui.set_slider_from_value(ElementId::OverlayBlur, 0.0));
+    assert_eq!(
+        ui.draft.overlay.blur,
+        crate::config::model::OverlayBlur::Transparent
+    );
+    assert!(ui.set_slider_from_value(ElementId::OverlayBlur, 4.0));
+    assert_eq!(
+        ui.draft.overlay.blur,
+        crate::config::model::OverlayBlur::Solid
     );
 }
 
@@ -148,7 +177,11 @@ fn reset_after_multiple_toggle_changes_matches_default_values() {
         ElementId::DesktopsEnabled,
         ElementId::WinNumberEnabled,
         ElementId::OverlayEnabled,
-        ElementId::OverlayExternalChanges,
+        ElementId::OverlayMicrophone,
+        ElementId::OverlaySpeaker,
+        ElementId::OverlayCurrentAppAudio,
+        ElementId::OverlayWorkspace,
+        ElementId::OverlayDisplayProfile,
     ];
     let mut ui = empty_settings_ui();
     for id in ids {

@@ -341,7 +341,7 @@ fn append_overlay(s: &crate::diagnostics::snapshot::DiagnosticsSnapshot, lines: 
         if s.overlay.enabled { "Yes" } else { "No" }.into(),
         None,
     );
-    row(lines, "Appearance", s.overlay.appearance.clone(), None);
+    row(lines, "Blur", s.overlay.blur.clone(), None);
     row(
         lines,
         "Resolved appearance",
@@ -353,8 +353,52 @@ fn append_overlay(s: &crate::diagnostics::snapshot::DiagnosticsSnapshot, lines: 
     );
     row(
         lines,
-        "External audio changes",
-        if s.overlay.external_audio_changes {
+        "Microphone notifications",
+        if s.overlay.notifications.microphone {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Speaker notifications",
+        if s.overlay.notifications.speaker {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Current app audio notifications",
+        if s.overlay.notifications.current_app_audio {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Workspace notifications",
+        if s.overlay.notifications.workspace {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Display profile notifications",
+        if s.overlay.notifications.display_profile {
             "Shown"
         } else {
             "Hidden"

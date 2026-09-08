@@ -220,9 +220,10 @@ fn build_overlay(inputs: &SnapshotInputs) -> OverlayDiagnostics {
             Health::Unavailable
         },
         enabled: inputs.config.overlay.enabled,
+        blur: inputs.config.overlay.blur.as_str().into(),
         appearance: inputs.config.overlay.appearance.as_str().into(),
         resolved_appearance: status.resolved_appearance.clone(),
-        external_audio_changes: inputs.config.overlay.show_external_audio_changes,
+        notifications: inputs.config.overlay.notifications,
         animations_enabled: status.animations_enabled,
         high_contrast: status.high_contrast,
         disable_overlapped_content: status.disable_overlapped_content,

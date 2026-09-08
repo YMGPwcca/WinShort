@@ -137,7 +137,7 @@ pub(super) fn slider_range(
     }
     let (minimum, maximum, small_change, large_change) = match id {
         ElementId::OverlayDuration => (500.0, 10_000.0, 100.0, 500.0),
-        ElementId::OverlayOpacity => (0.3, 1.0, 0.05, 0.25),
+        ElementId::OverlayBlur => (0.0, 4.0, 1.0, 2.0),
         ElementId::OverlayScale => (0.7, 1.6, 0.1, 0.5),
         _ => return None,
     };

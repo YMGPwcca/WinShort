@@ -548,6 +548,7 @@ impl App {
     ) {
         self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
             crate::ui::overlay::OverlayRow {
+                category: Some(crate::config::model::OverlayNotificationCategory::DisplayProfile),
                 icon: crate::ui::overlay::OverlayIcon::Info,
                 tone,
                 title: title.into(),
@@ -644,12 +645,12 @@ impl App {
         origin: AudioEventOrigin,
         seen: bool,
         changed: bool,
-        show_external: bool,
+        show_current_app_audio: bool,
         status_request_matches: bool,
     ) -> bool {
         match origin {
             AudioEventOrigin::Initial | AudioEventOrigin::Config(_) => false,
-            AudioEventOrigin::External => show_external && seen && changed,
+            AudioEventOrigin::External => show_current_app_audio && seen && changed,
             AudioEventOrigin::WinShortAction(_) => true,
             AudioEventOrigin::StatusRequest(_) => status_request_matches,
         }
@@ -1295,12 +1296,15 @@ impl App {
 
     fn show_overlay_model(&mut self, model: crate::ui::overlay::OverlayModel) {
         let config = crate::app::config();
+        let model = model.filter_enabled(config.overlay.notifications);
         self.show_overlay_model_with_config(model, config.overlay.clone());
     }
     fn show_preview_overlay(&mut self, config: crate::config::model::OverlayCfg) {
-        let state = crate::audio::AudioState::Active { volume_pct: 50 };
         let model =
-            crate::ui::overlay::OverlayModel::single(crate::ui::overlay::microphone_row(&state));
+            crate::ui::overlay::OverlayModel::preview(crate::ui::overlay::OverlayRow::preview(
+                "WinShort overlay preview",
+                "Previewing the current overlay settings",
+            ));
         self.show_overlay_model_with_config(model, config);
     }
 
@@ -1312,7 +1316,7 @@ impl App {
         if self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp {
             rows.push(crate::ui::overlay::application_row(&self.foreground_state));
         }
-        crate::ui::overlay::OverlayModel { rows }
+        crate::ui::overlay::OverlayModel::from_rows(rows)
     }
     fn show_status_overlay(&mut self) {
         let request_id = self.next_audio_request_id();
@@ -1820,7 +1824,7 @@ mod shutdown_gate_tests {
         let mut draft = saved.clone();
         draft.overlay.appearance = crate::config::model::OverlayAppearance::Light;
         draft.overlay.scale = 1.6;
-        draft.overlay.opacity = 0.5;
+        draft.overlay.blur = crate::config::model::OverlayBlur::BlurLight;
         draft.overlay.position = crate::config::model::OverlayPosition::TopLeft;
         let event = AppEvent::PreviewOverlay {
             config: draft.overlay.clone(),
@@ -1834,7 +1838,10 @@ mod shutdown_gate_tests {
             crate::config::model::OverlayAppearance::System
         );
         assert_eq!(saved.overlay.scale, 1.0);
-        assert_eq!(saved.overlay.opacity, 1.0);
+        assert_eq!(
+            saved.overlay.blur,
+            crate::config::model::OverlayBlur::BlurMedium
+        );
     }
 
     #[test]

@@ -237,10 +237,30 @@ impl SettingsUi {
             OverlayElement::Enabled => {
                 self.activate_config_toggle(hwnd, ElementId::OverlayEnabled, ConfigToggle::Overlay)
             }
-            OverlayElement::ExternalChanges => self.activate_config_toggle(
+            OverlayElement::Microphone => self.activate_config_toggle(
                 hwnd,
-                ElementId::OverlayExternalChanges,
-                ConfigToggle::ExternalAudio,
+                ElementId::OverlayMicrophone,
+                ConfigToggle::OverlayMicrophone,
+            ),
+            OverlayElement::Speaker => self.activate_config_toggle(
+                hwnd,
+                ElementId::OverlaySpeaker,
+                ConfigToggle::OverlaySpeaker,
+            ),
+            OverlayElement::CurrentAppAudio => self.activate_config_toggle(
+                hwnd,
+                ElementId::OverlayCurrentAppAudio,
+                ConfigToggle::OverlayCurrentAppAudio,
+            ),
+            OverlayElement::Workspace => self.activate_config_toggle(
+                hwnd,
+                ElementId::OverlayWorkspace,
+                ConfigToggle::OverlayWorkspace,
+            ),
+            OverlayElement::DisplayProfile => self.activate_config_toggle(
+                hwnd,
+                ElementId::OverlayDisplayProfile,
+                ConfigToggle::OverlayDisplayProfile,
             ),
             OverlayElement::PositionCell(index) => self.set_overlay_position(hwnd, index as usize),
             OverlayElement::Appearance => Self::request_picker(PickerKind::OverlayAppearance),
@@ -249,7 +269,7 @@ impl SettingsUi {
             OverlayElement::Preview => post_main(crate::event::AppEvent::PreviewOverlay {
                 config: self.draft.overlay.clone(),
             }),
-            OverlayElement::Duration | OverlayElement::Opacity | OverlayElement::Scale => {}
+            OverlayElement::Duration | OverlayElement::Blur | OverlayElement::Scale => {}
         }
     }
 

@@ -2,7 +2,18 @@ use super::*;
 use windows::Win32::Foundation::RECT;
 
 fn row(icon: OverlayIcon, title: &str) -> OverlayRow {
+    let category = match icon {
+        OverlayIcon::Microphone => crate::config::model::OverlayNotificationCategory::Microphone,
+        OverlayIcon::Output => crate::config::model::OverlayNotificationCategory::Speaker,
+        OverlayIcon::Application => {
+            crate::config::model::OverlayNotificationCategory::CurrentAppAudio
+        }
+        OverlayIcon::Workspace | OverlayIcon::Info => {
+            crate::config::model::OverlayNotificationCategory::Workspace
+        }
+    };
     OverlayRow {
+        category: Some(category),
         icon,
         tone: OverlayTone::Active,
         title: title.into(),
@@ -92,19 +103,28 @@ fn appearance_policy_resolves_system_and_explicit_modes() {
         resolved_theme_mode(OverlayAppearance::System, preferences),
         ThemeMode::Light
     );
-    assert_eq!(composition_tint_alpha(ThemeMode::Dark, 1.0), 148);
-    assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 200);
+    assert_eq!(
+        composition_tint_alpha(ThemeMode::Dark, OverlayBlur::BlurMedium),
+        148
+    );
+    assert_eq!(
+        composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurMedium),
+        200
+    );
 }
 
 #[test]
 fn light_composition_tint_stays_strong_enough_for_dark_text() {
-    assert!(composition_tint_alpha(ThemeMode::Light, 1.0) >= 200);
-    assert_eq!(composition_tint_alpha(ThemeMode::Light, 0.5), 100);
+    assert!(composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurMedium) >= 200);
+    assert_eq!(
+        composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurLight),
+        130
+    );
 }
 
 #[test]
 fn dark_composition_tint_keeps_secondary_text_high_contrast() {
-    assert!(composition_tint_alpha(ThemeMode::Dark, 1.0) >= 128);
+    assert!(composition_tint_alpha(ThemeMode::Dark, OverlayBlur::BlurMedium) >= 128);
     assert_eq!(
         palette_for(OverlayAppearance::Dark, SystemVisualPreferences::default()).secondary,
         Color::rgb(230, 236, 240)
@@ -113,12 +133,10 @@ fn dark_composition_tint_keeps_secondary_text_high_contrast() {
 
 #[test]
 fn coalescer_replaces_same_icon_and_keeps_deterministic_order() {
-    let current = OverlayModel {
-        rows: vec![
-            row(OverlayIcon::Output, "old output"),
-            row(OverlayIcon::Application, "app"),
-        ],
-    };
+    let current = OverlayModel::from_rows(vec![
+        row(OverlayIcon::Output, "old output"),
+        row(OverlayIcon::Application, "app"),
+    ]);
     let incoming = OverlayModel::single(row(OverlayIcon::Microphone, "mic"));
     let merged = merge_overlay_models(&current, &incoming);
     assert_eq!(
@@ -140,6 +158,43 @@ fn coalescer_replaces_same_icon_and_keeps_deterministic_order() {
     );
     assert_eq!(replaced.rows.len(), 3);
     assert_eq!(replaced.rows[1].title, "new output");
+}
+#[test]
+fn disabled_notification_categories_are_removed_before_rendering() {
+    let model = OverlayModel::from_rows(vec![
+        row(OverlayIcon::Microphone, "mic"),
+        row(OverlayIcon::Output, "speaker"),
+        row(OverlayIcon::Application, "app"),
+    ]);
+    let notifications = crate::config::model::OverlayNotifications {
+        microphone: false,
+        ..Default::default()
+    };
+    let filtered = model.filter_enabled(notifications);
+    assert_eq!(
+        filtered.rows.iter().map(|row| row.icon).collect::<Vec<_>>(),
+        vec![OverlayIcon::Output, OverlayIcon::Application]
+    );
+}
+#[test]
+fn explicit_preview_bypasses_notification_categories() {
+    let notifications = crate::config::model::OverlayNotifications {
+        microphone: false,
+        speaker: false,
+        current_app_audio: false,
+        workspace: false,
+        display_profile: false,
+    };
+    let normal = OverlayModel::single(row(OverlayIcon::Microphone, "mic"));
+    assert!(normal.filter_enabled(notifications).rows.is_empty());
+
+    let preview = OverlayModel::preview(OverlayRow::preview(
+        "WinShort overlay preview",
+        "Previewing current overlay settings",
+    ))
+    .filter_enabled(notifications);
+    assert_eq!(preview.rows.len(), 1);
+    assert!(preview.rows[0].category.is_none());
 }
 
 #[test]

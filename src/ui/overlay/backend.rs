@@ -7,6 +7,7 @@ use super::palette::{opaque_palette, OverlayPalette};
 use super::state::OverlayState;
 use super::timeline::{Phase, ShowPlan};
 use super::window::{client_size, remove_no_redirection_bitmap};
+use crate::config::model::OverlayBlur;
 use crate::error::{Error, Result};
 
 use crate::ui::theme::{Color, ThemeMode};
@@ -62,7 +63,7 @@ pub(super) struct OverlayRenderData {
     pub(super) palette: OverlayPalette,
     pub(super) theme_mode: ThemeMode,
     pub(super) alpha: f32,
-    pub(super) opacity: f32,
+    pub(super) blur: OverlayBlur,
 }
 
 pub(super) enum OverlaySurface {
@@ -194,8 +195,7 @@ impl OverlaySurface {
             Self::Composition(host) => host.sync_geometry(spec),
         }
     }
-
-    pub(super) fn render(&self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
+    pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
         match self {
             Self::Hwnd(surface) => surface.render(data),
             Self::Composition(host) => host.render(data, spec),
@@ -219,12 +219,7 @@ impl HwndOverlaySurface {
                 &data.model,
                 data.scale,
                 data.palette,
-                data.alpha
-                    * if data.palette.opaque {
-                        1.0
-                    } else {
-                        data.opacity.clamp(0.3, 1.0)
-                    },
+                data.alpha,
                 data.palette.opaque,
             );
             let end_result = self

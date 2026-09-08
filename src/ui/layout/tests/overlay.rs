@@ -3,9 +3,14 @@ use super::*;
 #[test]
 fn overlay_layout_has_no_duplicate_windows_audio_toggle() {
     let layout = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::Overlay, "", 0, None);
-    assert!(layout.element(ElementId::OverlayExternalChanges).is_none());
     assert!(layout.element(ElementId::OverlayPosition).is_none());
     assert!(layout.element(ElementId::OverlayAppearance).is_some());
+    assert!(layout.element(ElementId::OverlayMicrophone).is_some());
+    assert!(layout.element(ElementId::OverlaySpeaker).is_some());
+    assert!(layout.element(ElementId::OverlayCurrentAppAudio).is_some());
+    assert!(layout.element(ElementId::OverlayWorkspace).is_some());
+    assert!(layout.element(ElementId::OverlayDisplayProfile).is_some());
+    assert!(layout.element(ElementId::OverlayBlur).is_some());
 
     let system = SettingsLayout::build_shell(960.0, 900.0, 0.0, Page::System, "", 0, None);
     assert!(system.element(ElementId::OverlayAppearance).is_none());
@@ -101,12 +106,27 @@ fn overlay_placement_columns_are_equal_and_side_by_side() {
                 .count(),
             0
         );
-        let canvas = overlay_preview_canvas_rect(geometry.preview, (16, 9));
+        let canvas = geometry.preview_canvas;
         assert!(canvas.x >= geometry.preview.x);
         assert!(canvas.y >= geometry.preview.y);
         assert!(canvas.right() <= geometry.preview.right());
         assert!(canvas.bottom() <= geometry.preview.bottom());
         assert_ne!(canvas, geometry.region);
+        assert!((last_cell.bottom() - canvas.bottom()).abs() < 0.01);
+    }
+}
+#[test]
+fn overlay_preview_and_position_canvas_edges_align_for_all_aspects() {
+    for aspect in [(16, 9), (16, 10), (21, 9), (9, 16)] {
+        let geometry =
+            overlay_placement_geometry(super::super::Rect::new(0.0, 0.0, 640.0, 0.0), aspect);
+        let first_cell = overlay_position_grid_rect(geometry.controls, 0);
+        let last_cell = overlay_position_grid_rect(geometry.controls, 8);
+        assert!((geometry.position_grid.y - geometry.preview_canvas.y).abs() < 0.01);
+        assert!((geometry.position_grid.bottom() - geometry.preview_canvas.bottom()).abs() < 0.01);
+        assert!((first_cell.y - geometry.preview_canvas.y).abs() < 0.01);
+        assert!((last_cell.bottom() - geometry.preview_canvas.bottom()).abs() < 0.01);
+        assert!(first_cell.h > 30.0);
     }
 }
 

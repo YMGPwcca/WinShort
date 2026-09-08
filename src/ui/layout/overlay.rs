@@ -24,29 +24,38 @@ const OVERLAY_PLACEMENT_HEADER_HEIGHT: f32 = 44.0;
 
 const OVERLAY_POSITION_GRID_GAP: f32 = 8.0;
 
-const OVERLAY_POSITION_GRID_MIN_STEP: f32 = 44.0;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct OverlayPlacementGeometry {
     pub region: Rect,
     pub preview: Rect,
     pub controls: Rect,
+    pub preview_canvas: Rect,
+    pub position_grid: Rect,
 }
 
 pub(crate) fn overlay_position_controls_height() -> f32 {
-    OVERLAY_PLACEMENT_HEADER_HEIGHT + OVERLAY_POSITION_GRID_MIN_STEP * 3.0
+    PREVIEW_TITLE_HEIGHT + PREVIEW_CANVAS_MIN_HEIGHT + PREVIEW_BOTTOM_INSET
+}
+
+fn overlay_position_grid_bounds(controls: Rect) -> Rect {
+    Rect::new(
+        controls.x,
+        controls.y + OVERLAY_PLACEMENT_HEADER_HEIGHT,
+        controls.w,
+        (controls.h - OVERLAY_PLACEMENT_HEADER_HEIGHT - PREVIEW_BOTTOM_INSET).max(1.0),
+    )
 }
 
 pub(crate) fn overlay_position_grid_rect(controls: Rect, index: usize) -> Rect {
     let column = index % 3;
     let row = index / 3;
-    let cell_width = (controls.w - OVERLAY_POSITION_GRID_GAP * 2.0).max(3.0) / 3.0;
-    let grid_height = (controls.h - OVERLAY_PLACEMENT_HEADER_HEIGHT).max(3.0);
-    let row_step = grid_height / 3.0;
-    let cell_height = (row_step - OVERLAY_POSITION_GRID_GAP).max(1.0);
+    let grid = overlay_position_grid_bounds(controls);
+    let cell_width = (grid.w - OVERLAY_POSITION_GRID_GAP * 2.0).max(3.0) / 3.0;
+    let cell_height = (grid.h - OVERLAY_POSITION_GRID_GAP * 2.0).max(1.0) / 3.0;
+    let row_step = cell_height + OVERLAY_POSITION_GRID_GAP;
     Rect::new(
-        controls.x + column as f32 * (cell_width + OVERLAY_POSITION_GRID_GAP),
-        controls.y + OVERLAY_PLACEMENT_HEADER_HEIGHT + row as f32 * row_step,
+        grid.x + column as f32 * (cell_width + OVERLAY_POSITION_GRID_GAP),
+        grid.y + row as f32 * row_step,
         cell_width,
         cell_height,
     )
@@ -73,10 +82,14 @@ pub(crate) fn overlay_placement_geometry(
         overlay_position_controls_height(),
     );
     let height = overlay_preview_region_height(column_width, aspect).max(position.h);
+    let preview = Rect::new(preview.x, preview.y, preview.w, height);
+    let controls = Rect::new(position.x, position.y, position.w, height);
     OverlayPlacementGeometry {
         region: Rect::new(origin.x, origin.y, origin.w, height),
-        preview: Rect::new(preview.x, preview.y, preview.w, height),
-        controls: Rect::new(position.x, position.y, position.w, height),
+        preview_canvas: overlay_preview_canvas_rect(preview, aspect),
+        position_grid: overlay_position_grid_bounds(controls),
+        preview,
+        controls,
     }
 }
 
@@ -191,18 +204,61 @@ pub(super) fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) 
     );
     add_heading(
         layout,
-        "Size and timing",
-        "Adjust the compact status card with familiar ranges.",
+        "Notifications",
+        "Choose which changes appear in the status overlay.",
         &mut y,
     );
     add_section_content_gap(&mut y);
     for (id, label, description) in [
-        (ElementId::OverlayScale, "Size", "Small, normal, or large"),
-        (ElementId::OverlayOpacity, "Opacity", "Low, normal, or high"),
+        (
+            ElementId::OverlayMicrophone,
+            "Microphone",
+            "Show microphone changes",
+        ),
+        (ElementId::OverlaySpeaker, "Speaker", "Show speaker changes"),
+        (
+            ElementId::OverlayCurrentAppAudio,
+            "Current app audio",
+            "Show current app audio changes",
+        ),
+        (
+            ElementId::OverlayWorkspace,
+            "Workspace",
+            "Show workspace changes",
+        ),
+        (
+            ElementId::OverlayDisplayProfile,
+            "Display profile",
+            "Show display profile changes",
+        ),
+    ] {
+        add_row(layout, &mut y, id, ElementKind::Toggle, label, description);
+    }
+    add_heading(
+        layout,
+        "Size and timing",
+        "Tune the status card size, treatment, and time on screen.",
+        &mut y,
+    );
+    add_section_content_gap(&mut y);
+    for (id, kind, label, description) in [
+        (
+            ElementId::OverlayScale,
+            ElementKind::Slider,
+            "Size",
+            "0.7× to 1.6×",
+        ),
+        (
+            ElementId::OverlayBlur,
+            ElementKind::Slider,
+            "Blur",
+            "Five-stop background treatment",
+        ),
         (
             ElementId::OverlayDuration,
+            ElementKind::Slider,
             "Duration",
-            "Short, normal, or long",
+            "Show for the configured seconds",
         ),
     ] {
         let slider_y = y;
@@ -210,7 +266,7 @@ pub(super) fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) 
             layout,
             &mut y,
             id,
-            ElementKind::Slider,
+            kind,
             label,
             description,
             Rect::new(

@@ -9,6 +9,7 @@ use super::drawing::draw_overlay;
 use super::effect::GaussianBlurEffectGraph;
 use super::layout::CARD_CORNER_RADIUS_DIP;
 use super::palette::composition_tint_alpha;
+use crate::config::model::OverlayBlur;
 use crate::error::{Error, Result};
 use crate::ui::theme::Color;
 
@@ -56,6 +57,7 @@ struct CompositionScene {
     tint_visual: SpriteVisual,
     content_visual: SpriteVisual,
     _effect_brush: CompositionEffectBrush,
+    blur_amount: f32,
     tint_brush: CompositionColorBrush,
     content_brush: CompositionSurfaceBrush,
     geometry: CompositionRoundedRectangleGeometry,
@@ -181,14 +183,21 @@ fn clear_composition_surface(surface: &CompositionDrawingSurface, dpi: u32) -> R
     }
 }
 
-fn create_backdrop_brush(compositor: &Compositor) -> Result<CompositionEffectBrush> {
+fn create_backdrop_brush(
+    compositor: &Compositor,
+    blur_amount: f32,
+) -> Result<CompositionEffectBrush> {
     let source_name = HSTRING::from("source");
     let source_parameter = CompositionEffectSourceParameter::Create(&source_name)
         .map_err(|e| Error::win("CreateEffectSourceParameter(overlay)", &e))?;
     let source: IGraphicsEffectSource = source_parameter
         .cast()
         .map_err(|e| Error::win("CastEffectSourceParameter(overlay)", &e))?;
-    let effect: IGraphicsEffect = GaussianBlurEffectGraph { source }.into();
+    let effect: IGraphicsEffect = GaussianBlurEffectGraph {
+        source,
+        blur_amount,
+    }
+    .into();
     let effect_factory = compositor
         .CreateEffectFactory(&effect)
         .map_err(|e| Error::win("CreateEffectFactory(overlay)", &e))?;
@@ -319,8 +328,9 @@ fn create_scene(
     root.SetSize(vector_size)
         .map_err(|e| Error::win("SetRootSize(overlay)", &e))?;
 
-    let effect_brush = create_backdrop_brush(compositor)?;
     let (geometry, clip) = create_clip(compositor, vector_size, dpi)?;
+    let effect_brush =
+        create_backdrop_brush(compositor, OverlayBlur::BlurMedium.blur_amount().unwrap())?;
     let backdrop_visual = create_backdrop_visual(compositor, vector_size, &clip, &effect_brush)?;
     let (tint_brush, tint_visual) = create_tint_layer(compositor, vector_size, &clip)?;
     let (content_brush, content_visual) =
@@ -345,6 +355,7 @@ fn create_scene(
         tint_visual,
         content_visual,
         _effect_brush: effect_brush,
+        blur_amount: OverlayBlur::BlurMedium.blur_amount().unwrap(),
         tint_brush,
         content_brush,
         geometry,
@@ -434,8 +445,20 @@ impl CompositionHost {
         Ok(())
     }
 
-    pub(super) fn render(&self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
-        let blurred = spec.blur_enabled && !data.palette.opaque;
+    pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
+        if let Some(blur_amount) = data.blur.blur_amount() {
+            if (self.scene.blur_amount - blur_amount).abs() > f32::EPSILON {
+                let effect_brush = create_backdrop_brush(&self._compositor, blur_amount)?;
+                self.scene
+                    .backdrop_visual
+                    .SetBrush(&effect_brush)
+                    .map_err(|e| Error::win("SetBackdropBrush(overlay)", &e))?;
+                self.scene._effect_brush = effect_brush;
+                self.scene.blur_amount = blur_amount;
+            }
+        }
+        let blurred =
+            spec.blur_enabled && data.blur.blur_amount().is_some() && !data.palette.opaque;
         self.scene
             .backdrop_visual
             .SetIsVisible(blurred)
@@ -446,13 +469,13 @@ impl CompositionHost {
             .map_err(|e| Error::win("SetTintVisibility(overlay)", &e))?;
         self.scene
             .backdrop_visual
-            .SetOpacity((data.alpha * data.opacity.clamp(0.3, 1.0)).clamp(0.0, 1.0))
+            .SetOpacity(data.alpha.clamp(0.0, 1.0))
             .map_err(|e| Error::win("SetBackdropOpacity(overlay)", &e))?;
         self.scene
             .tint_visual
             .SetOpacity(data.alpha.clamp(0.0, 1.0))
             .map_err(|e| Error::win("SetTintOpacity(overlay)", &e))?;
-        let tint_alpha = composition_tint_alpha(data.theme_mode, data.opacity);
+        let tint_alpha = composition_tint_alpha(data.theme_mode, data.blur);
         self.scene
             .tint_brush
             .SetColor(WinRtColor {
@@ -496,12 +519,7 @@ impl CompositionHost {
             &data.model,
             data.scale,
             data.palette,
-            data.alpha
-                * if data.palette.opaque {
-                    1.0
-                } else {
-                    data.opacity.clamp(0.3, 1.0)
-                },
+            data.alpha,
             data.palette.opaque,
         );
         let end_result = unsafe {

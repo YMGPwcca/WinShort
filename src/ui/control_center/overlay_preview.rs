@@ -1,7 +1,7 @@
 //! Overlay preview for the control center.
 
 use super::state::SettingsUi;
-use crate::config::model::{MonitorChoice, OverlayAppearance, OverlayPosition};
+use crate::config::model::{MonitorChoice, OverlayAppearance, OverlayBlur, OverlayPosition};
 
 use crate::ui::layout::{overlay_placement_geometry, overlay_preview_canvas_rect, Rect as UiRect};
 use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
@@ -72,31 +72,19 @@ pub(super) fn overlay_position_label(index: usize) -> &'static str {
     overlay_position(index).label()
 }
 
-pub(super) fn overlay_duration_label(milliseconds: u32) -> &'static str {
-    match milliseconds {
-        0..=2_000 => "Short",
-        2_001..=5_000 => "Normal",
-        _ => "Long",
+pub(super) fn overlay_duration_label(milliseconds: u32) -> String {
+    if milliseconds % 1000 == 0 {
+        format!("{} s", milliseconds / 1000)
+    } else {
+        format!("{:.1} s", milliseconds as f32 / 1000.0)
     }
 }
 
-pub(super) fn overlay_opacity_label(opacity: f32) -> &'static str {
-    if opacity < 0.6 {
-        "Low"
-    } else if opacity < 0.9 {
-        "Normal"
+pub(super) fn overlay_scale_label(scale: f32) -> String {
+    if (scale.fract()).abs() < f32::EPSILON {
+        format!("{scale:.0}×")
     } else {
-        "High"
-    }
-}
-
-pub(super) fn overlay_scale_label(scale: f32) -> &'static str {
-    if scale < 1.0 {
-        "Small"
-    } else if scale < 1.4 {
-        "Normal"
-    } else {
-        "Large"
+        format!("{scale:.1}×")
     }
 }
 
@@ -126,13 +114,22 @@ impl SettingsUi {
             self.draft.overlay.position,
             self.draft.overlay.scale,
         );
-        let sample_surface = match self.draft.overlay.appearance {
-            OverlayAppearance::Dark => BrushRole::CardPressed,
-            OverlayAppearance::Light => BrushRole::BackgroundSubtle,
-            OverlayAppearance::System => BrushRole::Card,
+        let transparent = self.draft.overlay.blur == OverlayBlur::Transparent;
+        let sample_surface = match self.draft.overlay.blur {
+            OverlayBlur::Solid => BrushRole::CardPressed,
+            OverlayBlur::Transparent => BrushRole::BackgroundSubtle,
+            OverlayBlur::BlurLight | OverlayBlur::BlurMedium | OverlayBlur::BlurHeavy => {
+                match self.draft.overlay.appearance {
+                    OverlayAppearance::Dark => BrushRole::CardPressed,
+                    OverlayAppearance::Light => BrushRole::BackgroundSubtle,
+                    OverlayAppearance::System => BrushRole::Card,
+                }
+            }
         };
-        renderer.fill_rounded(sample.translated_y(1.0).d2d(), 8.0, BrushRole::Shadow);
-        renderer.fill_rounded(sample.d2d(), 8.0, sample_surface);
+        if !transparent {
+            renderer.fill_rounded(sample.translated_y(1.0).d2d(), 8.0, BrushRole::Shadow);
+            renderer.fill_rounded(sample.d2d(), 8.0, sample_surface);
+        }
         renderer.stroke_rounded(sample.d2d(), 8.0, BrushRole::Accent, 1.0);
     }
 

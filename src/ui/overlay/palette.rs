@@ -1,6 +1,6 @@
 //! Palette for the overlay.
 
-use crate::config::model::OverlayAppearance;
+use crate::config::model::{OverlayAppearance, OverlayBlur};
 use crate::platform::visual::{SystemVisualPreferences, VisualRgb};
 use crate::ui::theme::{Color, Theme, ThemeMode};
 
@@ -70,12 +70,19 @@ pub(super) fn resolved_theme_mode(
     }
 }
 
-pub(super) fn composition_tint_alpha(theme_mode: ThemeMode, opacity: f32) -> u8 {
+pub(super) fn composition_tint_alpha(theme_mode: ThemeMode, blur: OverlayBlur) -> u8 {
     let base = match theme_mode {
         ThemeMode::Dark => DARK_COMPOSITION_TINT_ALPHA,
         ThemeMode::Light => LIGHT_COMPOSITION_TINT_ALPHA,
     };
-    (base * opacity.clamp(0.3, 1.0)).round() as u8
+    let multiplier = match blur {
+        OverlayBlur::Transparent => 0.0,
+        OverlayBlur::BlurLight => 0.65,
+        OverlayBlur::BlurMedium => 1.0,
+        OverlayBlur::BlurHeavy => 1.25,
+        OverlayBlur::Solid => 1.0,
+    };
+    (base * multiplier).round().clamp(0.0, 255.0) as u8
 }
 
 pub(super) fn palette_for(

@@ -10,7 +10,11 @@ pub(super) enum ConfigToggle {
     WorkspaceNumbers,
     DisplayProfiles,
     Overlay,
-    ExternalAudio,
+    OverlayMicrophone,
+    OverlaySpeaker,
+    OverlayCurrentAppAudio,
+    OverlayWorkspace,
+    OverlayDisplayProfile,
 }
 
 impl ConfigToggle {
@@ -21,7 +25,11 @@ impl ConfigToggle {
             ElementId::WinNumberEnabled => Some(Self::WorkspaceNumbers),
             ElementId::DisplayProfilesEnabled => Some(Self::DisplayProfiles),
             ElementId::OverlayEnabled => Some(Self::Overlay),
-            ElementId::OverlayExternalChanges => Some(Self::ExternalAudio),
+            ElementId::OverlayMicrophone => Some(Self::OverlayMicrophone),
+            ElementId::OverlaySpeaker => Some(Self::OverlaySpeaker),
+            ElementId::OverlayCurrentAppAudio => Some(Self::OverlayCurrentAppAudio),
+            ElementId::OverlayWorkspace => Some(Self::OverlayWorkspace),
+            ElementId::OverlayDisplayProfile => Some(Self::OverlayDisplayProfile),
             _ => None,
         }
     }
@@ -33,7 +41,11 @@ impl ConfigToggle {
             Self::WorkspaceNumbers => config.virtual_desktops.win_number_switching,
             Self::DisplayProfiles => config.display_profiles.enabled,
             Self::Overlay => config.overlay.enabled,
-            Self::ExternalAudio => config.overlay.show_external_audio_changes,
+            Self::OverlayMicrophone => config.overlay.notifications.microphone,
+            Self::OverlaySpeaker => config.overlay.notifications.speaker,
+            Self::OverlayCurrentAppAudio => config.overlay.notifications.current_app_audio,
+            Self::OverlayWorkspace => config.overlay.notifications.workspace,
+            Self::OverlayDisplayProfile => config.overlay.notifications.display_profile,
         }
     }
 
@@ -44,7 +56,11 @@ impl ConfigToggle {
             Self::WorkspaceNumbers => &mut config.virtual_desktops.win_number_switching,
             Self::DisplayProfiles => &mut config.display_profiles.enabled,
             Self::Overlay => &mut config.overlay.enabled,
-            Self::ExternalAudio => &mut config.overlay.show_external_audio_changes,
+            Self::OverlayMicrophone => &mut config.overlay.notifications.microphone,
+            Self::OverlaySpeaker => &mut config.overlay.notifications.speaker,
+            Self::OverlayCurrentAppAudio => &mut config.overlay.notifications.current_app_audio,
+            Self::OverlayWorkspace => &mut config.overlay.notifications.workspace,
+            Self::OverlayDisplayProfile => &mut config.overlay.notifications.display_profile,
         };
         *value = !*value;
     }
@@ -66,7 +82,11 @@ mod tests {
             ConfigToggle::WorkspaceNumbers,
             ConfigToggle::DisplayProfiles,
             ConfigToggle::Overlay,
-            ConfigToggle::ExternalAudio,
+            ConfigToggle::OverlayMicrophone,
+            ConfigToggle::OverlaySpeaker,
+            ConfigToggle::OverlayCurrentAppAudio,
+            ConfigToggle::OverlayWorkspace,
+            ConfigToggle::OverlayDisplayProfile,
         ] {
             let before = toggle.selected(&config);
             toggle.toggle(&mut config);

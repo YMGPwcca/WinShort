@@ -7,24 +7,24 @@ fn property_notifications_preserve_first_old_and_latest_new_values() {
     first
         .nodes
         .iter_mut()
-        .find(|node| node.id == ElementId::OverlayOpacity)
-        .expect("opacity slider")
+        .find(|node| node.id == ElementId::OverlayDuration)
+        .expect("duration slider")
         .range
         .as_mut()
-        .expect("opacity range")
-        .value = 0.7;
+        .expect("duration range")
+        .value = 700.0;
     automation.publish(first);
 
     let mut latest = automation.snapshot();
     latest
         .nodes
         .iter_mut()
-        .find(|node| node.id == ElementId::OverlayOpacity)
-        .expect("opacity slider")
+        .find(|node| node.id == ElementId::OverlayDuration)
+        .expect("duration slider")
         .range
         .as_mut()
-        .expect("opacity range")
-        .value = 0.8;
+        .expect("duration range")
+        .value = 800.0;
     automation.publish(latest);
 
     let mut delivered = Vec::new();
@@ -35,11 +35,11 @@ fn property_notifications_preserve_first_old_and_latest_new_values() {
         AutomationNotificationKind::Property(UIA_RangeValueValuePropertyId.0)
     );
     match &delivered[0].old_value {
-        AutomationValue::F64(value) => assert!((*value - 0.65).abs() < 1e-12),
+        AutomationValue::F64(value) => assert!((*value - 5250.0).abs() < 1e-12),
         value => panic!("unexpected old value: {value:?}"),
     }
     match &delivered[0].new_value {
-        AutomationValue::F64(value) => assert!((*value - 0.8).abs() < 1e-12),
+        AutomationValue::F64(value) => assert!((*value - 800.0).abs() < 1e-12),
         value => panic!("unexpected new value: {value:?}"),
     }
 }

@@ -350,12 +350,16 @@ impl SettingsUi {
                 node.help_text = "Choose this overlay position".into();
             }
             OverlayElement::Enabled
-            | OverlayElement::ExternalChanges
+            | OverlayElement::Microphone
+            | OverlayElement::Speaker
+            | OverlayElement::CurrentAppAudio
+            | OverlayElement::Workspace
+            | OverlayElement::DisplayProfile
             | OverlayElement::Appearance
             | OverlayElement::Position
             | OverlayElement::Monitor
             | OverlayElement::Duration
-            | OverlayElement::Opacity
+            | OverlayElement::Blur
             | OverlayElement::Scale
             | OverlayElement::Preview => {}
         }

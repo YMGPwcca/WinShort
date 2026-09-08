@@ -141,9 +141,10 @@ pub struct ConfigDiagnostics {
 pub struct OverlayDiagnostics {
     pub health: Health,
     pub enabled: bool,
+    pub blur: String,
     pub appearance: String,
     pub resolved_appearance: Option<String>,
-    pub external_audio_changes: bool,
+    pub notifications: crate::config::model::OverlayNotifications,
     pub animations_enabled: Option<bool>,
     pub high_contrast: Option<bool>,
     pub disable_overlapped_content: Option<bool>,

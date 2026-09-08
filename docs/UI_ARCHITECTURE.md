@@ -1,9 +1,9 @@
 # UI boundaries and ownership
 
 This refactor is based on PR #103 at `43777bce4f05837b4aa1a6def44563a4357ba0d8`.
-It preserves the existing native controls, layout, overlay material, interaction
-semantics and accessibility IDs. It does not introduce a new UI framework or
-change the blur style.
+It preserves the existing native controls, layout, overlay material architecture,
+interaction semantics and accessibility IDs. It does not introduce a new UI
+framework; selectable blur treatments remain inside the existing Composition renderer.
 
 ## Direction of dependencies
 

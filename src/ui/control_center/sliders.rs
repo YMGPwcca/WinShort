@@ -2,6 +2,7 @@
 
 use super::native::invalidate;
 use super::state::SettingsUi;
+use crate::config::model::OverlayBlur;
 use crate::ui::controls;
 use crate::ui::layout::ElementId;
 use windows::Win32::Foundation::HWND;
@@ -14,8 +15,8 @@ impl SettingsUi {
                 self.draft.overlay.duration_ms =
                     ((500.0 + ratio * 9500.0) / 100.0).round() as u32 * 100;
             }
-            ElementId::OverlayOpacity => {
-                self.draft.overlay.opacity = ((0.3 + ratio * 0.7) * 20.0).round() / 20.0;
+            ElementId::OverlayBlur => {
+                self.draft.overlay.blur = OverlayBlur::from_index((ratio * 4.0).round() as usize);
             }
             ElementId::OverlayScale => {
                 self.draft.overlay.scale = ((0.7 + ratio * 0.9) * 10.0).round() / 10.0;
@@ -28,7 +29,7 @@ impl SettingsUi {
     pub(super) fn set_slider_from_value(&mut self, id: ElementId, value: f64) -> bool {
         let ratio = match id {
             ElementId::OverlayDuration => (value - 500.0) / 9500.0,
-            ElementId::OverlayOpacity => (value - 0.3) / 0.7,
+            ElementId::OverlayBlur => value / 4.0,
             ElementId::OverlayScale => (value - 0.7) / 0.9,
             _ => return false,
         };
@@ -50,8 +51,8 @@ impl SettingsUi {
             return match (id, step.is_sign_negative()) {
                 (ElementId::OverlayDuration, true) => 500.0,
                 (ElementId::OverlayDuration, false) => 10_000.0,
-                (ElementId::OverlayOpacity, true) => 0.3,
-                (ElementId::OverlayOpacity, false) => 1.0,
+                (ElementId::OverlayBlur, true) => 0.0,
+                (ElementId::OverlayBlur, false) => 4.0,
                 (ElementId::OverlayScale, true) => 0.7,
                 (ElementId::OverlayScale, false) => 1.6,
                 _ => current,
@@ -59,7 +60,14 @@ impl SettingsUi {
         }
         match id {
             ElementId::OverlayDuration => (current + step * 100.0).round().clamp(500.0, 10_000.0),
-            ElementId::OverlayOpacity => (current + step * 0.05).clamp(0.3, 1.0),
+            ElementId::OverlayBlur => {
+                let step = if step.abs() > 1.0 {
+                    step.signum() * 2.0
+                } else {
+                    step
+                };
+                (current + step).round().clamp(0.0, 4.0)
+            }
             ElementId::OverlayScale => (current + step * 0.1).clamp(0.7, 1.6),
             _ => current,
         }
@@ -67,7 +75,7 @@ impl SettingsUi {
 
     pub(super) fn adjust_focused_slider(&mut self, hwnd: HWND, vk: u16) -> bool {
         let Some(
-            id @ (ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale),
+            id @ (ElementId::OverlayDuration | ElementId::OverlayBlur | ElementId::OverlayScale),
         ) = self.focus.target()
         else {
             return false;
@@ -87,9 +95,12 @@ impl SettingsUi {
                 self.draft.overlay.duration_ms =
                     Self::slider_value(id, self.draft.overlay.duration_ms as f32, step) as u32;
             }
-            ElementId::OverlayOpacity => {
-                self.draft.overlay.opacity =
-                    Self::slider_value(id, self.draft.overlay.opacity, step);
+            ElementId::OverlayBlur => {
+                self.draft.overlay.blur = OverlayBlur::from_index(Self::slider_value(
+                    id,
+                    self.draft.overlay.blur.index() as f32,
+                    step,
+                ) as usize);
             }
             ElementId::OverlayScale => {
                 self.draft.overlay.scale = Self::slider_value(id, self.draft.overlay.scale, step);

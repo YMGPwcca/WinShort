@@ -35,7 +35,7 @@ use self::timeline::{
     WindowRegion, TIMER_MS,
 };
 #[cfg(test)]
-use crate::config::model::{OverlayAppearance, OverlayPosition};
+use crate::config::model::{OverlayAppearance, OverlayBlur, OverlayPosition};
 #[cfg(test)]
 use crate::platform::visual::{SystemVisualPreferences, VisualRgb};
 #[cfg(test)]

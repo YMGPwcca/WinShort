@@ -1,5 +1,7 @@
 //! Model for the overlay.
 
+use crate::config::model::{OverlayNotificationCategory, OverlayNotifications};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayIcon {
     Microphone,
@@ -34,8 +36,10 @@ pub(super) fn merge_overlay_models(
     if incoming.rows.len() != 1 {
         return OverlayModel {
             rows: incoming.rows.iter().take(3).cloned().collect(),
+            bypass_categories: incoming.bypass_categories,
         };
     }
+    let bypass_categories = current.bypass_categories || incoming.bypass_categories;
     let incoming_row = &incoming.rows[0];
     let mut rows = current.rows.clone();
     if let Some(existing) = rows.iter_mut().find(|row| row.icon == incoming_row.icon) {
@@ -45,20 +49,37 @@ pub(super) fn merge_overlay_models(
     }
     rows.sort_by_key(|row| row_rank(row.icon));
     rows.truncate(3);
-    OverlayModel { rows }
+    OverlayModel {
+        rows,
+        bypass_categories,
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct OverlayRow {
+    pub category: Option<OverlayNotificationCategory>,
     pub icon: OverlayIcon,
     pub tone: OverlayTone,
     pub title: String,
     pub detail: String,
 }
 
+impl OverlayRow {
+    pub(crate) fn preview(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            category: None,
+            icon: OverlayIcon::Info,
+            tone: OverlayTone::Changed,
+            title: title.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OverlayModel {
     pub rows: Vec<OverlayRow>,
+    pub(super) bypass_categories: bool,
 }
 
 pub(super) fn concise(value: &str) -> String {
@@ -72,6 +93,40 @@ pub(super) fn concise(value: &str) -> String {
 
 impl OverlayModel {
     pub(crate) fn single(row: OverlayRow) -> Self {
-        Self { rows: vec![row] }
+        Self {
+            rows: vec![row],
+            bypass_categories: false,
+        }
+    }
+
+    pub(crate) fn preview(row: OverlayRow) -> Self {
+        Self {
+            rows: vec![row],
+            bypass_categories: true,
+        }
+    }
+
+    pub(crate) fn from_rows(rows: Vec<OverlayRow>) -> Self {
+        Self {
+            rows,
+            bypass_categories: false,
+        }
+    }
+
+    pub(crate) fn filter_enabled(self, notifications: OverlayNotifications) -> Self {
+        if self.bypass_categories {
+            return self;
+        }
+        Self {
+            rows: self
+                .rows
+                .into_iter()
+                .filter(|row| {
+                    row.category
+                        .is_none_or(|category| notifications.is_enabled(category))
+                })
+                .collect(),
+            bypass_categories: false,
+        }
     }
 }

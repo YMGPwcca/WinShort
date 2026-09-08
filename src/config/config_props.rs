@@ -47,7 +47,8 @@ proptest! {
         cfg.repair(&crate::config::validate(&cfg));
         prop_assert_eq!(once.overlay.duration_ms, cfg.overlay.duration_ms);
         prop_assert_eq!(once.overlay.scale, cfg.overlay.scale);
-        prop_assert_eq!(once.overlay.opacity, cfg.overlay.opacity);
+        prop_assert_eq!(once.overlay.blur, cfg.overlay.blur);
+        prop_assert_eq!(once.overlay.notifications, cfg.overlay.notifications);
     }
 
     /// #58 fuzz strategy: arbitrary TOML docs parse or error cleanly; save

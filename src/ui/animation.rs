@@ -206,7 +206,11 @@ mod tests {
             ElementId::DesktopsEnabled,
             ElementId::WinNumberEnabled,
             ElementId::OverlayEnabled,
-            ElementId::OverlayExternalChanges,
+            ElementId::OverlayMicrophone,
+            ElementId::OverlaySpeaker,
+            ElementId::OverlayCurrentAppAudio,
+            ElementId::OverlayWorkspace,
+            ElementId::OverlayDisplayProfile,
             ElementId::DebugLogging,
         ];
         let mut motion = Motion::default();

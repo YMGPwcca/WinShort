@@ -12,7 +12,7 @@ use super::timeline::{
     motion_policy, timing_after_show, MotionPolicy, Phase, ShowPlan, TickPlan, APPEAR_MS,
     COALESCE_WINDOW_MS, LEAVE_MS, TIMER_MS,
 };
-use crate::config::model::OverlayCfg;
+use crate::config::model::{OverlayBlur, OverlayCfg};
 use crate::error::Result;
 use crate::platform::visual::SystemVisualPreferences;
 use std::time::{Duration, Instant, SystemTime};
@@ -78,12 +78,16 @@ impl OverlayState {
         }
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
+        let notifications = config.notifications;
         self.config = config;
         let now = Instant::now();
         let coalesce = self.phase != Phase::Hidden
             && now.duration_since(self.last_presented) <= Duration::from_millis(COALESCE_WINDOW_MS);
-        self.model = if coalesce {
-            merge_overlay_models(&self.model, &model)
+        self.model = if model.bypass_categories {
+            model
+        } else if coalesce {
+            let current = self.model.clone().filter_enabled(notifications);
+            merge_overlay_models(&current, &model)
         } else {
             model
         };
@@ -155,7 +159,7 @@ impl OverlayState {
                 .is_some_and(OverlaySurface::is_composition),
         );
         let palette = palette_for(self.config.appearance, self.preferences);
-        self.palette = if self.backdrop_enabled {
+        self.palette = if self.backdrop_enabled && !matches!(self.config.blur, OverlayBlur::Solid) {
             palette
         } else {
             opaque_palette(palette)
@@ -273,7 +277,7 @@ impl OverlayState {
             palette: self.palette,
             theme_mode: resolved_theme_mode(self.config.appearance, self.preferences),
             alpha,
-            opacity: self.config.opacity,
+            blur: self.config.blur,
         }
     }
 }

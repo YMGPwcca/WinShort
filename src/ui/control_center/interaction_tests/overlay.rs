@@ -13,3 +13,16 @@ fn compact_overlay_preview_keeps_sample_inside_canvas() {
         }
     }
 }
+#[test]
+fn overlay_size_label_reports_the_runtime_scale() {
+    for (scale, label) in [
+        (0.7, "0.7×"),
+        (0.8, "0.8×"),
+        (0.9, "0.9×"),
+        (1.0, "1×"),
+        (1.1, "1.1×"),
+        (1.6, "1.6×"),
+    ] {
+        assert_eq!(overlay_scale_label(scale), label);
+    }
+}

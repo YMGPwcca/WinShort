@@ -126,7 +126,7 @@ fn directly_called_unsupported_patterns_return_uia_not_supported() {
     let automation = published_automation();
 
     let slider = automation
-        .provider_for(ElementId::OverlayOpacity)
+        .provider_for(ElementId::OverlayDuration)
         .expect("test provider initialization");
     let invoke: IInvokeProvider = slider.cast().expect("Invoke interface");
     assert_hresult(

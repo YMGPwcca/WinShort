@@ -34,9 +34,6 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
     if !(0.7..=1.6).contains(&cfg.overlay.scale) {
         v.push(Violation::new("overlay.scale", "must be 0.7–1.6"));
     }
-    if !(0.3..=1.0).contains(&cfg.overlay.opacity) {
-        v.push(Violation::new("overlay.opacity", "must be 0.3–1.0"));
-    }
 
     // Hotkey conflicts: same (modifiers, key) bound twice.
     let mut seen: HashMap<Hotkey, &'static str> = HashMap::new();
@@ -418,9 +415,8 @@ mod tests {
         let mut c = Config::default();
         c.overlay.duration_ms = 10;
         c.overlay.scale = 9.0;
-        c.overlay.opacity = 0.1;
         let v = validate(&c);
-        assert_eq!(v.len(), 3);
+        assert_eq!(v.len(), 2);
         assert!(v.iter().any(|x| x.field == "overlay.duration_ms"));
     }
 
