@@ -223,9 +223,11 @@ pub enum AppEvent {
     // State published by workers / callbacks.
     MicrophoneStateChanged {
         state: AudioState,
+        origin: AudioEventOrigin,
     },
     OutputStateChanged {
         state: OutputState,
+        origin: AudioEventOrigin,
     },
     /// Legacy default-output notification retained for worker compatibility.
     /// The application deliberately does not surface a duplicate endpoint OSD.
@@ -357,9 +359,11 @@ pub(crate) enum AudioRuntimeEvent {
     },
     MicrophoneStateChanged {
         state: AudioState,
+        origin: AudioEventOrigin,
     },
     OutputStateChanged {
         state: OutputState,
+        origin: AudioEventOrigin,
     },
     DefaultOutputChanged(crate::audio::state::DeviceId),
     DevicesChanged,
@@ -473,11 +477,11 @@ impl From<AppEvent> for RoutedAppEvent {
             AppEvent::DeviceCycleResolved { request_id, result } => {
                 Self::Audio(AudioRuntimeEvent::DeviceCycleResolved { request_id, result })
             }
-            AppEvent::MicrophoneStateChanged { state } => {
-                Self::Audio(AudioRuntimeEvent::MicrophoneStateChanged { state })
+            AppEvent::MicrophoneStateChanged { state, origin } => {
+                Self::Audio(AudioRuntimeEvent::MicrophoneStateChanged { state, origin })
             }
-            AppEvent::OutputStateChanged { state } => {
-                Self::Audio(AudioRuntimeEvent::OutputStateChanged { state })
+            AppEvent::OutputStateChanged { state, origin } => {
+                Self::Audio(AudioRuntimeEvent::OutputStateChanged { state, origin })
             }
             AppEvent::DefaultOutputChanged(device) => {
                 Self::Audio(AudioRuntimeEvent::DefaultOutputChanged(device))
@@ -659,6 +663,32 @@ mod tests {
         assert!(matches!(
             RoutedAppEvent::from(AppEvent::OpenConfigFolder),
             RoutedAppEvent::ControlCenter(ControlCenterEvent::OpenConfigFolder)
+        ));
+    }
+
+    #[test]
+    fn endpoint_state_events_preserve_audio_origin_when_routed() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::MicrophoneStateChanged {
+                state: AudioState::Active { volume_pct: 40 },
+                origin: AudioEventOrigin::WinShortAction(41),
+            }),
+            RoutedAppEvent::Audio(AudioRuntimeEvent::MicrophoneStateChanged {
+                origin: AudioEventOrigin::WinShortAction(41),
+                ..
+            })
+        ));
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OutputStateChanged {
+                state: OutputState::Unavailable {
+                    reason: "test".into(),
+                },
+                origin: AudioEventOrigin::External,
+            }),
+            RoutedAppEvent::Audio(AudioRuntimeEvent::OutputStateChanged {
+                origin: AudioEventOrigin::External,
+                ..
+            })
         ));
     }
 

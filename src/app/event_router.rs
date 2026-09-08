@@ -276,15 +276,25 @@ impl App {
             AudioRuntimeEvent::DeviceCycleResolved { request_id, result } => {
                 self.handle_device_cycle_result(request_id, result)
             }
-            AudioRuntimeEvent::MicrophoneStateChanged { state } => {
+            AudioRuntimeEvent::MicrophoneStateChanged { state, origin } => {
                 self.microphone_state = state;
                 self.microphone_seen = true;
                 self.refresh_settings_runtime();
+                if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::microphone_row(&self.microphone_state),
+                    ));
+                }
             }
-            AudioRuntimeEvent::OutputStateChanged { state } => {
+            AudioRuntimeEvent::OutputStateChanged { state, origin } => {
                 self.output_state = state;
                 self.output_seen = true;
                 self.refresh_settings_runtime();
+                if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
+                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
+                        crate::ui::overlay::output_row(&self.output_state),
+                    ));
+                }
             }
             AudioRuntimeEvent::DefaultOutputChanged(_device) => {}
             AudioRuntimeEvent::DevicesChanged => {

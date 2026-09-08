@@ -172,6 +172,22 @@ pub enum AudioCommand {
     Shutdown,
 }
 
+impl AudioCommand {
+    fn toggle_target(&self) -> Option<(EndpointFlow, crate::event::AudioEventOrigin)> {
+        match self {
+            Self::ToggleMicrophone(request_id) => Some((
+                EndpointFlow::Capture,
+                crate::event::AudioEventOrigin::WinShortAction(*request_id),
+            )),
+            Self::ToggleOutput(request_id) => Some((
+                EndpointFlow::Render,
+                crate::event::AudioEventOrigin::WinShortAction(*request_id),
+            )),
+            _ => None,
+        }
+    }
+}
+
 pub struct AudioService {
     sender: Sender<AudioCommand>,
     devices: Arc<std::sync::RwLock<crate::audio::devices::DeviceLists>>,
@@ -327,9 +343,14 @@ impl AudioController {
             return true;
         }
         self.refresh_config_if_needed();
+        if let Some((flow, origin)) = command.toggle_target() {
+            self.toggle(flow, origin);
+            return true;
+        }
         match command {
-            AudioCommand::ToggleMicrophone(_) => self.toggle(EndpointFlow::Capture),
-            AudioCommand::ToggleOutput(_) => self.toggle(EndpointFlow::Render),
+            AudioCommand::ToggleMicrophone(_) | AudioCommand::ToggleOutput(_) => {
+                unreachable!("endpoint toggle commands are handled before dispatch")
+            }
             AudioCommand::ToggleForeground { pid, request_id } => {
                 let config = self.config.get();
                 let state =
@@ -390,7 +411,7 @@ impl AudioController {
             }
             AudioCommand::RefreshEndpoint(flow) => {
                 crate::log_debug!("audio {:?} endpoint notification", flow);
-                self.publish(flow);
+                self.publish(flow, crate::event::AudioEventOrigin::External);
             }
             // ConfigChanged is consumed by handle() above; refresh_config_if_needed
             // covers any residual revision drift.
@@ -649,8 +670,8 @@ impl AudioController {
             }
             self.post(AppEvent::DevicesChanged);
         }
-        self.publish(EndpointFlow::Capture);
-        self.publish(EndpointFlow::Render);
+        self.publish(EndpointFlow::Capture, origin);
+        self.publish(EndpointFlow::Render, origin);
     }
 
     fn rebuild(&mut self, flow: EndpointFlow, config: &crate::config::Config) {
@@ -707,7 +728,7 @@ impl AudioController {
         }
     }
 
-    fn toggle(&mut self, flow: EndpointFlow) {
+    fn toggle(&mut self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
         let missing = match flow {
             EndpointFlow::Capture => self.capture.is_none(),
             EndpointFlow::Render => self.render.is_none(),
@@ -726,10 +747,10 @@ impl AudioController {
         if let Err(e) = result {
             crate::warn_!("audio toggle {:?} failed: {e}", flow);
         }
-        self.publish(flow);
+        self.publish(flow, origin);
     }
 
-    fn publish(&self, flow: EndpointFlow) {
+    fn publish(&self, flow: EndpointFlow, origin: crate::event::AudioEventOrigin) {
         match flow {
             EndpointFlow::Capture => {
                 let state = self
@@ -740,7 +761,7 @@ impl AudioController {
                     .unwrap_or_else(|e| AudioState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::MicrophoneStateChanged { state });
+                self.post(AppEvent::MicrophoneStateChanged { state, origin });
             }
             EndpointFlow::Render => {
                 let state = self
@@ -751,7 +772,7 @@ impl AudioController {
                     .unwrap_or_else(|e| OutputState::Unavailable {
                         reason: e.to_string(),
                     });
-                self.post(AppEvent::OutputStateChanged { state });
+                self.post(AppEvent::OutputStateChanged { state, origin });
             }
         }
     }
@@ -892,6 +913,28 @@ mod tests {
             role,
             endpoint: endpoint.into(),
         }
+    }
+
+    #[test]
+    fn toggle_microphone_preserves_request_id_as_winshort_origin() {
+        assert_eq!(
+            AudioCommand::ToggleMicrophone(41).toggle_target(),
+            Some((
+                EndpointFlow::Capture,
+                crate::event::AudioEventOrigin::WinShortAction(41)
+            ))
+        );
+    }
+
+    #[test]
+    fn toggle_output_preserves_request_id_as_winshort_origin() {
+        assert_eq!(
+            AudioCommand::ToggleOutput(42).toggle_target(),
+            Some((
+                EndpointFlow::Render,
+                crate::event::AudioEventOrigin::WinShortAction(42)
+            ))
+        );
     }
 
     #[test]

@@ -98,6 +98,8 @@ pub struct App {
     /// Per-subsystem startup failures (degraded startup, #27): the app stays
     /// up with tray/Settings and surfaces why a subsystem is dark.
     degraded: Vec<(&'static str, String)>,
+    #[cfg(test)]
+    test_last_overlay_model: Option<crate::ui::overlay::OverlayModel>,
 }
 
 #[derive(Debug)]
@@ -215,6 +217,8 @@ impl App {
             shutting_down: false,
             support_bundle: None,
             degraded: Vec::new(),
+            #[cfg(test)]
+            test_last_overlay_model: None,
         });
         Ok(())
     }
@@ -1022,6 +1026,7 @@ impl App {
                         .unwrap_or_else(|| "audio subsystem unavailable".into());
                     self.route_event(AppEvent::MicrophoneStateChanged {
                         state: crate::audio::AudioState::Unavailable { reason },
+                        origin: AudioEventOrigin::WinShortAction(request_id),
                     });
                 }
             }
@@ -1035,6 +1040,7 @@ impl App {
                         .unwrap_or_else(|| "audio subsystem unavailable".into());
                     self.route_event(AppEvent::OutputStateChanged {
                         state: crate::audio::OutputState::Unavailable { reason },
+                        origin: AudioEventOrigin::WinShortAction(request_id),
                     });
                 }
             }
@@ -1309,6 +1315,10 @@ impl App {
     ) {
         if !config.enabled {
             return;
+        }
+        #[cfg(test)]
+        {
+            self.test_last_overlay_model = (!model.rows.is_empty()).then(|| model.clone());
         }
         if let Some(overlay) = &self.overlay {
             if let Err(error) = overlay.show(model, config) {
@@ -1777,6 +1787,7 @@ mod shutdown_gate_tests {
             shutting_down: false,
             support_bundle: None,
             degraded: Vec::new(),
+            test_last_overlay_model: None,
         }
     }
 
@@ -1866,9 +1877,11 @@ mod shutdown_gate_tests {
 
         app.route_event(AppEvent::MicrophoneStateChanged {
             state: microphone.clone(),
+            origin: AudioEventOrigin::External,
         });
         app.route_event(AppEvent::OutputStateChanged {
             state: output.clone(),
+            origin: AudioEventOrigin::External,
         });
         app.route_event(AppEvent::DefaultOutputChanged(crate::audio::DeviceId {
             endpoint: "new-output".into(),
@@ -1877,7 +1890,167 @@ mod shutdown_gate_tests {
 
         assert_eq!(app.microphone_state, microphone);
         assert_eq!(app.output_state, output);
+        assert!(app.microphone_seen);
+        assert!(app.output_seen);
         assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn winshort_microphone_action_shows_one_microphone_overlay() {
+        let mut app = test_app();
+        let state = crate::audio::AudioState::Muted { volume_pct: 20 };
+
+        app.route_event(AppEvent::MicrophoneStateChanged {
+            state: state.clone(),
+            origin: AudioEventOrigin::WinShortAction(41),
+        });
+
+        assert_eq!(app.microphone_state, state);
+        assert!(app.microphone_seen);
+        let model = app
+            .test_last_overlay_model
+            .take()
+            .expect("microphone action should show an overlay");
+        assert_eq!(model.rows.len(), 1);
+        assert_eq!(
+            model.rows[0].icon,
+            crate::ui::overlay::OverlayIcon::Microphone
+        );
+        assert_eq!(
+            model.rows[0].category,
+            Some(crate::config::model::OverlayNotificationCategory::Microphone)
+        );
+    }
+
+    #[test]
+    fn winshort_output_action_shows_one_speaker_overlay() {
+        let mut app = test_app();
+        let state = crate::audio::OutputState::Current {
+            device: crate::audio::DeviceId {
+                endpoint: "output".into(),
+                name: "Speakers".into(),
+            },
+            muted: true,
+            volume_pct: 80,
+        };
+
+        app.route_event(AppEvent::OutputStateChanged {
+            state: state.clone(),
+            origin: AudioEventOrigin::WinShortAction(42),
+        });
+
+        assert_eq!(app.output_state, state);
+        assert!(app.output_seen);
+        let model = app
+            .test_last_overlay_model
+            .take()
+            .expect("output action should show an overlay");
+        assert_eq!(model.rows.len(), 1);
+        assert_eq!(model.rows[0].icon, crate::ui::overlay::OverlayIcon::Output);
+        assert_eq!(
+            model.rows[0].category,
+            Some(crate::config::model::OverlayNotificationCategory::Speaker)
+        );
+    }
+
+    #[test]
+    fn external_audio_state_refreshes_without_an_overlay() {
+        let mut app = test_app();
+
+        app.route_event(AppEvent::MicrophoneStateChanged {
+            state: crate::audio::AudioState::Active { volume_pct: 55 },
+            origin: AudioEventOrigin::External,
+        });
+        assert!(app.microphone_seen);
+        assert!(app.test_last_overlay_model.is_none());
+
+        app.route_event(AppEvent::OutputStateChanged {
+            state: crate::audio::OutputState::Unavailable {
+                reason: "endpoint refresh".into(),
+            },
+            origin: AudioEventOrigin::External,
+        });
+        assert!(app.output_seen);
+        assert!(app.test_last_overlay_model.is_none());
+    }
+
+    #[test]
+    fn external_refresh_after_winshort_action_does_not_duplicate_overlay() {
+        let mut app = test_app();
+        let action_state = crate::audio::AudioState::Muted { volume_pct: 30 };
+        app.route_event(AppEvent::MicrophoneStateChanged {
+            state: action_state.clone(),
+            origin: AudioEventOrigin::WinShortAction(43),
+        });
+        assert!(app.test_last_overlay_model.is_some());
+
+        app.test_last_overlay_model = None;
+        app.route_event(AppEvent::MicrophoneStateChanged {
+            state: crate::audio::AudioState::Active { volume_pct: 30 },
+            origin: AudioEventOrigin::External,
+        });
+        assert_eq!(
+            app.microphone_state,
+            crate::audio::AudioState::Active { volume_pct: 30 }
+        );
+        assert!(app.test_last_overlay_model.is_none());
+    }
+
+    #[test]
+    fn degraded_microphone_toggle_keeps_action_origin_for_unavailable_overlay() {
+        let mut app = test_app();
+        app.dispatch_action(HotkeyAction::ToggleMicrophone);
+
+        assert!(matches!(
+            app.microphone_state,
+            crate::audio::AudioState::Unavailable { .. }
+        ));
+        let model = app
+            .test_last_overlay_model
+            .take()
+            .expect("degraded microphone toggle should show an overlay");
+        assert_eq!(
+            model.rows[0].icon,
+            crate::ui::overlay::OverlayIcon::Microphone
+        );
+        assert_eq!(
+            model.rows[0].tone,
+            crate::ui::overlay::OverlayTone::Unavailable
+        );
+    }
+
+    #[test]
+    fn degraded_output_toggle_keeps_action_origin_for_unavailable_overlay() {
+        let mut app = test_app();
+        app.dispatch_action(HotkeyAction::ToggleOutput);
+
+        assert!(matches!(
+            app.output_state,
+            crate::audio::OutputState::Unavailable { .. }
+        ));
+        let model = app
+            .test_last_overlay_model
+            .take()
+            .expect("degraded output toggle should show an overlay");
+        assert_eq!(model.rows[0].icon, crate::ui::overlay::OverlayIcon::Output);
+        assert_eq!(
+            model.rows[0].tone,
+            crate::ui::overlay::OverlayTone::Unavailable
+        );
+    }
+
+    #[test]
+    fn global_overlay_switch_still_blocks_audio_action_overlay() {
+        let mut app = test_app();
+        let mut config = crate::config::Config::default().overlay;
+        config.enabled = false;
+        app.show_overlay_model_with_config(
+            crate::ui::overlay::OverlayModel::single(crate::ui::overlay::microphone_row(
+                &crate::audio::AudioState::Muted { volume_pct: 10 },
+            )),
+            config,
+        );
+        assert!(app.test_last_overlay_model.is_none());
     }
 
     #[test]

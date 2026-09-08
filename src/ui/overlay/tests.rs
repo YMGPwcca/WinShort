@@ -193,10 +193,20 @@ fn disabled_notification_categories_are_removed_before_rendering() {
         microphone: false,
         ..Default::default()
     };
-    let filtered = model.filter_enabled(notifications);
+    let filtered = model.clone().filter_enabled(notifications);
     assert_eq!(
         filtered.rows.iter().map(|row| row.icon).collect::<Vec<_>>(),
         vec![OverlayIcon::Output, OverlayIcon::Application]
+    );
+
+    let notifications = crate::config::model::OverlayNotifications {
+        speaker: false,
+        ..Default::default()
+    };
+    let filtered = model.filter_enabled(notifications);
+    assert_eq!(
+        filtered.rows.iter().map(|row| row.icon).collect::<Vec<_>>(),
+        vec![OverlayIcon::Microphone, OverlayIcon::Application]
     );
 }
 #[test]
