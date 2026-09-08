@@ -49,8 +49,8 @@ pub(crate) struct OverlayRuntimeStatus {
     pub last_shown: Option<SystemTime>,
 }
 
-fn apply_show_plan(hwnd: HWND, plan: ShowPlan) -> Result<()> {
-    apply_frame_plan(hwnd, plan, true)?;
+fn apply_show_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -> Result<()> {
+    apply_frame_plan(hwnd, plan, apply_region)?;
     if let Err(error) = set_timer(hwnd, plan.timer_interval) {
         apply_hide_window(hwnd);
         return Err(error);
@@ -71,7 +71,7 @@ pub(super) fn set_timer(hwnd: HWND, interval: u32) -> Result<()> {
     }
 }
 
-fn apply_window_region(hwnd: HWND, region: WindowRegion) {
+pub(super) fn apply_window_region(hwnd: HWND, region: WindowRegion) {
     let handle = unsafe {
         CreateRoundRectRgn(
             region.inset,
@@ -248,7 +248,8 @@ impl OverlayWindow {
         let Some(plan) = plan else {
             return Ok(());
         };
-        apply_show_plan(self.hwnd, plan)?;
+        let apply_region = cell.borrow().requires_window_region();
+        apply_show_plan(self.hwnd, plan, apply_region)?;
         render_prepared_frame(cell, self.hwnd, plan)
     }
 

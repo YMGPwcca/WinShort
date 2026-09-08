@@ -18,6 +18,12 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 
+#[derive(Clone, Copy)]
+pub(super) struct OverlayDrawOptions {
+    pub(super) fill_card: bool,
+    pub(super) draw_card_border: bool,
+}
+
 pub(super) fn draw_overlay(
     target: &ID2D1RenderTarget,
     dwrite: &IDWriteFactory,
@@ -25,7 +31,7 @@ pub(super) fn draw_overlay(
     scale: f32,
     palette: OverlayPalette,
     content_alpha: f32,
-    fill_card: bool,
+    options: OverlayDrawOptions,
 ) -> Result<()> {
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
@@ -38,7 +44,7 @@ pub(super) fn draw_overlay(
         };
         let left = geometry.body_left;
         let top = geometry.body_top;
-        if fill_card {
+        if options.fill_card {
             let surface = color(with_alpha(palette.surface, content_alpha));
             let surface_brush = target.CreateSolidColorBrush(&surface, None)?;
             target.FillRoundedRectangle(
@@ -53,16 +59,24 @@ pub(super) fn draw_overlay(
 
         let border = color(with_alpha(palette.border, content_alpha));
         let border_brush = target.CreateSolidColorBrush(&border, None)?;
-        target.DrawRoundedRectangle(
-            &D2D1_ROUNDED_RECT {
-                rect: body,
-                radiusX: CARD_CORNER_RADIUS_DIP,
-                radiusY: CARD_CORNER_RADIUS_DIP,
-            },
-            &border_brush,
-            1.0,
-            None,
-        );
+        if options.draw_card_border {
+            let inset = 0.5;
+            target.DrawRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: body.left + inset,
+                        top: body.top + inset,
+                        right: body.right - inset,
+                        bottom: body.bottom - inset,
+                    },
+                    radiusX: (CARD_CORNER_RADIUS_DIP - inset).max(0.0),
+                    radiusY: (CARD_CORNER_RADIUS_DIP - inset).max(0.0),
+                },
+                &border_brush,
+                1.0,
+                None,
+            );
+        }
 
         let title_format = make_format(dwrite, 14.0 * scale, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let detail_format = make_format(dwrite, 12.0 * scale, DWRITE_FONT_WEIGHT_NORMAL)?;

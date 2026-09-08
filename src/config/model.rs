@@ -105,9 +105,9 @@ impl OverlayBlur {
     pub fn blur_amount(self) -> Option<f32> {
         match self {
             Self::Transparent | Self::Solid => None,
-            Self::BlurLight => Some(8.0),
-            Self::BlurMedium => Some(18.0),
-            Self::BlurHeavy => Some(32.0),
+            Self::BlurLight => Some(4.0),
+            Self::BlurMedium => Some(8.0),
+            Self::BlurHeavy => Some(18.0),
         }
     }
 

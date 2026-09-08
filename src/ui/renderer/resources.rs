@@ -73,6 +73,7 @@ pub(super) fn brush_colors(theme: Theme) -> [(BrushRole, Color); 20] {
 
 /// Every declared brush exists after construction, including after a theme change.
 pub(super) struct BrushSet {
+    theme: Theme,
     background: ID2D1SolidColorBrush,
     background_subtle: ID2D1SolidColorBrush,
     card: ID2D1SolidColorBrush,
@@ -106,6 +107,7 @@ impl BrushSet {
                 .map_err(|error| Error::win("CreateSolidColorBrush", &error))
         };
         Ok(Self {
+            theme,
             background: create(theme.bg)?,
             background_subtle: create(theme.bg_subtle)?,
             card: create(theme.card)?,
@@ -151,6 +153,31 @@ impl BrushSet {
             BrushRole::Success => &self.success,
             BrushRole::Focus => &self.focus,
             BrushRole::Shadow => &self.shadow,
+        }
+    }
+
+    pub(super) fn color(&self, role: BrushRole) -> Color {
+        match role {
+            BrushRole::Background => self.theme.bg,
+            BrushRole::BackgroundSubtle => self.theme.bg_subtle,
+            BrushRole::Card => self.theme.card,
+            BrushRole::CardHover => self.theme.card_hover,
+            BrushRole::ControlHover => self.theme.control_hover,
+            BrushRole::CardPressed => self.theme.card_pressed,
+            BrushRole::Border => self.theme.border,
+            BrushRole::BorderStrong => self.theme.border_strong,
+            BrushRole::Text => self.theme.text,
+            BrushRole::TextSecondary => self.theme.text_secondary,
+            BrushRole::TextDisabled => self.theme.text_disabled,
+            BrushRole::Accent => self.theme.accent,
+            BrushRole::AccentHover => self.theme.accent_hover,
+            BrushRole::AccentPressed => self.theme.accent_pressed,
+            BrushRole::AccentText => self.theme.accent_text,
+            BrushRole::Danger => self.theme.danger,
+            BrushRole::Warning => self.theme.warning,
+            BrushRole::Success => self.theme.success,
+            BrushRole::Focus => self.theme.focus,
+            BrushRole::Shadow => self.theme.shadow,
         }
     }
 }

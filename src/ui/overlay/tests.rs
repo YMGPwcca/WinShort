@@ -105,30 +105,53 @@ fn appearance_policy_resolves_system_and_explicit_modes() {
     );
     assert_eq!(
         composition_tint_alpha(ThemeMode::Dark, OverlayBlur::BlurMedium),
-        148
+        96
     );
     assert_eq!(
         composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurMedium),
-        200
-    );
-}
-
-#[test]
-fn light_composition_tint_stays_strong_enough_for_dark_text() {
-    assert!(composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurMedium) >= 200);
-    assert_eq!(
-        composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurLight),
         130
     );
 }
 
 #[test]
+fn light_composition_tint_stays_strong_enough_for_dark_text() {
+    assert!(composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurMedium) >= 130);
+    assert_eq!(
+        composition_tint_alpha(ThemeMode::Light, OverlayBlur::BlurLight),
+        70
+    );
+}
+
+#[test]
 fn dark_composition_tint_keeps_secondary_text_high_contrast() {
-    assert!(composition_tint_alpha(ThemeMode::Dark, OverlayBlur::BlurMedium) >= 128);
+    assert!(composition_tint_alpha(ThemeMode::Dark, OverlayBlur::BlurHeavy) >= 128);
     assert_eq!(
         palette_for(OverlayAppearance::Dark, SystemVisualPreferences::default()).secondary,
         Color::rgb(230, 236, 240)
     );
+}
+
+#[test]
+fn blur_levels_have_distinct_ordered_runtime_amounts() {
+    assert_eq!(OverlayBlur::Transparent.blur_amount(), None);
+    assert_eq!(OverlayBlur::BlurLight.blur_amount(), Some(4.0));
+    assert_eq!(OverlayBlur::BlurMedium.blur_amount(), Some(8.0));
+    assert_eq!(OverlayBlur::BlurHeavy.blur_amount(), Some(18.0));
+    assert_eq!(OverlayBlur::Solid.blur_amount(), None);
+    assert!(OverlayBlur::BlurLight.blur_amount() < OverlayBlur::BlurMedium.blur_amount());
+    assert!(OverlayBlur::BlurMedium.blur_amount() < OverlayBlur::BlurHeavy.blur_amount());
+}
+
+#[test]
+fn composition_tint_levels_follow_blur_intensity() {
+    let dark_levels = OverlayBlur::ALL.map(|blur| composition_tint_alpha(ThemeMode::Dark, blur));
+    let light_levels = OverlayBlur::ALL.map(|blur| composition_tint_alpha(ThemeMode::Light, blur));
+    assert_eq!(dark_levels, [0, 52, 96, 148, 148]);
+    assert_eq!(light_levels, [0, 70, 130, 200, 200]);
+    assert!(dark_levels[1] < dark_levels[2]);
+    assert!(dark_levels[2] < dark_levels[3]);
+    assert!(light_levels[1] < light_levels[2]);
+    assert!(light_levels[2] < light_levels[3]);
 }
 
 #[test]

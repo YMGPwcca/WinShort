@@ -88,6 +88,40 @@ pub(super) fn overlay_scale_label(scale: f32) -> String {
     }
 }
 
+pub(super) fn preview_treatment(
+    appearance: OverlayAppearance,
+    blur: OverlayBlur,
+) -> Option<(BrushRole, f32)> {
+    let material_role = match appearance {
+        OverlayAppearance::Dark => BrushRole::CardPressed,
+        OverlayAppearance::Light => BrushRole::BackgroundSubtle,
+        OverlayAppearance::System => BrushRole::Background,
+    };
+    match blur {
+        OverlayBlur::Transparent => None,
+        OverlayBlur::BlurLight => Some((material_role, 0.25)),
+        OverlayBlur::BlurMedium => Some((material_role, 0.50)),
+        OverlayBlur::BlurHeavy => Some((material_role, 0.75)),
+        OverlayBlur::Solid => Some((BrushRole::CardPressed, 1.0)),
+    }
+}
+
+fn stroke_rounded_inside(
+    renderer: &Renderer,
+    rect: UiRect,
+    radius: f32,
+    role: BrushRole,
+    width: f32,
+) {
+    let inset = width * 0.5;
+    renderer.stroke_rounded(
+        rect.inset(inset).d2d(),
+        (radius - inset).max(0.0),
+        role,
+        width,
+    );
+}
+
 impl SettingsUi {
     pub(super) fn draw_overlay_preview(&self, renderer: &Renderer, rect: UiRect) {
         let placement = overlay_placement_geometry(rect, self.overlay_preview_aspect);
@@ -108,29 +142,24 @@ impl SettingsUi {
         let canvas = overlay_preview_canvas_rect(preview, self.overlay_preview_aspect);
         renderer.fill_rounded(canvas.translated_y(2.0).d2d(), 8.0, BrushRole::Shadow);
         renderer.fill_rounded(canvas.d2d(), 8.0, BrushRole::Card);
-        renderer.stroke_rounded(canvas.d2d(), 8.0, BrushRole::BorderStrong, 1.0);
+        stroke_rounded_inside(renderer, canvas, 8.0, BrushRole::BorderStrong, 1.0);
         let sample = overlay_preview_card_rect(
             canvas,
             self.draft.overlay.position,
             self.draft.overlay.scale,
         );
-        let transparent = self.draft.overlay.blur == OverlayBlur::Transparent;
-        let sample_surface = match self.draft.overlay.blur {
-            OverlayBlur::Solid => BrushRole::CardPressed,
-            OverlayBlur::Transparent => BrushRole::BackgroundSubtle,
-            OverlayBlur::BlurLight | OverlayBlur::BlurMedium | OverlayBlur::BlurHeavy => {
-                match self.draft.overlay.appearance {
-                    OverlayAppearance::Dark => BrushRole::CardPressed,
-                    OverlayAppearance::Light => BrushRole::BackgroundSubtle,
-                    OverlayAppearance::System => BrushRole::Card,
-                }
-            }
-        };
-        if !transparent {
-            renderer.fill_rounded(sample.translated_y(1.0).d2d(), 8.0, BrushRole::Shadow);
-            renderer.fill_rounded(sample.d2d(), 8.0, sample_surface);
+        if let Some((sample_surface, intensity)) =
+            preview_treatment(self.draft.overlay.appearance, self.draft.overlay.blur)
+        {
+            renderer.fill_rounded_with_alpha(
+                sample.translated_y(1.0).d2d(),
+                8.0,
+                BrushRole::Shadow,
+                intensity,
+            );
+            renderer.fill_rounded_with_alpha(sample.d2d(), 8.0, sample_surface, intensity);
+            stroke_rounded_inside(renderer, sample, 8.0, BrushRole::Accent, 1.0);
         }
-        renderer.stroke_rounded(sample.d2d(), 8.0, BrushRole::Accent, 1.0);
     }
 
     pub(super) fn set_overlay_position(&mut self, hwnd: HWND, index: usize) {

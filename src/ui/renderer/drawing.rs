@@ -2,6 +2,7 @@
 
 use super::resources::BrushRole;
 use super::target::Renderer;
+use crate::ui::theme::Color;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT;
 
@@ -26,6 +27,26 @@ impl Renderer {
             radiusY: radius,
         };
         unsafe { self.target.FillRoundedRectangle(&rr, self.brush(role)) }
+    }
+
+    pub(crate) fn fill_rounded_with_alpha(
+        &self,
+        rect: D2D_RECT_F,
+        radius: f32,
+        role: BrushRole,
+        alpha: f32,
+    ) {
+        let mut color: Color = self.brushes.color(role);
+        color.a = (color.a as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
+        let Ok(brush) = (unsafe { self.target.CreateSolidColorBrush(&color.d2d(), None) }) else {
+            return;
+        };
+        let rr = D2D1_ROUNDED_RECT {
+            rect,
+            radiusX: radius,
+            radiusY: radius,
+        };
+        unsafe { self.target.FillRoundedRectangle(&rr, &brush) }
     }
 
     pub(crate) fn stroke_rounded(

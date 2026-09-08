@@ -25,7 +25,8 @@ pub(super) unsafe fn handle_settingchange(
         });
         match plan {
             Ok(Some(plan)) => {
-                if let Err(error) = apply_frame_plan(hwnd, plan, true) {
+                let apply_region = cell.borrow().requires_window_region();
+                if let Err(error) = apply_frame_plan(hwnd, plan, apply_region) {
                     crate::warn_!("overlay visual refresh placement failed: {error}");
                 }
                 if let Err(error) = set_timer(hwnd, plan.timer_interval) {

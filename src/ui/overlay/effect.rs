@@ -59,6 +59,8 @@ const E_INVALIDARG_HRESULT: windows::core::HRESULT = windows::core::HRESULT(0x80
 
 const E_POINTER_HRESULT: windows::core::HRESULT = windows::core::HRESULT(0x80004003u32 as i32);
 
+const D2D1_BORDER_MODE_SOFT: u32 = 0;
+
 fn invalid_argument<T>() -> windows::core::Result<T> {
     Err(windows::core::Error::from_hresult(E_INVALIDARG_HRESULT))
 }
@@ -131,7 +133,8 @@ impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffectGraph_Impl {
         }
         let property: IPropertyValue = match index {
             0 => PropertyValue::CreateSingle(self.blur_amount)?.cast()?,
-            1 | 2 => PropertyValue::CreateUInt32(1)?.cast()?,
+            1 => PropertyValue::CreateUInt32(1)?.cast()?,
+            2 => PropertyValue::CreateUInt32(D2D1_BORDER_MODE_SOFT)?.cast()?,
             _ => return invalid_argument(),
         };
         unsafe { *value = property.into_raw() };

@@ -1,12 +1,13 @@
 //! Rendering backend selection, resource creation and Composition failure recovery.
 
 use super::composition::CompositionHost;
-use super::drawing::draw_overlay;
+use super::drawing::{draw_overlay, OverlayDrawOptions};
+use super::layout::window_region_for;
 use super::model::OverlayModel;
 use super::palette::{opaque_palette, OverlayPalette};
 use super::state::OverlayState;
 use super::timeline::{Phase, ShowPlan};
-use super::window::{client_size, remove_no_redirection_bitmap};
+use super::window::{apply_window_region, client_size, remove_no_redirection_bitmap};
 use crate::config::model::OverlayBlur;
 use crate::error::{Error, Result};
 
@@ -123,6 +124,7 @@ fn run_surface_operation(
                     }
                 }
                 if fallback_result.is_ok() {
+                    apply_window_region(hwnd, window_region_for(spec.size, spec.dpi));
                     surface = fallback;
                     switched_to_fallback = true;
                     result = Ok(());
@@ -220,7 +222,10 @@ impl HwndOverlaySurface {
                 data.scale,
                 data.palette,
                 data.alpha,
-                data.palette.opaque,
+                OverlayDrawOptions {
+                    fill_card: data.palette.opaque,
+                    draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
+                },
             );
             let end_result = self
                 .target

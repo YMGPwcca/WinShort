@@ -269,6 +269,12 @@ impl OverlayState {
         }
     }
 
+    pub(super) fn requires_window_region(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| !surface.is_composition())
+    }
+
     pub(super) fn render_data(&self, alpha: f32) -> OverlayRenderData {
         OverlayRenderData {
             dwrite: self.graphics.dwrite.clone(),

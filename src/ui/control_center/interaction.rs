@@ -47,13 +47,13 @@ impl SettingsUi {
             return;
         }
         if let Some(old) = self.interaction.hovered() {
-            self.motion.animate_to(old, MotionChannel::Hover, 0.0, 140);
+            self.motion.clear(old, MotionChannel::Hover);
         }
         if let Some(new) = next {
             self.motion.animate_to(new, MotionChannel::Hover, 1.0, 140);
+            start_timer(hwnd);
         }
         self.interaction.set_hovered(next);
-        start_timer(hwnd);
         invalidate(hwnd);
     }
 

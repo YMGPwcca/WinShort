@@ -26,3 +26,38 @@ fn overlay_size_label_reports_the_runtime_scale() {
         assert_eq!(overlay_scale_label(scale), label);
     }
 }
+
+#[test]
+fn overlay_preview_treatments_are_distinct_and_transparent_has_no_surface() {
+    use crate::config::model::{OverlayAppearance, OverlayBlur};
+    use crate::ui::renderer::BrushRole;
+
+    assert_eq!(
+        preview_treatment(OverlayAppearance::System, OverlayBlur::Transparent),
+        None
+    );
+    assert_eq!(
+        preview_treatment(OverlayAppearance::System, OverlayBlur::BlurLight),
+        Some((BrushRole::Background, 0.25))
+    );
+    assert_eq!(
+        preview_treatment(OverlayAppearance::System, OverlayBlur::BlurMedium),
+        Some((BrushRole::Background, 0.50))
+    );
+    assert_eq!(
+        preview_treatment(OverlayAppearance::System, OverlayBlur::BlurHeavy),
+        Some((BrushRole::Background, 0.75))
+    );
+    assert_eq!(
+        preview_treatment(OverlayAppearance::System, OverlayBlur::Solid),
+        Some((BrushRole::CardPressed, 1.0))
+    );
+    assert_eq!(
+        preview_treatment(OverlayAppearance::Dark, OverlayBlur::BlurMedium),
+        Some((BrushRole::CardPressed, 0.50))
+    );
+    assert_eq!(
+        preview_treatment(OverlayAppearance::Light, OverlayBlur::BlurMedium),
+        Some((BrushRole::BackgroundSubtle, 0.50))
+    );
+}

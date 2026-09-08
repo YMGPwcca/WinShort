@@ -5,7 +5,7 @@
 //! details of every Direct3D, Direct2D and Composition resource.
 
 use super::backend::{OverlayGraphics, OverlayRenderData, SurfaceSpec};
-use super::drawing::draw_overlay;
+use super::drawing::{draw_overlay, OverlayDrawOptions};
 use super::effect::GaussianBlurEffectGraph;
 use super::layout::CARD_CORNER_RADIUS_DIP;
 use super::palette::composition_tint_alpha;
@@ -520,7 +520,10 @@ impl CompositionHost {
             data.scale,
             data.palette,
             data.alpha,
-            data.palette.opaque,
+            OverlayDrawOptions {
+                fill_card: data.palette.opaque,
+                draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
+            },
         );
         let end_result = unsafe {
             surface_interop

@@ -77,9 +77,9 @@ pub(super) fn composition_tint_alpha(theme_mode: ThemeMode, blur: OverlayBlur) -
     };
     let multiplier = match blur {
         OverlayBlur::Transparent => 0.0,
-        OverlayBlur::BlurLight => 0.65,
-        OverlayBlur::BlurMedium => 1.0,
-        OverlayBlur::BlurHeavy => 1.25,
+        OverlayBlur::BlurLight => 0.35,
+        OverlayBlur::BlurMedium => 0.65,
+        OverlayBlur::BlurHeavy => 1.0,
         OverlayBlur::Solid => 1.0,
     };
     (base * multiplier).round().clamp(0.0, 255.0) as u8
