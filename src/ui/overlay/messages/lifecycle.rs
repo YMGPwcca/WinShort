@@ -18,21 +18,32 @@ pub(super) unsafe fn handle_settingchange() -> LRESULT {
 /// # Safety
 /// Called synchronously by this window's dispatcher on its owning thread.
 /// Native message pointers and the state cell must remain valid for the call.
-pub(super) unsafe fn handle_timer(cell: &std::cell::RefCell<OverlayState>, hwnd: HWND) -> LRESULT {
+pub(super) unsafe fn handle_timer(
+    cell: &std::cell::RefCell<OverlayState>,
+    hwnd: HWND,
+    timer_id: usize,
+) -> LRESULT {
+    if cell.borrow().timer_id != timer_id {
+        return LRESULT(0);
+    }
     {
         let plan = prepare_state_plan(cell, |state| state.prepare_tick());
         match plan {
             Some(TickPlan::Hide) => {
-                let entry_id = { cell.borrow().entry_id };
-                apply_hide_window(hwnd);
+                let (entry_id, generation) = {
+                    let state = cell.borrow();
+                    (state.entry_id, state.generation)
+                };
+                apply_hide_window(hwnd, timer_id);
                 if entry_id != 0 {
                     crate::event::post_main(crate::event::AppEvent::OverlayCardExpired {
                         entry_id,
+                        generation,
                     });
                 }
             }
             Some(TickPlan::StopTimer) => {
-                if let Err(error) = set_timer(hwnd, None) {
+                if let Err(error) = set_timer(hwnd, timer_id, None) {
                     crate::warn_!("overlay timer stop failed: {error}");
                 }
             }
@@ -40,7 +51,7 @@ pub(super) unsafe fn handle_timer(cell: &std::cell::RefCell<OverlayState>, hwnd:
                 if let Err(error) = apply_frame_plan(hwnd, plan, false) {
                     crate::warn_!("overlay frame placement failed: {error}");
                 }
-                if let Err(error) = set_timer(hwnd, plan.timer_interval) {
+                if let Err(error) = set_timer(hwnd, plan.timer_id, plan.timer_interval) {
                     crate::warn_!("overlay frame timer update failed: {error}");
                 }
                 if let Err(error) = render_prepared_frame(cell, hwnd, plan) {

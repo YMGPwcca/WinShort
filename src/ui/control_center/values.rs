@@ -312,7 +312,10 @@ impl SettingsUi {
                 label: Cow::Borrowed(self.draft.overlay.blur.label()),
             },
             OverlayElement::Scale => ControlValue::Slider {
-                ratio: ((self.draft.overlay.scale - 0.7) / 0.9).clamp(0.0, 1.0),
+                ratio: ((self.draft.overlay.scale - crate::config::model::OVERLAY_SCALE_MIN)
+                    / (crate::config::model::OVERLAY_SCALE_MAX
+                        - crate::config::model::OVERLAY_SCALE_MIN))
+                    .clamp(0.0, 1.0),
                 label: Cow::Owned(overlay_scale_label(self.draft.overlay.scale)),
             },
             OverlayElement::Preview => ControlValue::Action(Cow::Borrowed("Show on screen")),

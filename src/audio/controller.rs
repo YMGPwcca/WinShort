@@ -521,6 +521,15 @@ impl AudioController {
                 error: "selected endpoint is no longer active".into(),
             };
         };
+        let selection = crate::audio::devices::default_selection_result(flow, previous, device);
+        let DeviceCycleResult::Changed {
+            flow,
+            previous,
+            device,
+        } = selection
+        else {
+            return selection;
+        };
         if let Err(error) =
             crate::audio::devices::set_system_default(&self.enumerator, endpoint_flow, &device)
         {
@@ -576,6 +585,9 @@ impl AudioController {
         match crate::audio::devices::device_cycle_result_with_allowlist(
             flow, previous, &active, allowlist,
         ) {
+            DeviceCycleResult::AlreadySelected { flow, device } => {
+                DeviceCycleResult::AlreadySelected { flow, device }
+            }
             DeviceCycleResult::NoDevices { flow, previous } => {
                 DeviceCycleResult::NoDevices { flow, previous }
             }

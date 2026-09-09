@@ -10,6 +10,7 @@ use super::timeline::{Phase, ShowPlan};
 use super::window::{apply_window_region, client_size, remove_no_redirection_bitmap};
 use crate::config::model::OverlayBlur;
 use crate::error::{Error, Result};
+use std::time::Instant;
 
 use crate::ui::theme::{Color, ThemeMode};
 use windows::Win32::Foundation::{HWND, SIZE};
@@ -177,7 +178,7 @@ pub(super) fn render_current_frame(
         if state.phase == Phase::Hidden {
             return Ok(());
         }
-        let (alpha, _) = state.frame_values();
+        let (alpha, _) = state.frame_values(Instant::now());
         (
             state.surface_spec(state.surface_size),
             state.render_data(alpha),

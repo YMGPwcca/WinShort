@@ -16,7 +16,7 @@ use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL, STGM_READ};
 
 use crate::audio::controller::{AudioCommand, EndpointFlow};
 use crate::audio::notifications::EndpointVolumeClient;
-use crate::audio::state::{AudioState, DeviceId, OutputState};
+use crate::audio::state::{AudioState, DeviceCycleFlow, DeviceCycleResult, DeviceId, OutputState};
 use crate::config::model::{DeviceSelection, EndpointRole};
 use crate::error::{Error, Result};
 
@@ -61,6 +61,28 @@ pub struct DeviceLists {
 pub enum DeviceCyclePlan {
     Select(DeviceId),
     NoActiveEndpoints,
+}
+
+pub(crate) fn default_selection_result(
+    flow: DeviceCycleFlow,
+    previous: Option<DeviceId>,
+    target: DeviceId,
+) -> DeviceCycleResult {
+    if previous
+        .as_ref()
+        .is_some_and(|current| current.endpoint == target.endpoint)
+    {
+        DeviceCycleResult::AlreadySelected {
+            flow,
+            device: target,
+        }
+    } else {
+        DeviceCycleResult::Changed {
+            flow,
+            previous,
+            device: target,
+        }
+    }
 }
 
 /// Plan the next real Windows endpoint from the current system default.
@@ -593,6 +615,38 @@ mod cycle_tests {
             }
             other => panic!("unexpected cycle result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn selecting_current_input_or_output_is_an_explicit_noop() {
+        for flow in [DeviceCycleFlow::Input, DeviceCycleFlow::Output] {
+            let current = device("current-id", "Current");
+            assert_eq!(
+                default_selection_result(flow, Some(current.clone()), current.clone()),
+                DeviceCycleResult::AlreadySelected {
+                    flow,
+                    device: current,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_a_different_endpoint_reports_a_change() {
+        let previous = device("previous-id", "Previous");
+        let target = device("target-id", "Target");
+        assert_eq!(
+            default_selection_result(
+                DeviceCycleFlow::Output,
+                Some(previous.clone()),
+                target.clone()
+            ),
+            DeviceCycleResult::Changed {
+                flow: DeviceCycleFlow::Output,
+                previous: Some(previous),
+                device: target,
+            }
+        );
     }
 
     #[test]

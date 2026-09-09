@@ -141,6 +141,10 @@ pub struct ConfigDiagnostics {
 pub struct OverlayDiagnostics {
     pub health: Health,
     pub enabled: bool,
+    pub active_card_count: usize,
+    pub permanent_card_count: usize,
+    pub toast_card_count: usize,
+    pub active_monitor_summary: Option<String>,
     pub blur: String,
     pub appearance: String,
     pub resolved_appearance: Option<String>,

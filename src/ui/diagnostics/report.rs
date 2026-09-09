@@ -341,6 +341,24 @@ fn append_overlay(s: &crate::diagnostics::snapshot::DiagnosticsSnapshot, lines: 
         if s.overlay.enabled { "Yes" } else { "No" }.into(),
         None,
     );
+    row(
+        lines,
+        "Active cards",
+        s.overlay.active_card_count.to_string(),
+        None,
+    );
+    row(
+        lines,
+        "Permanent cards",
+        s.overlay.permanent_card_count.to_string(),
+        None,
+    );
+    row(
+        lines,
+        "Toast cards",
+        s.overlay.toast_card_count.to_string(),
+        None,
+    );
     row(lines, "Blur", s.overlay.blur.clone(), None);
     row(
         lines,
@@ -465,6 +483,15 @@ fn append_overlay(s: &crate::diagnostics::snapshot::DiagnosticsSnapshot, lines: 
             .target_monitor
             .clone()
             .unwrap_or_else(|| "Never".into()),
+        None,
+    );
+    row(
+        lines,
+        "Active monitor summary",
+        s.overlay
+            .active_monitor_summary
+            .clone()
+            .unwrap_or_else(|| "None".into()),
         None,
     );
     row(

@@ -3,7 +3,9 @@
 use super::native::invalidate;
 use super::state::SettingsUi;
 use crate::config::model::{
-    OverlayBlur, OVERLAY_DURATION_MAX_MS, OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_STEP_MS,
+    normalize_overlay_duration, normalize_overlay_scale, OverlayBlur, OVERLAY_DURATION_MAX_MS,
+    OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_STEP_MS, OVERLAY_SCALE_MAX, OVERLAY_SCALE_MIN,
+    OVERLAY_SCALE_STEP,
 };
 use crate::ui::controls;
 use crate::ui::layout::{ElementId, Rect};
@@ -24,7 +26,9 @@ impl SettingsUi {
                 self.draft.overlay.blur = OverlayBlur::from_index((ratio * 4.0).round() as usize);
             }
             ElementId::OverlayScale => {
-                self.draft.overlay.scale = ((0.7 + ratio * 0.9) * 10.0).round() / 10.0;
+                self.draft.overlay.scale = normalize_overlay_scale(
+                    OVERLAY_SCALE_MIN + ratio * (OVERLAY_SCALE_MAX - OVERLAY_SCALE_MIN),
+                );
             }
             _ => return,
         }
@@ -64,18 +68,20 @@ impl SettingsUi {
                 (ElementId::OverlayDuration, false) => OVERLAY_DURATION_MAX_MS as f32,
                 (ElementId::OverlayBlur, true) => 0.0,
                 (ElementId::OverlayBlur, false) => 4.0,
-                (ElementId::OverlayScale, true) => 0.7,
-                (ElementId::OverlayScale, false) => 1.6,
+                (ElementId::OverlayScale, true) => OVERLAY_SCALE_MIN,
+                (ElementId::OverlayScale, false) => OVERLAY_SCALE_MAX,
                 _ => current,
             };
         }
         match id {
-            ElementId::OverlayDuration => (current + step * OVERLAY_DURATION_STEP_MS as f32)
-                .round()
-                .clamp(
-                    OVERLAY_DURATION_MIN_MS as f32,
-                    OVERLAY_DURATION_MAX_MS as f32,
-                ),
+            ElementId::OverlayDuration => normalize_overlay_duration(
+                (current + step * OVERLAY_DURATION_STEP_MS as f32)
+                    .round()
+                    .clamp(
+                        OVERLAY_DURATION_MIN_MS as f32,
+                        OVERLAY_DURATION_MAX_MS as f32,
+                    ) as u32,
+            ) as f32,
             ElementId::OverlayBlur => {
                 let step = if step.abs() > 1.0 {
                     step.signum() * 2.0
@@ -84,7 +90,8 @@ impl SettingsUi {
                 };
                 (current + step).round().clamp(0.0, 4.0)
             }
-            ElementId::OverlayScale => (current + step * 0.1).clamp(0.7, 1.6),
+            ElementId::OverlayScale => normalize_overlay_scale(current + step * OVERLAY_SCALE_STEP)
+                .clamp(OVERLAY_SCALE_MIN, OVERLAY_SCALE_MAX),
             _ => current,
         }
     }
@@ -148,6 +155,18 @@ mod tests {
         assert_eq!(
             SettingsUi::slider_ratio_from_x(row, geometry.track.x + geometry.track.w * 0.25),
             0.25
+        );
+    }
+
+    #[test]
+    fn overlay_slider_values_use_the_same_discrete_grid_as_config() {
+        assert_eq!(
+            SettingsUi::slider_value(ElementId::OverlayDuration, 1051.0, 0.0),
+            1100.0
+        );
+        assert_eq!(
+            SettingsUi::slider_value(ElementId::OverlayScale, 0.73, 0.0),
+            0.7
         );
     }
 }

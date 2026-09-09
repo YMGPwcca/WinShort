@@ -85,13 +85,19 @@ pub(super) fn position_for(
     position: OverlayPosition,
     dpi: u32,
 ) -> POINT {
-    let margin = (22.0 * dpi as f32 / 96.0).round() as i32;
-    let left = work.left + margin;
-    let right = work.right - margin - size.cx;
-    let top = work.top + margin;
-    let bottom = work.bottom - margin - size.cy;
-    let center_x = work.left + ((work.right - work.left) - size.cx) / 2;
-    let center_y = work.top + ((work.bottom - work.top) - size.cy) / 2;
+    let margin = (22.0 * dpi as f32 / 96.0).round() as i64;
+    let work_left = i64::from(work.left);
+    let work_top = i64::from(work.top);
+    let work_right = i64::from(work.right);
+    let work_bottom = i64::from(work.bottom);
+    let width = i64::from(size.cx);
+    let height = i64::from(size.cy);
+    let left = work_left + margin;
+    let right = work_right - margin - width;
+    let top = work_top + margin;
+    let bottom = work_bottom - margin - height;
+    let center_x = work_left + (work_right - work_left - width) / 2;
+    let center_y = work_top + (work_bottom - work_top - height) / 2;
     let (x, y) = match position {
         OverlayPosition::TopLeft => (left, top),
         OverlayPosition::TopCenter => (center_x, top),
@@ -103,9 +109,12 @@ pub(super) fn position_for(
         OverlayPosition::BottomCenter => (center_x, bottom),
         OverlayPosition::BottomRight => (right, bottom),
     };
-    let x = x.clamp(work.left, (work.right - size.cx).max(work.left));
-    let y = y.clamp(work.top, (work.bottom - size.cy).max(work.top));
-    POINT { x, y }
+    let x = x.clamp(work_left, (work_right - width).max(work_left));
+    let y = y.clamp(work_top, (work_bottom - height).max(work_top));
+    POINT {
+        x: x as i32,
+        y: y as i32,
+    }
 }
 
 /// Lay out a stable permanent lane followed by a newest-first toast lane.
@@ -126,27 +135,38 @@ pub(super) fn layout_cards(
         size_position,
         OverlayPosition::BottomLeft | OverlayPosition::BottomCenter | OverlayPosition::BottomRight
     );
-    let gap = (STACK_GAP_DIP * scale.clamp(0.7, 1.6) * dpi as f32 / 96.0)
-        .round()
-        .max(1.0) as i32;
-    let mut cursor = None;
+    let gap = stack_gap_px(scale, dpi);
+    let mut cursor: Option<i64> = None;
 
     inputs
         .iter()
         .map(|input| {
             let anchor = position_for(work, input.size, size_position, dpi);
-            let y = match cursor {
-                None => anchor.y,
-                Some(previous_edge) if down => previous_edge + gap,
-                Some(previous_edge) => previous_edge - gap - input.size.cy,
+            let unbounded_y = match cursor {
+                None => i64::from(anchor.y),
+                Some(previous_edge) if down => previous_edge + i64::from(gap),
+                Some(previous_edge) => previous_edge - i64::from(gap) - i64::from(input.size.cy),
             };
+            let max_y =
+                (i64::from(work.bottom) - i64::from(input.size.cy)).max(i64::from(work.top));
+            let y = unbounded_y.clamp(i64::from(work.top), max_y) as i32;
             let placement = CardPlacement {
                 position: POINT { x: anchor.x, y },
             };
-            cursor = Some(if down { y + input.size.cy } else { y });
+            cursor = Some(if down {
+                i64::from(y) + i64::from(input.size.cy)
+            } else {
+                i64::from(y)
+            });
             placement
         })
         .collect()
+}
+
+pub(super) fn stack_gap_px(scale: f32, dpi: u32) -> i32 {
+    (STACK_GAP_DIP * scale.clamp(0.7, 1.6) * dpi as f32 / 96.0)
+        .round()
+        .max(1.0) as i32
 }
 
 impl SurfaceGeometry {

@@ -1,14 +1,17 @@
 //! Independent overlay-card scheduling and native-window ownership.
+//!
+//! The registry identity invariant is one active entry per semantic
+//! OverlayKey; different keys are the only way cards stack.
 
 use super::backend::{OverlayGraphics, RECT_FALLBACK};
 use super::layout::{layout_cards, select_monitor, surface_geometry, CardPlacement, LayoutInput};
 use super::model::OverlayModel;
 use super::state::ShowRequest;
-use super::timeline::ShowMode;
+use super::timeline::{motion_policy, toast_deadline, MotionPolicy, ShowMode};
 use super::window::{OverlayRuntimeStatus, OverlayWindow};
 use crate::config::model::{OverlayCfg, OverlayPosition};
 use crate::error::Result;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::RECT;
 
@@ -29,6 +32,19 @@ pub(crate) enum OverlayKey {
 }
 
 impl OverlayKey {
+    pub(crate) const ALL: [Self; 10] = [
+        Self::MicrophonePermanent,
+        Self::MicrophoneToast,
+        Self::Speaker,
+        Self::CurrentAppAudio,
+        Self::InputDevice,
+        Self::OutputDevice,
+        Self::Workspace,
+        Self::DisplayProfile,
+        Self::Status,
+        Self::Preview,
+    ];
+
     fn permanent_rank(self) -> u8 {
         match self {
             Self::MicrophonePermanent => 0,
@@ -46,25 +62,12 @@ impl OverlayKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToastPolicy {
-    ReplaceSameKey,
-    StackDistinct,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayLifetime {
     Permanent,
-    Toast(ToastPolicy),
+    Toast,
 }
 
 impl OverlayLifetime {
-    fn expires_at(self, now: Instant, duration: Duration) -> Option<Instant> {
-        match self {
-            Self::Permanent => None,
-            Self::Toast(_) => Some(now + duration),
-        }
-    }
-
     pub(crate) fn is_permanent(self) -> bool {
         matches!(self, Self::Permanent)
     }
@@ -86,11 +89,11 @@ impl OverlayRequest {
         }
     }
 
-    pub(crate) fn toast(key: OverlayKey, model: OverlayModel, policy: ToastPolicy) -> Self {
+    pub(crate) fn toast(key: OverlayKey, model: OverlayModel) -> Self {
         Self {
             key,
             model,
-            lifetime: OverlayLifetime::Toast(policy),
+            lifetime: OverlayLifetime::Toast,
         }
     }
 }
@@ -98,12 +101,21 @@ impl OverlayRequest {
 #[derive(Debug, Clone)]
 pub(crate) struct OverlayEntry {
     id: u64,
+    generation: u64,
     key: OverlayKey,
     model: OverlayModel,
     lifetime: OverlayLifetime,
     expires_at: Option<Instant>,
+    presented_at: Instant,
     sequence: u64,
     placement: ResolvedPlacement,
+    lifecycle: EntryLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryLifecycle {
+    Active,
+    Expiring,
 }
 
 impl OverlayEntry {
@@ -113,6 +125,10 @@ impl OverlayEntry {
 
     pub(crate) fn key(&self) -> OverlayKey {
         self.key
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub(crate) fn model(&self) -> &OverlayModel {
@@ -131,6 +147,10 @@ impl OverlayEntry {
         self.sequence
     }
 
+    pub(crate) fn presented_at(&self) -> Instant {
+        self.presented_at
+    }
+
     pub(crate) fn is_permanent(&self) -> bool {
         self.lifetime.is_permanent()
     }
@@ -138,12 +158,17 @@ impl OverlayEntry {
     pub(crate) fn is_expired(&self, now: Instant) -> bool {
         self.expires_at.is_some_and(|expires_at| now >= expires_at)
     }
+
+    fn is_expiring(&self) -> bool {
+        self.lifecycle == EntryLifecycle::Expiring
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PresentOutcome {
     pub(crate) id: u64,
     pub(crate) inserted: bool,
+    pub(crate) restart_appearance: bool,
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +176,7 @@ pub(crate) struct OverlayRegistry {
     entries: Vec<OverlayEntry>,
     next_id: u64,
     next_sequence: u64,
+    next_generation: u64,
 }
 
 impl OverlayRegistry {
@@ -165,7 +191,13 @@ impl OverlayRegistry {
         duration: Duration,
         now: Instant,
     ) -> PresentOutcome {
-        self.present_with_placement(request, duration, now, ResolvedPlacement::default())
+        self.present_with_placement(
+            request,
+            duration,
+            now,
+            MotionPolicy::Reduced,
+            ResolvedPlacement::default(),
+        )
     }
 
     fn present_with_placement(
@@ -173,37 +205,56 @@ impl OverlayRegistry {
         request: OverlayRequest,
         duration: Duration,
         now: Instant,
+        motion: MotionPolicy,
         placement: ResolvedPlacement,
     ) -> PresentOutcome {
-        let expires_at = request.lifetime.expires_at(now, duration);
+        let expires_at = match request.lifetime {
+            OverlayLifetime::Permanent => None,
+            OverlayLifetime::Toast => Some(toast_deadline(now, motion, duration)),
+        };
         let sequence = self.next_sequence();
         if let Some(index) = self.replacement_index(&request) {
+            let generation = self.next_generation();
             let entry = &mut self.entries[index];
+            let restart_appearance = !entry.lifetime.is_permanent();
             let preserve_placement = entry.lifetime.is_permanent();
             entry.model = request.model;
             entry.lifetime = request.lifetime;
             entry.expires_at = expires_at;
+            entry.presented_at = now;
+            entry.generation = generation;
             entry.sequence = sequence;
+            entry.lifecycle = EntryLifecycle::Active;
             if !preserve_placement {
                 entry.placement = placement;
             }
             return PresentOutcome {
                 id: entry.id,
                 inserted: false,
+                restart_appearance,
             };
         }
 
         let id = self.next_id();
+        let generation = self.next_generation();
         self.entries.push(OverlayEntry {
             id,
+            generation,
             key: request.key,
             model: request.model,
             lifetime: request.lifetime,
             expires_at,
+            presented_at: now,
             sequence,
             placement,
+            lifecycle: EntryLifecycle::Active,
         });
-        PresentOutcome { id, inserted: true }
+        debug_assert!(self.has_unique_keys());
+        PresentOutcome {
+            id,
+            inserted: true,
+            restart_appearance: true,
+        }
     }
 
     pub(crate) fn remove_id(&mut self, id: u64) -> Option<OverlayEntry> {
@@ -261,18 +312,38 @@ impl OverlayRegistry {
         self.entries.clear();
     }
 
-    fn replacement_index(&self, request: &OverlayRequest) -> Option<usize> {
-        match request.lifetime {
-            OverlayLifetime::Permanent => self
-                .entries
-                .iter()
-                .position(|entry| entry.key == request.key && entry.lifetime.is_permanent()),
-            OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey) => self
-                .entries
-                .iter()
-                .position(|entry| entry.key == request.key && !entry.lifetime.is_permanent()),
-            OverlayLifetime::Toast(ToastPolicy::StackDistinct) => None,
+    fn mark_expiring(&mut self, now: Instant) {
+        for entry in &mut self.entries {
+            if !entry.is_permanent() && entry.is_expired(now) {
+                entry.lifecycle = EntryLifecycle::Expiring;
+            }
         }
+    }
+
+    fn remove_expired_generation(
+        &mut self,
+        id: u64,
+        generation: u64,
+        now: Instant,
+    ) -> Option<OverlayEntry> {
+        let index = self.entries.iter().position(|entry| {
+            entry.id == id
+                && entry.generation == generation
+                && !entry.is_permanent()
+                && entry.is_expired(now)
+        })?;
+        Some(self.entries.remove(index))
+    }
+
+    pub(crate) fn has_unique_keys(&self) -> bool {
+        let mut keys = std::collections::HashSet::new();
+        self.entries.iter().all(|entry| keys.insert(entry.key))
+    }
+
+    fn replacement_index(&self, request: &OverlayRequest) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.key == request.key)
     }
 
     fn next_id(&mut self) -> u64 {
@@ -290,6 +361,14 @@ impl OverlayRegistry {
         }
         self.next_sequence
     }
+
+    fn next_generation(&mut self) -> u64 {
+        self.next_generation = self.next_generation.wrapping_add(1);
+        if self.next_generation == 0 {
+            self.next_generation = 1;
+        }
+        self.next_generation
+    }
 }
 
 struct ManagedWindow {
@@ -303,6 +382,7 @@ pub(crate) struct OverlayManager {
     render_configs: HashMap<u64, OverlayCfg>,
     spare: Option<OverlayWindow>,
     windows: Vec<ManagedWindow>,
+    last_shown: Option<std::time::SystemTime>,
 }
 
 impl OverlayManager {
@@ -318,6 +398,7 @@ impl OverlayManager {
             render_configs: HashMap::new(),
             spare,
             windows: Vec::new(),
+            last_shown: None,
         })
     }
 
@@ -329,11 +410,14 @@ impl OverlayManager {
         if request.model.rows.is_empty() {
             return Ok(());
         }
+        let presentation_started_at = Instant::now();
+        let motion = motion_policy(crate::platform::visual::SystemVisualPreferences::query());
         let placement = self.placement_for_presentation(&request, &config);
         let outcome = self.registry.present_with_placement(
             request,
             Duration::from_millis(config.duration_ms as u64),
-            Instant::now(),
+            presentation_started_at,
+            motion,
             placement,
         );
         if let Err(error) = self.ensure_window(outcome.id) {
@@ -344,7 +428,17 @@ impl OverlayManager {
             return Err(error);
         }
         self.render_configs.insert(outcome.id, config);
-        self.sync_layout(Some(outcome.id))
+        let result = self.sync_layout(Some(outcome));
+        if result.is_ok()
+            && self
+                .registry
+                .entries()
+                .iter()
+                .any(|entry| entry.id() == outcome.id)
+        {
+            self.last_shown = Some(std::time::SystemTime::now());
+        }
+        result
     }
 
     pub(crate) fn remove_key(&mut self, key: OverlayKey, config: &OverlayCfg) -> Result<()> {
@@ -376,30 +470,28 @@ impl OverlayManager {
     }
 
     pub(crate) fn refresh_visuals(&mut self) -> Result<()> {
-        if self.registry.entries().is_empty() {
-            return Ok(());
-        }
-        for entry in &mut self.registry.entries {
-            refresh_placement_snapshot(&mut entry.placement);
-        }
         self.sync_layout(None)
     }
 
-    pub(crate) fn card_expired(&mut self, id: u64, config: &OverlayCfg) -> Result<()> {
+    pub(crate) fn card_expired(
+        &mut self,
+        id: u64,
+        generation: u64,
+        config: &OverlayCfg,
+    ) -> Result<()> {
         if !config.enabled {
             self.clear();
             return Ok(());
         }
-        let expired = self
+        let now = Instant::now();
+        self.registry.mark_expiring(now);
+        if self
             .registry
-            .entries()
-            .iter()
-            .find(|entry| entry.id() == id)
-            .is_some_and(|entry| !entry.is_permanent() && entry.is_expired(Instant::now()));
-        if !expired {
+            .remove_expired_generation(id, generation, now)
+            .is_none()
+        {
             return Ok(());
         }
-        self.registry.remove_id(id);
         self.render_configs.remove(&id);
         self.release_window(id);
         self.sync_layout(None)
@@ -453,19 +545,66 @@ impl OverlayManager {
     }
 
     pub(crate) fn status(&self) -> OverlayRuntimeStatus {
-        self.windows
-            .first()
+        debug_assert!(self.registry.has_unique_keys());
+        debug_assert!(self.registry.entries().len() <= OverlayKey::ALL.len());
+        let window_statuses = self
+            .windows
+            .iter()
             .map(|managed| managed.window.status())
-            .or_else(|| self.spare.as_ref().map(OverlayWindow::status))
-            .unwrap_or_default()
+            .collect::<Vec<_>>();
+        let active_monitor_summary = active_monitor_summary(&self.registry);
+        OverlayRuntimeStatus {
+            window_available: self.spare.is_some() || !self.windows.is_empty(),
+            active_card_count: self.registry.entries().len(),
+            permanent_card_count: self
+                .registry
+                .entries()
+                .iter()
+                .filter(|entry| entry.is_permanent())
+                .count(),
+            toast_card_count: self
+                .registry
+                .entries()
+                .iter()
+                .filter(|entry| !entry.is_permanent())
+                .count(),
+            target_monitor: active_monitor_summary.clone(),
+            active_monitor_summary,
+            resolved_appearance: consistent_string(
+                window_statuses
+                    .iter()
+                    .map(|status| status.resolved_appearance.clone()),
+            ),
+            animations_enabled: consistent_value(
+                window_statuses
+                    .iter()
+                    .map(|status| status.animations_enabled),
+            ),
+            high_contrast: consistent_value(
+                window_statuses.iter().map(|status| status.high_contrast),
+            ),
+            disable_overlapped_content: consistent_value(
+                window_statuses
+                    .iter()
+                    .map(|status| status.disable_overlapped_content),
+            ),
+            render_dpi: consistent_value(window_statuses.iter().map(|status| status.render_dpi)),
+            last_shown: self.last_shown,
+        }
     }
 
     fn ensure_window(&mut self, id: u64) -> Result<()> {
         if self.windows.iter().any(|managed| managed.id == id) {
             return Ok(());
         }
+        let generation = self
+            .registry
+            .entries()
+            .iter()
+            .find(|entry| entry.id() == id)
+            .map_or(0, OverlayEntry::generation);
         let window = if let Some(window) = self.spare.take() {
-            if let Err(error) = window.set_entry_id(id) {
+            if let Err(error) = window.set_entry_id(id, generation) {
                 window.destroy();
                 return Err(error);
             }
@@ -487,19 +626,28 @@ impl OverlayManager {
 
     fn release_window_value(&mut self, window: OverlayWindow) {
         window.hide();
-        if self.spare.is_none() && window.set_entry_id(UNASSIGNED_ENTRY_ID).is_ok() {
+        if self.spare.is_none() && window.set_entry_id(UNASSIGNED_ENTRY_ID, 0).is_ok() {
             self.spare = Some(window);
         } else {
             window.destroy();
         }
     }
 
-    fn sync_layout(&mut self, presenting_id: Option<u64>) -> Result<()> {
+    fn sync_layout(&mut self, presentation: Option<PresentOutcome>) -> Result<()> {
         if self.registry.entries().is_empty() {
             return Ok(());
         }
 
-        let plans = plan_layout(self.build_layout_entries());
+        let now = Instant::now();
+        self.registry.mark_expiring(now);
+        refresh_registry_placements(&mut self.registry);
+        let layout = plan_layout_with_evictions(self.build_layout_entries());
+        for id in layout.evicted_ids {
+            self.render_configs.remove(&id);
+            self.registry.remove_id(id);
+            self.release_window(id);
+        }
+        let plans = layout.entries;
 
         for plan in &plans {
             self.ensure_window(plan.entry.id)?;
@@ -507,7 +655,7 @@ impl OverlayManager {
 
         let mut first_error = None;
         for plan in plans {
-            if let Err(error) = self.show_planned_entry(plan, presenting_id) {
+            if let Err(error) = self.show_planned_entry(plan, presentation) {
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -521,6 +669,9 @@ impl OverlayManager {
             .entries()
             .iter()
             .filter_map(|entry| {
+                if entry.is_expiring() {
+                    return None;
+                }
                 let render_config = self.render_configs.get(&entry.id()).cloned()?;
                 let placement = entry.placement.clone();
                 Some(make_layout_entry(entry, render_config, placement))
@@ -528,7 +679,11 @@ impl OverlayManager {
             .collect()
     }
 
-    fn show_planned_entry(&self, plan: PlannedEntry, presenting_id: Option<u64>) -> Result<()> {
+    fn show_planned_entry(
+        &self,
+        plan: PlannedEntry,
+        presentation: Option<PresentOutcome>,
+    ) -> Result<()> {
         let Some(managed) = self
             .windows
             .iter()
@@ -536,12 +691,16 @@ impl OverlayManager {
         else {
             return Ok(());
         };
-        let mode = if presenting_id == Some(plan.entry.id) {
+        let mode = if presentation
+            .is_some_and(|value| value.id == plan.entry.id && value.restart_appearance)
+        {
             ShowMode::Present
         } else {
             ShowMode::Relayout
         };
         managed.window.show_at(ShowRequest {
+            generation: plan.entry.generation,
+            presentation_started_at: plan.entry.presented_at,
             model: plan.entry.model,
             config: plan.entry.render_config,
             dpi: plan.entry.placement.dpi,
@@ -550,6 +709,65 @@ impl OverlayManager {
             expires_at: plan.entry.expires_at,
             mode,
         })
+    }
+}
+
+fn consistent_value<T: Copy + Eq>(values: impl Iterator<Item = Option<T>>) -> Option<T> {
+    let mut result = None;
+    let mut missing = false;
+    for value in values {
+        match value {
+            None => missing = true,
+            Some(value) => match result {
+                None => result = Some(value),
+                Some(existing) if existing != value => return None,
+                Some(_) => {}
+            },
+        }
+    }
+    if missing {
+        None
+    } else {
+        result
+    }
+}
+
+fn consistent_string(values: impl Iterator<Item = Option<String>>) -> Option<String> {
+    let mut result = None;
+    let mut missing = false;
+    for value in values {
+        match value {
+            None => missing = true,
+            Some(value) => match &result {
+                None => result = Some(value),
+                Some(existing) if existing != &value => return None,
+                Some(_) => {}
+            },
+        }
+    }
+    if missing {
+        None
+    } else {
+        result
+    }
+}
+
+fn active_monitor_summary(registry: &OverlayRegistry) -> Option<String> {
+    let mut monitors = BTreeSet::new();
+    for entry in registry.entries() {
+        monitors.insert(
+            entry
+                .placement
+                .key
+                .monitor
+                .as_deref()
+                .unwrap_or("<unresolved>"),
+        );
+    }
+    match monitors.len() {
+        0 => None,
+        1 => monitors.into_iter().next().map(str::to_owned),
+        count => Some(format!("multiple ({count})")),
     }
 }
 
@@ -562,10 +780,12 @@ impl Drop for OverlayManager {
 #[derive(Clone)]
 struct LayoutEntry {
     id: u64,
+    generation: u64,
     key: OverlayKey,
     model: OverlayModel,
     lifetime: OverlayLifetime,
     expires_at: Option<Instant>,
+    presented_at: Instant,
     sequence: u64,
     render_config: OverlayCfg,
     placement: ResolvedPlacement,
@@ -573,7 +793,7 @@ struct LayoutEntry {
 }
 
 /// Stable identity for one independently laid out monitor/position group.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PlacementGroupKey {
     monitor: Option<String>,
     position: OverlayPosition,
@@ -609,6 +829,11 @@ struct LayoutGroup {
 struct PlannedEntry {
     entry: LayoutEntry,
     card: CardPlacement,
+}
+
+struct LayoutPlan {
+    entries: Vec<PlannedEntry>,
+    evicted_ids: Vec<u64>,
 }
 
 fn resolve_placement(config: &OverlayCfg) -> ResolvedPlacement {
@@ -649,7 +874,27 @@ fn adopt_runtime_configs(
     }
 }
 
-fn refresh_placement_snapshot(snapshot: &mut ResolvedPlacement) {
+#[cfg(test)]
+fn refresh_placement_snapshot_for_monitor(
+    snapshot: &mut ResolvedPlacement,
+    monitor: Option<crate::platform::monitor::MonitorGeometry>,
+) {
+    let position = snapshot.key.position;
+    *snapshot = resolve_placement_for_monitor(monitor, position);
+}
+
+fn refresh_registry_placements(registry: &mut OverlayRegistry) {
+    let mut refreshed = HashMap::new();
+    for entry in &mut registry.entries {
+        let group_key = entry.placement.key.clone();
+        entry.placement = refreshed
+            .entry(group_key)
+            .or_insert_with(|| resolve_stored_placement(&entry.placement))
+            .clone();
+    }
+}
+
+fn resolve_stored_placement(snapshot: &ResolvedPlacement) -> ResolvedPlacement {
     let monitor = snapshot
         .key
         .monitor
@@ -660,15 +905,7 @@ fn refresh_placement_snapshot(snapshot: &mut ResolvedPlacement) {
                 .find(|monitor| monitor.device_name == name)
         })
         .or_else(crate::platform::monitor::primary);
-    refresh_placement_snapshot_for_monitor(snapshot, monitor);
-}
-
-fn refresh_placement_snapshot_for_monitor(
-    snapshot: &mut ResolvedPlacement,
-    monitor: Option<crate::platform::monitor::MonitorGeometry>,
-) {
-    let position = snapshot.key.position;
-    *snapshot = resolve_placement_for_monitor(monitor, position);
+    resolve_placement_for_monitor(monitor, snapshot.key.position)
 }
 
 fn make_layout_entry(
@@ -680,10 +917,12 @@ fn make_layout_entry(
         surface_geometry(render_config.scale, entry.model().rows.len()).pixel_size(placement.dpi);
     LayoutEntry {
         id: entry.id(),
+        generation: entry.generation(),
         key: entry.key(),
         model: entry.model().clone(),
         lifetime: entry.lifetime(),
         expires_at: entry.expires_at(),
+        presented_at: entry.presented_at(),
         sequence: entry.sequence(),
         render_config,
         placement,
@@ -691,41 +930,118 @@ fn make_layout_entry(
     }
 }
 
+#[cfg(test)]
 fn plan_layout(entries: Vec<LayoutEntry>) -> Vec<PlannedEntry> {
-    group_layout_entries(entries)
-        .into_iter()
-        .flat_map(|mut group| {
-            group.entries.sort_by_key(layout_order);
-            let stack_scale = group
-                .entries
-                .iter()
-                .map(|entry| entry.render_config.scale.clamp(0.7, 1.6))
-                .fold(0.7, f32::max);
-            let inputs = group
-                .entries
-                .iter()
-                .map(|entry| LayoutInput { size: entry.size })
-                .collect::<Vec<_>>();
-            let placements = layout_cards(
-                group.placement.work,
-                group.placement.key.position,
-                group.placement.dpi,
-                stack_scale,
-                &inputs,
-            );
-            group
-                .entries
-                .into_iter()
+    plan_layout_with_evictions(entries).entries
+}
+
+fn plan_layout_with_evictions(entries: Vec<LayoutEntry>) -> LayoutPlan {
+    let mut layout = LayoutPlan {
+        entries: Vec::new(),
+        evicted_ids: Vec::new(),
+    };
+    for mut group in group_layout_entries(entries) {
+        group.entries.sort_by_key(layout_order);
+        let stack_scale = group
+            .entries
+            .iter()
+            .map(|entry| entry.render_config.scale.clamp(0.7, 1.6))
+            .fold(0.7, f32::max);
+        let visible_count = visible_entry_count(
+            &group.entries,
+            group.placement.work,
+            group.placement.key.position,
+            group.placement.dpi,
+            stack_scale,
+        );
+        let inputs = group.entries[..visible_count]
+            .iter()
+            .map(|entry| LayoutInput { size: entry.size })
+            .collect::<Vec<_>>();
+        let placements = layout_cards(
+            group.placement.work,
+            group.placement.key.position,
+            group.placement.dpi,
+            stack_scale,
+            &inputs,
+        );
+        let mut entries = group.entries;
+        let visible_entries = entries.drain(..visible_count);
+        layout.entries.extend(
+            visible_entries
                 .zip(placements)
-                .map(|(entry, card)| PlannedEntry { entry, card })
-                .collect::<Vec<_>>()
-        })
-        .collect()
+                .map(|(entry, card)| PlannedEntry { entry, card }),
+        );
+        layout.evicted_ids.extend(
+            entries
+                .into_iter()
+                .filter(|entry| !entry.lifetime.is_permanent())
+                .map(|entry| entry.id),
+        );
+    }
+    layout
+}
+
+fn visible_entry_count(
+    entries: &[LayoutEntry],
+    work: RECT,
+    position: OverlayPosition,
+    dpi: u32,
+    scale: f32,
+) -> usize {
+    let permanent_count = entries
+        .iter()
+        .take_while(|entry| entry.lifetime.is_permanent())
+        .count();
+    let mut visible_count = permanent_count;
+    for index in permanent_count..entries.len() {
+        let fits = index == 0 && permanent_count == 0
+            || stack_fits(work, position, dpi, scale, &entries[..=index]);
+        if !fits {
+            break;
+        }
+        visible_count += 1;
+    }
+    visible_count
+}
+
+fn stack_fits(
+    work: RECT,
+    position: OverlayPosition,
+    dpi: u32,
+    scale: f32,
+    entries: &[LayoutEntry],
+) -> bool {
+    let down = !matches!(
+        position,
+        OverlayPosition::BottomLeft | OverlayPosition::BottomCenter | OverlayPosition::BottomRight
+    );
+    let gap = super::layout::stack_gap_px(scale, dpi);
+    let mut previous_edge: Option<i64> = None;
+    for entry in entries {
+        let anchor = super::layout::position_for(work, entry.size, position, dpi);
+        let y = match previous_edge {
+            None => i64::from(anchor.y),
+            Some(edge) if down => edge + i64::from(gap),
+            Some(edge) => edge - i64::from(gap) - i64::from(entry.size.cy),
+        };
+        if y < i64::from(work.top)
+            || y.saturating_add(i64::from(entry.size.cy)) > i64::from(work.bottom)
+        {
+            return false;
+        }
+        previous_edge = Some(if down {
+            y + i64::from(entry.size.cy)
+        } else {
+            y
+        });
+    }
+    true
 }
 
 fn group_layout_entries(entries: Vec<LayoutEntry>) -> Vec<LayoutGroup> {
     let mut groups = Vec::new();
-    for entry in entries {
+    for mut entry in entries {
         let Some(group) = groups
             .iter_mut()
             .find(|group: &&mut LayoutGroup| group.placement.key == entry.placement.key)
@@ -736,6 +1052,12 @@ fn group_layout_entries(entries: Vec<LayoutEntry>) -> Vec<LayoutGroup> {
             });
             continue;
         };
+        let placement = group.placement.clone();
+        entry.placement = placement.clone();
+        if !entry.model.rows.is_empty() {
+            entry.size = surface_geometry(entry.render_config.scale, entry.model.rows.len())
+                .pixel_size(placement.dpi);
+        }
         group.entries.push(entry);
     }
     groups
@@ -792,10 +1114,12 @@ mod tests {
         config.scale = scale;
         LayoutEntry {
             id,
+            generation: id,
             key,
             model: OverlayModel::default(),
             lifetime,
             expires_at: None,
+            presented_at: Instant::now(),
             sequence,
             render_config: config,
             placement,
@@ -815,7 +1139,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Preview,
                 OverlayModel::preview(OverlayRow::preview("preview", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             Duration::from_millis(1300),
             now,
@@ -829,7 +1152,13 @@ mod tests {
         placement: ResolvedPlacement,
         now: Instant,
     ) -> PresentOutcome {
-        registry.present_with_placement(request, Duration::from_millis(1300), now, placement)
+        registry.present_with_placement(
+            request,
+            Duration::from_millis(1300),
+            now,
+            MotionPolicy::Reduced,
+            placement,
+        )
     }
 
     fn registry_entry(registry: &OverlayRegistry, id: u64) -> &OverlayEntry {
@@ -863,7 +1192,7 @@ mod tests {
             layout_entry(
                 2,
                 OverlayKey::Preview,
-                OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey),
+                OverlayLifetime::Toast,
                 2,
                 1.0,
                 preview_placement,
@@ -912,7 +1241,7 @@ mod tests {
             layout_entry(
                 2,
                 OverlayKey::Preview,
-                OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey),
+                OverlayLifetime::Toast,
                 2,
                 1.0,
                 placement("DISPLAY2", draft_work, OverlayPosition::TopLeft),
@@ -956,7 +1285,7 @@ mod tests {
             layout_entry(
                 2,
                 OverlayKey::Preview,
-                OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey),
+                OverlayLifetime::Toast,
                 2,
                 1.0,
                 placement("DISPLAY1", display, OverlayPosition::BottomRight),
@@ -1020,7 +1349,7 @@ mod tests {
             layout_entry(
                 2,
                 OverlayKey::Preview,
-                OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey),
+                OverlayLifetime::Toast,
                 2,
                 1.0,
                 placement,
@@ -1060,7 +1389,7 @@ mod tests {
             layout_entry(
                 2,
                 OverlayKey::Workspace,
-                OverlayLifetime::Toast(ToastPolicy::StackDistinct),
+                OverlayLifetime::Toast,
                 2,
                 1.0,
                 first_placement,
@@ -1082,7 +1411,7 @@ mod tests {
             layout_entry(
                 4,
                 OverlayKey::DisplayProfile,
-                OverlayLifetime::Toast(ToastPolicy::StackDistinct),
+                OverlayLifetime::Toast,
                 4,
                 1.6,
                 second_placement,
@@ -1126,7 +1455,7 @@ mod tests {
         let preview = layout_entry(
             2,
             OverlayKey::Preview,
-            OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey),
+            OverlayLifetime::Toast,
             2,
             1.0,
             preview_placement,
@@ -1166,7 +1495,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Preview,
                 OverlayModel::preview(OverlayRow::preview("preview", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             draft_placement.clone(),
             now,
@@ -1266,7 +1594,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Speaker,
                 OverlayModel::single(OverlayRow::preview("speaker", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             placement("DISPLAY2", display2, OverlayPosition::TopLeft),
             now + Duration::from_millis(100),
@@ -1298,7 +1625,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Speaker,
                 OverlayModel::single(OverlayRow::preview("speaker", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             placement("DISPLAY1", display1, OverlayPosition::TopLeft),
             now,
@@ -1319,15 +1645,14 @@ mod tests {
     }
 
     #[test]
-    fn stack_distinct_toasts_keep_their_own_cursor_monitor_snapshots() {
+    fn different_toasts_keep_their_own_cursor_monitor_snapshots() {
         let now = Instant::now();
         let mut registry = OverlayRegistry::default();
         let first = present_at(
             &mut registry,
             OverlayRequest::toast(
-                OverlayKey::Workspace,
+                OverlayKey::Status,
                 OverlayModel::single(OverlayRow::preview("first", "detail")),
-                ToastPolicy::StackDistinct,
             ),
             placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
             now,
@@ -1337,7 +1662,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Workspace,
                 OverlayModel::single(OverlayRow::preview("second", "detail")),
-                ToastPolicy::StackDistinct,
             ),
             placement(
                 "DISPLAY2",
@@ -1376,7 +1700,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Speaker,
                 OverlayModel::single(OverlayRow::preview("old", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
             now,
@@ -1386,7 +1709,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Speaker,
                 OverlayModel::single(OverlayRow::preview("new", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             placement(
                 "DISPLAY2",
@@ -1496,7 +1818,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Preview,
                 OverlayModel::preview(OverlayRow::preview("first", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
             now,
@@ -1506,7 +1827,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Preview,
                 OverlayModel::preview(OverlayRow::preview("second", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             placement(
                 "DISPLAY2",
@@ -1554,7 +1874,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Preview,
                 OverlayModel::preview(OverlayRow::preview("first", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             Duration::from_millis(1000),
             now,
@@ -1563,7 +1882,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Workspace,
                 OverlayModel::single(OverlayRow::preview("workspace", "detail")),
-                ToastPolicy::StackDistinct,
             ),
             Duration::from_millis(2000),
             now,
@@ -1572,7 +1890,6 @@ mod tests {
             OverlayRequest::toast(
                 OverlayKey::Preview,
                 OverlayModel::preview(OverlayRow::preview("second", "detail")),
-                ToastPolicy::ReplaceSameKey,
             ),
             Duration::from_millis(3000),
             now + Duration::from_millis(500),
@@ -1591,5 +1908,311 @@ mod tests {
                 .and_then(OverlayEntry::expires_at),
             Some(now + Duration::from_millis(2000))
         );
+    }
+
+    #[test]
+    fn expired_entries_are_marked_expiring_before_unrelated_layout() {
+        let now = Instant::now();
+        let mut registry = OverlayRegistry::default();
+        let expired = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Speaker,
+                OverlayModel::single(OverlayRow::preview("old", "detail")),
+            ),
+            placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
+            now,
+        );
+        registry.mark_expiring(now + Duration::from_millis(1300));
+        present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Workspace,
+                OverlayModel::single(OverlayRow::preview("new", "detail")),
+            ),
+            placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
+            now + Duration::from_millis(1301),
+        );
+
+        let entry = registry_entry(&registry, expired.id);
+        assert!(entry.is_expiring());
+        let visible = registry
+            .entries()
+            .iter()
+            .filter(|entry| !entry.is_expiring())
+            .map(|entry| {
+                make_layout_entry(
+                    entry,
+                    crate::config::Config::default().overlay,
+                    entry.placement.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let plans = plan_layout(visible);
+        assert!(plans.iter().all(|plan| plan.entry.id != expired.id));
+    }
+
+    #[test]
+    fn layout_evicts_oldest_toasts_by_work_area_capacity() {
+        let display = work(0, 0, 400, 370);
+        let placement = placement("DISPLAY1", display, OverlayPosition::TopLeft);
+        let entries = vec![
+            layout_entry(
+                1,
+                OverlayKey::MicrophonePermanent,
+                OverlayLifetime::Permanent,
+                1,
+                1.0,
+                placement.clone(),
+                SIZE { cx: 120, cy: 100 },
+            ),
+            layout_entry(
+                2,
+                OverlayKey::Workspace,
+                OverlayLifetime::Toast,
+                2,
+                1.0,
+                placement.clone(),
+                SIZE { cx: 120, cy: 100 },
+            ),
+            layout_entry(
+                3,
+                OverlayKey::Speaker,
+                OverlayLifetime::Toast,
+                3,
+                1.0,
+                placement.clone(),
+                SIZE { cx: 120, cy: 100 },
+            ),
+            layout_entry(
+                4,
+                OverlayKey::OutputDevice,
+                OverlayLifetime::Toast,
+                4,
+                1.0,
+                placement,
+                SIZE { cx: 120, cy: 100 },
+            ),
+        ];
+
+        let result = plan_layout_with_evictions(entries);
+        assert_eq!(result.evicted_ids, vec![2]);
+        assert!(result.entries.iter().any(|plan| plan.entry.id == 1));
+        assert!(result.entries.iter().any(|plan| plan.entry.id == 4));
+        assert!(result.entries.iter().any(|plan| plan.entry.id == 3));
+        for plan in &result.entries {
+            assert!(plan.card.position.x >= display.left);
+            assert!(plan.card.position.y >= display.top);
+            assert!(plan.card.position.x + plan.entry.size.cx <= display.right);
+            assert!(plan.card.position.y + plan.entry.size.cy <= display.bottom);
+        }
+    }
+
+    #[test]
+    fn toast_order_is_newest_first_and_permanent_slot_is_stable() {
+        let display = work(0, 0, 600, 600);
+        let placement = placement("DISPLAY1", display, OverlayPosition::TopLeft);
+        let mut registry = OverlayRegistry::default();
+        let permanent = present_at(
+            &mut registry,
+            OverlayRequest::permanent(
+                OverlayKey::MicrophonePermanent,
+                OverlayModel::single(OverlayRow::preview("muted", "detail")),
+            ),
+            placement.clone(),
+            Instant::now(),
+        );
+        let workspace = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Workspace,
+                OverlayModel::single(OverlayRow::preview("workspace", "detail")),
+            ),
+            placement.clone(),
+            Instant::now(),
+        );
+        let speaker = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Speaker,
+                OverlayModel::single(OverlayRow::preview("speaker", "detail")),
+            ),
+            placement.clone(),
+            Instant::now(),
+        );
+        let replacement = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Workspace,
+                OverlayModel::single(OverlayRow::preview("workspace latest", "detail")),
+            ),
+            placement.clone(),
+            Instant::now(),
+        );
+        let entries = registry
+            .entries()
+            .iter()
+            .map(|entry| {
+                make_layout_entry(
+                    entry,
+                    crate::config::Config::default().overlay,
+                    entry.placement.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let plans = plan_layout(entries);
+        let ordered_ids = plans.iter().map(|plan| plan.entry.id).collect::<Vec<_>>();
+        assert_eq!(ordered_ids[0], permanent.id);
+        assert_eq!(ordered_ids[1], replacement.id);
+        assert_eq!(ordered_ids[2], speaker.id);
+        assert_eq!(workspace.id, replacement.id);
+    }
+
+    #[test]
+    fn monitor_diagnostics_use_a_deterministic_aggregate_summary() {
+        let mut registry = OverlayRegistry::default();
+        assert_eq!(active_monitor_summary(&registry), None);
+        present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Status,
+                OverlayModel::single(OverlayRow::preview("status", "detail")),
+            ),
+            placement(
+                "DISPLAY2",
+                work(1000, 0, 2000, 800),
+                OverlayPosition::TopLeft,
+            ),
+            Instant::now(),
+        );
+        assert_eq!(active_monitor_summary(&registry), Some("DISPLAY2".into()));
+        present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Workspace,
+                OverlayModel::single(OverlayRow::preview("workspace", "detail")),
+            ),
+            placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
+            Instant::now(),
+        );
+        assert_eq!(
+            active_monitor_summary(&registry),
+            Some("multiple (2)".into())
+        );
+    }
+
+    #[test]
+    fn placement_group_normalizes_member_geometry_to_one_snapshot() {
+        let first = placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft);
+        let mut second = first.clone();
+        second.work = work(0, 0, 900, 700);
+        second.dpi = 144;
+        let plans = plan_layout(vec![
+            layout_entry(
+                1,
+                OverlayKey::Status,
+                OverlayLifetime::Toast,
+                1,
+                1.0,
+                first,
+                SIZE { cx: 120, cy: 80 },
+            ),
+            layout_entry(
+                2,
+                OverlayKey::Workspace,
+                OverlayLifetime::Toast,
+                2,
+                1.0,
+                second,
+                SIZE { cx: 120, cy: 80 },
+            ),
+        ]);
+        assert_eq!(
+            planned(&plans, 1).entry.placement.work,
+            planned(&plans, 2).entry.placement.work
+        );
+        assert_eq!(
+            planned(&plans, 1).entry.placement.dpi,
+            planned(&plans, 2).entry.placement.dpi
+        );
+    }
+
+    #[test]
+    fn overflow_never_evicts_permanent_entries() {
+        let display = work(0, 0, 300, 180);
+        let placement = placement("DISPLAY1", display, OverlayPosition::TopLeft);
+        let result = plan_layout_with_evictions(vec![
+            layout_entry(
+                1,
+                OverlayKey::MicrophonePermanent,
+                OverlayLifetime::Permanent,
+                1,
+                1.0,
+                placement.clone(),
+                SIZE { cx: 120, cy: 140 },
+            ),
+            layout_entry(
+                2,
+                OverlayKey::Status,
+                OverlayLifetime::Permanent,
+                2,
+                1.0,
+                placement.clone(),
+                SIZE { cx: 120, cy: 140 },
+            ),
+            layout_entry(
+                3,
+                OverlayKey::Workspace,
+                OverlayLifetime::Toast,
+                3,
+                1.0,
+                placement,
+                SIZE { cx: 120, cy: 140 },
+            ),
+        ]);
+
+        assert_eq!(result.evicted_ids, vec![3]);
+        assert!(result.entries.iter().any(|plan| plan.entry.id == 1));
+        assert!(result.entries.iter().any(|plan| plan.entry.id == 2));
+    }
+
+    #[test]
+    fn stale_expiry_generation_cannot_remove_same_key_replacement() {
+        let now = Instant::now();
+        let mut registry = OverlayRegistry::default();
+        let first = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::OutputDevice,
+                OverlayModel::single(OverlayRow::preview("Device A", "detail")),
+            ),
+            placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
+            now,
+        );
+        let old_generation = registry_entry(&registry, first.id).generation();
+        registry.mark_expiring(now + Duration::from_millis(1300));
+        let replacement = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::OutputDevice,
+                OverlayModel::single(OverlayRow::preview("Device B", "detail")),
+            ),
+            placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft),
+            now + Duration::from_millis(1301),
+        );
+
+        assert_eq!(replacement.id, first.id);
+        assert_ne!(
+            registry_entry(&registry, first.id).generation(),
+            old_generation
+        );
+        assert!(registry
+            .remove_expired_generation(first.id, old_generation, now + Duration::from_millis(2000))
+            .is_none());
+        assert_eq!(
+            registry_entry(&registry, first.id).model().rows[0].title,
+            "Device B"
+        );
+        assert!(!registry_entry(&registry, first.id).is_expiring());
     }
 }

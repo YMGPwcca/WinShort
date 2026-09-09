@@ -15,8 +15,8 @@ $ExePath = Join-Path $RepoRoot 'target\release\winshort.exe'
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $ResultRoot = Join-Path $RepoRoot "target\ui-acceptance-results\$Stamp"
 New-Item -ItemType Directory -Path $ResultRoot -Force | Out-Null
-$AcceptanceShowMessage = [uint32]0x8003
-$AcceptanceHideOverlayMessage = [uint32]0x8004
+$AcceptanceShowDeterministicOverlayMessage = [uint32]0x8003
+$AcceptanceHideAllOverlaysMessage = [uint32]0x8004
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -108,6 +108,18 @@ namespace WinShortUiAcceptance {
                 return true;
             }, IntPtr.Zero);
             return found;
+        }
+        public static IntPtr[] FindVisibleWindowsForProcess(int pid, string className) {
+            var found = new System.Collections.Generic.List<IntPtr>();
+            EnumWindows(delegate(IntPtr hwnd, IntPtr lparam) {
+                uint owner;
+                GetWindowThreadProcessId(hwnd, out owner);
+                if (owner == (uint)pid && IsWindowVisible(hwnd) && ClassEquals(hwnd, className)) {
+                    found.Add(hwnd);
+                }
+                return true;
+            }, IntPtr.Zero);
+            return found.ToArray();
         }
         public static IntPtr FindMessageWindowForProcess(int pid, string className) {
             var hwnd = FindWindowEx(new IntPtr(-3), IntPtr.Zero, className, null);
@@ -487,6 +499,19 @@ function Wait-Until {
     throw $Failure
 }
 
+function Get-DeterministicOverlayHwnd {
+    param([System.Diagnostics.Process]$Process)
+
+    $candidates = [WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+        $Process.Id,
+        'WinShort.Overlay'
+    )
+    if ($candidates.Count -ne 1) {
+        return $null
+    }
+    return $candidates[0]
+}
+
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Text)
     $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -513,7 +538,7 @@ function New-ProcessStartInfo {
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_OPAQUE') | Out-Null
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_COMPOSITION_FAILURE') | Out-Null
     if ($AcceptanceTrigger) {
-        $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-status-overlay'
+        $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-deterministic-acceptance-overlay'
     } else {
         $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE') | Out-Null
     }
@@ -1129,9 +1154,7 @@ show_external_audio_changes = false
         Start-Sleep -Milliseconds 1800
         $overlayHwnd = Wait-Until {
             if ($process.HasExited) { return $null }
-            $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-            if ($candidate -eq [IntPtr]::Zero) { return $null }
-            $candidate
+            Get-DeterministicOverlayHwnd $process
         } "$Name overlay did not appear"
         $mainHwnd = Wait-Until {
             if ($process.HasExited) { return $null }
@@ -1158,19 +1181,20 @@ show_external_audio_changes = false
             $true
         )) "$Name deterministic backdrop did not start"
 
-        [WinShortUiAcceptance.Native]::PostMessageTo($overlayHwnd, $AcceptanceHideOverlayMessage) | Out-Null
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceHideAllOverlaysMessage) | Out-Null
         Wait-Until {
-            -not [WinShortUiAcceptance.Native]::Visible($overlayHwnd)
+            ([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+                $process.Id,
+                'WinShort.Overlay'
+            ).Count -eq 0)
         } "$Name overlay did not hide for baseline capture" | Out-Null
         Start-Sleep -Milliseconds 100
         $baseline = Capture-Bitmap $overlayRectangle
 
-        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowMessage) | Out-Null
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowDeterministicOverlayMessage) | Out-Null
         $overlayHwnd = Wait-Until {
             if ($process.HasExited) { return $null }
-            $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-            if ($candidate -eq [IntPtr]::Zero) { return $null }
-            $candidate
+            Get-DeterministicOverlayHwnd $process
         } "$Name overlay did not reappear"
         Start-Sleep -Milliseconds 180
         [WinShortUiAcceptance.PatternBackdrop]::LowerBelow($overlayHwnd)
@@ -1284,9 +1308,7 @@ show_external_audio_changes = false
 
             $overlayHwnd = Wait-Until {
                 if ($process.HasExited) { return $null }
-                $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-                if ($candidate -eq [IntPtr]::Zero) { return $null }
-                $candidate
+                Get-DeterministicOverlayHwnd $process
             } "runtime overlay did not appear for $appearance"
             $mainHwnd = Wait-Until {
                 if ($process.HasExited) { return $null }
@@ -1314,20 +1336,18 @@ show_external_audio_changes = false
                 $false
             )) "deterministic backdrop did not start for $appearance"
 
-            [WinShortUiAcceptance.Native]::PostMessageTo($overlayHwnd, $AcceptanceHideOverlayMessage) | Out-Null
+            [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceHideAllOverlaysMessage) | Out-Null
             Wait-Until {
-                -not [WinShortUiAcceptance.Native]::Visible($overlayHwnd)
+                (Get-DeterministicOverlayHwnd $process) -eq $null
             } 'overlay did not hide for baseline capture' | Out-Null
             Start-Sleep -Milliseconds 100
             $baseline = Capture-Bitmap $overlayRectangle
             $baselineContext = Capture-Bitmap $contextRectangle
 
-            [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowMessage) | Out-Null
+            [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowDeterministicOverlayMessage) | Out-Null
             $overlayHwnd = Wait-Until {
                 if ($process.HasExited) { return $null }
-                $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-                if ($candidate -eq [IntPtr]::Zero) { return $null }
-                $candidate
+                Get-DeterministicOverlayHwnd $process
             } "runtime overlay did not reappear for $appearance"
             Start-Sleep -Milliseconds 180
             [WinShortUiAcceptance.PatternBackdrop]::LowerBelow($overlayHwnd)

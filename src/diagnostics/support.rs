@@ -547,6 +547,18 @@ fn format_diagnostics(
     );
     line(
         &mut out,
+        &format!("Active cards: {}", snapshot.overlay.active_card_count),
+    );
+    line(
+        &mut out,
+        &format!("Permanent cards: {}", snapshot.overlay.permanent_card_count),
+    );
+    line(
+        &mut out,
+        &format!("Toast cards: {}", snapshot.overlay.toast_card_count),
+    );
+    line(
+        &mut out,
         &format!("Appearance: {}", snapshot.overlay.appearance),
     );
     line(&mut out, &format!("Blur: {}", snapshot.overlay.blur));
@@ -632,6 +644,17 @@ fn format_diagnostics(
                 .target_monitor
                 .as_deref()
                 .unwrap_or("never")
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Active monitor summary: {}",
+            snapshot
+                .overlay
+                .active_monitor_summary
+                .as_deref()
+                .unwrap_or("none")
         ),
     );
     line(
@@ -1574,6 +1597,10 @@ safe=1"#,
             overlay: OverlayDiagnostics {
                 health: Health::Healthy,
                 enabled: true,
+                active_card_count: 0,
+                permanent_card_count: 0,
+                toast_card_count: 0,
+                active_monitor_summary: None,
                 blur: "blur-medium".into(),
                 appearance: "system".into(),
                 resolved_appearance: Some("dark".into()),

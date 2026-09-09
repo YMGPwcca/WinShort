@@ -44,6 +44,24 @@ pub const OVERLAY_DURATION_MIN_MS: u32 = 1_000;
 pub const OVERLAY_DURATION_MAX_MS: u32 = 5_000;
 pub const OVERLAY_DURATION_STEP_MS: u32 = 100;
 pub const OVERLAY_DURATION_PAGE_STEP_MS: u32 = 500;
+pub const OVERLAY_SCALE_MIN: f32 = 0.7;
+pub const OVERLAY_SCALE_MAX: f32 = 1.6;
+pub const OVERLAY_SCALE_STEP: f32 = 0.1;
+
+pub fn normalize_overlay_duration(duration_ms: u32) -> u32 {
+    let clamped = duration_ms.clamp(OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_MAX_MS);
+    let offset = clamped - OVERLAY_DURATION_MIN_MS;
+    let snapped = ((offset + OVERLAY_DURATION_STEP_MS / 2) / OVERLAY_DURATION_STEP_MS)
+        * OVERLAY_DURATION_STEP_MS;
+    (OVERLAY_DURATION_MIN_MS + snapped).min(OVERLAY_DURATION_MAX_MS)
+}
+
+pub fn normalize_overlay_scale(scale: f32) -> f32 {
+    let finite = if scale.is_finite() { scale } else { 1.0 };
+    let clamped = finite.clamp(OVERLAY_SCALE_MIN, OVERLAY_SCALE_MAX);
+    let steps = ((clamped - OVERLAY_SCALE_MIN) / OVERLAY_SCALE_STEP).round();
+    (OVERLAY_SCALE_MIN + steps * OVERLAY_SCALE_STEP).clamp(OVERLAY_SCALE_MIN, OVERLAY_SCALE_MAX)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayBlur {
@@ -312,7 +330,7 @@ impl OverlayAppearance {
         })
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OverlayPosition {
     TopLeft,
     TopCenter,
@@ -1327,44 +1345,91 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-impl Config {
-    /// Field-level repair for validation violations (#15a): clamp numeric
-    /// ranges, drop conflicting hotkeys. Only violated fields are touched.
-    pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
-        let mut drop_hotkeys: Vec<String> = Vec::new();
-        let number_modifier_repaired = violations
-            .iter()
-            .any(|violation| violation.field == "virtual_desktops.number_modifier");
-        let input_allowlist_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("audio.cycle_input_allowlist["));
-        let output_allowlist_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("audio.cycle_output_allowlist["));
-        let display_profiles_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("display_profiles."));
-        let profile_hotkeys_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("hotkeys.display_profiles"));
-        let disabled_hotkeys_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("hotkeys.disabled["));
-        for v in violations {
-            match v.field.as_str() {
-                "overlay.duration_ms" => {
-                    self.overlay.duration_ms = self
-                        .overlay
-                        .duration_ms
-                        .clamp(OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_MAX_MS)
-                }
-                "overlay.scale" => self.overlay.scale = 1.0,
+#[derive(Debug, Clone, Copy)]
+struct RepairScope {
+    number_modifier_repaired: bool,
+    input_allowlist_invalid: bool,
+    output_allowlist_invalid: bool,
+    display_profiles_invalid: bool,
+    profile_hotkeys_invalid: bool,
+    disabled_hotkeys_invalid: bool,
+}
 
+impl RepairScope {
+    fn from(violations: &[crate::config::validate::Violation]) -> Self {
+        Self {
+            number_modifier_repaired: violations
+                .iter()
+                .any(|violation| violation.field == "virtual_desktops.number_modifier"),
+            input_allowlist_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("audio.cycle_input_allowlist[")),
+            output_allowlist_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("audio.cycle_output_allowlist[")),
+            display_profiles_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("display_profiles.")),
+            profile_hotkeys_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("hotkeys.display_profiles")),
+            disabled_hotkeys_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("hotkeys.disabled[")),
+        }
+    }
+}
+
+impl Config {
+    /// Field-level repair for validation violations (#15a): clamp/snap numeric
+    /// values, drop conflicting hotkeys. Only violated fields are touched.
+    pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
+        let scope = RepairScope::from(violations);
+        self.repair_overlay_values(violations);
+        let dropped_hotkeys =
+            self.repair_desktop_fields(violations, scope.number_modifier_repaired);
+        self.drop_conflicting_hotkeys(&dropped_hotkeys);
+        if scope.input_allowlist_invalid {
+            repair_allowlist(&mut self.audio.cycle_input_allowlist);
+        }
+        if scope.output_allowlist_invalid {
+            repair_allowlist(&mut self.audio.cycle_output_allowlist);
+        }
+        if scope.display_profiles_invalid {
+            self.repair_display_profiles();
+        }
+        if scope.display_profiles_invalid || scope.profile_hotkeys_invalid {
+            self.repair_profile_hotkeys();
+        }
+        if scope.disabled_hotkeys_invalid {
+            self.repair_disabled_hotkeys();
+        }
+    }
+
+    fn repair_overlay_values(&mut self, violations: &[crate::config::validate::Violation]) {
+        for violation in violations {
+            match violation.field.as_str() {
+                "overlay.duration_ms" => {
+                    self.overlay.duration_ms = normalize_overlay_duration(self.overlay.duration_ms);
+                }
+                "overlay.scale" => {
+                    self.overlay.scale = normalize_overlay_scale(self.overlay.scale);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn repair_desktop_fields(
+        &mut self,
+        violations: &[crate::config::validate::Violation],
+        number_modifier_repaired: bool,
+    ) -> Vec<String> {
+        let mut dropped_hotkeys = Vec::new();
+        for violation in violations {
+            match violation.field.as_str() {
                 "virtual_desktops.number_modifier" => {
                     self.virtual_desktops.number_modifier = ModifierMask::WIN;
-                    // A repaired default family must not collide with an
-                    // optional family that was only skipped because the
-                    // invalid number modifier generated no bindings.
                     if self.virtual_desktops.move_follow_modifier == Some(ModifierMask::WIN) {
                         self.virtual_desktops.move_follow_modifier = None;
                     }
@@ -1372,23 +1437,16 @@ impl Config {
                         self.virtual_desktops.move_silent_modifier = None;
                     }
                 }
-                "virtual_desktops.move_follow_modifier"
-                    if v.message.contains("conflicts")
-                        || v.message.contains("empty")
-                        || v.message.contains("unsupported") =>
-                {
+                "virtual_desktops.move_follow_modifier" if modifier_family_violation(violation) => {
                     self.virtual_desktops.move_follow_modifier = None;
                 }
-                "virtual_desktops.move_silent_modifier"
-                    if v.message.contains("conflicts")
-                        || v.message.contains("empty")
-                        || v.message.contains("unsupported") =>
-                {
+                "virtual_desktops.move_silent_modifier" if modifier_family_violation(violation) => {
                     self.virtual_desktops.move_silent_modifier = None;
                 }
-                f if f.starts_with("hotkeys.") && v.message.contains("conflicts") => {
-                    // Conflict-class violations: drop the offending binding.
-                    drop_hotkeys.push(f.trim_start_matches("hotkeys.").to_string());
+                field
+                    if field.starts_with("hotkeys.") && violation.message.contains("conflicts") =>
+                {
+                    dropped_hotkeys.push(field.trim_start_matches("hotkeys.").to_string());
                 }
                 _ => {}
             }
@@ -1397,26 +1455,34 @@ impl Config {
             && self.virtual_desktops.enabled
             && self.virtual_desktops.win_number_switching
         {
-            for hotkey in numbered_desktop_family(ModifierMask::WIN) {
-                for slot in [
-                    &mut self.hotkeys.toggle_microphone,
-                    &mut self.hotkeys.toggle_output,
-                    &mut self.hotkeys.toggle_foreground_audio,
-                    &mut self.hotkeys.cycle_input_device,
-                    &mut self.hotkeys.cycle_output_device,
-                    &mut self.hotkeys.foreground_volume_up,
-                    &mut self.hotkeys.foreground_volume_down,
-                    &mut self.virtual_desktops.previous_desktop,
-                    &mut self.virtual_desktops.scratchpad_assign,
-                    &mut self.virtual_desktops.scratchpad_toggle,
-                ] {
-                    if *slot == Some(hotkey) {
-                        *slot = None;
-                    }
+            self.clear_number_family_conflicts();
+        }
+        dropped_hotkeys
+    }
+
+    fn clear_number_family_conflicts(&mut self) {
+        for hotkey in numbered_desktop_family(ModifierMask::WIN) {
+            for slot in [
+                &mut self.hotkeys.toggle_microphone,
+                &mut self.hotkeys.toggle_output,
+                &mut self.hotkeys.toggle_foreground_audio,
+                &mut self.hotkeys.cycle_input_device,
+                &mut self.hotkeys.cycle_output_device,
+                &mut self.hotkeys.foreground_volume_up,
+                &mut self.hotkeys.foreground_volume_down,
+                &mut self.virtual_desktops.previous_desktop,
+                &mut self.virtual_desktops.scratchpad_assign,
+                &mut self.virtual_desktops.scratchpad_toggle,
+            ] {
+                if *slot == Some(hotkey) {
+                    *slot = None;
                 }
             }
         }
-        for field in drop_hotkeys {
+    }
+
+    fn drop_conflicting_hotkeys(&mut self, fields: &[String]) {
+        for field in fields {
             match field.as_str() {
                 "toggle_microphone" => self.hotkeys.toggle_microphone = None,
                 "toggle_output" => self.hotkeys.toggle_output = None,
@@ -1431,136 +1497,134 @@ impl Config {
                 _ => {}
             }
         }
-        for (invalid, allowlist) in [
-            (
-                input_allowlist_invalid,
-                &mut self.audio.cycle_input_allowlist,
-            ),
-            (
-                output_allowlist_invalid,
-                &mut self.audio.cycle_output_allowlist,
-            ),
-        ] {
-            if invalid {
-                if let Some(ids) = allowlist {
-                    let mut seen = std::collections::HashSet::new();
-                    ids.retain(|id| !id.trim().is_empty() && seen.insert(id.clone()));
-                }
-            }
-        }
-        if display_profiles_invalid {
-            let mut seen_profiles = std::collections::HashSet::new();
-            let mut seen_names = std::collections::HashSet::new();
-            self.display_profiles.profiles.retain(|profile| {
-                let id = profile.id.trim();
-                let mut seen_routes = std::collections::HashSet::new();
-                !id.is_empty()
-                    && !profile.name.trim().is_empty()
-                    && !profile.routes.is_empty()
-                    && profile.routes.len() <= 32
-                    && profile.routes.iter().all(|route| {
-                        !route.target_path.trim().is_empty()
-                            && (!crate::display::route_has_any_mode(route)
-                                || crate::display::route_has_complete_mode(route))
-                            && (!profile.confirmed
-                                || crate::display::route_has_complete_mode(route))
-                            && seen_routes.insert(format!(
-                                "{}|{}|{}|{}",
-                                route.target_path.trim().to_ascii_lowercase(),
-                                route.target_adapter,
-                                route.target_id,
-                                route.output_technology
-                            ))
-                    })
-                    && crate::display::validate_profile(profile).is_ok()
-                    && seen_profiles.insert(id.to_ascii_lowercase())
-                    && seen_names.insert(profile.name.trim().to_ascii_lowercase())
-            });
-            self.display_profiles
-                .profiles
-                .truncate(crate::display::MAX_PROFILES);
-            if self
-                .display_profiles
-                .active_profile
-                .as_deref()
-                .is_some_and(|active| {
-                    !self
-                        .display_profiles
-                        .profiles
-                        .iter()
-                        .any(|profile| profile.id.eq_ignore_ascii_case(active))
+    }
+
+    fn repair_display_profiles(&mut self) {
+        let mut seen_profiles = std::collections::HashSet::new();
+        let mut seen_names = std::collections::HashSet::new();
+        self.display_profiles.profiles.retain(|profile| {
+            let id = profile.id.trim();
+            let mut seen_routes = std::collections::HashSet::new();
+            !id.is_empty()
+                && !profile.name.trim().is_empty()
+                && !profile.routes.is_empty()
+                && profile.routes.len() <= 32
+                && profile.routes.iter().all(|route| {
+                    !route.target_path.trim().is_empty()
+                        && (!crate::display::route_has_any_mode(route)
+                            || crate::display::route_has_complete_mode(route))
+                        && (!profile.confirmed || crate::display::route_has_complete_mode(route))
+                        && seen_routes.insert(format!(
+                            "{}|{}|{}|{}",
+                            route.target_path.trim().to_ascii_lowercase(),
+                            route.target_adapter,
+                            route.target_id,
+                            route.output_technology
+                        ))
                 })
-            {
-                self.display_profiles.active_profile = None;
-            }
+                && crate::display::validate_profile(profile).is_ok()
+                && seen_profiles.insert(id.to_ascii_lowercase())
+                && seen_names.insert(profile.name.trim().to_ascii_lowercase())
+        });
+        self.display_profiles
+            .profiles
+            .truncate(crate::display::MAX_PROFILES);
+        if self
+            .display_profiles
+            .active_profile
+            .as_deref()
+            .is_some_and(|active| {
+                !self
+                    .display_profiles
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.id.eq_ignore_ascii_case(active))
+            })
+        {
+            self.display_profiles.active_profile = None;
         }
-        if display_profiles_invalid || profile_hotkeys_invalid {
-            let valid_profiles = self
-                .display_profiles
-                .profiles
-                .iter()
-                .map(|profile| profile.id.trim().to_ascii_lowercase())
-                .collect::<std::collections::HashSet<_>>();
-            let mut used_profile_keys = std::collections::HashSet::new();
-            let mut used = std::collections::HashSet::new();
-            for hotkey in [
-                self.hotkeys.toggle_microphone,
-                self.hotkeys.toggle_output,
-                self.hotkeys.toggle_foreground_audio,
-                self.hotkeys.cycle_input_device,
-                self.hotkeys.cycle_output_device,
-                self.hotkeys.foreground_volume_up,
-                self.hotkeys.foreground_volume_down,
-                self.virtual_desktops.previous_desktop,
-                self.virtual_desktops.scratchpad_assign,
-                self.virtual_desktops.scratchpad_toggle,
+    }
+
+    fn repair_profile_hotkeys(&mut self) {
+        let valid_profiles = self
+            .display_profiles
+            .profiles
+            .iter()
+            .map(|profile| profile.id.trim().to_ascii_lowercase())
+            .collect::<std::collections::HashSet<_>>();
+        let mut used_profile_keys = std::collections::HashSet::new();
+        let mut used = std::collections::HashSet::new();
+        for hotkey in [
+            self.hotkeys.toggle_microphone,
+            self.hotkeys.toggle_output,
+            self.hotkeys.toggle_foreground_audio,
+            self.hotkeys.cycle_input_device,
+            self.hotkeys.cycle_output_device,
+            self.hotkeys.foreground_volume_up,
+            self.hotkeys.foreground_volume_down,
+            self.virtual_desktops.previous_desktop,
+            self.virtual_desktops.scratchpad_assign,
+            self.virtual_desktops.scratchpad_toggle,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            used.insert(hotkey);
+        }
+        if self.virtual_desktops.enabled {
+            for modifier in [
+                self.virtual_desktops
+                    .win_number_switching
+                    .then_some(self.virtual_desktops.number_modifier),
+                self.virtual_desktops.move_follow_modifier,
+                self.virtual_desktops.move_silent_modifier,
             ]
             .into_iter()
             .flatten()
+            .filter(|modifier| !modifier.is_empty())
             {
-                used.insert(hotkey);
+                used.extend(numbered_desktop_family(modifier));
             }
-            if self.virtual_desktops.enabled {
-                for modifier in [
-                    self.virtual_desktops
-                        .win_number_switching
-                        .then_some(self.virtual_desktops.number_modifier),
-                    self.virtual_desktops.move_follow_modifier,
-                    self.virtual_desktops.move_silent_modifier,
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|modifier| !modifier.is_empty())
-                {
-                    used.extend(numbered_desktop_family(modifier));
-                }
+        }
+        self.hotkeys.display_profiles.retain(|binding| {
+            valid_profiles.contains(&binding.profile_id.trim().to_ascii_lowercase())
+                && used_profile_keys.insert(crate::display::profile_id_key(&binding.profile_id))
+                && used.insert(binding.hotkey)
+        });
+        self.hotkeys.display_profiles.truncate(u8::MAX as usize + 1);
+    }
+
+    fn repair_disabled_hotkeys(&mut self) {
+        let disabled = std::mem::take(&mut self.hotkeys.disabled);
+        let mut seen = std::collections::HashSet::new();
+        let mut normalized = Vec::with_capacity(disabled.len());
+        for binding in disabled {
+            let Some(action) = self.canonical_disabled_action(&binding.action) else {
+                continue;
+            };
+            if !seen.insert(action.to_ascii_lowercase()) {
+                continue;
             }
-            self.hotkeys.display_profiles.retain(|binding| {
-                valid_profiles.contains(&binding.profile_id.trim().to_ascii_lowercase())
-                    && used_profile_keys.insert(crate::display::profile_id_key(&binding.profile_id))
-                    && used.insert(binding.hotkey)
+            self.clear_active_hotkey_action(&action);
+            normalized.push(DisabledHotkey {
+                action,
+                hotkey: binding.hotkey,
             });
-            self.hotkeys.display_profiles.truncate(u8::MAX as usize + 1);
         }
-        if disabled_hotkeys_invalid {
-            let disabled = std::mem::take(&mut self.hotkeys.disabled);
-            let mut seen = std::collections::HashSet::new();
-            let mut normalized = Vec::with_capacity(disabled.len());
-            for binding in disabled {
-                let Some(action) = self.canonical_disabled_action(&binding.action) else {
-                    continue;
-                };
-                if !seen.insert(action.to_ascii_lowercase()) {
-                    continue;
-                }
-                self.clear_active_hotkey_action(&action);
-                normalized.push(DisabledHotkey {
-                    action,
-                    hotkey: binding.hotkey,
-                });
-            }
-            self.hotkeys.disabled = normalized;
-        }
+        self.hotkeys.disabled = normalized;
+    }
+}
+
+fn modifier_family_violation(violation: &crate::config::validate::Violation) -> bool {
+    violation.message.contains("conflicts")
+        || violation.message.contains("empty")
+        || violation.message.contains("unsupported")
+}
+
+fn repair_allowlist(allowlist: &mut Option<Vec<String>>) {
+    if let Some(ids) = allowlist {
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|id| !id.trim().is_empty() && seen.insert(id.clone()));
     }
 }
 
@@ -1582,6 +1646,8 @@ mod hotkey_schema_tests {
         for (duration_ms, expected) in [
             (500, OVERLAY_DURATION_MIN_MS),
             (10_000, OVERLAY_DURATION_MAX_MS),
+            (1051, 1100),
+            (1049, 1000),
             (1300, 1300),
         ] {
             let mut config = Config::default();
@@ -1589,6 +1655,22 @@ mod hotkey_schema_tests {
             let violations = crate::config::validate(&config);
             config.repair(&violations);
             assert_eq!(config.overlay.duration_ms, expected);
+        }
+    }
+
+    #[test]
+    fn overlay_scale_repair_snaps_nearest_supported_value() {
+        for (scale, expected) in [
+            (0.73, 0.7),
+            (0.76, 0.8),
+            (f32::NAN, 1.0),
+            (2.0, OVERLAY_SCALE_MAX),
+        ] {
+            let mut config = Config::default();
+            config.overlay.scale = scale;
+            let violations = crate::config::validate(&config);
+            config.repair(&violations);
+            assert_eq!(config.overlay.scale, expected);
         }
     }
 

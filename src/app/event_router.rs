@@ -148,10 +148,14 @@ impl App {
         match event {
             OverlayEvent::ShowStatus => self.show_status_overlay(),
             OverlayEvent::Preview { config } => self.show_preview_overlay(config),
-            OverlayEvent::CardExpired { entry_id } => {
+            OverlayEvent::CardExpired {
+                entry_id,
+                generation,
+            } => {
                 let config = crate::app::config();
                 if let Some(overlay) = &mut self.overlay {
-                    if let Err(error) = overlay.card_expired(entry_id, &config.overlay) {
+                    if let Err(error) = overlay.card_expired(entry_id, generation, &config.overlay)
+                    {
                         crate::warn_!("overlay card expiry handling failed: {error}");
                     }
                 }
@@ -210,7 +214,6 @@ impl App {
                             title: "Previous desktop unavailable".into(),
                             detail: "Workspace service is not available right now".into(),
                         }),
-                        crate::ui::overlay::ToastPolicy::StackDistinct,
                     ));
                 }
             }
@@ -229,7 +232,6 @@ impl App {
                             title: "Special Desktop unavailable".into(),
                             detail: "Workspace service is not available right now".into(),
                         }),
-                        crate::ui::overlay::ToastPolicy::StackDistinct,
                     ));
                 }
             }
@@ -273,7 +275,6 @@ impl App {
                         title: title.into(),
                         detail: detail.into(),
                     }),
-                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
                 self.refresh_settings_runtime();
             }
@@ -290,7 +291,6 @@ impl App {
                         title: "Couldn't change workspace".into(),
                         detail: "Try again or open Diagnostics for help".into(),
                     }),
-                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
             }
             DesktopEvent::BackendChanged(status) => {
@@ -324,7 +324,6 @@ impl App {
                         crate::ui::overlay::OverlayModel::single(crate::ui::overlay::output_row(
                             &self.output_state,
                         )),
-                        crate::ui::overlay::ToastPolicy::ReplaceSameKey,
                     ));
                 }
             }
@@ -364,14 +363,12 @@ impl App {
                         self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
                             crate::ui::overlay::OverlayKey::Status,
                             self.status_overlay_model(),
-                            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
                         ));
                     } else {
                         let row = crate::ui::overlay::application_row(&self.foreground_state);
                         self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
                             crate::ui::overlay::OverlayKey::CurrentAppAudio,
                             crate::ui::overlay::OverlayModel::single(row),
-                            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
                         ));
                     }
                 }
@@ -384,7 +381,6 @@ impl App {
                         crate::ui::overlay::OverlayModel::single(
                             crate::ui::overlay::application_volume_row(&state),
                         ),
-                        crate::ui::overlay::ToastPolicy::ReplaceSameKey,
                     ));
                 }
                 self.refresh_settings_runtime();

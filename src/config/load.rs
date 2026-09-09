@@ -242,6 +242,35 @@ mod tests {
     }
 
     #[test]
+    fn load_repairs_overlay_values_to_the_same_ui_grid() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_overlay_grid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            "schema_version = 11\n[overlay]\nduration_ms = 1051\nscale = 0.76\n",
+        )
+        .unwrap();
+
+        let (config, warnings) = load(&dir);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.overlay.duration_ms, 1100);
+        assert_eq!(config.overlay.scale, 0.8);
+        let diagnostics = crate::config::load_diagnostics();
+        assert!(diagnostics
+            .repaired_fields
+            .iter()
+            .any(|field| field == "overlay.duration_ms"));
+        assert!(diagnostics
+            .repaired_fields
+            .iter()
+            .any(|field| field == "overlay.scale"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn schema_v2_defaults_new_hotkeys_and_records_v10_migration() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();

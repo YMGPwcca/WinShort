@@ -14,8 +14,8 @@ pub const WM_APP_ACTION: u32 = 0x8001; // keyboard hook recognized a binding
 pub const WM_APP_EVENT: u32 = 0x8002; // wake-only; payload lives in [`EVENTS`]
 /// Harness-only messages used to exercise the real UI paths in an isolated
 /// release-process acceptance run.
-pub const WM_APP_UI_ACCEPTANCE_SHOW: u32 = 0x8003;
-pub const WM_APP_UI_ACCEPTANCE_HIDE_OVERLAY: u32 = 0x8004;
+pub const WM_APP_UI_ACCEPTANCE_SHOW_DETERMINISTIC_OVERLAY: u32 = 0x8003;
+pub const WM_APP_UI_ACCEPTANCE_HIDE_ALL_OVERLAYS: u32 = 0x8004;
 
 /// Actions produced by the keyboard engine. Small enough to pack into a WPARAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +159,7 @@ pub enum AppEvent {
     /// A card's own native timer completed its leave animation.
     OverlayCardExpired {
         entry_id: u64,
+        generation: u64,
     },
     /// Recompute all card geometry after a system visual/DPI change.
     OverlayVisualRefresh,
@@ -339,6 +340,7 @@ pub(crate) enum OverlayEvent {
     },
     CardExpired {
         entry_id: u64,
+        generation: u64,
     },
     VisualRefresh,
 }
@@ -463,9 +465,13 @@ impl From<AppEvent> for RoutedAppEvent {
             }
             AppEvent::ShowStatusOverlay => Self::Overlay(OverlayEvent::ShowStatus),
             AppEvent::PreviewOverlay { config } => Self::Overlay(OverlayEvent::Preview { config }),
-            AppEvent::OverlayCardExpired { entry_id } => {
-                Self::Overlay(OverlayEvent::CardExpired { entry_id })
-            }
+            AppEvent::OverlayCardExpired {
+                entry_id,
+                generation,
+            } => Self::Overlay(OverlayEvent::CardExpired {
+                entry_id,
+                generation,
+            }),
             AppEvent::OverlayVisualRefresh => Self::Overlay(OverlayEvent::VisualRefresh),
             AppEvent::ConfigApplied { seq, stamp } => {
                 Self::Config(ConfigEvent::Applied { seq, stamp })
@@ -709,8 +715,14 @@ mod tests {
     #[test]
     fn overlay_lifecycle_events_route_as_typed_overlay_events() {
         assert!(matches!(
-            RoutedAppEvent::from(AppEvent::OverlayCardExpired { entry_id: 7 }),
-            RoutedAppEvent::Overlay(OverlayEvent::CardExpired { entry_id: 7 })
+            RoutedAppEvent::from(AppEvent::OverlayCardExpired {
+                entry_id: 7,
+                generation: 3,
+            }),
+            RoutedAppEvent::Overlay(OverlayEvent::CardExpired {
+                entry_id: 7,
+                generation: 3,
+            })
         ));
         assert!(matches!(
             RoutedAppEvent::from(AppEvent::OverlayVisualRefresh),

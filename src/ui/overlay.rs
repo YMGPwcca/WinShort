@@ -15,7 +15,7 @@ mod state;
 mod timeline;
 mod window;
 
-pub(crate) use manager::{OverlayKey, OverlayManager, OverlayRequest, ToastPolicy};
+pub(crate) use manager::{OverlayKey, OverlayManager, OverlayRequest};
 pub(crate) use model::{OverlayIcon, OverlayModel, OverlayRow, OverlayTone};
 pub(crate) use presentation::{
     application_row, application_volume_row, device_cycle_error_row, device_cycle_no_devices_row,
@@ -31,8 +31,8 @@ use self::palette::{
 };
 #[cfg(test)]
 use self::timeline::{
-    motion_policy, prepare_state_plan, timing_after_show, MotionPolicy, Phase, ShowMode, ShowPlan,
-    WindowRegion, TIMER_MS,
+    motion_policy, prepare_state_plan, timing_after_show, toast_deadline, MotionPolicy, Phase,
+    PositionTween, ShowMode, ShowPlan, WindowRegion, APPEAR_MS, POSITION_TWEEN_MS, TIMER_MS,
 };
 #[cfg(test)]
 use crate::config::model::{OverlayAppearance, OverlayBlur, OverlayPosition};

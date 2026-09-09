@@ -220,6 +220,10 @@ fn build_overlay(inputs: &SnapshotInputs) -> OverlayDiagnostics {
             Health::Unavailable
         },
         enabled: inputs.config.overlay.enabled,
+        active_card_count: status.active_card_count,
+        permanent_card_count: status.permanent_card_count,
+        toast_card_count: status.toast_card_count,
+        active_monitor_summary: status.active_monitor_summary.clone(),
         blur: inputs.config.overlay.blur.as_str().into(),
         appearance: inputs.config.overlay.appearance.as_str().into(),
         resolved_appearance: status.resolved_appearance.clone(),

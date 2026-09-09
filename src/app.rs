@@ -92,6 +92,7 @@ pub struct App {
     foreground_seen: bool,
     next_audio_request_id: u64,
     status_request_id: Option<u64>,
+    acceptance_overlay_only: bool,
     suspended: bool,
     shutting_down: bool,
     support_bundle: Option<std::thread::JoinHandle<()>>,
@@ -213,6 +214,7 @@ impl App {
             foreground_seen: false,
             next_audio_request_id: 0,
             status_request_id: None,
+            acceptance_overlay_only: false,
             suspended: false,
             shutting_down: false,
             support_bundle: None,
@@ -566,7 +568,6 @@ impl App {
                 title: title.into(),
                 detail: detail.into(),
             }),
-            crate::ui::overlay::ToastPolicy::StackDistinct,
         ));
     }
 
@@ -1268,6 +1269,12 @@ impl App {
         result: crate::audio::DeviceCycleResult,
     ) {
         match result {
+            crate::audio::DeviceCycleResult::AlreadySelected { flow, device } => {
+                crate::log_debug!(
+                    "device selection request {request_id} was already selected for {flow:?}: {}",
+                    device.name
+                );
+            }
             crate::audio::DeviceCycleResult::Changed { flow, device, .. } => {
                 let key = Self::device_cycle_overlay_key(flow);
                 self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
@@ -1275,7 +1282,6 @@ impl App {
                     crate::ui::overlay::OverlayModel::single(crate::ui::overlay::device_cycle_row(
                         flow, &device,
                     )),
-                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
                 crate::log_debug!("device cycle request {request_id} applied for {flow:?}");
             }
@@ -1286,7 +1292,6 @@ impl App {
                     crate::ui::overlay::OverlayModel::single(
                         crate::ui::overlay::device_cycle_no_devices_row(flow),
                     ),
-                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
             }
             crate::audio::DeviceCycleResult::Failed { flow, error, .. } => {
@@ -1297,7 +1302,6 @@ impl App {
                     crate::ui::overlay::OverlayModel::single(
                         crate::ui::overlay::device_cycle_error_row(flow, &error),
                     ),
-                    crate::ui::overlay::ToastPolicy::StackDistinct,
                 ));
             }
         }
@@ -1345,6 +1349,9 @@ impl App {
             }
             return;
         }
+        if self.acceptance_overlay_only && request.key != crate::ui::overlay::OverlayKey::Status {
+            return;
+        }
         let model = request.model.filter_enabled(config.notifications);
         if model.rows.is_empty() {
             if let Some(overlay) = &mut self.overlay {
@@ -1387,6 +1394,17 @@ impl App {
 
     fn reconcile_microphone_overlay(&mut self, show_unmute_feedback: bool) {
         let config = crate::app::config();
+        if self.acceptance_overlay_only {
+            self.remove_overlay_key(
+                crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                &config.overlay,
+            );
+            self.remove_overlay_key(
+                crate::ui::overlay::OverlayKey::MicrophoneToast,
+                &config.overlay,
+            );
+            return;
+        }
         if !config.overlay.enabled || !config.overlay.notifications.microphone {
             self.remove_overlay_key(
                 crate::ui::overlay::OverlayKey::MicrophonePermanent,
@@ -1427,7 +1445,6 @@ impl App {
                             crate::ui::overlay::OverlayModel::single(
                                 crate::ui::overlay::microphone_row(&self.microphone_state),
                             ),
-                            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
                         ),
                         config.overlay.clone(),
                     );
@@ -1445,7 +1462,6 @@ impl App {
                             crate::ui::overlay::OverlayModel::single(
                                 crate::ui::overlay::microphone_row(&self.microphone_state),
                             ),
-                            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
                         ),
                         config.overlay.clone(),
                     );
@@ -1464,7 +1480,6 @@ impl App {
             crate::ui::overlay::OverlayRequest::toast(
                 crate::ui::overlay::OverlayKey::Preview,
                 model,
-                crate::ui::overlay::ToastPolicy::ReplaceSameKey,
             ),
             config,
         );
@@ -1480,7 +1495,36 @@ impl App {
         }
         crate::ui::overlay::OverlayModel::from_rows(rows)
     }
+
+    pub(super) fn hide_all_overlays_for_acceptance(&mut self) {
+        self.status_request_id = None;
+        if let Some(overlay) = &mut self.overlay {
+            overlay.clear();
+        }
+        #[cfg(test)]
+        {
+            self.test_last_overlay_model = None;
+        }
+    }
+
+    pub(super) fn show_deterministic_acceptance_overlay(&mut self) {
+        self.acceptance_overlay_only = true;
+        self.hide_all_overlays_for_acceptance();
+        let config = crate::app::config();
+        self.show_overlay_with_config(
+            crate::ui::overlay::OverlayRequest::toast(
+                crate::ui::overlay::OverlayKey::Status,
+                self.status_overlay_model(),
+            ),
+            config.overlay.clone(),
+        );
+    }
+
     fn show_status_overlay(&mut self) {
+        if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
+            self.show_deterministic_acceptance_overlay();
+            return;
+        }
         let request_id = self.next_audio_request_id();
         let pid = self
             .foreground
@@ -1499,7 +1543,6 @@ impl App {
         self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
             crate::ui::overlay::OverlayKey::Status,
             self.status_overlay_model(),
-            crate::ui::overlay::ToastPolicy::ReplaceSameKey,
         ));
     }
     /// Route a cross-thread transport event into one main-thread domain handler.
@@ -1718,9 +1761,16 @@ unsafe extern "system" fn main_wndproc(
             LRESULT(0)
         }
 
-        event::WM_APP_UI_ACCEPTANCE_SHOW => {
+        event::WM_APP_UI_ACCEPTANCE_SHOW_DETERMINISTIC_OVERLAY => {
             if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
-                dispatch_main_event(AppEvent::ShowStatusOverlay);
+                with_app(App::show_deterministic_acceptance_overlay);
+            }
+            LRESULT(0)
+        }
+
+        event::WM_APP_UI_ACCEPTANCE_HIDE_ALL_OVERLAYS => {
+            if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
+                with_app(App::hide_all_overlays_for_acceptance);
             }
             LRESULT(0)
         }
@@ -1914,6 +1964,7 @@ mod shutdown_gate_tests {
             foreground_seen: false,
             next_audio_request_id: 0,
             status_request_id: None,
+            acceptance_overlay_only: false,
             suspended: false,
             shutting_down: false,
             support_bundle: None,
@@ -2109,6 +2160,41 @@ mod shutdown_gate_tests {
             model.rows[0].category,
             Some(crate::config::model::OverlayNotificationCategory::Speaker)
         );
+    }
+
+    #[test]
+    fn already_selected_device_does_not_emit_a_changed_overlay() {
+        let mut app = test_app();
+        app.handle_device_cycle_result(
+            99,
+            crate::audio::DeviceCycleResult::AlreadySelected {
+                flow: crate::audio::DeviceCycleFlow::Output,
+                device: crate::audio::DeviceId {
+                    endpoint: "output".into(),
+                    name: "Speakers".into(),
+                },
+            },
+        );
+        assert!(app.test_last_overlay_model.is_none());
+    }
+
+    #[test]
+    fn failed_device_change_emits_unavailable_feedback() {
+        let mut app = test_app();
+        app.handle_device_cycle_result(
+            100,
+            crate::audio::DeviceCycleResult::Failed {
+                flow: crate::audio::DeviceCycleFlow::Input,
+                previous: None,
+                target: None,
+                error: "setter failed".into(),
+            },
+        );
+        let model = app
+            .test_last_overlay_model
+            .take()
+            .expect("failed device changes should show feedback");
+        assert_eq!(model.rows[0].title, "Next microphone unavailable");
     }
 
     #[test]

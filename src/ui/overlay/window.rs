@@ -6,7 +6,9 @@ use super::layout::surface_geometry;
 use super::messages::overlay_wndproc;
 use super::palette::{acceptance_forces_composition_failure, resolved_theme_mode};
 use super::state::{OverlayState, ShowRequest};
-use super::timeline::{prepare_state_plan, Phase, ShowPlan, WindowRegion};
+use super::timeline::{
+    prepare_state_plan, timer_id_for_generation, Phase, ShowPlan, WindowRegion, TIMER_ID,
+};
 use crate::error::{Error, Result};
 use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
@@ -27,8 +29,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub(crate) const CLASS_NAME: &str = "WinShort.Overlay";
 
-pub(super) const TIMER_ID: usize = 2;
-
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 
 pub(crate) struct OverlayWindow {
@@ -38,19 +38,27 @@ pub(crate) struct OverlayWindow {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OverlayRuntimeStatus {
     pub window_available: bool,
+    pub active_card_count: usize,
+    pub permanent_card_count: usize,
+    pub toast_card_count: usize,
+    /// None, one resolved device name, or a deterministic multiple (N) summary.
+    pub active_monitor_summary: Option<String>,
     pub resolved_appearance: Option<String>,
     pub animations_enabled: Option<bool>,
     pub high_contrast: Option<bool>,
     pub disable_overlapped_content: Option<bool>,
+    /// Legacy field with manager aggregate semantics: one monitor identity or
+    /// a deterministic multiple (N) summary, never an arbitrary first HWND.
     pub target_monitor: Option<String>,
+    /// Some only when every active window reports the same render DPI.
     pub render_dpi: Option<u32>,
     pub last_shown: Option<SystemTime>,
 }
 
 fn apply_show_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -> Result<()> {
     apply_frame_plan(hwnd, plan, apply_region)?;
-    if let Err(error) = set_timer(hwnd, plan.timer_interval) {
-        apply_hide_window(hwnd);
+    if let Err(error) = set_timer(hwnd, plan.timer_id, plan.timer_interval) {
+        apply_hide_window(hwnd, plan.timer_id);
         return Err(error);
     }
     unsafe {
@@ -60,15 +68,15 @@ fn apply_show_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -> Result<()>
     Ok(())
 }
 
-pub(super) fn set_timer(hwnd: HWND, interval: Option<u32>) -> Result<()> {
+pub(super) fn set_timer(hwnd: HWND, timer_id: usize, interval: Option<u32>) -> Result<()> {
     if let Some(interval) = interval {
-        let timer = unsafe { SetTimer(Some(hwnd), TIMER_ID, interval, None) };
+        let timer = unsafe { SetTimer(Some(hwnd), timer_id, interval, None) };
         if timer == 0 {
             return Err(Error::internal("SetTimer(overlay) returned zero"));
         }
     } else {
         unsafe {
-            let _ = KillTimer(Some(hwnd), TIMER_ID);
+            let _ = KillTimer(Some(hwnd), timer_id);
         }
     }
     Ok(())
@@ -115,11 +123,11 @@ pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -
     Ok(())
 }
 
-pub(super) fn apply_hide_window(hwnd: HWND) {
+pub(super) fn apply_hide_window(hwnd: HWND, timer_id: usize) {
     unsafe {
         // Hide/teardown is intentionally best-effort: a timer can already be
         // absent and ShowWindow returns prior visibility rather than an error.
-        let _ = KillTimer(Some(hwnd), TIMER_ID);
+        let _ = KillTimer(Some(hwnd), timer_id);
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
 }
@@ -242,21 +250,35 @@ impl OverlayWindow {
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
             return Err(Error::internal("overlay state missing"));
         };
+        let previous_timer_id = cell.borrow().timer_id;
         let preferences = SystemVisualPreferences::query();
         let plan = prepare_state_plan(cell, |state| state.prepare_show(request, preferences))?;
         let Some(plan) = plan else {
             return Ok(());
         };
+        if previous_timer_id != plan.timer_id {
+            set_timer(self.hwnd, previous_timer_id, None)?;
+        }
         let apply_region = cell.borrow().requires_window_region();
         apply_show_plan(self.hwnd, plan, apply_region)?;
         render_prepared_frame(cell, self.hwnd, plan)
     }
 
-    pub(super) fn set_entry_id(&self, entry_id: u64) -> Result<()> {
+    pub(super) fn set_entry_id(&self, entry_id: u64, generation: u64) -> Result<()> {
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
             return Err(Error::internal("overlay state missing"));
         };
-        cell.borrow_mut().entry_id = entry_id;
+        let mut state = cell.borrow_mut();
+        state.phase = Phase::Hidden;
+        state.expires_at = None;
+        state.position_tween = None;
+        state.model = super::model::OverlayModel::default();
+        state.last_target_monitor = None;
+        state.last_render_dpi = None;
+        state.last_shown = None;
+        state.entry_id = entry_id;
+        state.generation = generation;
+        state.timer_id = timer_id_for_generation(generation);
         Ok(())
     }
 
@@ -269,14 +291,18 @@ impl OverlayWindow {
     }
 
     pub(crate) fn hide(&self) {
-        if let Some(cell) = unsafe { win::state_cell::<OverlayState>(self.hwnd) } {
+        let timer_id = if let Some(cell) = unsafe { win::state_cell::<OverlayState>(self.hwnd) } {
             {
                 let mut state = cell.borrow_mut();
                 state.phase = Phase::Hidden;
                 state.expires_at = None;
+                state.position_tween = None;
+                state.timer_id
             }
-        }
-        apply_hide_window(self.hwnd);
+        } else {
+            TIMER_ID
+        };
+        apply_hide_window(self.hwnd, timer_id);
     }
 
     pub(crate) fn status(&self) -> OverlayRuntimeStatus {
@@ -285,8 +311,16 @@ impl OverlayWindow {
         };
         let state = cell.borrow();
         let resolved = resolved_theme_mode(state.config.appearance, state.preferences);
+        let assigned = state.entry_id != 0;
+        let is_permanent = assigned && state.expires_at.is_none();
         OverlayRuntimeStatus {
             window_available: true,
+            active_card_count: usize::from(assigned),
+            permanent_card_count: usize::from(is_permanent),
+            toast_card_count: usize::from(assigned && !is_permanent),
+            active_monitor_summary: assigned
+                .then(|| state.last_target_monitor.clone())
+                .flatten(),
             resolved_appearance: Some(
                 match resolved {
                     ThemeMode::Dark => "dark",

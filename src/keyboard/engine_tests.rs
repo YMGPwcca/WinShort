@@ -671,6 +671,52 @@ fn lifecycle_reset_after_partial_chord_emits_no_actions() {
 }
 
 #[test]
+fn more_than_eight_suppressed_keys_keep_their_up_debt() {
+    let mut table = BindingTable::default();
+    for key in b'A'..=b'I' {
+        table.insert(
+            Hotkey {
+                modifiers: ModifierMask::CTRL.union(ModifierMask::ALT),
+                key: VirtualKey(key as u16),
+            },
+            HotkeyAction::ToggleMicrophone,
+        );
+    }
+
+    let mut engine = KeyboardEngine::new();
+    assert_eq!(
+        engine.on_event(RawKeyEvent::down(0xA2), &table),
+        EngineOutcome::Pass
+    );
+    assert_eq!(
+        engine.on_event(RawKeyEvent::down(0xA4), &table),
+        EngineOutcome::Pass
+    );
+    for key in b'A'..=b'I' {
+        assert!(matches!(
+            engine.on_event(RawKeyEvent::down(key as u16), &table),
+            EngineOutcome::Dispatch { .. }
+        ));
+    }
+    for key in b'A'..=b'I' {
+        assert_eq!(
+            engine.on_event(RawKeyEvent::up(key as u16), &table),
+            EngineOutcome::Swallow,
+            "key-up for {key} must remain swallowed"
+        );
+    }
+    assert_eq!(
+        engine.on_event(RawKeyEvent::up(0xA4), &table),
+        EngineOutcome::Pass
+    );
+    assert_eq!(
+        engine.on_event(RawKeyEvent::up(0xA2), &table),
+        EngineOutcome::Pass
+    );
+    assert!(engine.is_neutral());
+}
+
+#[test]
 fn digit_first_win_up_then_digit_up_passes_digit_up() {
     // Regression for #5: 1↓ (passed), Win↓ completes → dispatch, Win↑
     // swallowed, then 1↑ must PASS — the shell saw the down.

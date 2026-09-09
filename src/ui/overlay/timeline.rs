@@ -1,13 +1,18 @@
 //! Pure per-card animation timing policy.
 
 use crate::platform::visual::SystemVisualPreferences;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{POINT, SIZE};
 
 pub(super) const TIMER_MS: u32 = 16;
 
+pub(super) const TIMER_ID: usize = 2;
+
 pub(super) const APPEAR_MS: u64 = 140;
 
 pub(super) const LEAVE_MS: u64 = 180;
+
+pub(super) const POSITION_TWEEN_MS: u64 = 140;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MotionPolicy {
@@ -23,6 +28,37 @@ pub(super) fn motion_policy(preferences: SystemVisualPreferences) -> MotionPolic
     }
 }
 
+/// The configured toast duration is the fully-visible hold interval. Animated
+/// presentations therefore reserve the appear interval before the deadline;
+/// reduced motion has no such prefix.
+pub(super) fn toast_deadline(
+    presentation_started: Instant,
+    motion: MotionPolicy,
+    hold_duration: Duration,
+) -> Instant {
+    let appear = match motion {
+        MotionPolicy::Animated => Duration::from_millis(APPEAR_MS),
+        MotionPolicy::Reduced => Duration::ZERO,
+    };
+    presentation_started + appear + hold_duration
+}
+
+/// Give every entry generation a different HWND timer identity. A stale
+/// WM_TIMER posted for a released card consequently cannot tick a reused
+/// HWND's new assignment.
+pub(super) fn timer_id_for_generation(generation: u64) -> usize {
+    const TIMER_ID_OFFSET: usize = 0x1000;
+    if generation == 0 {
+        return TIMER_ID;
+    }
+    let id = (generation as usize).wrapping_add(TIMER_ID_OFFSET);
+    if id == 0 || id == TIMER_ID {
+        TIMER_ID_OFFSET + 1
+    } else {
+        id
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ShowTiming {
     pub(super) phase: Phase,
@@ -35,6 +71,7 @@ pub(super) struct ShowPlan {
     pub(super) size: SIZE,
     pub(super) region: WindowRegion,
     pub(super) alpha: f32,
+    pub(super) timer_id: usize,
     pub(super) timer_interval: Option<u32>,
 }
 
@@ -57,6 +94,49 @@ pub(super) enum TickPlan {
 pub(super) enum ShowMode {
     Present,
     Relayout,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PositionTween {
+    from: POINT,
+    to: POINT,
+    started_at: Instant,
+}
+
+impl PositionTween {
+    pub(super) fn start(
+        from: POINT,
+        to: POINT,
+        motion: MotionPolicy,
+        started_at: Instant,
+    ) -> Option<Self> {
+        if motion == MotionPolicy::Reduced || from.x == to.x && from.y == to.y {
+            return None;
+        }
+        Some(Self {
+            from,
+            to,
+            started_at,
+        })
+    }
+
+    pub(super) fn is_finished(self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started_at) >= Duration::from_millis(POSITION_TWEEN_MS)
+    }
+
+    pub(super) fn position_at(self, now: Instant) -> POINT {
+        let elapsed = now.saturating_duration_since(self.started_at).as_secs_f32();
+        let t = (elapsed / (POSITION_TWEEN_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        POINT {
+            x: interpolate(self.from.x, self.to.x, eased),
+            y: interpolate(self.from.y, self.to.y, eased),
+        }
+    }
+}
+
+fn interpolate(from: i32, to: i32, amount: f32) -> i32 {
+    (from as f32 + (to - from) as f32 * amount).round() as i32
 }
 
 /// Return an owned plan before any caller performs HWND work.
@@ -87,26 +167,9 @@ pub(super) fn timing_after_show(phase: Phase, motion: MotionPolicy, mode: ShowMo
             restart_phase: true,
         };
     }
-    if phase == Phase::Hidden {
-        return ShowTiming {
-            phase: Phase::Appearing,
-            restart_phase: true,
-        };
-    }
-    match phase {
-        Phase::Appearing => ShowTiming {
-            phase: Phase::Appearing,
-            restart_phase: false,
-        },
-        Phase::Holding => ShowTiming {
-            phase: Phase::Holding,
-            restart_phase: false,
-        },
-        Phase::Leaving => ShowTiming {
-            phase: Phase::Holding,
-            restart_phase: true,
-        },
-        Phase::Hidden => unreachable!("hidden phase handled above"),
+    ShowTiming {
+        phase: Phase::Appearing,
+        restart_phase: true,
     }
 }
 

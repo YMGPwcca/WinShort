@@ -65,6 +65,18 @@ namespace WinShortUiVisual {
             }, IntPtr.Zero);
             return found;
         }
+        public static IntPtr[] FindVisibleWindowsForProcess(int pid, string className) {
+            var found = new System.Collections.Generic.List<IntPtr>();
+            EnumWindows(delegate(IntPtr hwnd, IntPtr lparam) {
+                uint owner;
+                GetWindowThreadProcessId(hwnd, out owner);
+                if (owner == (uint)pid && IsWindowVisible(hwnd) && ClassEquals(hwnd, className)) {
+                    found.Add(hwnd);
+                }
+                return true;
+            }, IntPtr.Zero);
+            return found.ToArray();
+        }
 
         public static int[] WindowRect(IntPtr hwnd) {
             RECT rect;
@@ -106,6 +118,19 @@ function Wait-Until {
         Start-Sleep -Milliseconds 200
     }
     throw $Failure
+}
+
+function Get-DeterministicOverlayHwnd {
+    param([System.Diagnostics.Process]$Process)
+
+    $candidates = [WinShortUiVisual.Native]::FindVisibleWindowsForProcess(
+        $Process.Id,
+        'WinShort.Overlay'
+    )
+    if ($candidates.Count -ne 1) {
+        return $null
+    }
+    return $candidates[0]
 }
 
 function Write-Utf8NoBom {
@@ -185,7 +210,7 @@ function New-ProcessStartInfo {
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.EnvironmentVariables['WINSHORT_DATA_DIR'] = $DataDirectory
-    $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-status-overlay'
+    $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-deterministic-acceptance-overlay'
     $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_NO_EXTERNAL'] = '1'
     $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_THEME'] = $Appearance
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_OPAQUE') | Out-Null
@@ -374,9 +399,7 @@ show_external_audio_changes = false
 
                 $overlayHwnd = Wait-Until {
                     if ($process.HasExited) { return $null }
-                    $candidate = [WinShortUiVisual.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-                    if ($candidate -eq [IntPtr]::Zero) { return $null }
-                    $candidate
+                    Get-DeterministicOverlayHwnd $process
                 } "runtime overlay did not appear for $appearance/$($background.Name)"
 
                 Start-Sleep -Milliseconds 300

@@ -23,6 +23,18 @@ fn row(icon: OverlayIcon, title: &str) -> OverlayRow {
     }
 }
 
+fn registry_entry_title(registry: &OverlayRegistry, key: OverlayKey) -> &str {
+    registry
+        .entries()
+        .iter()
+        .find(|entry| entry.key() == key)
+        .expect("registry entry should exist")
+        .model()
+        .rows[0]
+        .title
+        .as_str()
+}
+
 #[test]
 fn visual_preferences_select_reduced_motion_and_high_contrast_palette() {
     let preferences = SystemVisualPreferences {
@@ -179,6 +191,7 @@ fn permanent_microphone_entry_is_unique_and_never_expires() {
 
     assert!(first.inserted);
     assert!(!refreshed.inserted);
+    assert!(!refreshed.restart_appearance);
     assert_eq!(first.id, refreshed.id);
     assert_eq!(registry.entries().len(), 1);
     let entry = &registry.entries()[0];
@@ -208,7 +221,6 @@ fn unmute_removes_permanent_entry_before_creating_a_new_toast() {
         OverlayRequest::toast(
             OverlayKey::MicrophoneToast,
             OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1300),
         now,
@@ -219,7 +231,7 @@ fn unmute_removes_permanent_entry_before_creating_a_new_toast() {
     assert_eq!(registry.entries()[0].key(), OverlayKey::MicrophoneToast);
     assert!(matches!(
         registry.entries()[0].lifetime(),
-        OverlayLifetime::Toast(ToastPolicy::ReplaceSameKey)
+        OverlayLifetime::Toast
     ));
 }
 
@@ -239,7 +251,6 @@ fn permanent_microphone_and_speaker_toast_are_independent() {
         OverlayRequest::toast(
             OverlayKey::Speaker,
             OverlayModel::single(row(OverlayIcon::Output, "speaker")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1300),
         now,
@@ -276,7 +287,6 @@ fn permanent_microphone_and_workspace_toast_are_independent() {
         OverlayRequest::toast(
             OverlayKey::Workspace,
             OverlayModel::single(row(OverlayIcon::Workspace, "workspace")),
-            ToastPolicy::StackDistinct,
         ),
         Duration::from_millis(1300),
         now,
@@ -293,14 +303,13 @@ fn permanent_microphone_and_workspace_toast_are_independent() {
 }
 
 #[test]
-fn workspace_toast_stacks_as_a_distinct_entry() {
+fn workspace_toast_replaces_the_single_semantic_entry() {
     let now = Instant::now();
     let mut registry = OverlayRegistry::default();
     let first = registry.present(
         OverlayRequest::toast(
             OverlayKey::Workspace,
             OverlayModel::single(row(OverlayIcon::Workspace, "first")),
-            ToastPolicy::StackDistinct,
         ),
         Duration::from_millis(1300),
         now,
@@ -309,15 +318,89 @@ fn workspace_toast_stacks_as_a_distinct_entry() {
         OverlayRequest::toast(
             OverlayKey::Workspace,
             OverlayModel::single(row(OverlayIcon::Workspace, "second")),
-            ToastPolicy::StackDistinct,
         ),
         Duration::from_millis(1300),
         now + Duration::from_millis(100),
     );
 
-    assert!(first.inserted && second.inserted);
-    assert_ne!(first.id, second.id);
+    assert!(first.inserted);
+    assert!(!second.inserted);
+    assert_eq!(first.id, second.id);
+    assert_eq!(registry.entries().len(), 1);
+    assert_eq!(registry.entries()[0].model().rows[0].title, "second");
+}
+
+#[test]
+fn repeated_device_presentations_replace_one_entry_for_each_device_key() {
+    let now = Instant::now();
+    for key in [OverlayKey::InputDevice, OverlayKey::OutputDevice] {
+        let mut registry = OverlayRegistry::default();
+        let icon = if key == OverlayKey::InputDevice {
+            OverlayIcon::Microphone
+        } else {
+            OverlayIcon::Output
+        };
+        let mut last = None;
+        for index in 0..100 {
+            last = Some(registry.present(
+                OverlayRequest::toast(
+                    key,
+                    OverlayModel::single(row(icon, &format!("device-{index}"))),
+                ),
+                Duration::from_millis(1300),
+                now + Duration::from_millis(index),
+            ));
+        }
+        let last = last.expect("device presentations should produce an outcome");
+        assert_eq!(registry.entries().len(), 1);
+        assert_eq!(registry.entries()[0].key(), key);
+        assert_eq!(registry.entries()[0].model().rows[0].title, "device-99");
+        assert_eq!(
+            registry.entries()[0].expires_at(),
+            Some(now + Duration::from_millis(99 + 1300))
+        );
+        assert_eq!(registry.entries()[0].sequence(), 100);
+        assert_eq!(last.id, 1, "same key must reuse its card identity");
+        assert!(registry.has_unique_keys());
+    }
+}
+
+#[test]
+fn repeated_display_and_speaker_presentations_keep_singleton_keys() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    for (key, icon) in [
+        (OverlayKey::DisplayProfile, OverlayIcon::Info),
+        (OverlayKey::Speaker, OverlayIcon::Output),
+    ] {
+        registry.present(
+            OverlayRequest::toast(key, OverlayModel::single(row(icon, "first"))),
+            Duration::from_millis(1000),
+            now,
+        );
+        registry.present(
+            OverlayRequest::toast(key, OverlayModel::single(row(icon, "latest"))),
+            Duration::from_millis(1000),
+            now + Duration::from_millis(100),
+        );
+    }
     assert_eq!(registry.entries().len(), 2);
+    assert!(registry
+        .entries()
+        .iter()
+        .all(|entry| entry.model().rows[0].title == "latest"));
+    assert!(registry.has_unique_keys());
+}
+
+#[test]
+fn semantic_key_set_is_the_registry_card_upper_bound() {
+    let keys = OverlayKey::ALL;
+    let unique = keys
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(keys.len(), 10);
+    assert_eq!(unique.len(), keys.len());
 }
 
 #[test]
@@ -328,7 +411,6 @@ fn one_toast_expiry_does_not_remove_another_toast() {
         OverlayRequest::toast(
             OverlayKey::Speaker,
             OverlayModel::single(row(OverlayIcon::Output, "speaker")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1000),
         now,
@@ -337,7 +419,6 @@ fn one_toast_expiry_does_not_remove_another_toast() {
         OverlayRequest::toast(
             OverlayKey::Workspace,
             OverlayModel::single(row(OverlayIcon::Workspace, "workspace")),
-            ToastPolicy::StackDistinct,
         ),
         Duration::from_millis(1000),
         now + Duration::from_millis(300),
@@ -358,7 +439,6 @@ fn replace_same_key_updates_one_toast_and_resets_only_its_deadline() {
         OverlayRequest::toast(
             OverlayKey::Speaker,
             OverlayModel::single(row(OverlayIcon::Output, "old speaker")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1000),
         now,
@@ -367,7 +447,6 @@ fn replace_same_key_updates_one_toast_and_resets_only_its_deadline() {
         OverlayRequest::toast(
             OverlayKey::Workspace,
             OverlayModel::single(row(OverlayIcon::Workspace, "workspace")),
-            ToastPolicy::StackDistinct,
         ),
         Duration::from_millis(1600),
         now,
@@ -376,13 +455,13 @@ fn replace_same_key_updates_one_toast_and_resets_only_its_deadline() {
         OverlayRequest::toast(
             OverlayKey::Speaker,
             OverlayModel::single(row(OverlayIcon::Output, "new speaker")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(2000),
         now + Duration::from_millis(500),
     );
 
     assert!(!replaced.inserted);
+    assert!(replaced.restart_appearance);
     assert_eq!(replaced.id, first.id);
     assert_eq!(registry.entries().len(), 2);
     let speaker = registry
@@ -405,6 +484,7 @@ fn replace_same_key_updates_one_toast_and_resets_only_its_deadline() {
         workspace.expires_at(),
         Some(now + Duration::from_millis(1600))
     );
+    assert!(speaker.sequence() > workspace.sequence());
 }
 
 #[test]
@@ -426,7 +506,6 @@ fn status_and_preview_are_separate_transient_entries() {
                 row(OverlayIcon::Microphone, "mic"),
                 row(OverlayIcon::Output, "speaker"),
             ]),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1300),
         now,
@@ -435,7 +514,6 @@ fn status_and_preview_are_separate_transient_entries() {
         OverlayRequest::toast(
             OverlayKey::Preview,
             OverlayModel::preview(OverlayRow::preview("preview", "preview detail")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1300),
         now,
@@ -448,6 +526,56 @@ fn status_and_preview_are_separate_transient_entries() {
     assert!(registry.entries()[0].expires_at().is_none());
     assert!(registry.entries()[1].expires_at().is_some());
     assert!(registry.entries()[2].expires_at().is_some());
+}
+
+#[test]
+fn status_and_preview_replacements_are_independent_singletons() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let status = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Status,
+            OverlayModel::single(row(OverlayIcon::Info, "status one")),
+        ),
+        Duration::from_millis(1000),
+        now,
+    );
+    let preview = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Preview,
+            OverlayModel::preview(OverlayRow::preview("preview one", "detail")),
+        ),
+        Duration::from_millis(1000),
+        now,
+    );
+    let status_replacement = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Status,
+            OverlayModel::single(row(OverlayIcon::Info, "status two")),
+        ),
+        Duration::from_millis(2000),
+        now + Duration::from_millis(100),
+    );
+    let preview_replacement = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::Preview,
+            OverlayModel::preview(OverlayRow::preview("preview two", "detail")),
+        ),
+        Duration::from_millis(2000),
+        now + Duration::from_millis(100),
+    );
+
+    assert_eq!(registry.entries().len(), 2);
+    assert_eq!(status.id, status_replacement.id);
+    assert_eq!(preview.id, preview_replacement.id);
+    assert_eq!(
+        registry_entry_title(&registry, OverlayKey::Status),
+        "status two"
+    );
+    assert_eq!(
+        registry_entry_title(&registry, OverlayKey::Preview),
+        "preview two"
+    );
 }
 
 #[test]
@@ -466,7 +594,6 @@ fn status_and_preview_expiry_leave_permanent_microphone_untouched() {
         OverlayRequest::toast(
             OverlayKey::Status,
             OverlayModel::from_rows(vec![row(OverlayIcon::Microphone, "mic")]),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1000),
         now,
@@ -475,7 +602,6 @@ fn status_and_preview_expiry_leave_permanent_microphone_untouched() {
         OverlayRequest::toast(
             OverlayKey::Preview,
             OverlayModel::preview(OverlayRow::preview("preview", "detail")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1500),
         now,
@@ -585,7 +711,6 @@ fn category_filter_removes_matching_entries_but_keeps_preview() {
         OverlayRequest::toast(
             OverlayKey::MicrophoneToast,
             OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1300),
         now,
@@ -594,7 +719,6 @@ fn category_filter_removes_matching_entries_but_keeps_preview() {
         OverlayRequest::toast(
             OverlayKey::Speaker,
             OverlayModel::single(row(OverlayIcon::Output, "speaker")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1300),
         now,
@@ -603,7 +727,6 @@ fn category_filter_removes_matching_entries_but_keeps_preview() {
         OverlayRequest::toast(
             OverlayKey::Preview,
             OverlayModel::preview(OverlayRow::preview("preview", "detail")),
-            ToastPolicy::ReplaceSameKey,
         ),
         Duration::from_millis(1300),
         now,
@@ -647,7 +770,6 @@ fn global_clear_then_restore_rebuilds_permanent_state_without_old_toasts() {
         OverlayRequest::toast(
             OverlayKey::Workspace,
             OverlayModel::single(row(OverlayIcon::Workspace, "expired later")),
-            ToastPolicy::StackDistinct,
         ),
         Duration::from_millis(1300),
         now,
@@ -686,12 +808,54 @@ fn card_timing_is_independent_and_relayout_does_not_restart_animation() {
     assert!(!moved.restart_phase);
 
     let replaced = timing_after_show(Phase::Leaving, MotionPolicy::Animated, ShowMode::Present);
-    assert_eq!(replaced.phase, Phase::Holding);
+    assert_eq!(replaced.phase, Phase::Appearing);
     assert!(replaced.restart_phase);
 
     let reduced = timing_after_show(Phase::Hidden, MotionPolicy::Reduced, ShowMode::Present);
     assert_eq!(reduced.phase, Phase::Holding);
     assert!(reduced.restart_phase);
+}
+
+#[test]
+fn toast_deadline_reserves_appear_only_for_animated_motion() {
+    let started = Instant::now();
+    let hold = Duration::from_millis(1000);
+    assert_eq!(
+        toast_deadline(started, MotionPolicy::Animated, hold),
+        started + Duration::from_millis(APPEAR_MS + 1000)
+    );
+    assert_eq!(
+        toast_deadline(started, MotionPolicy::Reduced, hold),
+        started + hold
+    );
+}
+
+#[test]
+fn relayout_position_tween_is_smooth_and_reduced_motion_is_immediate() {
+    let started = Instant::now();
+    let from = POINT { x: 0, y: 0 };
+    let to = POINT { x: 100, y: 100 };
+    let tween = PositionTween::start(from, to, MotionPolicy::Animated, started)
+        .expect("animated movement should create a tween");
+    let middle = tween.position_at(started + Duration::from_millis(POSITION_TWEEN_MS / 2));
+    assert!(middle.x > from.x && middle.x < to.x);
+    assert_eq!(
+        tween.position_at(started + Duration::from_millis(POSITION_TWEEN_MS)),
+        to
+    );
+    assert!(PositionTween::start(from, to, MotionPolicy::Reduced, started).is_none());
+}
+
+#[test]
+fn timer_identity_changes_with_card_generation() {
+    assert_eq!(
+        super::timeline::timer_id_for_generation(0),
+        super::timeline::TIMER_ID
+    );
+    assert_ne!(
+        super::timeline::timer_id_for_generation(1),
+        super::timeline::timer_id_for_generation(2)
+    );
 }
 
 #[test]
@@ -735,6 +899,26 @@ fn permanent_and_toast_layout_has_stable_slots_and_no_overlap() {
 }
 
 #[test]
+fn oversized_card_is_clamped_inside_the_work_area() {
+    let work = RECT {
+        left: 10,
+        top: 20,
+        right: 100,
+        bottom: 90,
+    };
+    let placements = layout_cards(
+        work,
+        OverlayPosition::BottomRight,
+        96,
+        1.0,
+        &[LayoutInput {
+            size: SIZE { cx: 200, cy: 200 },
+        }],
+    );
+    assert_eq!(placements[0].position, POINT { x: 10, y: 20 });
+}
+
+#[test]
 fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
     let cell = std::cell::RefCell::new(0_u8);
     let plan = prepare_state_plan(&cell, |state| {
@@ -749,6 +933,7 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
                 corner_diameter: 28,
             },
             alpha: 1.0,
+            timer_id: super::timeline::TIMER_ID,
             timer_interval: Some(TIMER_MS),
         }
     });
