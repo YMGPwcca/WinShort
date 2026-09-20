@@ -1,7 +1,7 @@
 //! Window for the overlay.
 
 use super::backend::{render_prepared_frame, OverlayGraphics, OverlaySurface};
-use super::composition::CompositionHost;
+use super::composition::{CompositionHost, CompositionRuntime};
 use super::layout::surface_geometry;
 use super::messages::overlay_wndproc;
 use super::palette::{acceptance_forces_composition_failure, resolved_theme_mode};
@@ -174,7 +174,11 @@ pub(super) fn client_size(hwnd: HWND) -> Result<Option<SIZE>> {
 }
 
 impl OverlayWindow {
-    pub(super) fn create_with_graphics(entry_id: u64, graphics: OverlayGraphics) -> Result<Self> {
+    pub(super) fn create_with_graphics(
+        entry_id: u64,
+        graphics: OverlayGraphics,
+        composition_runtime: Option<CompositionRuntime>,
+    ) -> Result<Self> {
         let _atom = win::register_class_once(&REGISTERED, CLASS_NAME, Some(overlay_wndproc))?;
         let mut state = win::WindowCreation::new(OverlayState::new(graphics.clone(), entry_id));
         let no_redirection = if acceptance_forces_composition_failure() {
@@ -210,25 +214,22 @@ impl OverlayWindow {
 
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
         let initial_size = surface_geometry(1.0, 1).pixel_size(dpi);
-        let composition = if acceptance_forces_composition_failure() {
-            Err(Error::internal("forced acceptance Composition failure"))
-        } else {
-            CompositionHost::create(hwnd, initial_size, dpi, &graphics)
-        };
-        let surface = match composition {
-            Ok(host) => OverlaySurface::Composition(host),
-            Err(error) => {
-                crate::warn_!(
-                    "overlay Composition unavailable; using opaque D2D fallback: {error}"
-                );
-                remove_no_redirection_bitmap(hwnd);
-                match graphics.create_surface(hwnd, dpi, initial_size) {
-                    Ok(surface) => OverlaySurface::Hwnd(surface),
-                    Err(fallback_error) => {
-                        return Err(fallback_error);
-                    }
+        let composition = composition_runtime.and_then(|runtime| {
+            match CompositionHost::create(hwnd, initial_size, dpi, runtime) {
+                Ok(host) => Some(host),
+                Err(error) => {
+                    crate::warn_!(
+                        "overlay Composition target unavailable; using opaque D2D fallback for this card: {error}"
+                    );
+                    None
                 }
             }
+        });
+        let surface = if let Some(host) = composition {
+            OverlaySurface::Composition(host)
+        } else {
+            remove_no_redirection_bitmap(hwnd);
+            OverlaySurface::Hwnd(graphics.create_surface(hwnd, dpi, initial_size)?)
         };
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(hwnd) }) else {
             return Err(Error::internal("overlay state missing after creation"));

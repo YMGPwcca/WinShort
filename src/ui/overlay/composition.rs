@@ -12,6 +12,7 @@ use super::palette::composition_tint_alpha;
 use crate::config::model::OverlayBlur;
 use crate::error::{Error, Result};
 use crate::ui::theme::Color;
+use std::rc::Rc;
 
 use windows::core::{Interface, HSTRING};
 use windows::Foundation::Size;
@@ -51,6 +52,22 @@ struct CompositionDevices {
     _d3d_context: ID3D11DeviceContext,
 }
 
+/// Thread-owned Composition infrastructure shared by every overlay card.
+///
+/// The `Rc` is intentional: the runtime is created and consumed only on the
+/// main UI thread, so its dispatcher queue and graphics devices cannot drift
+/// across apartment/thread ownership boundaries.
+struct CompositionRuntimeInner {
+    compositor: Compositor,
+    devices: CompositionDevices,
+    _dispatcher: DispatcherQueueController,
+}
+
+#[derive(Clone)]
+pub(super) struct CompositionRuntime {
+    inner: Rc<CompositionRuntimeInner>,
+}
+
 struct CompositionScene {
     root: ContainerVisual,
     backdrop_visual: SpriteVisual,
@@ -65,14 +82,14 @@ struct CompositionScene {
 }
 
 pub(super) struct CompositionHost {
-    _dispatcher: DispatcherQueueController,
-    _compositor: Compositor,
     _target: DesktopWindowTarget,
     scene: CompositionScene,
     surface: CompositionDrawingSurface,
-    devices: CompositionDevices,
     size: SIZE,
     dpi: u32,
+    // Keep the shared thread runtime alive until this host's target/scene/surface
+    // have been released.
+    runtime: CompositionRuntime,
 }
 
 fn create_dispatcher() -> Result<DispatcherQueueController> {
@@ -85,14 +102,12 @@ fn create_dispatcher() -> Result<DispatcherQueueController> {
         .map_err(|e| Error::win("CreateDispatcherQueueController(overlay)", &e))
 }
 
-fn create_target(hwnd: HWND) -> Result<(Compositor, DesktopWindowTarget)> {
-    let compositor = Compositor::new().map_err(|e| Error::win("Compositor::new(overlay)", &e))?;
+fn create_target(compositor: &Compositor, hwnd: HWND) -> Result<DesktopWindowTarget> {
     let desktop: ICompositorDesktopInterop = compositor
         .cast()
         .map_err(|e| Error::win("ICompositorDesktopInterop(overlay)", &e))?;
-    let target = unsafe { desktop.CreateDesktopWindowTarget(hwnd, false) }
-        .map_err(|e| Error::win("CreateDesktopWindowTarget(overlay)", &e))?;
-    Ok((compositor, target))
+    unsafe { desktop.CreateDesktopWindowTarget(hwnd, false) }
+        .map_err(|e| Error::win("CreateDesktopWindowTarget(overlay)", &e))
 }
 
 fn create_devices(
@@ -143,6 +158,30 @@ fn create_devices(
         _d3d_device: d3d_device,
         _d3d_context: d3d_context,
     })
+}
+
+impl CompositionRuntime {
+    pub(super) fn create(graphics: &OverlayGraphics) -> Result<Self> {
+        let dispatcher = create_dispatcher()?;
+        let compositor =
+            Compositor::new().map_err(|e| Error::win("Compositor::new(overlay)", &e))?;
+        let devices = create_devices(&compositor, graphics)?;
+        Ok(Self {
+            inner: Rc::new(CompositionRuntimeInner {
+                compositor,
+                devices,
+                _dispatcher: dispatcher,
+            }),
+        })
+    }
+
+    fn compositor(&self) -> &Compositor {
+        &self.inner.compositor
+    }
+
+    fn graphics_device(&self) -> &CompositionGraphicsDevice {
+        &self.inner.devices.graphics_device
+    }
 }
 
 fn create_composition_surface(
@@ -383,27 +422,23 @@ impl CompositionHost {
         hwnd: HWND,
         size: SIZE,
         dpi: u32,
-        graphics: &OverlayGraphics,
+        runtime: CompositionRuntime,
     ) -> Result<Self> {
-        let dispatcher = create_dispatcher()?;
-        let (compositor, target) = create_target(hwnd)?;
-        let devices = create_devices(&compositor, graphics)?;
-        let surface = create_composition_surface(&devices.graphics_device, size)?;
+        let target = create_target(runtime.compositor(), hwnd)?;
+        let surface = create_composition_surface(runtime.graphics_device(), size)?;
         clear_composition_surface(&surface, dpi)?;
-        let scene = create_scene(&compositor, &surface, size, dpi)?;
+        let scene = create_scene(runtime.compositor(), &surface, size, dpi)?;
         target
             .SetRoot(&scene.root)
             .map_err(|e| Error::win("SetCompositionRoot(overlay)", &e))?;
 
         Ok(Self {
-            _dispatcher: dispatcher,
-            _compositor: compositor,
             _target: target,
             scene,
             surface,
-            devices,
             size,
             dpi,
+            runtime,
         })
     }
 
@@ -411,7 +446,7 @@ impl CompositionHost {
         if self.size == spec.size && self.dpi == spec.dpi {
             return Ok(());
         }
-        let surface = create_composition_surface(&self.devices.graphics_device, spec.size)?;
+        let surface = create_composition_surface(self.runtime.graphics_device(), spec.size)?;
         clear_composition_surface(&surface, spec.dpi)?;
         self.scene
             .content_brush
@@ -448,7 +483,7 @@ impl CompositionHost {
     pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
         if let Some(blur_amount) = data.blur.blur_amount() {
             if (self.scene.blur_amount - blur_amount).abs() > f32::EPSILON {
-                let effect_brush = create_backdrop_brush(&self._compositor, blur_amount)?;
+                let effect_brush = create_backdrop_brush(self.runtime.compositor(), blur_amount)?;
                 self.scene
                     .backdrop_visual
                     .SetBrush(&effect_brush)

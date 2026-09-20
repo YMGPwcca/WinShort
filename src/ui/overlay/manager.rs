@@ -4,8 +4,10 @@
 //! OverlayKey; different keys are the only way cards stack.
 
 use super::backend::{OverlayGraphics, RECT_FALLBACK};
+use super::composition::CompositionRuntime;
 use super::layout::{layout_cards, select_monitor, surface_geometry, CardPlacement, LayoutInput};
 use super::model::OverlayModel;
+use super::palette::acceptance_forces_composition_failure;
 use super::state::ShowRequest;
 use super::timeline::{motion_policy, toast_deadline, MotionPolicy, ShowMode};
 use super::window::{OverlayRuntimeStatus, OverlayWindow};
@@ -382,15 +384,35 @@ pub(crate) struct OverlayManager {
     render_configs: HashMap<u64, OverlayCfg>,
     spare: Option<OverlayWindow>,
     windows: Vec<ManagedWindow>,
+    // Drop after every window so the shared dispatcher/compositor/device graph
+    // outlives all per-card Composition targets.
+    composition_runtime: Option<CompositionRuntime>,
     last_shown: Option<std::time::SystemTime>,
 }
 
 impl OverlayManager {
     pub(crate) fn create() -> Result<Self> {
         let graphics = OverlayGraphics::create()?;
+        let composition_runtime = if acceptance_forces_composition_failure() {
+            crate::warn_!(
+                "overlay Composition unavailable; using opaque D2D fallback: forced acceptance Composition failure"
+            );
+            None
+        } else {
+            match CompositionRuntime::create(&graphics) {
+                Ok(runtime) => Some(runtime),
+                Err(error) => {
+                    crate::warn_!(
+                        "overlay shared Composition runtime unavailable; using opaque D2D fallback for all cards: {error}"
+                    );
+                    None
+                }
+            }
+        };
         let spare = Some(OverlayWindow::create_with_graphics(
             UNASSIGNED_ENTRY_ID,
             graphics.clone(),
+            composition_runtime.clone(),
         )?);
         Ok(Self {
             graphics,
@@ -398,6 +420,7 @@ impl OverlayManager {
             render_configs: HashMap::new(),
             spare,
             windows: Vec::new(),
+            composition_runtime,
             last_shown: None,
         })
     }
@@ -610,7 +633,11 @@ impl OverlayManager {
             }
             window
         } else {
-            OverlayWindow::create_with_graphics(id, self.graphics.clone())?
+            OverlayWindow::create_with_graphics(
+                id,
+                self.graphics.clone(),
+                self.composition_runtime.clone(),
+            )?
         };
         self.windows.push(ManagedWindow { id, window });
         Ok(())
