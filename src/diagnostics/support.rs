@@ -586,6 +586,13 @@ fn format_diagnostics(
     line(
         &mut out,
         &format!(
+            "External current app change notifications: {}",
+            yes_no(snapshot.overlay.notifications.external_current_app_audio)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
             "Workspace notifications: {}",
             yes_no(snapshot.overlay.notifications.workspace)
         ),
@@ -828,6 +835,10 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
             show_microphone: config.overlay.notifications.microphone,
             show_speaker: config.overlay.notifications.speaker,
             show_current_app_audio: config.overlay.notifications.current_app_audio,
+            show_external_current_app_audio: config
+                .overlay
+                .notifications
+                .external_current_app_audio,
             show_workspace: config.overlay.notifications.workspace,
             show_display_profile: config.overlay.notifications.display_profile,
         },
@@ -1000,6 +1011,7 @@ struct SafeOverlay {
     show_microphone: bool,
     show_speaker: bool,
     show_current_app_audio: bool,
+    show_external_current_app_audio: bool,
     show_workspace: bool,
     show_display_profile: bool,
 }
@@ -1487,6 +1499,8 @@ safe=1"#,
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("opaque-endpoint".into());
         config.audio.cycle_input_allowlist = Some(vec!["opaque-allowlist".into()]);
+        config.overlay.notifications.current_app_audio = true;
+        config.overlay.notifications.external_current_app_audio = false;
         config.hotkeys.toggle_output = None;
         config.hotkeys.set_disabled_hotkey(
             "toggle_output".into(),
@@ -1498,6 +1512,8 @@ safe=1"#,
         assert!(!output.contains("opaque-endpoint"));
         assert!(output.contains("endpoint#02"));
         assert!(!output.contains("opaque-allowlist"));
+        assert!(output.contains("show_current_app_audio = true"));
+        assert!(output.contains("show_external_current_app_audio = false"));
         assert!(output.contains("disabled"));
         assert!(output.contains("toggle_output"));
         assert!(output.contains("Ctrl+Alt+F20"));
