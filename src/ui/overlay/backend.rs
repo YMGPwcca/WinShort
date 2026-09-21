@@ -35,9 +35,7 @@ pub(super) fn render_prepared_frame(
     if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some()
         && std::env::var_os("WINSHORT_UI_ACCEPTANCE_FORCE_RENDER_FAILURE").is_some()
     {
-        return Err(Error::internal(
-            "forced acceptance overlay render failure",
-        ));
+        return Err(Error::internal("forced acceptance overlay render failure"));
     }
     let (spec, data) = {
         let state = cell.borrow();
