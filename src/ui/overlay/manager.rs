@@ -173,7 +173,7 @@ pub(crate) struct PresentOutcome {
     pub(crate) restart_appearance: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct OverlayRegistry {
     entries: Vec<OverlayEntry>,
     next_id: u64,
@@ -378,6 +378,30 @@ struct ManagedWindow {
     window: OverlayWindow,
 }
 
+#[derive(Clone)]
+struct PresentationStateSnapshot {
+    registry: OverlayRegistry,
+    render_configs: HashMap<u64, OverlayCfg>,
+}
+
+impl PresentationStateSnapshot {
+    fn capture(registry: &OverlayRegistry, render_configs: &HashMap<u64, OverlayCfg>) -> Self {
+        Self {
+            registry: registry.clone(),
+            render_configs: render_configs.clone(),
+        }
+    }
+
+    fn restore(
+        self,
+        registry: &mut OverlayRegistry,
+        render_configs: &mut HashMap<u64, OverlayCfg>,
+    ) {
+        *registry = self.registry;
+        *render_configs = self.render_configs;
+    }
+}
+
 pub(crate) struct OverlayManager {
     graphics: OverlayGraphics,
     registry: OverlayRegistry,
@@ -433,6 +457,8 @@ impl OverlayManager {
         if request.model.rows.is_empty() {
             return Ok(());
         }
+        let snapshot =
+            PresentationStateSnapshot::capture(&self.registry, &self.render_configs);
         let presentation_started_at = Instant::now();
         let motion = motion_policy(crate::platform::visual::SystemVisualPreferences::query());
         let placement = self.placement_for_presentation(&request, &config);
@@ -444,24 +470,23 @@ impl OverlayManager {
             placement,
         );
         if let Err(error) = self.ensure_window(outcome.id) {
-            if outcome.inserted {
-                self.registry.remove_id(outcome.id);
-                self.render_configs.remove(&outcome.id);
-            }
+            self.rollback_presentation(snapshot);
             return Err(error);
         }
         self.render_configs.insert(outcome.id, config);
-        let result = self.sync_layout(Some(outcome));
-        if result.is_ok()
-            && self
-                .registry
-                .entries()
-                .iter()
-                .any(|entry| entry.id() == outcome.id)
+        if let Err(error) = self.sync_layout(Some(outcome)) {
+            self.rollback_presentation(snapshot);
+            return Err(error);
+        }
+        if self
+            .registry
+            .entries()
+            .iter()
+            .any(|entry| entry.id() == outcome.id)
         {
             self.last_shown = Some(std::time::SystemTime::now());
         }
-        result
+        Ok(())
     }
 
     pub(crate) fn remove_key(&mut self, key: OverlayKey, config: &OverlayCfg) -> Result<()> {
@@ -613,6 +638,30 @@ impl OverlayManager {
             ),
             render_dpi: consistent_value(window_statuses.iter().map(|status| status.render_dpi)),
             last_shown: self.last_shown,
+        }
+    }
+
+    fn rollback_presentation(&mut self, snapshot: PresentationStateSnapshot) {
+        snapshot.restore(&mut self.registry, &mut self.render_configs);
+
+        let active_ids = self
+            .registry
+            .entries()
+            .iter()
+            .map(OverlayEntry::id)
+            .collect::<BTreeSet<_>>();
+        let stale_window_ids = self
+            .windows
+            .iter()
+            .filter(|managed| !active_ids.contains(&managed.id))
+            .map(|managed| managed.id)
+            .collect::<Vec<_>>();
+        for id in stale_window_ids {
+            self.release_window(id);
+        }
+
+        if let Err(error) = self.sync_layout(None) {
+            crate::warn_!("overlay presentation rollback redraw failed: {error}");
         }
     }
 
@@ -1194,6 +1243,86 @@ mod tests {
             .iter()
             .find(|entry| entry.id() == id)
             .unwrap_or_else(|| panic!("missing registry entry {id}"))
+    }
+
+    #[test]
+    fn presentation_snapshot_restores_same_key_model_generation_deadline_and_config() {
+        let now = Instant::now();
+        let mut registry = OverlayRegistry::default();
+        let mut render_configs = HashMap::new();
+        let placement = ResolvedPlacement::default();
+
+        let original = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Speaker,
+                OverlayModel::single(OverlayRow::preview("original", "before failure")),
+            ),
+            placement.clone(),
+            now,
+        );
+        let mut original_config = crate::config::Config::default().overlay;
+        original_config.duration_ms = 1300;
+        render_configs.insert(original.id, original_config.clone());
+
+        let original_entry = registry_entry(&registry, original.id).clone();
+        let snapshot = PresentationStateSnapshot::capture(&registry, &render_configs);
+
+        let replacement = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Speaker,
+                OverlayModel::single(OverlayRow::preview("replacement", "failed render")),
+            ),
+            placement,
+            now + Duration::from_millis(100),
+        );
+        assert_eq!(replacement.id, original.id);
+        assert_ne!(
+            registry_entry(&registry, original.id).generation(),
+            original_entry.generation()
+        );
+        let mut replacement_config = original_config.clone();
+        replacement_config.duration_ms = 5000;
+        render_configs.insert(original.id, replacement_config);
+
+        snapshot.restore(&mut registry, &mut render_configs);
+
+        let restored = registry_entry(&registry, original.id);
+        assert_eq!(restored.generation(), original_entry.generation());
+        assert_eq!(restored.expires_at(), original_entry.expires_at());
+        assert_eq!(restored.presented_at(), original_entry.presented_at());
+        assert_eq!(restored.model().rows[0].title, "original");
+        assert_eq!(
+            render_configs.get(&original.id).map(|config| config.duration_ms),
+            Some(1300)
+        );
+    }
+
+    #[test]
+    fn presentation_snapshot_removes_failed_new_entry_and_config() {
+        let now = Instant::now();
+        let mut registry = OverlayRegistry::default();
+        let mut render_configs = HashMap::new();
+        let snapshot = PresentationStateSnapshot::capture(&registry, &render_configs);
+
+        let inserted = present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Workspace,
+                OverlayModel::single(OverlayRow::preview("workspace", "failed render")),
+            ),
+            ResolvedPlacement::default(),
+            now,
+        );
+        render_configs.insert(inserted.id, crate::config::Config::default().overlay);
+        assert_eq!(registry.entries().len(), 1);
+        assert_eq!(render_configs.len(), 1);
+
+        snapshot.restore(&mut registry, &mut render_configs);
+
+        assert!(registry.entries().is_empty());
+        assert!(render_configs.is_empty());
     }
 
     #[test]
