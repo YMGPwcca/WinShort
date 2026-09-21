@@ -352,7 +352,10 @@ impl App {
                     origin,
                     self.foreground_seen,
                     changed,
-                    crate::app::config().overlay.notifications.current_app_audio,
+                    crate::app::config()
+                        .overlay
+                        .notifications
+                        .external_current_app_audio,
                     status_request_matches,
                 );
                 self.foreground_state = state;

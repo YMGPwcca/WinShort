@@ -80,9 +80,11 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                             cfg.overlay.blur.as_str()
                         ));
                     }
-                    if toml.overlay.show_external_audio_changes.is_some() {
+                    if parsed_schema < CURRENT_SCHEMA_VERSION
+                        && toml.overlay.show_external_audio_changes.is_some()
+                    {
                         migrations.push(
-                            "overlay.show_external_audio_changes migrated to overlay.show_current_app_audio"
+                            "overlay.show_external_audio_changes preserved as the external current-app audio notification policy"
                                 .into(),
                         );
                     }

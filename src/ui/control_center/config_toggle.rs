@@ -50,6 +50,14 @@ impl ConfigToggle {
     }
 
     pub(super) fn toggle(self, config: &mut Config) {
+        if matches!(self, Self::OverlayCurrentAppAudio) {
+            let value = !config.overlay.notifications.current_app_audio;
+            config.overlay.notifications.current_app_audio = value;
+            // Explicit use of the v11 master switch adopts v11 semantics and
+            // clears any narrower migrated external-change policy.
+            config.overlay.notifications.external_current_app_audio = value;
+            return;
+        }
         let value = match self {
             Self::PauseShortcuts => &mut config.general.start_hotkeys_enabled,
             Self::Workspaces => &mut config.virtual_desktops.enabled,
@@ -58,9 +66,9 @@ impl ConfigToggle {
             Self::Overlay => &mut config.overlay.enabled,
             Self::OverlayMicrophone => &mut config.overlay.notifications.microphone,
             Self::OverlaySpeaker => &mut config.overlay.notifications.speaker,
-            Self::OverlayCurrentAppAudio => &mut config.overlay.notifications.current_app_audio,
             Self::OverlayWorkspace => &mut config.overlay.notifications.workspace,
             Self::OverlayDisplayProfile => &mut config.overlay.notifications.display_profile,
+            Self::OverlayCurrentAppAudio => unreachable!(),
         };
         *value = !*value;
     }
@@ -95,5 +103,20 @@ mod tests {
             assert_eq!(toggle.selected(&config), before);
         }
         assert!(ConfigToggle::from_element(ElementId::Search).is_none());
+    }
+
+    #[test]
+    fn current_app_toggle_reconciles_legacy_external_policy() {
+        let mut config = Config::default();
+        config.overlay.notifications.current_app_audio = true;
+        config.overlay.notifications.external_current_app_audio = false;
+
+        ConfigToggle::OverlayCurrentAppAudio.toggle(&mut config);
+        assert!(!config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
+
+        ConfigToggle::OverlayCurrentAppAudio.toggle(&mut config);
+        assert!(config.overlay.notifications.current_app_audio);
+        assert!(config.overlay.notifications.external_current_app_audio);
     }
 }

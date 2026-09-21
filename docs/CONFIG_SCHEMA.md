@@ -94,7 +94,7 @@ enum OverlayAppearance { System, Dark, Light }
 enum OverlayNotificationCategory { Microphone, Speaker, CurrentAppAudio, Workspace, DisplayProfile }
 struct OverlayNotifications {
   microphone: bool, speaker: bool, current_app_audio: bool,
-  workspace: bool, display_profile: bool
+  external_current_app_audio: bool, workspace: bool, display_profile: bool
 }
 enum EndpointRole { Console, Multimedia, Communications }
 struct AudioCfg {
@@ -266,7 +266,14 @@ introduced fields. Legacy `overlay.opacity` is migrated to `overlay.blur` before
 | `(0.65, 1.00]` | `blur-medium` |
 
 Legacy migration never selects `blur-heavy` or `solid`; those are new opt-in treatments.
-The legacy `overlay.show_external_audio_changes` key maps to
-`overlay.show_current_app_audio`. Both legacy keys are read for migration,
-reported in load diagnostics, and omitted from the next Save. A successful Save
-writes schema v11 and updates active load diagnostics to source v11.
+The legacy `overlay.show_external_audio_changes` key keeps its original narrow
+meaning: it controls unsolicited external current-app change toasts only. Migration
+leaves the v11 `overlay.show_current_app_audio` category master enabled, so
+WinShort-triggered current-app feedback and explicit status snapshots retain their
+legacy behavior. Internally this becomes `external_current_app_audio`.
+
+On Save, the legacy wire key is omitted when that policy matches the v11 master.
+It is retained only as a compatibility override when the two differ. Explicitly
+toggling Current app audio in the v11 Control Center synchronizes both policies,
+so the compatibility override disappears on the next Save. A successful Save
+still writes schema v11 and updates active load diagnostics to source v11.

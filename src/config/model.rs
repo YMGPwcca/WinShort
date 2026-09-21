@@ -163,7 +163,14 @@ pub enum OverlayNotificationCategory {
 pub struct OverlayNotifications {
     pub microphone: bool,
     pub speaker: bool,
+    /// Master category switch for current-app rows, including WinShort actions
+    /// and explicit status snapshots.
     pub current_app_audio: bool,
+    /// Whether unsolicited external current-app changes may create a toast.
+    ///
+    /// This remains separate so legacy `show_external_audio_changes = false`
+    /// keeps its narrower behavior without disabling WinShort feedback.
+    pub external_current_app_audio: bool,
     pub workspace: bool,
     pub display_profile: bool,
 }
@@ -186,6 +193,7 @@ impl Default for OverlayNotifications {
             microphone: true,
             speaker: true,
             current_app_audio: true,
+            external_current_app_audio: true,
             workspace: true,
             display_profile: true,
         }
@@ -627,8 +635,10 @@ pub struct OverlayToml {
     /// documents, then omitted from every subsequent save.
     #[serde(default, skip_serializing)]
     pub opacity: Option<f32>,
-    /// Legacy external-audio toggle. It maps to current-app audio notices.
-    #[serde(default, skip_serializing)]
+    /// Legacy external-audio toggle. On schema-v11 it is retained only as a
+    /// compatibility override when external-change policy differs from the
+    /// current-app category master switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_external_audio_changes: Option<bool>,
 }
 
@@ -932,7 +942,12 @@ impl Config {
                 show_workspace: self.overlay.notifications.workspace,
                 show_display_profile: self.overlay.notifications.display_profile,
                 opacity: None,
-                show_external_audio_changes: None,
+                show_external_audio_changes: (self
+                    .overlay
+                    .notifications
+                    .external_current_app_audio
+                    != self.overlay.notifications.current_app_audio)
+                    .then_some(self.overlay.notifications.external_current_app_audio),
             },
             audio: AudioToml {
                 input_role: self.audio.input_role.as_str().into(),
@@ -1077,22 +1092,23 @@ impl Config {
                 t.overlay.appearance
             )),
         }
+        let external_current_app_audio =
+            t.overlay
+                .show_external_audio_changes
+                .unwrap_or(t.overlay.show_current_app_audio);
+        if t.schema_version < CURRENT_SCHEMA_VERSION
+            && t.overlay.show_external_audio_changes.is_some()
+        {
+            warnings.push(
+                "overlay.show_external_audio_changes preserved as the external current-app audio notification policy"
+                    .into(),
+            );
+        }
         c.overlay.notifications = OverlayNotifications {
             microphone: t.overlay.show_microphone,
             speaker: t.overlay.show_speaker,
-            current_app_audio: if t.schema_version < CURRENT_SCHEMA_VERSION {
-                if let Some(value) = t.overlay.show_external_audio_changes {
-                    warnings.push(
-                        "overlay.show_external_audio_changes migrated to overlay.show_current_app_audio"
-                            .into(),
-                    );
-                    value
-                } else {
-                    t.overlay.show_current_app_audio
-                }
-            } else {
-                t.overlay.show_current_app_audio
-            },
+            current_app_audio: t.overlay.show_current_app_audio,
+            external_current_app_audio,
             workspace: t.overlay.show_workspace,
             display_profile: t.overlay.show_display_profile,
         };
@@ -1675,6 +1691,41 @@ mod hotkey_schema_tests {
     }
 
     #[test]
+    fn schema_v11_category_switch_defaults_external_policy_to_the_same_value() {
+        let raw = r#"
+schema_version = 11
+[overlay]
+show_current_app_audio = false
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
+        let saved = toml::to_string_pretty(&config.to_toml()).unwrap();
+        assert!(saved.contains("show_current_app_audio = false"));
+        assert!(!saved.contains("show_external_audio_changes"));
+    }
+
+    #[test]
+    fn schema_v11_compatibility_override_round_trips_narrow_external_policy() {
+        let raw = r#"
+schema_version = 11
+[overlay]
+show_current_app_audio = true
+show_external_audio_changes = false
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
+        let saved = toml::to_string_pretty(&config.to_toml()).unwrap();
+        assert!(saved.contains("show_current_app_audio = true"));
+        assert!(saved.contains("show_external_audio_changes = false"));
+    }
+
+    #[test]
     fn schema_v2_preserves_existing_values_and_defaults_new_hotkeys() {
         let raw = r#"
 schema_version = 2
@@ -1701,7 +1752,8 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
             .any(|warning| warning.contains("show_external_audio_changes")));
         assert!(!config.general.start_hotkeys_enabled);
         assert_eq!(config.overlay.appearance, OverlayAppearance::Dark);
-        assert!(!config.overlay.notifications.current_app_audio);
+        assert!(config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
         assert_eq!(
             config.audio.output_device,
             DeviceSelection::Endpoint("opaque-output-id".into())
@@ -1734,15 +1786,17 @@ show_external_audio_changes = false
         let boundary: ConfigToml = toml::from_str(raw).unwrap();
         let (config, warnings) = Config::from_toml(&boundary);
         assert_eq!(config.overlay.blur, OverlayBlur::BlurLight);
-        assert!(!config.overlay.notifications.current_app_audio);
+        assert!(config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
         assert!(warnings.iter().any(|warning| warning.contains("opacity")));
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("show_external_audio_changes")));
         let saved = toml::to_string_pretty(&config.to_toml()).unwrap();
         assert!(saved.contains("blur = \"blur-light\""));
+        assert!(saved.contains("show_current_app_audio = true"));
+        assert!(saved.contains("show_external_audio_changes = false"));
         assert!(!saved.contains("opacity"));
-        assert!(!saved.contains("show_external_audio_changes"));
     }
     #[test]
     fn legacy_opacity_boundaries_never_introduce_new_treatments() {
