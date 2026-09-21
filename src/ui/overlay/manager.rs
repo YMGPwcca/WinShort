@@ -457,8 +457,7 @@ impl OverlayManager {
         if request.model.rows.is_empty() {
             return Ok(());
         }
-        let snapshot =
-            PresentationStateSnapshot::capture(&self.registry, &self.render_configs);
+        let snapshot = PresentationStateSnapshot::capture(&self.registry, &self.render_configs);
         let presentation_started_at = Instant::now();
         let motion = motion_policy(crate::platform::visual::SystemVisualPreferences::query());
         let placement = self.placement_for_presentation(&request, &config);
