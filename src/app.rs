@@ -1520,6 +1520,78 @@ impl App {
         );
     }
 
+    pub(super) fn show_deterministic_acceptance_multicard(&mut self) {
+        self.acceptance_overlay_only = true;
+        self.hide_all_overlays_for_acceptance();
+        let config = crate::app::config().overlay.clone();
+        let requests = [
+            crate::ui::overlay::OverlayRequest::permanent(
+                crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                    category: Some(
+                        crate::config::model::OverlayNotificationCategory::Microphone,
+                    ),
+                    icon: crate::ui::overlay::OverlayIcon::Microphone,
+                    tone: crate::ui::overlay::OverlayTone::Muted,
+                    title: "Microphone muted".into(),
+                    detail: "Acceptance permanent card".into(),
+                }),
+            ),
+            crate::ui::overlay::OverlayRequest::toast(
+                crate::ui::overlay::OverlayKey::Speaker,
+                crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                    category: Some(crate::config::model::OverlayNotificationCategory::Speaker),
+                    icon: crate::ui::overlay::OverlayIcon::Output,
+                    tone: crate::ui::overlay::OverlayTone::Changed,
+                    title: "Speaker changed".into(),
+                    detail: "Acceptance speaker toast".into(),
+                }),
+            ),
+            crate::ui::overlay::OverlayRequest::toast(
+                crate::ui::overlay::OverlayKey::Workspace,
+                crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                    category: Some(crate::config::model::OverlayNotificationCategory::Workspace),
+                    icon: crate::ui::overlay::OverlayIcon::Workspace,
+                    tone: crate::ui::overlay::OverlayTone::Changed,
+                    title: "Workspace changed".into(),
+                    detail: "Acceptance workspace toast".into(),
+                }),
+            ),
+        ];
+        let Some(overlay) = &mut self.overlay else {
+            return;
+        };
+        for request in requests {
+            if let Err(error) = overlay.present(request, config.clone()) {
+                crate::error_!("multi-card acceptance overlay show failed: {error}");
+                break;
+            }
+        }
+    }
+
+    pub(super) fn replace_deterministic_acceptance_speaker(&mut self) {
+        self.acceptance_overlay_only = true;
+        let config = crate::app::config().overlay.clone();
+        let Some(overlay) = &mut self.overlay else {
+            return;
+        };
+        if let Err(error) = overlay.present(
+            crate::ui::overlay::OverlayRequest::toast(
+                crate::ui::overlay::OverlayKey::Speaker,
+                crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                    category: Some(crate::config::model::OverlayNotificationCategory::Speaker),
+                    icon: crate::ui::overlay::OverlayIcon::Output,
+                    tone: crate::ui::overlay::OverlayTone::Changed,
+                    title: "Speaker replaced".into(),
+                    detail: "Acceptance replacement toast".into(),
+                }),
+            ),
+            config,
+        ) {
+            crate::error_!("multi-card acceptance speaker replacement failed: {error}");
+        }
+    }
+
     fn show_status_overlay(&mut self) {
         if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
             self.show_deterministic_acceptance_overlay();
@@ -1771,6 +1843,20 @@ unsafe extern "system" fn main_wndproc(
         event::WM_APP_UI_ACCEPTANCE_HIDE_ALL_OVERLAYS => {
             if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
                 with_app(App::hide_all_overlays_for_acceptance);
+            }
+            LRESULT(0)
+        }
+
+        event::WM_APP_UI_ACCEPTANCE_SHOW_MULTI_OVERLAY => {
+            if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
+                with_app(App::show_deterministic_acceptance_multicard);
+            }
+            LRESULT(0)
+        }
+
+        event::WM_APP_UI_ACCEPTANCE_REPLACE_SPEAKER_OVERLAY => {
+            if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() {
+                with_app(App::replace_deterministic_acceptance_speaker);
             }
             LRESULT(0)
         }

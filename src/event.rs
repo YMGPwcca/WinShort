@@ -16,6 +16,8 @@ pub const WM_APP_EVENT: u32 = 0x8002; // wake-only; payload lives in [`EVENTS`]
 /// release-process acceptance run.
 pub const WM_APP_UI_ACCEPTANCE_SHOW_DETERMINISTIC_OVERLAY: u32 = 0x8003;
 pub const WM_APP_UI_ACCEPTANCE_HIDE_ALL_OVERLAYS: u32 = 0x8004;
+pub const WM_APP_UI_ACCEPTANCE_SHOW_MULTI_OVERLAY: u32 = 0x8005;
+pub const WM_APP_UI_ACCEPTANCE_REPLACE_SPEAKER_OVERLAY: u32 = 0x8006;
 
 /// Actions produced by the keyboard engine. Small enough to pack into a WPARAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
