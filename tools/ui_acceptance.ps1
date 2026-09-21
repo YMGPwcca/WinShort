@@ -525,7 +525,8 @@ function New-ProcessStartInfo {
         [string]$PickerTheme,
         [bool]$AcceptanceTrigger,
         [bool]$ForceOpaque = $false,
-        [bool]$ForceCompositionFailure = $false
+        [bool]$ForceCompositionFailure = $false,
+        [bool]$ForceRenderFailure = $false
     )
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Executable
@@ -537,6 +538,7 @@ function New-ProcessStartInfo {
     $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_NO_EXTERNAL'] = '1'
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_OPAQUE') | Out-Null
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_COMPOSITION_FAILURE') | Out-Null
+    $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_RENDER_FAILURE') | Out-Null
     if ($AcceptanceTrigger) {
         $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-deterministic-acceptance-overlay'
     } else {
@@ -548,6 +550,9 @@ function New-ProcessStartInfo {
     if ($ForceCompositionFailure) {
         $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_FORCE_COMPOSITION_FAILURE'] = '1'
     }
+    if ($ForceRenderFailure) {
+        $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_FORCE_RENDER_FAILURE'] = '1'
+    }
     return $info
 }
 
@@ -557,7 +562,8 @@ function Start-WinShort {
         [string]$PickerTheme,
         [bool]$AcceptanceTrigger,
         [bool]$ForceOpaque = $false,
-        [bool]$ForceCompositionFailure = $false
+        [bool]$ForceCompositionFailure = $false,
+        [bool]$ForceRenderFailure = $false
     )
     $info = New-ProcessStartInfo `
         $ExePath `
@@ -565,7 +571,8 @@ function Start-WinShort {
         $PickerTheme `
         $AcceptanceTrigger `
         $ForceOpaque `
-        $ForceCompositionFailure
+        $ForceCompositionFailure `
+        $ForceRenderFailure
     return [System.Diagnostics.Process]::Start($info)
 }
 
@@ -1262,6 +1269,69 @@ show_external_audio_changes = false
     }
 }
 
+function Invoke-RenderFailureVisibilityScenario {
+    param([string]$Name)
+
+    $scenarioDirectory = Join-Path $ResultRoot $Name
+    $dataDirectory = Join-Path $scenarioDirectory 'data'
+    New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
+    $config = @"
+schema_version = 10
+
+[overlay]
+enabled = true
+duration_ms = 10000
+position = "bottom-right"
+monitor = "primary"
+scale = 1.0
+opacity = 1.0
+appearance = "dark"
+show_external_audio_changes = false
+"@
+    Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
+
+    $process = $null
+    try {
+        $process = Start-WinShort $dataDirectory 'dark' $true $false $false $true
+        Assert-Condition ($null -ne $process) "could not start $Name release binary"
+        $mainHwnd = Wait-Until {
+            if ($process.HasExited) { return $null }
+            $candidate = [WinShortUiAcceptance.Native]::FindMessageWindowForProcess($process.Id, 'WinShort.Main')
+            if ($candidate -eq [IntPtr]::Zero) { return $null }
+            $candidate
+        } "$Name main message window did not appear"
+
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowDeterministicOverlayMessage) | Out-Null
+        Start-Sleep -Milliseconds 350
+        $visible = @([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+            $process.Id,
+            'WinShort.Overlay'
+        ))
+        Assert-Condition ($visible.Count -eq 0) "$Name exposed an overlay HWND after forced render failure"
+
+        Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process
+        $logs = Get-Content (Join-Path $dataDirectory 'logs\*.log') -Raw -ErrorAction SilentlyContinue
+        $failureLogged = $logs -match 'overlay show failed: forced acceptance overlay render failure'
+        Assert-Condition $failureLogged "$Name did not exercise the forced render-failure path"
+
+        return [pscustomobject]@{
+            Name = $Name
+            VisibleOverlayCount = $visible.Count
+            FailureLogged = $failureLogged
+        }
+    }
+    finally {
+        if ($null -ne $process) {
+            if (-not $process.HasExited) {
+                $process.Kill() | Out-Null
+                $process.WaitForExit(5000) | Out-Null
+            }
+            try { Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process } catch { }
+            $process.Dispose()
+        }
+    }
+}
+
 $existing = Get-Process -Name 'winshort' -ErrorAction SilentlyContinue
 Assert-Condition ($null -eq $existing) 'an existing winshort.exe is running; refusing to touch the user process'
 
@@ -1541,6 +1611,7 @@ show_external_audio_changes = false
         Assert-Condition ([Math]::Abs($fallback.Height - $overlayResults[0].Height) -le 2) "$($fallback.Name) height differs from Composition card"
     }
 
+    $renderFailureResult = Invoke-RenderFailureVisibilityScenario -Name 'render-failure-remains-hidden'
 
     for ($index = 1; $index -lt $overlayResults.Count; $index++) {
         Assert-Condition ([Math]::Abs($overlayResults[$index].Width - $overlayResults[0].Width) -le 2) 'runtime overlay widths differ between appearance styles'
@@ -1557,6 +1628,7 @@ show_external_audio_changes = false
         }
         HistoricalDwmReplay = $historicalReplay
         Fallback = $fallbackResults
+        RenderFailureVisibility = $renderFailureResult
         Acceptance = [pscustomobject]@{
             RuntimeOverlay = $overlayResults
             ControlCenterAndPickers = $scenarioResults
