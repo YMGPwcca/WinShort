@@ -50,13 +50,17 @@ fn default_role_bit(role: EndpointRole) -> u8 {
     }
 }
 
-fn default_roles_requiring_change(
+fn default_roles_known_to_change(
     defaults: &crate::audio::devices::DefaultDevices,
     target: &crate::audio::DeviceId,
 ) -> u8 {
     crate::audio::devices::ALL_ENDPOINT_ROLES
         .into_iter()
-        .filter(|role| !defaults.role_matches(*role, target))
+        .filter(|role| {
+            defaults
+                .for_role(*role)
+                .is_some_and(|current| current.endpoint != target.endpoint)
+        })
         .fold(0, |mask, role| mask | default_role_bit(role))
 }
 
@@ -534,7 +538,7 @@ impl AudioController {
                 error: "selected endpoint is no longer active".into(),
             };
         };
-        let expected_roles = default_roles_requiring_change(&defaults, &device);
+        let expected_roles = default_roles_known_to_change(&defaults, &device);
         let selection = crate::audio::devices::default_selection_result(flow, &defaults, device);
         let DeviceCycleResult::Changed {
             flow,
@@ -544,7 +548,6 @@ impl AudioController {
         else {
             return selection;
         };
-        debug_assert_ne!(expected_roles, 0);
         if let Err(error) =
             crate::audio::devices::set_system_default(&self.enumerator, endpoint_flow, &device)
         {
@@ -555,12 +558,14 @@ impl AudioController {
                 error: error.to_string(),
             };
         }
-        self.pending_default_switches.push(PendingDefaultSwitch {
-            flow: endpoint_flow,
-            endpoint: device.endpoint.clone(),
-            expected_roles,
-            observed_roles: 0,
-        });
+        if expected_roles != 0 {
+            self.pending_default_switches.push(PendingDefaultSwitch {
+                flow: endpoint_flow,
+                endpoint: device.endpoint.clone(),
+                expected_roles,
+                observed_roles: 0,
+            });
+        }
         let snapshot = self.config.snapshot();
         self.rebuild_all(
             false,
@@ -607,15 +612,18 @@ impl AudioController {
             DeviceCycleResult::NoDevices { flow, previous } => {
                 DeviceCycleResult::NoDevices { flow, previous }
             }
-            DeviceCycleResult::Changed {
-                flow,
-                previous,
-                device,
-            } => {
-                let expected_roles = default_roles_requiring_change(&defaults, &device);
-                if expected_roles == 0 {
-                    return DeviceCycleResult::AlreadySelected { flow, device };
-                }
+            DeviceCycleResult::Changed { device, .. } => {
+                let selection =
+                    crate::audio::devices::default_selection_result(flow, &defaults, device);
+                let DeviceCycleResult::Changed {
+                    flow,
+                    previous,
+                    device,
+                } = selection
+                else {
+                    return selection;
+                };
+                let expected_roles = default_roles_known_to_change(&defaults, &device);
                 if let Err(error) = crate::audio::devices::set_system_default(
                     &self.enumerator,
                     endpoint_flow,
@@ -628,12 +636,14 @@ impl AudioController {
                         error: error.to_string(),
                     };
                 }
-                self.pending_default_switches.push(PendingDefaultSwitch {
-                    flow: endpoint_flow,
-                    endpoint: device.endpoint.clone(),
-                    expected_roles,
-                    observed_roles: 0,
-                });
+                if expected_roles != 0 {
+                    self.pending_default_switches.push(PendingDefaultSwitch {
+                        flow: endpoint_flow,
+                        endpoint: device.endpoint.clone(),
+                        expected_roles,
+                        observed_roles: 0,
+                    });
+                }
                 let snapshot = self.config.snapshot();
                 self.rebuild_all(
                     false,
@@ -1024,7 +1034,7 @@ mod tests {
                 name: "Other communications".into(),
             }),
         };
-        let expected_roles = default_roles_requiring_change(&defaults, &target);
+        let expected_roles = default_roles_known_to_change(&defaults, &target);
         assert_eq!(expected_roles, 0b110);
 
         let mut pending = vec![PendingDefaultSwitch {

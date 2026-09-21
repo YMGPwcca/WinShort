@@ -673,6 +673,24 @@ mod cycle_tests {
     }
 
     #[test]
+    fn unreadable_role_never_turns_partial_state_into_already_selected() {
+        let target = device("target-id", "Target");
+        let defaults = DefaultDevices {
+            console: Some(target.clone()),
+            multimedia: Some(target.clone()),
+            communications: None,
+        };
+        assert_eq!(
+            default_selection_result(DeviceCycleFlow::Output, &defaults, target.clone()),
+            DeviceCycleResult::Changed {
+                flow: DeviceCycleFlow::Output,
+                previous: Some(target.clone()),
+                device: target,
+            }
+        );
+    }
+
+    #[test]
     fn selecting_a_different_endpoint_reports_a_change() {
         let previous = device("previous-id", "Previous");
         let target = device("target-id", "Target");
