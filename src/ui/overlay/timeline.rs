@@ -43,6 +43,42 @@ pub(super) fn toast_deadline(
     presentation_started + appear + hold_duration
 }
 
+fn deadline_interval_ms(now: Instant, deadline: Instant) -> u32 {
+    deadline
+        .saturating_duration_since(now)
+        .as_millis()
+        .clamp(1, u32::MAX as u128) as u32
+}
+
+/// Choose the next HWND timer interval without coupling the fully-visible hold
+/// phase to the animation cadence.
+///
+/// Animated appear/leave frames and active position tweens still tick at
+/// `TIMER_MS`. A stationary toast in `Holding` arms directly to its expiry
+/// deadline, while permanent cards stop their timer entirely.
+pub(super) fn timer_interval_for_card(
+    phase: Phase,
+    motion: MotionPolicy,
+    position_tween_active: bool,
+    expires_at: Option<Instant>,
+    now: Instant,
+) -> Option<u32> {
+    if phase == Phase::Hidden {
+        return None;
+    }
+    if position_tween_active {
+        return Some(TIMER_MS);
+    }
+    if motion == MotionPolicy::Reduced {
+        return expires_at.map(|deadline| deadline_interval_ms(now, deadline));
+    }
+    match phase {
+        Phase::Appearing | Phase::Leaving => Some(TIMER_MS),
+        Phase::Holding => expires_at.map(|deadline| deadline_interval_ms(now, deadline)),
+        Phase::Hidden => None,
+    }
+}
+
 /// Give every entry generation a different HWND timer identity. A stale
 /// WM_TIMER posted for a released card consequently cannot tick a reused
 /// HWND's new assignment.

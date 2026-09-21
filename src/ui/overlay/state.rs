@@ -7,8 +7,8 @@ use super::palette::{
     composition_blur_enabled, opaque_palette, palette_for, resolved_theme_mode, OverlayPalette,
 };
 use super::timeline::{
-    motion_policy, timer_id_for_generation, timing_after_show, MotionPolicy, Phase, PositionTween,
-    ShowMode, ShowPlan, TickPlan, APPEAR_MS, LEAVE_MS, TIMER_MS,
+    motion_policy, timer_id_for_generation, timer_interval_for_card, timing_after_show,
+    MotionPolicy, Phase, PositionTween, ShowMode, ShowPlan, TickPlan, APPEAR_MS, LEAVE_MS,
 };
 use crate::config::model::{OverlayBlur, OverlayCfg};
 use crate::error::Result;
@@ -151,32 +151,14 @@ impl OverlayState {
             region: window_region_for(self.surface_size, self.dpi),
             alpha,
             timer_id: self.timer_id,
-            timer_interval: self.timer_interval(),
-        }
-    }
-
-    pub(super) fn timer_interval(&self) -> Option<u32> {
-        if self.phase == Phase::Hidden {
-            return None;
-        }
-        if self
-            .position_tween
-            .is_some_and(|tween| !tween.is_finished(Instant::now()))
-        {
-            return Some(TIMER_MS);
-        }
-        if self.motion == MotionPolicy::Reduced {
-            return self.expires_at.map(|expires_at| {
-                expires_at
-                    .saturating_duration_since(Instant::now())
-                    .as_millis()
-                    .clamp(1, u32::MAX as u128) as u32
-            });
-        }
-        match self.phase {
-            Phase::Appearing | Phase::Leaving => Some(TIMER_MS),
-            Phase::Holding if self.expires_at.is_some() => Some(TIMER_MS),
-            Phase::Holding | Phase::Hidden => None,
+            timer_interval: timer_interval_for_card(
+                self.phase,
+                self.motion,
+                self.position_tween
+                    .is_some_and(|tween| !tween.is_finished(now)),
+                self.expires_at,
+                now,
+            ),
         }
     }
 

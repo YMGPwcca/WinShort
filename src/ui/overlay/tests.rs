@@ -831,6 +831,84 @@ fn toast_deadline_reserves_appear_only_for_animated_motion() {
 }
 
 #[test]
+fn stationary_holding_toast_arms_its_deadline_instead_of_animation_ticks() {
+    let now = Instant::now();
+    let deadline = now + Duration::from_secs(5);
+    assert_eq!(
+        timer_interval_for_card(
+            Phase::Holding,
+            MotionPolicy::Animated,
+            false,
+            Some(deadline),
+            now,
+        ),
+        Some(5_000)
+    );
+}
+
+#[test]
+fn animation_and_position_tween_keep_the_frame_timer() {
+    let now = Instant::now();
+    let deadline = now + Duration::from_secs(5);
+    for phase in [Phase::Appearing, Phase::Leaving] {
+        assert_eq!(
+            timer_interval_for_card(
+                phase,
+                MotionPolicy::Animated,
+                false,
+                Some(deadline),
+                now,
+            ),
+            Some(TIMER_MS)
+        );
+    }
+    assert_eq!(
+        timer_interval_for_card(
+            Phase::Holding,
+            MotionPolicy::Animated,
+            true,
+            Some(deadline),
+            now,
+        ),
+        Some(TIMER_MS)
+    );
+}
+
+#[test]
+fn permanent_holding_card_has_no_timer_and_reduced_motion_waits_for_expiry() {
+    let now = Instant::now();
+    assert_eq!(
+        timer_interval_for_card(Phase::Holding, MotionPolicy::Animated, false, None, now),
+        None
+    );
+    assert_eq!(
+        timer_interval_for_card(
+            Phase::Holding,
+            MotionPolicy::Reduced,
+            false,
+            Some(now + Duration::from_millis(2_500)),
+            now,
+        ),
+        Some(2_500)
+    );
+}
+
+#[test]
+fn expired_holding_deadline_rearms_promptly_for_transition() {
+    let now = Instant::now();
+    assert_eq!(
+        timer_interval_for_card(
+            Phase::Holding,
+            MotionPolicy::Animated,
+            false,
+            Some(now),
+            now,
+        ),
+        Some(1)
+    );
+}
+
+#[test]
 fn relayout_position_tween_is_smooth_and_reduced_motion_is_immediate() {
     let started = Instant::now();
     let from = POINT { x: 0, y: 0 };

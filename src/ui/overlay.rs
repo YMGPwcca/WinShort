@@ -31,8 +31,9 @@ use self::palette::{
 };
 #[cfg(test)]
 use self::timeline::{
-    motion_policy, prepare_state_plan, timing_after_show, toast_deadline, MotionPolicy, Phase,
-    PositionTween, ShowMode, ShowPlan, WindowRegion, APPEAR_MS, POSITION_TWEEN_MS, TIMER_MS,
+    motion_policy, prepare_state_plan, timer_interval_for_card, timing_after_show, toast_deadline,
+    MotionPolicy, Phase, PositionTween, ShowMode, ShowPlan, WindowRegion, APPEAR_MS,
+    POSITION_TWEEN_MS, TIMER_MS,
 };
 #[cfg(test)]
 use crate::config::model::{OverlayAppearance, OverlayBlur, OverlayPosition};
