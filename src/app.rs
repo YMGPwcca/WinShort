@@ -1528,9 +1528,7 @@ impl App {
             crate::ui::overlay::OverlayRequest::permanent(
                 crate::ui::overlay::OverlayKey::MicrophonePermanent,
                 crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
-                    category: Some(
-                        crate::config::model::OverlayNotificationCategory::Microphone,
-                    ),
+                    category: Some(crate::config::model::OverlayNotificationCategory::Microphone),
                     icon: crate::ui::overlay::OverlayIcon::Microphone,
                     tone: crate::ui::overlay::OverlayTone::Muted,
                     title: "Microphone muted".into(),
