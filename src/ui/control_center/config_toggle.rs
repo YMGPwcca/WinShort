@@ -50,27 +50,44 @@ impl ConfigToggle {
     }
 
     pub(super) fn toggle(self, config: &mut Config) {
-        if matches!(self, Self::OverlayCurrentAppAudio) {
-            let value = !config.overlay.notifications.current_app_audio;
-            config.overlay.notifications.current_app_audio = value;
-            // Explicit use of the v11 master switch adopts v11 semantics and
-            // clears any narrower migrated external-change policy.
-            config.overlay.notifications.external_current_app_audio = value;
-            return;
+        match self {
+            Self::PauseShortcuts => {
+                config.general.start_hotkeys_enabled = !config.general.start_hotkeys_enabled;
+            }
+            Self::Workspaces => {
+                config.virtual_desktops.enabled = !config.virtual_desktops.enabled;
+            }
+            Self::WorkspaceNumbers => {
+                config.virtual_desktops.win_number_switching =
+                    !config.virtual_desktops.win_number_switching;
+            }
+            Self::DisplayProfiles => {
+                config.display_profiles.enabled = !config.display_profiles.enabled;
+            }
+            Self::Overlay => {
+                config.overlay.enabled = !config.overlay.enabled;
+            }
+            Self::OverlayMicrophone => {
+                config.overlay.notifications.microphone = !config.overlay.notifications.microphone;
+            }
+            Self::OverlaySpeaker => {
+                config.overlay.notifications.speaker = !config.overlay.notifications.speaker;
+            }
+            Self::OverlayCurrentAppAudio => {
+                let value = !config.overlay.notifications.current_app_audio;
+                config.overlay.notifications.current_app_audio = value;
+                // Explicit use of the v11 master switch adopts v11 semantics
+                // and clears any narrower migrated external-change policy.
+                config.overlay.notifications.external_current_app_audio = value;
+            }
+            Self::OverlayWorkspace => {
+                config.overlay.notifications.workspace = !config.overlay.notifications.workspace;
+            }
+            Self::OverlayDisplayProfile => {
+                config.overlay.notifications.display_profile =
+                    !config.overlay.notifications.display_profile;
+            }
         }
-        let value = match self {
-            Self::PauseShortcuts => &mut config.general.start_hotkeys_enabled,
-            Self::Workspaces => &mut config.virtual_desktops.enabled,
-            Self::WorkspaceNumbers => &mut config.virtual_desktops.win_number_switching,
-            Self::DisplayProfiles => &mut config.display_profiles.enabled,
-            Self::Overlay => &mut config.overlay.enabled,
-            Self::OverlayMicrophone => &mut config.overlay.notifications.microphone,
-            Self::OverlaySpeaker => &mut config.overlay.notifications.speaker,
-            Self::OverlayWorkspace => &mut config.overlay.notifications.workspace,
-            Self::OverlayDisplayProfile => &mut config.overlay.notifications.display_profile,
-            Self::OverlayCurrentAppAudio => unreachable!(),
-        };
-        *value = !*value;
     }
 }
 

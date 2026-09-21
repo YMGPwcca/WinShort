@@ -2436,6 +2436,64 @@ mod shutdown_gate_tests {
     }
 
     #[test]
+    fn legacy_external_policy_keeps_action_and_status_current_app_feedback() {
+        let mut app = test_app();
+        let mut overlay = crate::config::Config::default().overlay;
+        overlay.notifications.current_app_audio = true;
+        overlay.notifications.external_current_app_audio = false;
+
+        assert!(!App::should_show_audio_overlay(
+            AudioEventOrigin::External,
+            true,
+            true,
+            overlay.notifications.external_current_app_audio,
+            false,
+        ));
+        assert!(App::should_show_audio_overlay(
+            AudioEventOrigin::WinShortAction(7),
+            true,
+            true,
+            overlay.notifications.external_current_app_audio,
+            false,
+        ));
+
+        app.show_overlay_with_config(
+            crate::ui::overlay::OverlayRequest::toast(
+                crate::ui::overlay::OverlayKey::CurrentAppAudio,
+                crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                    category: Some(
+                        crate::config::model::OverlayNotificationCategory::CurrentAppAudio,
+                    ),
+                    icon: crate::ui::overlay::OverlayIcon::Application,
+                    tone: crate::ui::overlay::OverlayTone::Changed,
+                    title: "Current app changed".into(),
+                    detail: "WinShort action feedback".into(),
+                }),
+            ),
+            overlay.clone(),
+        );
+        let action_model = app
+            .test_last_overlay_model
+            .take()
+            .expect("legacy external policy must not suppress WinShort action feedback");
+        assert_eq!(action_model.rows.len(), 1);
+
+        app.foreground_state = crate::audio::AppAudioState {
+            app_name: Some("Test app".into()),
+            aggregate: crate::audio::Aggregate::AllActive,
+            sessions: 1,
+            error: None,
+        };
+        let status_model = app
+            .status_overlay_model()
+            .filter_enabled(overlay.notifications);
+        assert!(status_model.rows.iter().any(|row| {
+            row.category
+                == Some(crate::config::model::OverlayNotificationCategory::CurrentAppAudio)
+        }));
+    }
+
+    #[test]
     fn config_rebuild_origin_does_not_emit_external_overlay() {
         assert!(!App::should_show_audio_overlay(
             AudioEventOrigin::Config(crate::event::ConfigCommitOrigin::DeviceCycle),

@@ -680,6 +680,7 @@ fn explicit_preview_bypasses_notification_categories() {
         microphone: false,
         speaker: false,
         current_app_audio: false,
+        external_current_app_audio: false,
         workspace: false,
         display_profile: false,
     };
