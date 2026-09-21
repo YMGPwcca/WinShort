@@ -1311,7 +1311,7 @@ show_external_audio_changes = false
 
         Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process
         $logs = Get-Content (Join-Path $dataDirectory 'logs\*.log') -Raw -ErrorAction SilentlyContinue
-        $failureLogged = $logs -match 'overlay show failed: forced acceptance overlay render failure'
+        $failureLogged = $logs -match 'overlay show failed: internal error: forced acceptance overlay render failure'
         Assert-Condition $failureLogged "$Name did not exercise the forced render-failure path"
 
         return [pscustomobject]@{
