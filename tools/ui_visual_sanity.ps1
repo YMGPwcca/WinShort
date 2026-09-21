@@ -374,17 +374,21 @@ try {
             New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
 
             $config = @"
-schema_version = 10
+schema_version = 11
 
 [overlay]
 enabled = true
-duration_ms = 10000
+duration_ms = 5000
 position = "center"
 monitor = "primary"
 scale = 1.0
-opacity = 1.0
+blur = "blur-medium"
 appearance = "$appearance"
-show_external_audio_changes = false
+show_microphone = true
+show_speaker = true
+show_current_app_audio = true
+show_workspace = true
+show_display_profile = true
 "@
             Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
 
