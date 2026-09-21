@@ -27,7 +27,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ui_acceptance.ps1
 ```
 
 The harness refuses to run beside an existing `winshort.exe`, uses
-`WINSHORT_DATA_DIR` for an isolated configuration root, exercises the real
+`WINSHORT_DATA_DIR` for an isolated configuration root, boots current-schema
+v11 for the normal matrix, keeps one dedicated v10 migration scenario, exercises
+the three-card permanent-microphone + speaker + workspace stack (including
+same-key replacement/expiry), verifies render failures remain hidden, and exercises the real
 second-instance Control Center activation and Win32 overlay path, captures
 Control Center/picker/runtime-overlay PNGs, and writes a JSON summary below
 `target/ui-acceptance-results/`.
@@ -302,8 +305,10 @@ coalesce with timer reset · negative virtual-screen coordinates · monitor unpl
   status results refresh the multi-row status presentation. Coalesced updates
   preserve the full settled hold.
 
-Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
-flag exists).
+Screenshot-driven QA is implemented inside the isolated machine harness rather than through
+a `--debug-screenshot-*` product flag. It captures deterministic overlay/control-center surfaces,
+runs comparator/blur/outside-card checks, writes heatmaps plus a multi-card capture, and produces
+`runtime-overlay-visual-sheet.png` for the remaining human visual review gate.
 ## G. Process-level smoke (MANUAL / HARDWARE-DEPENDENT)
 
 release exe launches silently · tray icon present · double-click opens one Control Center window ·
