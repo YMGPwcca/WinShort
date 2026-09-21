@@ -942,10 +942,7 @@ impl Config {
                 show_workspace: self.overlay.notifications.workspace,
                 show_display_profile: self.overlay.notifications.display_profile,
                 opacity: None,
-                show_external_audio_changes: (self
-                    .overlay
-                    .notifications
-                    .external_current_app_audio
+                show_external_audio_changes: (self.overlay.notifications.external_current_app_audio
                     != self.overlay.notifications.current_app_audio)
                     .then_some(self.overlay.notifications.external_current_app_audio),
             },
@@ -1092,10 +1089,10 @@ impl Config {
                 t.overlay.appearance
             )),
         }
-        let external_current_app_audio =
-            t.overlay
-                .show_external_audio_changes
-                .unwrap_or(t.overlay.show_current_app_audio);
+        let external_current_app_audio = t
+            .overlay
+            .show_external_audio_changes
+            .unwrap_or(t.overlay.show_current_app_audio);
         if t.schema_version < CURRENT_SCHEMA_VERSION
             && t.overlay.show_external_audio_changes.is_some()
         {

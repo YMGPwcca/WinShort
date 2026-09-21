@@ -367,6 +367,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    fn legacy_external_audio_policy_survives_save_and_reload() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir =
+            std::env::temp_dir().join(format!("ws_schema_external_audio_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            r#"schema_version = 10
+[overlay]
+show_external_audio_changes = false
+"#,
+        )
+        .unwrap();
+
+        let (migrated, warnings) = load(&dir);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("show_external_audio_changes")));
+        assert!(migrated.overlay.notifications.current_app_audio);
+        assert!(!migrated.overlay.notifications.external_current_app_audio);
+
+        crate::config::save::save(&dir, &migrated).unwrap();
+        let saved_text = std::fs::read_to_string(config_path(&dir)).unwrap();
+        assert!(saved_text.contains("schema_version = 11"));
+        assert!(saved_text.contains("show_current_app_audio = true"));
+        assert!(saved_text.contains("show_external_audio_changes = false"));
+
+        let (reloaded, reload_warnings) = load(&dir);
+        assert!(reload_warnings.is_empty(), "{reload_warnings:?}");
+        assert!(reloaded.overlay.notifications.current_app_audio);
+        assert!(!reloaded.overlay.notifications.external_current_app_audio);
+        assert_eq!(reloaded, migrated);
+
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(
+            diagnostics.source_schema_version,
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+        assert!(diagnostics.migrations.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn saving_migrated_config_updates_diagnostics_to_v11() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
