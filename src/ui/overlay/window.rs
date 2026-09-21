@@ -22,8 +22,8 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GetClientRect, GetWindowLongPtrW, KillTimer, SetTimer,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
-    SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
@@ -55,8 +55,7 @@ pub(crate) struct OverlayRuntimeStatus {
     pub last_shown: Option<SystemTime>,
 }
 
-fn apply_show_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -> Result<()> {
-    apply_frame_plan(hwnd, plan, apply_region)?;
+fn commit_prepared_show(hwnd: HWND, plan: ShowPlan) -> Result<()> {
     if let Err(error) = set_timer(hwnd, plan.timer_id, plan.timer_interval) {
         apply_hide_window(hwnd, plan.timer_id);
         return Err(error);
@@ -116,7 +115,7 @@ pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -
             plan.position.y,
             plan.size.cx,
             plan.size.cy,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE,
         )
         .map_err(|error| Error::win("SetWindowPos(overlay)", &error))?;
     }
@@ -261,8 +260,12 @@ impl OverlayWindow {
             set_timer(self.hwnd, previous_timer_id, None)?;
         }
         let apply_region = cell.borrow().requires_window_region();
-        apply_show_plan(self.hwnd, plan, apply_region)?;
-        render_prepared_frame(cell, self.hwnd, plan)
+        apply_frame_plan(self.hwnd, plan, apply_region)?;
+        if let Err(error) = render_prepared_frame(cell, self.hwnd, plan) {
+            apply_hide_window(self.hwnd, plan.timer_id);
+            return Err(error);
+        }
+        commit_prepared_show(self.hwnd, plan)
     }
 
     pub(super) fn set_entry_id(&self, entry_id: u64, generation: u64) -> Result<()> {
