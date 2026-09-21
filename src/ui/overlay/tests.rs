@@ -852,13 +852,7 @@ fn animation_and_position_tween_keep_the_frame_timer() {
     let deadline = now + Duration::from_secs(5);
     for phase in [Phase::Appearing, Phase::Leaving] {
         assert_eq!(
-            timer_interval_for_card(
-                phase,
-                MotionPolicy::Animated,
-                false,
-                Some(deadline),
-                now,
-            ),
+            timer_interval_for_card(phase, MotionPolicy::Animated, false, Some(deadline), now,),
             Some(TIMER_MS)
         );
     }
