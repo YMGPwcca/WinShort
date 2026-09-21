@@ -2488,8 +2488,7 @@ mod shutdown_gate_tests {
             .status_overlay_model()
             .filter_enabled(overlay.notifications);
         assert!(status_model.rows.iter().any(|row| {
-            row.category
-                == Some(crate::config::model::OverlayNotificationCategory::CurrentAppAudio)
+            row.category == Some(crate::config::model::OverlayNotificationCategory::CurrentAppAudio)
         }));
     }
 

@@ -942,7 +942,10 @@ impl Config {
                 show_workspace: self.overlay.notifications.workspace,
                 show_display_profile: self.overlay.notifications.display_profile,
                 opacity: None,
-                show_external_audio_changes: (self.overlay.notifications.external_current_app_audio
+                show_external_audio_changes: (self
+                    .overlay
+                    .notifications
+                    .external_current_app_audio
                     != self.overlay.notifications.current_app_audio)
                     .then_some(self.overlay.notifications.external_current_app_audio),
             },
