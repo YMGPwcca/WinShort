@@ -42,6 +42,17 @@ impl DefaultDevices {
             EndpointRole::Communications => self.communications.as_ref(),
         }
     }
+
+    pub(crate) fn role_matches(&self, role: EndpointRole, target: &DeviceId) -> bool {
+        self.for_role(role)
+            .is_some_and(|current| current.endpoint == target.endpoint)
+    }
+
+    fn all_roles_match(&self, target: &DeviceId) -> bool {
+        ALL_ENDPOINT_ROLES
+            .into_iter()
+            .all(|role| self.role_matches(role, target))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -65,13 +76,11 @@ pub enum DeviceCyclePlan {
 
 pub(crate) fn default_selection_result(
     flow: DeviceCycleFlow,
-    previous: Option<DeviceId>,
+    defaults: &DefaultDevices,
     target: DeviceId,
 ) -> DeviceCycleResult {
-    if previous
-        .as_ref()
-        .is_some_and(|current| current.endpoint == target.endpoint)
-    {
+    let previous = defaults.console.clone();
+    if defaults.all_roles_match(&target) {
         DeviceCycleResult::AlreadySelected {
             flow,
             device: target,
@@ -205,12 +214,21 @@ fn enumerate_defaults(
     defaults
 }
 
-/// Return the current console default, which is the canonical cycle cursor.
-pub(crate) fn current_default_device(
+/// Read the current Windows defaults for all three roles.
+///
+/// A role that cannot be read stays `None`. Callers must therefore treat it
+/// as not converged on any target and run the all-role setter rather than
+/// silently accepting a Console-only match.
+pub(crate) fn current_default_devices(
     enumerator: &IMMDeviceEnumerator,
     flow: EndpointFlow,
-) -> Result<DeviceId> {
-    default_device(enumerator, flow, EndpointRole::Console)
+) -> DefaultDevices {
+    let mut warnings = Vec::new();
+    let defaults = enumerate_defaults(enumerator, flow, &mut warnings);
+    for warning in warnings {
+        crate::warn_!("audio {warning}");
+    }
+    defaults
 }
 
 fn default_device(
@@ -618,11 +636,16 @@ mod cycle_tests {
     }
 
     #[test]
-    fn selecting_current_input_or_output_is_an_explicit_noop() {
+    fn selecting_current_input_or_output_is_a_noop_only_when_all_roles_match() {
         for flow in [DeviceCycleFlow::Input, DeviceCycleFlow::Output] {
             let current = device("current-id", "Current");
+            let defaults = DefaultDevices {
+                console: Some(current.clone()),
+                multimedia: Some(current.clone()),
+                communications: Some(current.clone()),
+            };
             assert_eq!(
-                default_selection_result(flow, Some(current.clone()), current.clone()),
+                default_selection_result(flow, &defaults, current.clone()),
                 DeviceCycleResult::AlreadySelected {
                     flow,
                     device: current,
@@ -632,15 +655,34 @@ mod cycle_tests {
     }
 
     #[test]
+    fn selecting_console_default_repairs_diverged_multimedia_and_communications_roles() {
+        let target = device("target-id", "Target");
+        let defaults = DefaultDevices {
+            console: Some(target.clone()),
+            multimedia: Some(device("multimedia-id", "Multimedia")),
+            communications: Some(device("communications-id", "Communications")),
+        };
+        assert_eq!(
+            default_selection_result(DeviceCycleFlow::Output, &defaults, target.clone()),
+            DeviceCycleResult::Changed {
+                flow: DeviceCycleFlow::Output,
+                previous: Some(target.clone()),
+                device: target,
+            }
+        );
+    }
+
+    #[test]
     fn selecting_a_different_endpoint_reports_a_change() {
         let previous = device("previous-id", "Previous");
         let target = device("target-id", "Target");
+        let defaults = DefaultDevices {
+            console: Some(previous.clone()),
+            multimedia: Some(previous.clone()),
+            communications: Some(previous.clone()),
+        };
         assert_eq!(
-            default_selection_result(
-                DeviceCycleFlow::Output,
-                Some(previous.clone()),
-                target.clone()
-            ),
+            default_selection_result(DeviceCycleFlow::Output, &defaults, target.clone()),
             DeviceCycleResult::Changed {
                 flow: DeviceCycleFlow::Output,
                 previous: Some(previous),
