@@ -659,12 +659,12 @@ impl App {
         origin: AudioEventOrigin,
         seen: bool,
         changed: bool,
-        show_current_app_audio: bool,
+        show_external_current_app_audio: bool,
         status_request_matches: bool,
     ) -> bool {
         match origin {
             AudioEventOrigin::Initial | AudioEventOrigin::Config(_) => false,
-            AudioEventOrigin::External => show_current_app_audio && seen && changed,
+            AudioEventOrigin::External => show_external_current_app_audio && seen && changed,
             AudioEventOrigin::WinShortAction(_) => true,
             AudioEventOrigin::StatusRequest(_) => status_request_matches,
         }
