@@ -1383,7 +1383,7 @@ show_external_audio_changes = false
         return [pscustomobject]@{
             Name = $Name
             SourceSchema = 10
-            EffectiveSchema = 11
+            MigrationBootPassed = $true
             VisibleOverlayCount = 1
             Width = $rectangle.Width
             Height = $rectangle.Height
@@ -1430,6 +1430,10 @@ show_display_profile = true
     try {
         $process = Start-WinShort $dataDirectory 'dark' $true
         Assert-Condition ($null -ne $process) "could not start $Name release binary"
+        Wait-Until {
+            if ($process.HasExited) { return $null }
+            Get-DeterministicOverlayHwnd $process
+        } "$Name startup acceptance overlay did not appear" | Out-Null
         $mainHwnd = Wait-Until {
             if ($process.HasExited) { return $null }
             $candidate = [WinShortUiAcceptance.Native]::FindMessageWindowForProcess($process.Id, 'WinShort.Main')
@@ -1488,6 +1492,11 @@ show_display_profile = true
 
         $backendKinds = @($compositionFlags | Select-Object -Unique)
         Assert-Condition ($backendKinds.Count -eq 1) "$Name mixed Composition and opaque fallback cards"
+        $widths = @($rectangles | ForEach-Object { $_.Width } | Select-Object -Unique)
+        $heights = @($rectangles | ForEach-Object { $_.Height } | Select-Object -Unique)
+        Assert-Condition (
+            $widths.Count -eq 1 -and $heights.Count -eq 1
+        ) "$Name cards do not share one deterministic surface geometry"
 
         $union = $rectangles[0]
         for ($index = 1; $index -lt $rectangles.Count; $index++) {
@@ -1541,8 +1550,9 @@ show_display_profile = true
             ReplacementVisibleCount = $afterReplacement.Count
             AfterOriginalExpiryCount = $afterOriginalExpiry.Count
             FinalPermanentCount = $finalWindows.Count
-            CompositionBacked = [bool]$compositionFlags[0]
+            CompositionBacked = [bool]($compositionFlags[0])
             UniformBackend = $true
+            UniformGeometry = $true
             NoOverlap = $true
             InsideWorkArea = $true
             Screenshot = $screenshotPath
