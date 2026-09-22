@@ -6,7 +6,7 @@ use crate::ui::theme::{Color, Theme, ThemeMode};
 
 const DARK_COMPOSITION_TINT_ALPHA: f32 = 148.0;
 
-const LIGHT_COMPOSITION_TINT_ALPHA: f32 = 200.0;
+const LIGHT_COMPOSITION_TINT_ALPHA: f32 = 42.0;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct OverlayPalette {

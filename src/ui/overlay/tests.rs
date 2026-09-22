@@ -93,13 +93,13 @@ fn appearance_policy_resolves_system_and_explicit_modes() {
         ThemeMode::Light
     );
     assert_eq!(composition_tint_alpha(ThemeMode::Dark, 1.0), 148);
-    assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 200);
+    assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 42);
 }
 
 #[test]
-fn light_composition_tint_stays_strong_enough_for_dark_text() {
-    assert!(composition_tint_alpha(ThemeMode::Light, 1.0) >= 200);
-    assert_eq!(composition_tint_alpha(ThemeMode::Light, 0.5), 100);
+fn light_composition_tint_uses_pre_tuning_strength() {
+    assert_eq!(composition_tint_alpha(ThemeMode::Light, 1.0), 42);
+    assert_eq!(composition_tint_alpha(ThemeMode::Light, 0.5), 21);
 }
 
 #[test]
