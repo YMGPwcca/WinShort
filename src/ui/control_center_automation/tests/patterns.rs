@@ -41,7 +41,7 @@ fn published_provider_exposes_slider_range_pattern() {
         .iter_mut()
         .find(|(id, _, _, _)| *id == ElementId::OverlayDuration)
     {
-        *value = "2.0s".into();
+        *value = "3 s".into();
         *ratio = 0.5;
     }
     let automation = SettingsAutomation::new(HWND(std::ptr::null_mut()));
@@ -61,9 +61,9 @@ fn published_provider_exposes_slider_range_pattern() {
             .expect("range pattern")
     };
     let range: IRangeValueProvider = unknown.cast().expect("range interface");
-    assert_eq!(unsafe { range.Minimum().expect("minimum") }, 500.0);
-    assert_eq!(unsafe { range.Maximum().expect("maximum") }, 10_000.0);
-    assert_eq!(unsafe { range.Value().expect("value") }, 5_250.0);
+    assert_eq!(unsafe { range.Minimum().expect("minimum") }, 1000.0);
+    assert_eq!(unsafe { range.Maximum().expect("maximum") }, 5000.0);
+    assert_eq!(unsafe { range.Value().expect("value") }, 3000.0);
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn directly_called_unsupported_patterns_return_uia_not_supported() {
     let automation = published_automation();
 
     let slider = automation
-        .provider_for(ElementId::OverlayOpacity)
+        .provider_for(ElementId::OverlayDuration)
         .expect("test provider initialization");
     let invoke: IInvokeProvider = slider.cast().expect("Invoke interface");
     assert_hresult(

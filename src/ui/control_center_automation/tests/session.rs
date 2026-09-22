@@ -23,6 +23,22 @@ fn snapshot_contains_logical_nodes_without_child_windows() {
         .iter()
         .all(|node| node.bounds.width > 0.0 && node.bounds.height > 0.0));
 }
+#[test]
+fn blur_control_retains_legacy_opacity_automation_id() {
+    let automation = published_automation();
+    let provider = automation
+        .provider_for(ElementId::OverlayBlur)
+        .expect("blur control provider");
+    let automation_id = unsafe {
+        provider
+            .GetPropertyValue(UIA_AutomationIdPropertyId)
+            .expect("automation id")
+    };
+    assert_eq!(
+        automation_id.to_string(),
+        "WinShort.ControlCenter.OverlayOpacity"
+    );
+}
 
 #[test]
 fn phase_one_hotkey_nodes_expose_names_and_help_text() {
@@ -114,12 +130,18 @@ fn automation_rects_are_screen_space_and_dpi_scaled() {
 #[test]
 fn slider_ranges_expose_model_units() {
     let range =
-        slider_range(ElementId::OverlayOpacity, ElementKind::Slider, 0.5).expect("opacity range");
-    assert_eq!(range.minimum, 0.3);
-    assert_eq!(range.maximum, 1.0);
-    assert!((range.value - 0.65).abs() < f64::EPSILON);
-    assert_eq!(range.small_change, 0.05);
-    assert_eq!(range.large_change, 0.25);
+        slider_range(ElementId::OverlayDuration, ElementKind::Slider, 0.5).expect("duration range");
+    assert_eq!(range.minimum, 1000.0);
+    assert_eq!(range.maximum, 5000.0);
+    assert!((range.value - 3000.0).abs() < f64::EPSILON);
+    assert_eq!(range.small_change, 100.0);
+    assert_eq!(range.large_change, 500.0);
+    let blur = slider_range(ElementId::OverlayBlur, ElementKind::Slider, 0.5).expect("blur range");
+    assert_eq!(blur.minimum, 0.0);
+    assert_eq!(blur.maximum, 4.0);
+    assert_eq!(blur.value, 2.0);
+    assert_eq!(blur.small_change, 1.0);
+    assert_eq!(blur.large_change, 2.0);
 }
 
 #[test]
@@ -441,9 +463,9 @@ fn disabled_toggle_returns_element_not_enabled() {
 
 #[test]
 fn disabled_range_value_returns_element_not_enabled() {
-    let automation = automation_with_disabled(ElementId::OverlayOpacity);
+    let automation = automation_with_disabled(ElementId::OverlayDuration);
     let provider = automation
-        .provider_for(ElementId::OverlayOpacity)
+        .provider_for(ElementId::OverlayDuration)
         .expect("test provider initialization");
     let unknown = unsafe {
         provider
@@ -461,7 +483,7 @@ fn disabled_range_value_returns_element_not_enabled() {
 fn invalid_range_value_returns_invalid_argument() {
     let automation = published_automation();
     let provider = automation
-        .provider_for(ElementId::OverlayOpacity)
+        .provider_for(ElementId::OverlayDuration)
         .expect("test provider initialization");
     let unknown = unsafe {
         provider
@@ -518,7 +540,7 @@ fn stale_provider_operations_return_element_not_available() {
         UIA_E_ELEMENTNOTAVAILABLE,
     );
 
-    let range_provider = stale_provider(ElementId::OverlayOpacity);
+    let range_provider = stale_provider(ElementId::OverlayDuration);
     let range: IRangeValueProvider = range_provider.cast().expect("stale RangeValue");
     assert_hresult(
         unsafe { range.SetValue(0.7) }.expect_err("stale RangeValue"),

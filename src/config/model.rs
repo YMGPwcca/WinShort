@@ -10,7 +10,7 @@ use crate::keyboard::binding::{numbered_desktop_family, Hotkey, ModifierMask};
 pub const DEFAULT_TOGGLE_MICROPHONE: &str = "Ctrl+Alt+M";
 pub const DEFAULT_TOGGLE_OUTPUT: &str = "Ctrl+Alt+O";
 pub const DEFAULT_TOGGLE_FOREGROUND: &str = "Ctrl+Alt+P";
-pub const CURRENT_SCHEMA_VERSION: u8 = 10;
+pub const CURRENT_SCHEMA_VERSION: u8 = 11;
 pub const LEGACY_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,9 +35,169 @@ pub struct OverlayCfg {
     pub position: OverlayPosition,
     pub monitor: MonitorChoice,
     pub scale: f32,
-    pub opacity: f32,
+    pub blur: OverlayBlur,
     pub appearance: OverlayAppearance,
-    pub show_external_audio_changes: bool,
+    pub notifications: OverlayNotifications,
+}
+
+pub const OVERLAY_DURATION_MIN_MS: u32 = 1_000;
+pub const OVERLAY_DURATION_MAX_MS: u32 = 5_000;
+pub const OVERLAY_DURATION_STEP_MS: u32 = 100;
+pub const OVERLAY_DURATION_PAGE_STEP_MS: u32 = 500;
+pub const OVERLAY_SCALE_MIN: f32 = 0.7;
+pub const OVERLAY_SCALE_MAX: f32 = 1.6;
+pub const OVERLAY_SCALE_STEP: f32 = 0.1;
+
+pub fn normalize_overlay_duration(duration_ms: u32) -> u32 {
+    let clamped = duration_ms.clamp(OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_MAX_MS);
+    let offset = clamped - OVERLAY_DURATION_MIN_MS;
+    let snapped = ((offset + OVERLAY_DURATION_STEP_MS / 2) / OVERLAY_DURATION_STEP_MS)
+        * OVERLAY_DURATION_STEP_MS;
+    (OVERLAY_DURATION_MIN_MS + snapped).min(OVERLAY_DURATION_MAX_MS)
+}
+
+pub fn normalize_overlay_scale(scale: f32) -> f32 {
+    let finite = if scale.is_finite() { scale } else { 1.0 };
+    let clamped = finite.clamp(OVERLAY_SCALE_MIN, OVERLAY_SCALE_MAX);
+    let steps = ((clamped - OVERLAY_SCALE_MIN) / OVERLAY_SCALE_STEP).round();
+    (OVERLAY_SCALE_MIN + steps * OVERLAY_SCALE_STEP).clamp(OVERLAY_SCALE_MIN, OVERLAY_SCALE_MAX)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayBlur {
+    Transparent,
+    BlurLight,
+    BlurMedium,
+    BlurHeavy,
+    Solid,
+}
+
+impl OverlayBlur {
+    pub const ALL: [Self; 5] = [
+        Self::Transparent,
+        Self::BlurLight,
+        Self::BlurMedium,
+        Self::BlurHeavy,
+        Self::Solid,
+    ];
+    pub fn index(self) -> usize {
+        match self {
+            Self::Transparent => 0,
+            Self::BlurLight => 1,
+            Self::BlurMedium => 2,
+            Self::BlurHeavy => 3,
+            Self::Solid => 4,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index.min(Self::ALL.len() - 1)]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Transparent => "Transparent",
+            Self::BlurLight => "Light blur",
+            Self::BlurMedium => "Medium blur",
+            Self::BlurHeavy => "Heavy blur",
+            Self::Solid => "Solid",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transparent => "transparent",
+            Self::BlurLight => "blur-light",
+            Self::BlurMedium => "blur-medium",
+            Self::BlurHeavy => "blur-heavy",
+            Self::Solid => "solid",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "transparent" => Self::Transparent,
+            "blur-light" | "light" => Self::BlurLight,
+            "blur-medium" | "medium" => Self::BlurMedium,
+            "blur-heavy" | "heavy" => Self::BlurHeavy,
+            "solid" => Self::Solid,
+            _ => return None,
+        })
+    }
+
+    pub fn blur_amount(self) -> Option<f32> {
+        match self {
+            Self::Transparent | Self::Solid => None,
+            Self::BlurLight => Some(4.0),
+            Self::BlurMedium => Some(8.0),
+            Self::BlurHeavy => Some(18.0),
+        }
+    }
+
+    pub fn from_legacy_opacity(opacity: f32) -> Self {
+        let opacity = if opacity.is_finite() {
+            opacity.clamp(0.3, 1.0)
+        } else {
+            0.85
+        };
+        if opacity <= 0.45 {
+            Self::Transparent
+        } else if opacity <= 0.65 {
+            Self::BlurLight
+        } else {
+            Self::BlurMedium
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayNotificationCategory {
+    Microphone,
+    Speaker,
+    CurrentAppAudio,
+    Workspace,
+    DisplayProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayNotifications {
+    pub microphone: bool,
+    pub speaker: bool,
+    /// Master category switch for current-app rows, including WinShort actions
+    /// and explicit status snapshots.
+    pub current_app_audio: bool,
+    /// Whether unsolicited external current-app changes may create a toast.
+    ///
+    /// This remains separate so legacy `show_external_audio_changes = false`
+    /// keeps its narrower behavior without disabling WinShort feedback.
+    pub external_current_app_audio: bool,
+    pub workspace: bool,
+    pub display_profile: bool,
+}
+
+impl OverlayNotifications {
+    pub fn is_enabled(self, category: OverlayNotificationCategory) -> bool {
+        match category {
+            OverlayNotificationCategory::Microphone => self.microphone,
+            OverlayNotificationCategory::Speaker => self.speaker,
+            OverlayNotificationCategory::CurrentAppAudio => self.current_app_audio,
+            OverlayNotificationCategory::Workspace => self.workspace,
+            OverlayNotificationCategory::DisplayProfile => self.display_profile,
+        }
+    }
+}
+
+impl Default for OverlayNotifications {
+    fn default() -> Self {
+        Self {
+            microphone: true,
+            speaker: true,
+            current_app_audio: true,
+            external_current_app_audio: true,
+            workspace: true,
+            display_profile: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,7 +338,7 @@ impl OverlayAppearance {
         })
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OverlayPosition {
     TopLeft,
     TopCenter,
@@ -351,9 +511,9 @@ impl Default for Config {
                 position: OverlayPosition::BottomCenter,
                 monitor: MonitorChoice::Cursor,
                 scale: 1.0,
-                opacity: 1.0,
+                blur: OverlayBlur::BlurMedium,
                 appearance: OverlayAppearance::System,
-                show_external_audio_changes: true,
+                notifications: OverlayNotifications::default(),
             },
             audio: AudioCfg {
                 input_role: EndpointRole::Console,
@@ -457,12 +617,29 @@ pub struct OverlayToml {
     pub monitor: String,
     #[serde(default = "default_scale")]
     pub scale: f32,
-    #[serde(default = "default_opacity")]
-    pub opacity: f32,
+    #[serde(default = "default_blur")]
+    pub blur: String,
     #[serde(default = "default_appearance")]
     pub appearance: String,
-    #[serde(default = "default_show_external_audio_changes")]
-    pub show_external_audio_changes: bool,
+    #[serde(default = "default_true")]
+    pub show_microphone: bool,
+    #[serde(default = "default_true")]
+    pub show_speaker: bool,
+    #[serde(default = "default_true")]
+    pub show_current_app_audio: bool,
+    #[serde(default = "default_true")]
+    pub show_workspace: bool,
+    #[serde(default = "default_true")]
+    pub show_display_profile: bool,
+    /// Legacy opacity field. It is read only to migrate schema-v10 and older
+    /// documents, then omitted from every subsequent save.
+    #[serde(default, skip_serializing)]
+    pub opacity: Option<f32>,
+    /// Legacy external-audio toggle. On schema-v11 it is retained only as a
+    /// compatibility override when external-change policy differs from the
+    /// current-app category master switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_external_audio_changes: Option<bool>,
 }
 
 impl Default for OverlayToml {
@@ -473,9 +650,15 @@ impl Default for OverlayToml {
             position: default_position(),
             monitor: default_monitor(),
             scale: default_scale(),
-            opacity: default_opacity(),
+            blur: default_blur(),
             appearance: default_appearance(),
-            show_external_audio_changes: default_show_external_audio_changes(),
+            show_microphone: true,
+            show_speaker: true,
+            show_current_app_audio: true,
+            show_workspace: true,
+            show_display_profile: true,
+            opacity: None,
+            show_external_audio_changes: None,
         }
     }
 }
@@ -624,14 +807,11 @@ fn default_monitor() -> String {
 fn default_scale() -> f32 {
     1.0
 }
-fn default_opacity() -> f32 {
-    1.0
+fn default_blur() -> String {
+    "blur-medium".into()
 }
 fn default_appearance() -> String {
     "system".into()
-}
-fn default_show_external_audio_changes() -> bool {
-    true
 }
 fn default_role() -> String {
     "console".into()
@@ -754,9 +934,20 @@ impl Config {
                 position: self.overlay.position.as_str().into(),
                 monitor: self.overlay.monitor.as_str(),
                 scale: self.overlay.scale,
-                opacity: self.overlay.opacity,
+                blur: self.overlay.blur.as_str().into(),
                 appearance: self.overlay.appearance.as_str().into(),
-                show_external_audio_changes: self.overlay.show_external_audio_changes,
+                show_microphone: self.overlay.notifications.microphone,
+                show_speaker: self.overlay.notifications.speaker,
+                show_current_app_audio: self.overlay.notifications.current_app_audio,
+                show_workspace: self.overlay.notifications.workspace,
+                show_display_profile: self.overlay.notifications.display_profile,
+                opacity: None,
+                show_external_audio_changes: (self
+                    .overlay
+                    .notifications
+                    .external_current_app_audio
+                    != self.overlay.notifications.current_app_audio)
+                    .then_some(self.overlay.notifications.external_current_app_audio),
             },
             audio: AudioToml {
                 input_role: self.audio.input_role.as_str().into(),
@@ -867,6 +1058,10 @@ impl Config {
 
         c.overlay.enabled = t.overlay.enabled;
         c.overlay.duration_ms = t.overlay.duration_ms;
+        match OverlayBlur::parse(&t.overlay.blur) {
+            Some(blur) => c.overlay.blur = blur,
+            None => warnings.push(format!("overlay.blur: unknown `{}`", t.overlay.blur)),
+        }
         match OverlayPosition::parse(&t.overlay.position) {
             Some(p) => c.overlay.position = p,
             None if t.overlay.position.is_empty() => {}
@@ -881,7 +1076,15 @@ impl Config {
             None => warnings.push(format!("overlay.monitor: unknown `{}`", t.overlay.monitor)),
         }
         c.overlay.scale = t.overlay.scale;
-        c.overlay.opacity = t.overlay.opacity;
+        if t.schema_version < CURRENT_SCHEMA_VERSION {
+            if let Some(opacity) = t.overlay.opacity {
+                c.overlay.blur = OverlayBlur::from_legacy_opacity(opacity);
+                warnings.push(format!(
+                    "overlay.opacity migrated to overlay.blur `{}`",
+                    c.overlay.blur.as_str()
+                ));
+            }
+        }
         match OverlayAppearance::parse(&t.overlay.appearance) {
             Some(appearance) => c.overlay.appearance = appearance,
             None => warnings.push(format!(
@@ -889,7 +1092,26 @@ impl Config {
                 t.overlay.appearance
             )),
         }
-        c.overlay.show_external_audio_changes = t.overlay.show_external_audio_changes;
+        let external_current_app_audio = t
+            .overlay
+            .show_external_audio_changes
+            .unwrap_or(t.overlay.show_current_app_audio);
+        if t.schema_version < CURRENT_SCHEMA_VERSION
+            && t.overlay.show_external_audio_changes.is_some()
+        {
+            warnings.push(
+                "overlay.show_external_audio_changes preserved as the external current-app audio notification policy"
+                    .into(),
+            );
+        }
+        c.overlay.notifications = OverlayNotifications {
+            microphone: t.overlay.show_microphone,
+            speaker: t.overlay.show_speaker,
+            current_app_audio: t.overlay.show_current_app_audio,
+            external_current_app_audio,
+            workspace: t.overlay.show_workspace,
+            display_profile: t.overlay.show_display_profile,
+        };
 
         match EndpointRole::parse(&t.audio.input_role) {
             Some(r) => c.audio.input_role = r,
@@ -1093,9 +1315,15 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "position",
             "monitor",
             "duration_ms",
+            "blur",
             "opacity",
             "scale",
             "appearance",
+            "show_microphone",
+            "show_speaker",
+            "show_current_app_audio",
+            "show_workspace",
+            "show_display_profile",
             "show_external_audio_changes",
         ]),
         "audio" => Some(&[
@@ -1133,40 +1361,91 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-impl Config {
-    /// Field-level repair for validation violations (#15a): clamp numeric
-    /// ranges, drop conflicting hotkeys. Only violated fields are touched.
-    pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
-        let mut drop_hotkeys: Vec<String> = Vec::new();
-        let number_modifier_repaired = violations
-            .iter()
-            .any(|violation| violation.field == "virtual_desktops.number_modifier");
-        let input_allowlist_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("audio.cycle_input_allowlist["));
-        let output_allowlist_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("audio.cycle_output_allowlist["));
-        let display_profiles_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("display_profiles."));
-        let profile_hotkeys_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("hotkeys.display_profiles"));
-        let disabled_hotkeys_invalid = violations
-            .iter()
-            .any(|violation| violation.field.starts_with("hotkeys.disabled["));
-        for v in violations {
-            match v.field.as_str() {
-                "overlay.duration_ms" => self.overlay.duration_ms = 2000,
-                "overlay.scale" => self.overlay.scale = 1.0,
+#[derive(Debug, Clone, Copy)]
+struct RepairScope {
+    number_modifier_repaired: bool,
+    input_allowlist_invalid: bool,
+    output_allowlist_invalid: bool,
+    display_profiles_invalid: bool,
+    profile_hotkeys_invalid: bool,
+    disabled_hotkeys_invalid: bool,
+}
 
-                "overlay.opacity" => self.overlay.opacity = 0.85,
+impl RepairScope {
+    fn from(violations: &[crate::config::validate::Violation]) -> Self {
+        Self {
+            number_modifier_repaired: violations
+                .iter()
+                .any(|violation| violation.field == "virtual_desktops.number_modifier"),
+            input_allowlist_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("audio.cycle_input_allowlist[")),
+            output_allowlist_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("audio.cycle_output_allowlist[")),
+            display_profiles_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("display_profiles.")),
+            profile_hotkeys_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("hotkeys.display_profiles")),
+            disabled_hotkeys_invalid: violations
+                .iter()
+                .any(|violation| violation.field.starts_with("hotkeys.disabled[")),
+        }
+    }
+}
+
+impl Config {
+    /// Field-level repair for validation violations (#15a): clamp/snap numeric
+    /// values, drop conflicting hotkeys. Only violated fields are touched.
+    pub fn repair(&mut self, violations: &[crate::config::validate::Violation]) {
+        let scope = RepairScope::from(violations);
+        self.repair_overlay_values(violations);
+        let dropped_hotkeys =
+            self.repair_desktop_fields(violations, scope.number_modifier_repaired);
+        self.drop_conflicting_hotkeys(&dropped_hotkeys);
+        if scope.input_allowlist_invalid {
+            repair_allowlist(&mut self.audio.cycle_input_allowlist);
+        }
+        if scope.output_allowlist_invalid {
+            repair_allowlist(&mut self.audio.cycle_output_allowlist);
+        }
+        if scope.display_profiles_invalid {
+            self.repair_display_profiles();
+        }
+        if scope.display_profiles_invalid || scope.profile_hotkeys_invalid {
+            self.repair_profile_hotkeys();
+        }
+        if scope.disabled_hotkeys_invalid {
+            self.repair_disabled_hotkeys();
+        }
+    }
+
+    fn repair_overlay_values(&mut self, violations: &[crate::config::validate::Violation]) {
+        for violation in violations {
+            match violation.field.as_str() {
+                "overlay.duration_ms" => {
+                    self.overlay.duration_ms = normalize_overlay_duration(self.overlay.duration_ms);
+                }
+                "overlay.scale" => {
+                    self.overlay.scale = normalize_overlay_scale(self.overlay.scale);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn repair_desktop_fields(
+        &mut self,
+        violations: &[crate::config::validate::Violation],
+        number_modifier_repaired: bool,
+    ) -> Vec<String> {
+        let mut dropped_hotkeys = Vec::new();
+        for violation in violations {
+            match violation.field.as_str() {
                 "virtual_desktops.number_modifier" => {
                     self.virtual_desktops.number_modifier = ModifierMask::WIN;
-                    // A repaired default family must not collide with an
-                    // optional family that was only skipped because the
-                    // invalid number modifier generated no bindings.
                     if self.virtual_desktops.move_follow_modifier == Some(ModifierMask::WIN) {
                         self.virtual_desktops.move_follow_modifier = None;
                     }
@@ -1174,23 +1453,16 @@ impl Config {
                         self.virtual_desktops.move_silent_modifier = None;
                     }
                 }
-                "virtual_desktops.move_follow_modifier"
-                    if v.message.contains("conflicts")
-                        || v.message.contains("empty")
-                        || v.message.contains("unsupported") =>
-                {
+                "virtual_desktops.move_follow_modifier" if modifier_family_violation(violation) => {
                     self.virtual_desktops.move_follow_modifier = None;
                 }
-                "virtual_desktops.move_silent_modifier"
-                    if v.message.contains("conflicts")
-                        || v.message.contains("empty")
-                        || v.message.contains("unsupported") =>
-                {
+                "virtual_desktops.move_silent_modifier" if modifier_family_violation(violation) => {
                     self.virtual_desktops.move_silent_modifier = None;
                 }
-                f if f.starts_with("hotkeys.") && v.message.contains("conflicts") => {
-                    // Conflict-class violations: drop the offending binding.
-                    drop_hotkeys.push(f.trim_start_matches("hotkeys.").to_string());
+                field
+                    if field.starts_with("hotkeys.") && violation.message.contains("conflicts") =>
+                {
+                    dropped_hotkeys.push(field.trim_start_matches("hotkeys.").to_string());
                 }
                 _ => {}
             }
@@ -1199,26 +1471,34 @@ impl Config {
             && self.virtual_desktops.enabled
             && self.virtual_desktops.win_number_switching
         {
-            for hotkey in numbered_desktop_family(ModifierMask::WIN) {
-                for slot in [
-                    &mut self.hotkeys.toggle_microphone,
-                    &mut self.hotkeys.toggle_output,
-                    &mut self.hotkeys.toggle_foreground_audio,
-                    &mut self.hotkeys.cycle_input_device,
-                    &mut self.hotkeys.cycle_output_device,
-                    &mut self.hotkeys.foreground_volume_up,
-                    &mut self.hotkeys.foreground_volume_down,
-                    &mut self.virtual_desktops.previous_desktop,
-                    &mut self.virtual_desktops.scratchpad_assign,
-                    &mut self.virtual_desktops.scratchpad_toggle,
-                ] {
-                    if *slot == Some(hotkey) {
-                        *slot = None;
-                    }
+            self.clear_number_family_conflicts();
+        }
+        dropped_hotkeys
+    }
+
+    fn clear_number_family_conflicts(&mut self) {
+        for hotkey in numbered_desktop_family(ModifierMask::WIN) {
+            for slot in [
+                &mut self.hotkeys.toggle_microphone,
+                &mut self.hotkeys.toggle_output,
+                &mut self.hotkeys.toggle_foreground_audio,
+                &mut self.hotkeys.cycle_input_device,
+                &mut self.hotkeys.cycle_output_device,
+                &mut self.hotkeys.foreground_volume_up,
+                &mut self.hotkeys.foreground_volume_down,
+                &mut self.virtual_desktops.previous_desktop,
+                &mut self.virtual_desktops.scratchpad_assign,
+                &mut self.virtual_desktops.scratchpad_toggle,
+            ] {
+                if *slot == Some(hotkey) {
+                    *slot = None;
                 }
             }
         }
-        for field in drop_hotkeys {
+    }
+
+    fn drop_conflicting_hotkeys(&mut self, fields: &[String]) {
+        for field in fields {
             match field.as_str() {
                 "toggle_microphone" => self.hotkeys.toggle_microphone = None,
                 "toggle_output" => self.hotkeys.toggle_output = None,
@@ -1233,136 +1513,134 @@ impl Config {
                 _ => {}
             }
         }
-        for (invalid, allowlist) in [
-            (
-                input_allowlist_invalid,
-                &mut self.audio.cycle_input_allowlist,
-            ),
-            (
-                output_allowlist_invalid,
-                &mut self.audio.cycle_output_allowlist,
-            ),
-        ] {
-            if invalid {
-                if let Some(ids) = allowlist {
-                    let mut seen = std::collections::HashSet::new();
-                    ids.retain(|id| !id.trim().is_empty() && seen.insert(id.clone()));
-                }
-            }
-        }
-        if display_profiles_invalid {
-            let mut seen_profiles = std::collections::HashSet::new();
-            let mut seen_names = std::collections::HashSet::new();
-            self.display_profiles.profiles.retain(|profile| {
-                let id = profile.id.trim();
-                let mut seen_routes = std::collections::HashSet::new();
-                !id.is_empty()
-                    && !profile.name.trim().is_empty()
-                    && !profile.routes.is_empty()
-                    && profile.routes.len() <= 32
-                    && profile.routes.iter().all(|route| {
-                        !route.target_path.trim().is_empty()
-                            && (!crate::display::route_has_any_mode(route)
-                                || crate::display::route_has_complete_mode(route))
-                            && (!profile.confirmed
-                                || crate::display::route_has_complete_mode(route))
-                            && seen_routes.insert(format!(
-                                "{}|{}|{}|{}",
-                                route.target_path.trim().to_ascii_lowercase(),
-                                route.target_adapter,
-                                route.target_id,
-                                route.output_technology
-                            ))
-                    })
-                    && crate::display::validate_profile(profile).is_ok()
-                    && seen_profiles.insert(id.to_ascii_lowercase())
-                    && seen_names.insert(profile.name.trim().to_ascii_lowercase())
-            });
-            self.display_profiles
-                .profiles
-                .truncate(crate::display::MAX_PROFILES);
-            if self
-                .display_profiles
-                .active_profile
-                .as_deref()
-                .is_some_and(|active| {
-                    !self
-                        .display_profiles
-                        .profiles
-                        .iter()
-                        .any(|profile| profile.id.eq_ignore_ascii_case(active))
+    }
+
+    fn repair_display_profiles(&mut self) {
+        let mut seen_profiles = std::collections::HashSet::new();
+        let mut seen_names = std::collections::HashSet::new();
+        self.display_profiles.profiles.retain(|profile| {
+            let id = profile.id.trim();
+            let mut seen_routes = std::collections::HashSet::new();
+            !id.is_empty()
+                && !profile.name.trim().is_empty()
+                && !profile.routes.is_empty()
+                && profile.routes.len() <= 32
+                && profile.routes.iter().all(|route| {
+                    !route.target_path.trim().is_empty()
+                        && (!crate::display::route_has_any_mode(route)
+                            || crate::display::route_has_complete_mode(route))
+                        && (!profile.confirmed || crate::display::route_has_complete_mode(route))
+                        && seen_routes.insert(format!(
+                            "{}|{}|{}|{}",
+                            route.target_path.trim().to_ascii_lowercase(),
+                            route.target_adapter,
+                            route.target_id,
+                            route.output_technology
+                        ))
                 })
-            {
-                self.display_profiles.active_profile = None;
-            }
+                && crate::display::validate_profile(profile).is_ok()
+                && seen_profiles.insert(id.to_ascii_lowercase())
+                && seen_names.insert(profile.name.trim().to_ascii_lowercase())
+        });
+        self.display_profiles
+            .profiles
+            .truncate(crate::display::MAX_PROFILES);
+        if self
+            .display_profiles
+            .active_profile
+            .as_deref()
+            .is_some_and(|active| {
+                !self
+                    .display_profiles
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.id.eq_ignore_ascii_case(active))
+            })
+        {
+            self.display_profiles.active_profile = None;
         }
-        if display_profiles_invalid || profile_hotkeys_invalid {
-            let valid_profiles = self
-                .display_profiles
-                .profiles
-                .iter()
-                .map(|profile| profile.id.trim().to_ascii_lowercase())
-                .collect::<std::collections::HashSet<_>>();
-            let mut used_profile_keys = std::collections::HashSet::new();
-            let mut used = std::collections::HashSet::new();
-            for hotkey in [
-                self.hotkeys.toggle_microphone,
-                self.hotkeys.toggle_output,
-                self.hotkeys.toggle_foreground_audio,
-                self.hotkeys.cycle_input_device,
-                self.hotkeys.cycle_output_device,
-                self.hotkeys.foreground_volume_up,
-                self.hotkeys.foreground_volume_down,
-                self.virtual_desktops.previous_desktop,
-                self.virtual_desktops.scratchpad_assign,
-                self.virtual_desktops.scratchpad_toggle,
+    }
+
+    fn repair_profile_hotkeys(&mut self) {
+        let valid_profiles = self
+            .display_profiles
+            .profiles
+            .iter()
+            .map(|profile| profile.id.trim().to_ascii_lowercase())
+            .collect::<std::collections::HashSet<_>>();
+        let mut used_profile_keys = std::collections::HashSet::new();
+        let mut used = std::collections::HashSet::new();
+        for hotkey in [
+            self.hotkeys.toggle_microphone,
+            self.hotkeys.toggle_output,
+            self.hotkeys.toggle_foreground_audio,
+            self.hotkeys.cycle_input_device,
+            self.hotkeys.cycle_output_device,
+            self.hotkeys.foreground_volume_up,
+            self.hotkeys.foreground_volume_down,
+            self.virtual_desktops.previous_desktop,
+            self.virtual_desktops.scratchpad_assign,
+            self.virtual_desktops.scratchpad_toggle,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            used.insert(hotkey);
+        }
+        if self.virtual_desktops.enabled {
+            for modifier in [
+                self.virtual_desktops
+                    .win_number_switching
+                    .then_some(self.virtual_desktops.number_modifier),
+                self.virtual_desktops.move_follow_modifier,
+                self.virtual_desktops.move_silent_modifier,
             ]
             .into_iter()
             .flatten()
+            .filter(|modifier| !modifier.is_empty())
             {
-                used.insert(hotkey);
+                used.extend(numbered_desktop_family(modifier));
             }
-            if self.virtual_desktops.enabled {
-                for modifier in [
-                    self.virtual_desktops
-                        .win_number_switching
-                        .then_some(self.virtual_desktops.number_modifier),
-                    self.virtual_desktops.move_follow_modifier,
-                    self.virtual_desktops.move_silent_modifier,
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|modifier| !modifier.is_empty())
-                {
-                    used.extend(numbered_desktop_family(modifier));
-                }
+        }
+        self.hotkeys.display_profiles.retain(|binding| {
+            valid_profiles.contains(&binding.profile_id.trim().to_ascii_lowercase())
+                && used_profile_keys.insert(crate::display::profile_id_key(&binding.profile_id))
+                && used.insert(binding.hotkey)
+        });
+        self.hotkeys.display_profiles.truncate(u8::MAX as usize + 1);
+    }
+
+    fn repair_disabled_hotkeys(&mut self) {
+        let disabled = std::mem::take(&mut self.hotkeys.disabled);
+        let mut seen = std::collections::HashSet::new();
+        let mut normalized = Vec::with_capacity(disabled.len());
+        for binding in disabled {
+            let Some(action) = self.canonical_disabled_action(&binding.action) else {
+                continue;
+            };
+            if !seen.insert(action.to_ascii_lowercase()) {
+                continue;
             }
-            self.hotkeys.display_profiles.retain(|binding| {
-                valid_profiles.contains(&binding.profile_id.trim().to_ascii_lowercase())
-                    && used_profile_keys.insert(crate::display::profile_id_key(&binding.profile_id))
-                    && used.insert(binding.hotkey)
+            self.clear_active_hotkey_action(&action);
+            normalized.push(DisabledHotkey {
+                action,
+                hotkey: binding.hotkey,
             });
-            self.hotkeys.display_profiles.truncate(u8::MAX as usize + 1);
         }
-        if disabled_hotkeys_invalid {
-            let disabled = std::mem::take(&mut self.hotkeys.disabled);
-            let mut seen = std::collections::HashSet::new();
-            let mut normalized = Vec::with_capacity(disabled.len());
-            for binding in disabled {
-                let Some(action) = self.canonical_disabled_action(&binding.action) else {
-                    continue;
-                };
-                if !seen.insert(action.to_ascii_lowercase()) {
-                    continue;
-                }
-                self.clear_active_hotkey_action(&action);
-                normalized.push(DisabledHotkey {
-                    action,
-                    hotkey: binding.hotkey,
-                });
-            }
-            self.hotkeys.disabled = normalized;
-        }
+        self.hotkeys.disabled = normalized;
+    }
+}
+
+fn modifier_family_violation(violation: &crate::config::validate::Violation) -> bool {
+    violation.message.contains("conflicts")
+        || violation.message.contains("empty")
+        || violation.message.contains("unsupported")
+}
+
+fn repair_allowlist(allowlist: &mut Option<Vec<String>>) {
+    if let Some(ids) = allowlist {
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|id| !id.trim().is_empty() && seen.insert(id.clone()));
     }
 }
 
@@ -1377,6 +1655,74 @@ mod hotkey_schema_tests {
         assert!(config.hotkeys.cycle_output_device.is_none());
         assert!(config.hotkeys.foreground_volume_up.is_none());
         assert!(config.hotkeys.foreground_volume_down.is_none());
+    }
+
+    #[test]
+    fn overlay_duration_repair_clamps_legacy_values() {
+        for (duration_ms, expected) in [
+            (500, OVERLAY_DURATION_MIN_MS),
+            (10_000, OVERLAY_DURATION_MAX_MS),
+            (1051, 1100),
+            (1049, 1000),
+            (1300, 1300),
+        ] {
+            let mut config = Config::default();
+            config.overlay.duration_ms = duration_ms;
+            let violations = crate::config::validate(&config);
+            config.repair(&violations);
+            assert_eq!(config.overlay.duration_ms, expected);
+        }
+    }
+
+    #[test]
+    fn overlay_scale_repair_snaps_nearest_supported_value() {
+        for (scale, expected) in [
+            (0.73, 0.7),
+            (0.76, 0.8),
+            (f32::NAN, 1.0),
+            (2.0, OVERLAY_SCALE_MAX),
+        ] {
+            let mut config = Config::default();
+            config.overlay.scale = scale;
+            let violations = crate::config::validate(&config);
+            config.repair(&violations);
+            assert_eq!(config.overlay.scale, expected);
+        }
+    }
+
+    #[test]
+    fn schema_v11_category_switch_defaults_external_policy_to_the_same_value() {
+        let raw = r#"
+schema_version = 11
+[overlay]
+show_current_app_audio = false
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
+        let saved = toml::to_string_pretty(&config.to_toml()).unwrap();
+        assert!(saved.contains("show_current_app_audio = false"));
+        assert!(!saved.contains("show_external_audio_changes"));
+    }
+
+    #[test]
+    fn schema_v11_compatibility_override_round_trips_narrow_external_policy() {
+        let raw = r#"
+schema_version = 11
+[overlay]
+show_current_app_audio = true
+show_external_audio_changes = false
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
+        let saved = toml::to_string_pretty(&config.to_toml()).unwrap();
+        assert!(saved.contains("show_current_app_audio = true"));
+        assert!(saved.contains("show_external_audio_changes = false"));
     }
 
     #[test]
@@ -1401,10 +1747,13 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
 "#;
         let boundary: ConfigToml = toml::from_str(raw).unwrap();
         let (config, warnings) = Config::from_toml(&boundary);
-        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("show_external_audio_changes")));
         assert!(!config.general.start_hotkeys_enabled);
         assert_eq!(config.overlay.appearance, OverlayAppearance::Dark);
-        assert!(!config.overlay.show_external_audio_changes);
+        assert!(config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
         assert_eq!(
             config.audio.output_device,
             DeviceSelection::Endpoint("opaque-output-id".into())
@@ -1425,6 +1774,51 @@ toggle_foreground_audio = "Ctrl+Alt+F3"
         assert!(config.hotkeys.cycle_output_device.is_none());
         assert!(config.hotkeys.foreground_volume_up.is_none());
         assert!(config.hotkeys.foreground_volume_down.is_none());
+    }
+    #[test]
+    fn schema_v10_migrates_opacity_and_external_audio_policy() {
+        let raw = r#"
+schema_version = 10
+[overlay]
+opacity = 0.5
+show_external_audio_changes = false
+"#;
+        let boundary: ConfigToml = toml::from_str(raw).unwrap();
+        let (config, warnings) = Config::from_toml(&boundary);
+        assert_eq!(config.overlay.blur, OverlayBlur::BlurLight);
+        assert!(config.overlay.notifications.current_app_audio);
+        assert!(!config.overlay.notifications.external_current_app_audio);
+        assert!(warnings.iter().any(|warning| warning.contains("opacity")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("show_external_audio_changes")));
+        let saved = toml::to_string_pretty(&config.to_toml()).unwrap();
+        assert!(saved.contains("blur = \"blur-light\""));
+        assert!(saved.contains("show_current_app_audio = true"));
+        assert!(saved.contains("show_external_audio_changes = false"));
+        assert!(!saved.contains("opacity"));
+    }
+    #[test]
+    fn legacy_opacity_boundaries_never_introduce_new_treatments() {
+        let cases = [
+            (0.30, OverlayBlur::Transparent),
+            (0.45, OverlayBlur::Transparent),
+            (0.50, OverlayBlur::BlurLight),
+            (0.65, OverlayBlur::BlurLight),
+            (0.85, OverlayBlur::BlurMedium),
+            (1.00, OverlayBlur::BlurMedium),
+        ];
+        for (opacity, expected) in cases {
+            assert_eq!(OverlayBlur::from_legacy_opacity(opacity), expected);
+        }
+        assert_eq!(
+            OverlayBlur::from_legacy_opacity(f32::NAN),
+            OverlayBlur::BlurMedium
+        );
+        assert_eq!(
+            OverlayBlur::from_legacy_opacity(f32::INFINITY),
+            OverlayBlur::BlurMedium
+        );
     }
 
     #[test]

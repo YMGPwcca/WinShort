@@ -59,6 +59,8 @@ const E_INVALIDARG_HRESULT: windows::core::HRESULT = windows::core::HRESULT(0x80
 
 const E_POINTER_HRESULT: windows::core::HRESULT = windows::core::HRESULT(0x80004003u32 as i32);
 
+const D2D1_BORDER_MODE_SOFT: u32 = 0;
+
 fn invalid_argument<T>() -> windows::core::Result<T> {
     Err(windows::core::Error::from_hresult(E_INVALIDARG_HRESULT))
 }
@@ -70,6 +72,7 @@ fn null_pointer<T>() -> windows::core::Result<T> {
 #[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
 pub(super) struct GaussianBlurEffectGraph {
     pub(super) source: IGraphicsEffectSource,
+    pub(super) blur_amount: f32,
 }
 
 impl IGraphicsEffectSource_Impl for GaussianBlurEffectGraph_Impl {}
@@ -129,8 +132,9 @@ impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffectGraph_Impl {
             return null_pointer();
         }
         let property: IPropertyValue = match index {
-            0 => PropertyValue::CreateSingle(18.0)?.cast()?,
-            1 | 2 => PropertyValue::CreateUInt32(1)?.cast()?,
+            0 => PropertyValue::CreateSingle(self.blur_amount)?.cast()?,
+            1 => PropertyValue::CreateUInt32(1)?.cast()?,
+            2 => PropertyValue::CreateUInt32(D2D1_BORDER_MODE_SOFT)?.cast()?,
             _ => return invalid_argument(),
         };
         unsafe { *value = property.into_raw() };

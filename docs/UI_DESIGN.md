@@ -123,14 +123,15 @@ Overlay uses one fixed side-by-side placement area at the supported Control Cent
 - a same-row, equal-width pair for Show status overlay and Monitor;
 - a 3×3 position grid with accessible Top left through Bottom right cells;
 - Overlay style: Follow Windows, Light, or Dark for the status card;
-- Small/Normal/Large size;
-- Low/Normal/High opacity;
-- Short/Normal/Long duration;
+- 0.7×–1.6× actual size multiplier presentation over the existing scale model;
+- a five-stop Blur slider: Transparent, Light blur, Medium blur, Heavy blur, or Solid;
+- Duration shown as the actual configured seconds;
+- per-category notification toggles for Microphone, Speaker, Current app audio, Workspace, and Display profile;
 - Show on screen.
 
 Monitor targeting exposes only Primary and Cursor position. The preview derives its simulated monitor ratio from the selected work area, using the monitor containing the pointer for Cursor position. Missing monitor information uses a 16:9 fallback. The monitor is fit inside bounded content geometry without stretching, and the frame contains only a minimal status-card silhouette whose normalized placement matches runtime overlay placement; it has no illustrative text. The Monitor helper uses concise `Overlay location` copy so the complete description remains visible beside its selector. `Show on screen` sends the edited `OverlayCfg` without saving it.
 
-The runtime overlay is a non-layered, click-through HWND rendered through Direct2D and backed by documented DWM Desktop Acrylic: `DwmSetWindowAttribute` with `DWMWA_SYSTEMBACKDROP_TYPE` and `DWMSBT_TRANSIENTWINDOW`, plus `DwmExtendFrameIntoClientArea` for the client surface. Overlay opacity scales the drawn card over the blurred DWM material. Windows 10/API failure, High Contrast, and `SPI_GETDISABLEOVERLAPPEDCONTENT` fall back to a fully opaque accessible surface. Topmost, no-activate, tool-window, monitor placement, DPI, and bounded event-driven animation remain intact.
+The runtime overlay is a non-layered, click-through HWND rendered through Direct2D and backed by the existing Windows Composition effect graph. Transparent disables the material, the three blur treatments select the Gaussian blur amount and tint, and Solid renders an opaque card. Windows 10/API failure, High Contrast, and `SPI_GETDISABLEOVERLAPPEDCONTENT` fall back to a fully opaque accessible surface. Topmost, no-activate, tool-window, monitor placement, DPI, and bounded event-driven animation remain intact.
 
 ### System
 
@@ -211,7 +212,7 @@ The Control Center preserves the established custom provider rules:
 - child picker teardown is idempotent and happens before the owner hides;
 - no child HWND is invented for painted Control Center rows.
 
-The owner window is PMv2-aware, fixed-size, and uses a blank custom top-chrome row with a Close hit target and DWM rounded corners. It responds to `WM_DPICHANGED` by preserving the logical client size, persists/restores only its reachable position, hides to the tray on Close, and stops its timer when hover/toggle motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; scrolling is always direct. The DWM-backed overlay retains its reduced-motion policy and falls back to an opaque surface when acrylic is unavailable or disabled.
+The owner window is PMv2-aware, fixed-size, and uses a blank custom top-chrome row with a Close hit target and DWM rounded corners. It responds to `WM_DPICHANGED` by preserving the logical client size, persists/restores only its reachable position, hides to the tray on Close, and stops its timer when hover/toggle motion, capture, or feedback is idle. Reduced Windows animation preferences skip shell hover/toggle tweens; scrolling is always direct. The Composition-backed overlay retains its reduced-motion policy, applies the selected blur treatment, and falls back to an opaque surface when Composition is unavailable or disabled.
 
 Diagnostics remains a separate native window backed by `App::diagnostics_snapshot`. It preserves Copy Diagnostics, Open Logs, Support Bundle, Self-Test, sanitized endpoint/path/config projections, bounded log collection, and no telemetry. The Home and System pages route friendly Details actions there instead of leaking technical state into normal controls.
 

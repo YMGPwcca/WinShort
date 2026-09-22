@@ -56,7 +56,9 @@ use self::display_routes::parse_display_route_values;
 #[cfg(test)]
 use self::native::close_picker_before_settings_hide;
 #[cfg(test)]
-use self::overlay_preview::{overlay_preview_card_rect, work_area_aspect};
+use self::overlay_preview::{
+    overlay_preview_card_rect, overlay_scale_label, preview_treatment, work_area_aspect,
+};
 #[cfg(test)]
 use self::painting::APPLIED_STATUS;
 #[cfg(test)]

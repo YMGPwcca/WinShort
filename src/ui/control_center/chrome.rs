@@ -2,12 +2,8 @@
 
 use super::state::SettingsUi;
 
-use crate::ui::theme::{Theme, ThemeMode};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, POINT};
-use windows::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-};
+use crate::ui::theme::Theme;
+use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{HTCAPTION, HTCLIENT};
 
@@ -45,28 +41,5 @@ pub(super) fn chrome_hit_test(ui: &SettingsUi, hwnd: HWND, lparam: LPARAM) -> u3
 }
 
 pub(super) fn apply_chrome(hwnd: HWND, theme: Theme) {
-    unsafe {
-        let dark: u32 = if theme.mode == ThemeMode::Dark { 1 } else { 0 };
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            (&dark as *const u32).cast(),
-            std::mem::size_of::<u32>() as u32,
-        );
-        let pref = DWMWCP_ROUND.0;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            (&pref as *const i32).cast(),
-            std::mem::size_of::<i32>() as u32,
-        );
-        let c = theme.bg;
-        let caption = COLORREF(c.r as u32 | ((c.g as u32) << 8) | ((c.b as u32) << 16));
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_CAPTION_COLOR,
-            (&caption as *const COLORREF).cast(),
-            std::mem::size_of::<COLORREF>() as u32,
-        );
-    }
+    crate::platform::window::apply_chrome(hwnd, theme);
 }

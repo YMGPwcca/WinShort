@@ -14,8 +14,10 @@ pub const WM_APP_ACTION: u32 = 0x8001; // keyboard hook recognized a binding
 pub const WM_APP_EVENT: u32 = 0x8002; // wake-only; payload lives in [`EVENTS`]
 /// Harness-only messages used to exercise the real UI paths in an isolated
 /// release-process acceptance run.
-pub const WM_APP_UI_ACCEPTANCE_SHOW: u32 = 0x8003;
-pub const WM_APP_UI_ACCEPTANCE_HIDE_OVERLAY: u32 = 0x8004;
+pub const WM_APP_UI_ACCEPTANCE_SHOW_DETERMINISTIC_OVERLAY: u32 = 0x8003;
+pub const WM_APP_UI_ACCEPTANCE_HIDE_ALL_OVERLAYS: u32 = 0x8004;
+pub const WM_APP_UI_ACCEPTANCE_SHOW_MULTI_OVERLAY: u32 = 0x8005;
+pub const WM_APP_UI_ACCEPTANCE_REPLACE_SPEAKER_OVERLAY: u32 = 0x8006;
 
 /// Actions produced by the keyboard engine. Small enough to pack into a WPARAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,11 +152,19 @@ pub enum AppEvent {
     ToggleSpecialWorkspaceFromUi,
     ShowDiagnostics,
     OpenSettingsPicker(crate::ui::picker::PickerKind),
+    OpenConfigFolder,
     ShowStatusOverlay,
     /// Render the Settings draft overlay without persisting it.
     PreviewOverlay {
         config: crate::config::model::OverlayCfg,
     },
+    /// A card's own native timer completed its leave animation.
+    OverlayCardExpired {
+        entry_id: u64,
+        generation: u64,
+    },
+    /// Recompute all card geometry after a system visual/DPI change.
+    OverlayVisualRefresh,
     FocusSettingsFromPicker {
         reverse: bool,
     },
@@ -196,6 +206,9 @@ pub enum AppEvent {
     RunDiagnosticsSelfTest,
     CopyDiagnostics,
     OpenDiagnosticsLogs,
+    DiagnosticsLogsOpenFinished {
+        error: Option<String>,
+    },
     CreateSupportBundle,
     ConfigApplied {
         seq: u64,
@@ -219,9 +232,11 @@ pub enum AppEvent {
     // State published by workers / callbacks.
     MicrophoneStateChanged {
         state: AudioState,
+        origin: AudioEventOrigin,
     },
     OutputStateChanged {
         state: OutputState,
+        origin: AudioEventOrigin,
     },
     /// Legacy default-output notification retained for worker compatibility.
     /// The application deliberately does not surface a duplicate endpoint OSD.
@@ -258,6 +273,7 @@ pub(crate) enum RoutedAppEvent {
 pub(crate) enum ControlCenterEvent {
     Show,
     OpenPicker(crate::ui::picker::PickerKind),
+    OpenConfigFolder,
     FocusFromPicker {
         reverse: bool,
     },
@@ -308,6 +324,9 @@ pub(crate) enum DiagnosticsEvent {
     RunSelfTest,
     Copy,
     OpenLogs,
+    LogsOpenFinished {
+        error: Option<String>,
+    },
     CreateSupportBundle,
     SupportBundleFinished {
         path: Option<std::path::PathBuf>,
@@ -321,6 +340,11 @@ pub(crate) enum OverlayEvent {
     Preview {
         config: crate::config::model::OverlayCfg,
     },
+    CardExpired {
+        entry_id: u64,
+        generation: u64,
+    },
+    VisualRefresh,
 }
 
 #[derive(Debug)]
@@ -349,9 +373,11 @@ pub(crate) enum AudioRuntimeEvent {
     },
     MicrophoneStateChanged {
         state: AudioState,
+        origin: AudioEventOrigin,
     },
     OutputStateChanged {
         state: OutputState,
+        origin: AudioEventOrigin,
     },
     DefaultOutputChanged(crate::audio::state::DeviceId),
     DevicesChanged,
@@ -372,6 +398,7 @@ impl From<AppEvent> for RoutedAppEvent {
             AppEvent::OpenSettingsPicker(kind) => {
                 Self::ControlCenter(ControlCenterEvent::OpenPicker(kind))
             }
+            AppEvent::OpenConfigFolder => Self::ControlCenter(ControlCenterEvent::OpenConfigFolder),
             AppEvent::FocusSettingsFromPicker { reverse } => {
                 Self::ControlCenter(ControlCenterEvent::FocusFromPicker { reverse })
             }
@@ -429,6 +456,9 @@ impl From<AppEvent> for RoutedAppEvent {
             AppEvent::RunDiagnosticsSelfTest => Self::Diagnostics(DiagnosticsEvent::RunSelfTest),
             AppEvent::CopyDiagnostics => Self::Diagnostics(DiagnosticsEvent::Copy),
             AppEvent::OpenDiagnosticsLogs => Self::Diagnostics(DiagnosticsEvent::OpenLogs),
+            AppEvent::DiagnosticsLogsOpenFinished { error } => {
+                Self::Diagnostics(DiagnosticsEvent::LogsOpenFinished { error })
+            }
             AppEvent::CreateSupportBundle => {
                 Self::Diagnostics(DiagnosticsEvent::CreateSupportBundle)
             }
@@ -437,6 +467,14 @@ impl From<AppEvent> for RoutedAppEvent {
             }
             AppEvent::ShowStatusOverlay => Self::Overlay(OverlayEvent::ShowStatus),
             AppEvent::PreviewOverlay { config } => Self::Overlay(OverlayEvent::Preview { config }),
+            AppEvent::OverlayCardExpired {
+                entry_id,
+                generation,
+            } => Self::Overlay(OverlayEvent::CardExpired {
+                entry_id,
+                generation,
+            }),
+            AppEvent::OverlayVisualRefresh => Self::Overlay(OverlayEvent::VisualRefresh),
             AppEvent::ConfigApplied { seq, stamp } => {
                 Self::Config(ConfigEvent::Applied { seq, stamp })
             }
@@ -461,11 +499,11 @@ impl From<AppEvent> for RoutedAppEvent {
             AppEvent::DeviceCycleResolved { request_id, result } => {
                 Self::Audio(AudioRuntimeEvent::DeviceCycleResolved { request_id, result })
             }
-            AppEvent::MicrophoneStateChanged { state } => {
-                Self::Audio(AudioRuntimeEvent::MicrophoneStateChanged { state })
+            AppEvent::MicrophoneStateChanged { state, origin } => {
+                Self::Audio(AudioRuntimeEvent::MicrophoneStateChanged { state, origin })
             }
-            AppEvent::OutputStateChanged { state } => {
-                Self::Audio(AudioRuntimeEvent::OutputStateChanged { state })
+            AppEvent::OutputStateChanged { state, origin } => {
+                Self::Audio(AudioRuntimeEvent::OutputStateChanged { state, origin })
             }
             AppEvent::DefaultOutputChanged(device) => {
                 Self::Audio(AudioRuntimeEvent::DefaultOutputChanged(device))
@@ -640,6 +678,78 @@ mod tests {
         ));
         assert!(matches!(drained[2], AppEvent::DevicesChanged));
         assert!(q.drain().is_empty());
+    }
+
+    #[test]
+    fn open_config_folder_routes_as_a_typed_control_center_event() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OpenConfigFolder),
+            RoutedAppEvent::ControlCenter(ControlCenterEvent::OpenConfigFolder)
+        ));
+    }
+
+    #[test]
+    fn endpoint_state_events_preserve_audio_origin_when_routed() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::MicrophoneStateChanged {
+                state: AudioState::Active { volume_pct: 40 },
+                origin: AudioEventOrigin::WinShortAction(41),
+            }),
+            RoutedAppEvent::Audio(AudioRuntimeEvent::MicrophoneStateChanged {
+                origin: AudioEventOrigin::WinShortAction(41),
+                ..
+            })
+        ));
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OutputStateChanged {
+                state: OutputState::Unavailable {
+                    reason: "test".into(),
+                },
+                origin: AudioEventOrigin::External,
+            }),
+            RoutedAppEvent::Audio(AudioRuntimeEvent::OutputStateChanged {
+                origin: AudioEventOrigin::External,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn overlay_lifecycle_events_route_as_typed_overlay_events() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OverlayCardExpired {
+                entry_id: 7,
+                generation: 3,
+            }),
+            RoutedAppEvent::Overlay(OverlayEvent::CardExpired {
+                entry_id: 7,
+                generation: 3,
+            })
+        ));
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OverlayVisualRefresh),
+            RoutedAppEvent::Overlay(OverlayEvent::VisualRefresh)
+        ));
+    }
+
+    #[test]
+    fn open_diagnostics_logs_routes_as_a_typed_diagnostics_event() {
+        assert!(matches!(
+            RoutedAppEvent::from(AppEvent::OpenDiagnosticsLogs),
+            RoutedAppEvent::Diagnostics(DiagnosticsEvent::OpenLogs)
+        ));
+    }
+
+    #[test]
+    fn diagnostics_logs_completion_routes_as_a_typed_diagnostics_event() {
+        let event = AppEvent::DiagnosticsLogsOpenFinished {
+            error: Some("test failure".into()),
+        };
+        assert!(matches!(
+            RoutedAppEvent::from(event),
+            RoutedAppEvent::Diagnostics(DiagnosticsEvent::LogsOpenFinished { error })
+                if error.as_deref() == Some("test failure")
+        ));
     }
 
     #[test]

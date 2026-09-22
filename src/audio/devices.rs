@@ -16,7 +16,7 @@ use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL, STGM_READ};
 
 use crate::audio::controller::{AudioCommand, EndpointFlow};
 use crate::audio::notifications::EndpointVolumeClient;
-use crate::audio::state::{AudioState, DeviceId, OutputState};
+use crate::audio::state::{AudioState, DeviceCycleFlow, DeviceCycleResult, DeviceId, OutputState};
 use crate::config::model::{DeviceSelection, EndpointRole};
 use crate::error::{Error, Result};
 
@@ -42,6 +42,17 @@ impl DefaultDevices {
             EndpointRole::Communications => self.communications.as_ref(),
         }
     }
+
+    pub(crate) fn role_matches(&self, role: EndpointRole, target: &DeviceId) -> bool {
+        self.for_role(role)
+            .is_some_and(|current| current.endpoint == target.endpoint)
+    }
+
+    fn all_roles_match(&self, target: &DeviceId) -> bool {
+        ALL_ENDPOINT_ROLES
+            .into_iter()
+            .all(|role| self.role_matches(role, target))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -61,6 +72,26 @@ pub struct DeviceLists {
 pub enum DeviceCyclePlan {
     Select(DeviceId),
     NoActiveEndpoints,
+}
+
+pub(crate) fn default_selection_result(
+    flow: DeviceCycleFlow,
+    defaults: &DefaultDevices,
+    target: DeviceId,
+) -> DeviceCycleResult {
+    let previous = defaults.console.clone();
+    if defaults.all_roles_match(&target) {
+        DeviceCycleResult::AlreadySelected {
+            flow,
+            device: target,
+        }
+    } else {
+        DeviceCycleResult::Changed {
+            flow,
+            previous,
+            device: target,
+        }
+    }
 }
 
 /// Plan the next real Windows endpoint from the current system default.
@@ -183,12 +214,21 @@ fn enumerate_defaults(
     defaults
 }
 
-/// Return the current console default, which is the canonical cycle cursor.
-pub(crate) fn current_default_device(
+/// Read the current Windows defaults for all three roles.
+///
+/// A role that cannot be read stays `None`. Callers must therefore treat it
+/// as not converged on any target and run the all-role setter rather than
+/// silently accepting a Console-only match.
+pub(crate) fn current_default_devices(
     enumerator: &IMMDeviceEnumerator,
     flow: EndpointFlow,
-) -> Result<DeviceId> {
-    default_device(enumerator, flow, EndpointRole::Console)
+) -> DefaultDevices {
+    let mut warnings = Vec::new();
+    let defaults = enumerate_defaults(enumerator, flow, &mut warnings);
+    for warning in warnings {
+        crate::warn_!("audio {warning}");
+    }
+    defaults
 }
 
 fn default_device(
@@ -593,6 +633,80 @@ mod cycle_tests {
             }
             other => panic!("unexpected cycle result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn selecting_current_input_or_output_is_a_noop_only_when_all_roles_match() {
+        for flow in [DeviceCycleFlow::Input, DeviceCycleFlow::Output] {
+            let current = device("current-id", "Current");
+            let defaults = DefaultDevices {
+                console: Some(current.clone()),
+                multimedia: Some(current.clone()),
+                communications: Some(current.clone()),
+            };
+            assert_eq!(
+                default_selection_result(flow, &defaults, current.clone()),
+                DeviceCycleResult::AlreadySelected {
+                    flow,
+                    device: current,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_console_default_repairs_diverged_multimedia_and_communications_roles() {
+        let target = device("target-id", "Target");
+        let defaults = DefaultDevices {
+            console: Some(target.clone()),
+            multimedia: Some(device("multimedia-id", "Multimedia")),
+            communications: Some(device("communications-id", "Communications")),
+        };
+        assert_eq!(
+            default_selection_result(DeviceCycleFlow::Output, &defaults, target.clone()),
+            DeviceCycleResult::Changed {
+                flow: DeviceCycleFlow::Output,
+                previous: Some(target.clone()),
+                device: target,
+            }
+        );
+    }
+
+    #[test]
+    fn unreadable_role_never_turns_partial_state_into_already_selected() {
+        let target = device("target-id", "Target");
+        let defaults = DefaultDevices {
+            console: Some(target.clone()),
+            multimedia: Some(target.clone()),
+            communications: None,
+        };
+        assert_eq!(
+            default_selection_result(DeviceCycleFlow::Output, &defaults, target.clone()),
+            DeviceCycleResult::Changed {
+                flow: DeviceCycleFlow::Output,
+                previous: Some(target.clone()),
+                device: target,
+            }
+        );
+    }
+
+    #[test]
+    fn selecting_a_different_endpoint_reports_a_change() {
+        let previous = device("previous-id", "Previous");
+        let target = device("target-id", "Target");
+        let defaults = DefaultDevices {
+            console: Some(previous.clone()),
+            multimedia: Some(previous.clone()),
+            communications: Some(previous.clone()),
+        };
+        assert_eq!(
+            default_selection_result(DeviceCycleFlow::Output, &defaults, target.clone()),
+            DeviceCycleResult::Changed {
+                flow: DeviceCycleFlow::Output,
+                previous: Some(previous),
+                device: target,
+            }
+        );
     }
 
     #[test]

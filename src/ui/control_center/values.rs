@@ -2,10 +2,9 @@
 
 use super::audio::allowlist_label;
 use super::config_toggle::ConfigToggle;
-use super::overlay_preview::{
-    overlay_duration_label, overlay_opacity_label, overlay_position, overlay_scale_label,
-};
+use super::overlay_preview::{overlay_duration_label, overlay_position, overlay_scale_label};
 use super::state::{ConfirmationTarget, SettingsUi};
+use crate::config::model::{OVERLAY_DURATION_MAX_MS, OVERLAY_DURATION_MIN_MS};
 use crate::ui::controls::ControlValue;
 use crate::ui::layout::{
     AudioElement, DisplayElement, ElementDomain, ElementId, HomeElement, HotkeySlot,
@@ -271,8 +270,20 @@ impl SettingsUi {
             OverlayElement::Enabled => {
                 ControlValue::Toggle(ConfigToggle::Overlay.selected(&self.draft))
             }
-            OverlayElement::ExternalChanges => {
-                ControlValue::Toggle(ConfigToggle::ExternalAudio.selected(&self.draft))
+            OverlayElement::Microphone => {
+                ControlValue::Toggle(ConfigToggle::OverlayMicrophone.selected(&self.draft))
+            }
+            OverlayElement::Speaker => {
+                ControlValue::Toggle(ConfigToggle::OverlaySpeaker.selected(&self.draft))
+            }
+            OverlayElement::CurrentAppAudio => {
+                ControlValue::Toggle(ConfigToggle::OverlayCurrentAppAudio.selected(&self.draft))
+            }
+            OverlayElement::Workspace => {
+                ControlValue::Toggle(ConfigToggle::OverlayWorkspace.selected(&self.draft))
+            }
+            OverlayElement::DisplayProfile => {
+                ControlValue::Toggle(ConfigToggle::OverlayDisplayProfile.selected(&self.draft))
             }
             OverlayElement::PositionCell(index) => ControlValue::Toggle(
                 self.draft.overlay.position == overlay_position(index as usize),
@@ -287,17 +298,25 @@ impl SettingsUi {
                 crate::ui::presentation::monitor_choice_label(&self.draft.overlay.monitor),
             )),
             OverlayElement::Duration => ControlValue::Slider {
-                ratio: (self.draft.overlay.duration_ms.saturating_sub(500) as f32 / 9500.0)
+                ratio: (self
+                    .draft
+                    .overlay
+                    .duration_ms
+                    .saturating_sub(OVERLAY_DURATION_MIN_MS) as f32
+                    / (OVERLAY_DURATION_MAX_MS - OVERLAY_DURATION_MIN_MS) as f32)
                     .clamp(0.0, 1.0),
-                label: Cow::Borrowed(overlay_duration_label(self.draft.overlay.duration_ms)),
+                label: Cow::Owned(overlay_duration_label(self.draft.overlay.duration_ms)),
             },
-            OverlayElement::Opacity => ControlValue::Slider {
-                ratio: ((self.draft.overlay.opacity - 0.3) / 0.7).clamp(0.0, 1.0),
-                label: Cow::Borrowed(overlay_opacity_label(self.draft.overlay.opacity)),
+            OverlayElement::Blur => ControlValue::Slider {
+                ratio: self.draft.overlay.blur.index() as f32 / 4.0,
+                label: Cow::Borrowed(self.draft.overlay.blur.label()),
             },
             OverlayElement::Scale => ControlValue::Slider {
-                ratio: ((self.draft.overlay.scale - 0.7) / 0.9).clamp(0.0, 1.0),
-                label: Cow::Borrowed(overlay_scale_label(self.draft.overlay.scale)),
+                ratio: ((self.draft.overlay.scale - crate::config::model::OVERLAY_SCALE_MIN)
+                    / (crate::config::model::OVERLAY_SCALE_MAX
+                        - crate::config::model::OVERLAY_SCALE_MIN))
+                    .clamp(0.0, 1.0),
+                label: Cow::Owned(overlay_scale_label(self.draft.overlay.scale)),
             },
             OverlayElement::Preview => ControlValue::Action(Cow::Borrowed("Show on screen")),
         }

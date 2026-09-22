@@ -1,16 +1,18 @@
 //! Messages for the diagnostics.
 
-use super::native::invalidate;
+use super::native::{client_size_dip, invalidate, screen_point_dip};
 use super::state::DiagnosticsUi;
-use super::window::WM_MOUSELEAVE;
+use super::window::{diagnostics_hit_test_dip, MIN_HEIGHT, MIN_WIDTH, WM_MOUSELEAVE};
 use crate::platform::window as win;
+use crate::ui::layout::titlebar_geometry;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 
 use windows::Win32::UI::WindowsAndMessaging::{
     ShowWindow, CREATESTRUCTW, SW_HIDE, WM_CLOSE, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
-    WM_NCDESTROY, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE,
+    WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSKEYDOWN,
+    WM_SYSKEYUP,
 };
 
 pub(super) unsafe extern "system" fn diagnostics_wndproc(
@@ -42,6 +44,20 @@ pub(super) unsafe extern "system" fn diagnostics_wndproc(
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 LRESULT(0)
             }
+            WM_NCHITTEST => {
+                let dpi = cell.borrow().dpi;
+                let Some((width, height)) = client_size_dip(hwnd, dpi).ok() else {
+                    return LRESULT(windows::Win32::UI::WindowsAndMessaging::HTCLIENT as isize);
+                };
+                let Some((x, y)) = screen_point_dip(hwnd, lparam, dpi) else {
+                    return LRESULT(windows::Win32::UI::WindowsAndMessaging::HTCLIENT as isize);
+                };
+                LRESULT(
+                    diagnostics_hit_test_dip(titlebar_geometry(width, 0.0), width, height, x, y)
+                        as isize,
+                )
+            }
+            WM_NCCALCSIZE => LRESULT(0),
             WM_PAINT => lifecycle::handle_paint(cell, hwnd),
             WM_ERASEBKGND => LRESULT(1),
             WM_SIZE => {
@@ -85,8 +101,8 @@ pub(super) unsafe extern "system" fn diagnostics_wndproc(
                 let info =
                     &mut *(lparam.0 as *mut windows::Win32::UI::WindowsAndMessaging::MINMAXINFO);
                 let scale = cell.borrow().dpi as f32 / 96.0;
-                info.ptMinTrackSize.x = (720.0 * scale) as i32;
-                info.ptMinTrackSize.y = (560.0 * scale) as i32;
+                info.ptMinTrackSize.x = (MIN_WIDTH * scale) as i32;
+                info.ptMinTrackSize.y = (MIN_HEIGHT * scale) as i32;
                 LRESULT(0)
             }
             _ => win::def_proc(hwnd, msg, wparam, lparam),

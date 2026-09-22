@@ -135,13 +135,17 @@ pub(crate) enum WorkspaceElement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayElement {
     Enabled,
-    ExternalChanges,
+    Microphone,
+    Speaker,
+    CurrentAppAudio,
+    Workspace,
+    DisplayProfile,
     PositionCell(u8),
     Appearance,
     Position,
     Monitor,
     Duration,
-    Opacity,
+    Blur,
     Scale,
     Preview,
 }
@@ -278,7 +282,11 @@ impl ElementId {
             }
 
             Self::OverlayEnabled => ElementDomain::Overlay(OverlayElement::Enabled),
-            Self::OverlayExternalChanges => ElementDomain::Overlay(OverlayElement::ExternalChanges),
+            Self::OverlayCurrentAppAudio => ElementDomain::Overlay(OverlayElement::CurrentAppAudio),
+            Self::OverlayMicrophone => ElementDomain::Overlay(OverlayElement::Microphone),
+            Self::OverlaySpeaker => ElementDomain::Overlay(OverlayElement::Speaker),
+            Self::OverlayWorkspace => ElementDomain::Overlay(OverlayElement::Workspace),
+            Self::OverlayDisplayProfile => ElementDomain::Overlay(OverlayElement::DisplayProfile),
             Self::OverlayPositionCell(index) => {
                 ElementDomain::Overlay(OverlayElement::PositionCell(index))
             }
@@ -286,7 +294,7 @@ impl ElementId {
             Self::OverlayPosition => ElementDomain::Overlay(OverlayElement::Position),
             Self::OverlayMonitor => ElementDomain::Overlay(OverlayElement::Monitor),
             Self::OverlayDuration => ElementDomain::Overlay(OverlayElement::Duration),
-            Self::OverlayOpacity => ElementDomain::Overlay(OverlayElement::Opacity),
+            Self::OverlayBlur => ElementDomain::Overlay(OverlayElement::Blur),
             Self::OverlayScale => ElementDomain::Overlay(OverlayElement::Scale),
             Self::OverlayPreview => ElementDomain::Overlay(OverlayElement::Preview),
 

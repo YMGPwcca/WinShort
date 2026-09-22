@@ -18,6 +18,10 @@ pub enum DeviceCycleFlow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceCycleResult {
+    AlreadySelected {
+        flow: DeviceCycleFlow,
+        device: DeviceId,
+    },
     Changed {
         flow: DeviceCycleFlow,
         previous: Option<DeviceId>,

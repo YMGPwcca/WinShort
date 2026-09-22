@@ -218,12 +218,16 @@ impl SettingsUi {
     fn overlay_disabled(&self, element: OverlayElement) -> bool {
         match element {
             OverlayElement::Enabled | OverlayElement::Appearance => false,
-            OverlayElement::ExternalChanges
+            OverlayElement::Microphone
+            | OverlayElement::Speaker
+            | OverlayElement::CurrentAppAudio
+            | OverlayElement::Workspace
+            | OverlayElement::DisplayProfile
             | OverlayElement::Position
             | OverlayElement::Monitor
             | OverlayElement::PositionCell(_)
             | OverlayElement::Duration
-            | OverlayElement::Opacity
+            | OverlayElement::Blur
             | OverlayElement::Scale
             | OverlayElement::Preview => !self.draft.overlay.enabled,
         }

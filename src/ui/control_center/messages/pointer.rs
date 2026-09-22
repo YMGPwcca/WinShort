@@ -50,7 +50,7 @@ pub(super) unsafe fn handle_mousemove(
     }
     ui.update_hover(hwnd, x, y);
     if let Some(
-        id @ (ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale),
+        id @ (ElementId::OverlayDuration | ElementId::OverlayBlur | ElementId::OverlayScale),
     ) = ui.interaction.pressed()
     {
         ui.set_slider_from_x(id, x);
@@ -131,7 +131,7 @@ pub(super) unsafe fn handle_lbuttondown(
                     if matches!(
                         id,
                         ElementId::OverlayDuration
-                            | ElementId::OverlayOpacity
+                            | ElementId::OverlayBlur
                             | ElementId::OverlayScale
                     ) {
                         ui.set_slider_from_x(id, x);
@@ -180,7 +180,7 @@ pub(super) unsafe fn handle_lbuttonup(
         let slider = pressed.is_some_and(|id| {
             matches!(
                 id,
-                ElementId::OverlayDuration | ElementId::OverlayOpacity | ElementId::OverlayScale
+                ElementId::OverlayDuration | ElementId::OverlayBlur | ElementId::OverlayScale
             )
         });
         let activate_id = pressed.filter(|id| !slider && ui.layout.hit_test(x, y) == Some(*id));

@@ -3,8 +3,6 @@
 use super::backend::resize_surface;
 
 use super::state::OverlayState;
-use super::timeline::Phase;
-use super::window::{apply_hide_window, TIMER_ID};
 
 use crate::platform::window as win;
 
@@ -40,19 +38,12 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         };
         match msg {
-            crate::event::WM_APP_UI_ACCEPTANCE_HIDE_OVERLAY
-                if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some() =>
-            {
-                {
-                    cell.borrow_mut().phase = Phase::Hidden;
-                }
-                apply_hide_window(hwnd);
-                LRESULT(0)
-            }
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
-                lifecycle::handle_settingchange(cell, hwnd)
+                lifecycle::handle_settingchange()
             }
-            WM_TIMER if wparam.0 == TIMER_ID => lifecycle::handle_timer(cell, hwnd),
+            WM_TIMER if wparam.0 == cell.borrow().timer_id => {
+                lifecycle::handle_timer(cell, hwnd, wparam.0)
+            }
             WM_PAINT => lifecycle::handle_paint(cell, hwnd),
             WM_SIZE => {
                 if let Err(error) = resize_surface(cell, hwnd) {
@@ -63,7 +54,7 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
             WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_ERASEBKGND => LRESULT(1),
-            WM_DPICHANGED => lifecycle::handle_dpichanged(cell, hwnd, wparam),
+            WM_DPICHANGED => lifecycle::handle_dpichanged(),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }

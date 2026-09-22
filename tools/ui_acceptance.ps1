@@ -15,8 +15,10 @@ $ExePath = Join-Path $RepoRoot 'target\release\winshort.exe'
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $ResultRoot = Join-Path $RepoRoot "target\ui-acceptance-results\$Stamp"
 New-Item -ItemType Directory -Path $ResultRoot -Force | Out-Null
-$AcceptanceShowMessage = [uint32]0x8003
-$AcceptanceHideOverlayMessage = [uint32]0x8004
+$AcceptanceShowDeterministicOverlayMessage = [uint32]0x8003
+$AcceptanceHideAllOverlaysMessage = [uint32]0x8004
+$AcceptanceShowMultiOverlayMessage = [uint32]0x8005
+$AcceptanceReplaceSpeakerOverlayMessage = [uint32]0x8006
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -63,6 +65,8 @@ namespace WinShortUiAcceptance {
         [DllImport("user32.dll")]
         private static extern bool IsWindowVisible(IntPtr hwnd);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowLongW(IntPtr hwnd, int index);
 
         [DllImport("user32.dll")]
         private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
@@ -108,6 +112,18 @@ namespace WinShortUiAcceptance {
                 return true;
             }, IntPtr.Zero);
             return found;
+        }
+        public static IntPtr[] FindVisibleWindowsForProcess(int pid, string className) {
+            var found = new System.Collections.Generic.List<IntPtr>();
+            EnumWindows(delegate(IntPtr hwnd, IntPtr lparam) {
+                uint owner;
+                GetWindowThreadProcessId(hwnd, out owner);
+                if (owner == (uint)pid && IsWindowVisible(hwnd) && ClassEquals(hwnd, className)) {
+                    found.Add(hwnd);
+                }
+                return true;
+            }, IntPtr.Zero);
+            return found.ToArray();
         }
         public static IntPtr FindMessageWindowForProcess(int pid, string className) {
             var hwnd = FindWindowEx(new IntPtr(-3), IntPtr.Zero, className, null);
@@ -164,6 +180,11 @@ namespace WinShortUiAcceptance {
             return IsWindowVisible(hwnd);
         }
 
+        public static bool HasNoRedirectionBitmap(IntPtr hwnd) {
+            const int GWL_EXSTYLE = -20;
+            const int WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+            return (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_NOREDIRECTIONBITMAP) != 0;
+        }
 
         public static bool PostEscape(IntPtr hwnd) {
             return PostMessage(hwnd, 0x0100, (IntPtr)0x1B, IntPtr.Zero)
@@ -487,6 +508,19 @@ function Wait-Until {
     throw $Failure
 }
 
+function Get-DeterministicOverlayHwnd {
+    param([System.Diagnostics.Process]$Process)
+
+    $candidates = [WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+        $Process.Id,
+        'WinShort.Overlay'
+    )
+    if ($candidates.Count -ne 1) {
+        return $null
+    }
+    return $candidates[0]
+}
+
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Text)
     $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -500,7 +534,8 @@ function New-ProcessStartInfo {
         [string]$PickerTheme,
         [bool]$AcceptanceTrigger,
         [bool]$ForceOpaque = $false,
-        [bool]$ForceCompositionFailure = $false
+        [bool]$ForceCompositionFailure = $false,
+        [bool]$ForceRenderFailure = $false
     )
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Executable
@@ -512,8 +547,9 @@ function New-ProcessStartInfo {
     $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_NO_EXTERNAL'] = '1'
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_OPAQUE') | Out-Null
     $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_COMPOSITION_FAILURE') | Out-Null
+    $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE_FORCE_RENDER_FAILURE') | Out-Null
     if ($AcceptanceTrigger) {
-        $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-status-overlay'
+        $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE'] = 'show-deterministic-acceptance-overlay'
     } else {
         $info.EnvironmentVariables.Remove('WINSHORT_UI_ACCEPTANCE') | Out-Null
     }
@@ -522,6 +558,9 @@ function New-ProcessStartInfo {
     }
     if ($ForceCompositionFailure) {
         $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_FORCE_COMPOSITION_FAILURE'] = '1'
+    }
+    if ($ForceRenderFailure) {
+        $info.EnvironmentVariables['WINSHORT_UI_ACCEPTANCE_FORCE_RENDER_FAILURE'] = '1'
     }
     return $info
 }
@@ -532,7 +571,8 @@ function Start-WinShort {
         [string]$PickerTheme,
         [bool]$AcceptanceTrigger,
         [bool]$ForceOpaque = $false,
-        [bool]$ForceCompositionFailure = $false
+        [bool]$ForceCompositionFailure = $false,
+        [bool]$ForceRenderFailure = $false
     )
     $info = New-ProcessStartInfo `
         $ExePath `
@@ -540,7 +580,8 @@ function Start-WinShort {
         $PickerTheme `
         $AcceptanceTrigger `
         $ForceOpaque `
-        $ForceCompositionFailure
+        $ForceCompositionFailure `
+        $ForceRenderFailure
     return [System.Diagnostics.Process]::Start($info)
 }
 
@@ -1100,17 +1141,21 @@ function Invoke-ForcedOverlayScenario {
     $dataDirectory = Join-Path $scenarioDirectory 'data'
     New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
     $config = @"
-schema_version = 10
+schema_version = 11
 
 [overlay]
 enabled = true
-duration_ms = 10000
+duration_ms = 5000
 position = "bottom-right"
 monitor = "primary"
 scale = 1.0
-opacity = 1.0
+blur = "blur-medium"
 appearance = "$Appearance"
-show_external_audio_changes = false
+show_microphone = true
+show_speaker = true
+show_current_app_audio = true
+show_workspace = true
+show_display_profile = true
 "@
     Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
 
@@ -1129,9 +1174,7 @@ show_external_audio_changes = false
         Start-Sleep -Milliseconds 1800
         $overlayHwnd = Wait-Until {
             if ($process.HasExited) { return $null }
-            $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-            if ($candidate -eq [IntPtr]::Zero) { return $null }
-            $candidate
+            Get-DeterministicOverlayHwnd $process
         } "$Name overlay did not appear"
         $mainHwnd = Wait-Until {
             if ($process.HasExited) { return $null }
@@ -1158,19 +1201,20 @@ show_external_audio_changes = false
             $true
         )) "$Name deterministic backdrop did not start"
 
-        [WinShortUiAcceptance.Native]::PostMessageTo($overlayHwnd, $AcceptanceHideOverlayMessage) | Out-Null
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceHideAllOverlaysMessage) | Out-Null
         Wait-Until {
-            -not [WinShortUiAcceptance.Native]::Visible($overlayHwnd)
+            ([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+                $process.Id,
+                'WinShort.Overlay'
+            ).Count -eq 0)
         } "$Name overlay did not hide for baseline capture" | Out-Null
         Start-Sleep -Milliseconds 100
         $baseline = Capture-Bitmap $overlayRectangle
 
-        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowMessage) | Out-Null
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowDeterministicOverlayMessage) | Out-Null
         $overlayHwnd = Wait-Until {
             if ($process.HasExited) { return $null }
-            $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-            if ($candidate -eq [IntPtr]::Zero) { return $null }
-            $candidate
+            Get-DeterministicOverlayHwnd $process
         } "$Name overlay did not reappear"
         Start-Sleep -Milliseconds 180
         [WinShortUiAcceptance.PatternBackdrop]::LowerBelow($overlayHwnd)
@@ -1238,6 +1282,294 @@ show_external_audio_changes = false
     }
 }
 
+function Invoke-RenderFailureVisibilityScenario {
+    param([string]$Name)
+
+    $scenarioDirectory = Join-Path $ResultRoot $Name
+    $dataDirectory = Join-Path $scenarioDirectory 'data'
+    New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
+    $config = @"
+schema_version = 11
+
+[overlay]
+enabled = true
+duration_ms = 5000
+position = "bottom-right"
+monitor = "primary"
+scale = 1.0
+blur = "blur-medium"
+appearance = "dark"
+show_microphone = true
+show_speaker = true
+show_current_app_audio = true
+show_workspace = true
+show_display_profile = true
+"@
+    Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
+
+    $process = $null
+    try {
+        $process = Start-WinShort $dataDirectory 'dark' $true $false $false $true
+        Assert-Condition ($null -ne $process) "could not start $Name release binary"
+        $mainHwnd = Wait-Until {
+            if ($process.HasExited) { return $null }
+            $candidate = [WinShortUiAcceptance.Native]::FindMessageWindowForProcess($process.Id, 'WinShort.Main')
+            if ($candidate -eq [IntPtr]::Zero) { return $null }
+            $candidate
+        } "$Name main message window did not appear"
+
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowDeterministicOverlayMessage) | Out-Null
+        Start-Sleep -Milliseconds 350
+        $visible = @([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+            $process.Id,
+            'WinShort.Overlay'
+        ))
+        Assert-Condition ($visible.Count -eq 0) "$Name exposed an overlay HWND after forced render failure"
+
+        Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process
+        $logs = Get-Content (Join-Path $dataDirectory 'logs\*.log') -Raw -ErrorAction SilentlyContinue
+        $failureLogged = $logs -match 'overlay show failed: internal error: forced acceptance overlay render failure'
+        Assert-Condition $failureLogged "$Name did not exercise the forced render-failure path"
+
+        return [pscustomobject]@{
+            Name = $Name
+            VisibleOverlayCount = $visible.Count
+            FailureLogged = $failureLogged
+        }
+    }
+    finally {
+        if ($null -ne $process) {
+            if (-not $process.HasExited) {
+                $process.Kill() | Out-Null
+                $process.WaitForExit(5000) | Out-Null
+            }
+            try { Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process } catch { }
+            $process.Dispose()
+        }
+    }
+}
+
+function Invoke-LegacyV10MigrationScenario {
+    param([string]$Name)
+
+    $scenarioDirectory = Join-Path $ResultRoot $Name
+    $dataDirectory = Join-Path $scenarioDirectory 'data'
+    New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
+    $config = @"
+schema_version = 10
+
+[overlay]
+enabled = true
+duration_ms = 5000
+position = "bottom-right"
+monitor = "primary"
+scale = 1.0
+opacity = 1.0
+appearance = "dark"
+show_external_audio_changes = false
+"@
+    Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
+
+    $process = $null
+    try {
+        $process = Start-WinShort $dataDirectory 'dark' $true
+        Assert-Condition ($null -ne $process) "could not start $Name release binary"
+        $overlayHwnd = Wait-Until {
+            if ($process.HasExited) { return $null }
+            Get-DeterministicOverlayHwnd $process
+        } "$Name legacy v10 overlay did not appear"
+        $rectangle = Get-Rect ([WinShortUiAcceptance.Native]::WindowRect($overlayHwnd))
+        Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process
+        return [pscustomobject]@{
+            Name = $Name
+            SourceSchema = 10
+            MigrationBootPassed = $true
+            VisibleOverlayCount = 1
+            Width = $rectangle.Width
+            Height = $rectangle.Height
+        }
+    }
+    finally {
+        if ($null -ne $process) {
+            if (-not $process.HasExited) {
+                $process.Kill() | Out-Null
+                $process.WaitForExit(5000) | Out-Null
+            }
+            try { Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process } catch { }
+            $process.Dispose()
+        }
+    }
+}
+
+function Invoke-MultiCardOverlayScenario {
+    param([string]$Name)
+
+    $scenarioDirectory = Join-Path $ResultRoot $Name
+    $dataDirectory = Join-Path $scenarioDirectory 'data'
+    New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
+    $config = @"
+schema_version = 11
+
+[overlay]
+enabled = true
+duration_ms = 2000
+position = "bottom-right"
+monitor = "primary"
+scale = 1.0
+blur = "blur-medium"
+appearance = "dark"
+show_microphone = true
+show_speaker = true
+show_current_app_audio = true
+show_workspace = true
+show_display_profile = true
+"@
+    Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
+
+    $process = $null
+    try {
+        $process = Start-WinShort $dataDirectory 'dark' $true
+        Assert-Condition ($null -ne $process) "could not start $Name release binary"
+        Wait-Until {
+            if ($process.HasExited) { return $null }
+            Get-DeterministicOverlayHwnd $process
+        } "$Name startup acceptance overlay did not appear" | Out-Null
+        $mainHwnd = Wait-Until {
+            if ($process.HasExited) { return $null }
+            $candidate = [WinShortUiAcceptance.Native]::FindMessageWindowForProcess($process.Id, 'WinShort.Main')
+            if ($candidate -eq [IntPtr]::Zero) { return $null }
+            $candidate
+        } "$Name main message window did not appear"
+
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceHideAllOverlaysMessage) | Out-Null
+        Wait-Until {
+            ([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+                $process.Id,
+                'WinShort.Overlay'
+            ).Count -eq 0)
+        } "$Name could not clear startup overlay" | Out-Null
+
+        [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowMultiOverlayMessage) | Out-Null
+        Wait-Until {
+            ([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+                $process.Id,
+                'WinShort.Overlay'
+            ).Count -eq 3)
+        } "$Name did not expose exactly three overlay HWNDs" | Out-Null
+
+        $windows = @([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+            $process.Id,
+            'WinShort.Overlay'
+        ))
+        Assert-Condition ($windows.Count -eq 3) "$Name initial card count changed before inspection"
+
+        $rectangles = @()
+        $compositionFlags = @()
+        foreach ($window in $windows) {
+            $rectangle = Get-Rect ([WinShortUiAcceptance.Native]::WindowRect($window))
+            $rectangles += $rectangle
+            $compositionFlags += [WinShortUiAcceptance.Native]::HasNoRedirectionBitmap($window)
+            $workArea = [System.Windows.Forms.Screen]::FromHandle($window).WorkingArea
+            Assert-Condition (
+                $rectangle.Left -ge $workArea.Left -and
+                $rectangle.Top -ge $workArea.Top -and
+                $rectangle.Right -le $workArea.Right -and
+                $rectangle.Bottom -le $workArea.Bottom
+            ) "$Name card escaped the monitor work area"
+        }
+
+        for ($left = 0; $left -lt $rectangles.Count; $left++) {
+            for ($right = $left + 1; $right -lt $rectangles.Count; $right++) {
+                $intersection = [System.Drawing.Rectangle]::Intersect(
+                    $rectangles[$left],
+                    $rectangles[$right]
+                )
+                Assert-Condition (
+                    $intersection.Width -eq 0 -or $intersection.Height -eq 0
+                ) "$Name cards overlap"
+            }
+        }
+
+        $backendKinds = @($compositionFlags | Select-Object -Unique)
+        Assert-Condition ($backendKinds.Count -eq 1) "$Name mixed Composition and opaque fallback cards"
+        $widths = @($rectangles | ForEach-Object { $_.Width } | Select-Object -Unique)
+        $heights = @($rectangles | ForEach-Object { $_.Height } | Select-Object -Unique)
+        Assert-Condition (
+            $widths.Count -eq 1 -and $heights.Count -eq 1
+        ) "$Name cards do not share one deterministic surface geometry"
+
+        $union = $rectangles[0]
+        for ($index = 1; $index -lt $rectangles.Count; $index++) {
+            $union = [System.Drawing.Rectangle]::Union($union, $rectangles[$index])
+        }
+        $screenshotPath = Join-Path $scenarioDirectory 'runtime-overlay-multi-card.png'
+        Save-Bitmap (Capture-Bitmap $union) $screenshotPath
+
+        Start-Sleep -Milliseconds 800
+        [WinShortUiAcceptance.Native]::PostMessageTo(
+            $mainHwnd,
+            $AcceptanceReplaceSpeakerOverlayMessage
+        ) | Out-Null
+        Start-Sleep -Milliseconds 120
+        $afterReplacement = @([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+            $process.Id,
+            'WinShort.Overlay'
+        ))
+        Assert-Condition ($afterReplacement.Count -eq 3) "$Name same-key replacement changed HWND cardinality"
+
+        Wait-Until {
+            ([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+                $process.Id,
+                'WinShort.Overlay'
+            ).Count -eq 2)
+        } "$Name did not preserve replacement speaker after the original toast deadline" | Out-Null
+
+        Start-Sleep -Milliseconds 300
+        $afterOriginalExpiry = @([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+            $process.Id,
+            'WinShort.Overlay'
+        ))
+        Assert-Condition ($afterOriginalExpiry.Count -eq 2) "$Name stale timer removed the replacement toast"
+
+        Wait-Until {
+            ([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+                $process.Id,
+                'WinShort.Overlay'
+            ).Count -eq 1)
+        } "$Name replacement toast did not expire independently" | Out-Null
+
+        $finalWindows = @([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
+            $process.Id,
+            'WinShort.Overlay'
+        ))
+        Assert-Condition ($finalWindows.Count -eq 1) "$Name permanent card did not remain after toast expiry"
+
+        return [pscustomobject]@{
+            Name = $Name
+            InitialVisibleCount = 3
+            ReplacementVisibleCount = $afterReplacement.Count
+            AfterOriginalExpiryCount = $afterOriginalExpiry.Count
+            FinalPermanentCount = $finalWindows.Count
+            CompositionBacked = [bool]($compositionFlags[0])
+            UniformBackend = $true
+            UniformGeometry = $true
+            NoOverlap = $true
+            InsideWorkArea = $true
+            Screenshot = $screenshotPath
+        }
+    }
+    finally {
+        if ($null -ne $process) {
+            if (-not $process.HasExited) {
+                $process.Kill() | Out-Null
+                $process.WaitForExit(5000) | Out-Null
+            }
+            try { Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process } catch { }
+            $process.Dispose()
+        }
+    }
+}
+
 $existing = Get-Process -Name 'winshort' -ErrorAction SilentlyContinue
 Assert-Condition ($null -eq $existing) 'an existing winshort.exe is running; refusing to touch the user process'
 
@@ -1258,17 +1590,21 @@ try {
         New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
         $pickerTheme = if ($appearance -eq 'light') { 'light' } else { 'dark' }
         $config = @"
-schema_version = 10
+schema_version = 11
 
 [overlay]
 enabled = true
-duration_ms = 10000
+duration_ms = 5000
 position = "bottom-right"
 monitor = "primary"
 scale = 1.0
-opacity = 1.0
+blur = "blur-medium"
 appearance = "$appearance"
-show_external_audio_changes = false
+show_microphone = true
+show_speaker = true
+show_current_app_audio = true
+show_workspace = true
+show_display_profile = true
 "@
         Write-Utf8NoBom (Join-Path $dataDirectory 'config.toml') $config
 
@@ -1284,9 +1620,7 @@ show_external_audio_changes = false
 
             $overlayHwnd = Wait-Until {
                 if ($process.HasExited) { return $null }
-                $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-                if ($candidate -eq [IntPtr]::Zero) { return $null }
-                $candidate
+                Get-DeterministicOverlayHwnd $process
             } "runtime overlay did not appear for $appearance"
             $mainHwnd = Wait-Until {
                 if ($process.HasExited) { return $null }
@@ -1314,20 +1648,18 @@ show_external_audio_changes = false
                 $false
             )) "deterministic backdrop did not start for $appearance"
 
-            [WinShortUiAcceptance.Native]::PostMessageTo($overlayHwnd, $AcceptanceHideOverlayMessage) | Out-Null
+            [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceHideAllOverlaysMessage) | Out-Null
             Wait-Until {
-                -not [WinShortUiAcceptance.Native]::Visible($overlayHwnd)
+                (Get-DeterministicOverlayHwnd $process) -eq $null
             } 'overlay did not hide for baseline capture' | Out-Null
             Start-Sleep -Milliseconds 100
             $baseline = Capture-Bitmap $overlayRectangle
             $baselineContext = Capture-Bitmap $contextRectangle
 
-            [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowMessage) | Out-Null
+            [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceShowDeterministicOverlayMessage) | Out-Null
             $overlayHwnd = Wait-Until {
                 if ($process.HasExited) { return $null }
-                $candidate = [WinShortUiAcceptance.Native]::FindVisibleWindowForProcess($process.Id, 'WinShort.Overlay')
-                if ($candidate -eq [IntPtr]::Zero) { return $null }
-                $candidate
+                Get-DeterministicOverlayHwnd $process
             } "runtime overlay did not reappear for $appearance"
             Start-Sleep -Milliseconds 180
             [WinShortUiAcceptance.PatternBackdrop]::LowerBelow($overlayHwnd)
@@ -1521,6 +1853,9 @@ show_external_audio_changes = false
         Assert-Condition ([Math]::Abs($fallback.Height - $overlayResults[0].Height) -le 2) "$($fallback.Name) height differs from Composition card"
     }
 
+    $renderFailureResult = Invoke-RenderFailureVisibilityScenario -Name 'render-failure-remains-hidden'
+    $legacyV10Result = Invoke-LegacyV10MigrationScenario -Name 'legacy-v10-migration'
+    $multiCardResult = Invoke-MultiCardOverlayScenario -Name 'multi-card-stack'
 
     for ($index = 1; $index -lt $overlayResults.Count; $index++) {
         Assert-Condition ([Math]::Abs($overlayResults[$index].Width - $overlayResults[0].Width) -le 2) 'runtime overlay widths differ between appearance styles'
@@ -1537,6 +1872,9 @@ show_external_audio_changes = false
         }
         HistoricalDwmReplay = $historicalReplay
         Fallback = $fallbackResults
+        RenderFailureVisibility = $renderFailureResult
+        LegacyV10Migration = $legacyV10Result
+        MultiCardStack = $multiCardResult
         Acceptance = [pscustomobject]@{
             RuntimeOverlay = $overlayResults
             ControlCenterAndPickers = $scenarioResults

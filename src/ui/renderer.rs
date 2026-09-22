@@ -5,7 +5,6 @@ mod resources;
 mod target;
 mod text;
 
-pub(crate) use drawing::rect;
 pub(crate) use resources::{BrushRole, TextStyle};
 pub(crate) use target::Renderer;
 

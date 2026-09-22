@@ -1,24 +1,37 @@
 //! Overlay state transitions and frame planning. Native operations consume owned plans.
 
-use super::backend::{
-    OverlayGraphics, OverlayRenderData, OverlaySurface, SurfaceSpec, RECT_FALLBACK,
-};
-use super::layout::{position_for, surface_geometry, window_region_for};
-use super::model::{merge_overlay_models, OverlayModel};
+use super::backend::{OverlayGraphics, OverlayRenderData, OverlaySurface, SurfaceSpec};
+use super::layout::{surface_geometry, window_region_for};
+use super::model::OverlayModel;
 use super::palette::{
     composition_blur_enabled, opaque_palette, palette_for, resolved_theme_mode, OverlayPalette,
 };
 use super::timeline::{
-    motion_policy, timing_after_show, MotionPolicy, Phase, ShowPlan, TickPlan, APPEAR_MS,
-    COALESCE_WINDOW_MS, LEAVE_MS, TIMER_MS,
+    motion_policy, timer_id_for_generation, timer_interval_for_card, timing_after_show,
+    MotionPolicy, Phase, PositionTween, ShowMode, ShowPlan, TickPlan, APPEAR_MS, LEAVE_MS,
 };
-use crate::config::model::OverlayCfg;
+use crate::config::model::{OverlayBlur, OverlayCfg};
 use crate::error::Result;
 use crate::platform::visual::SystemVisualPreferences;
 use std::time::{Duration, Instant, SystemTime};
 use windows::Win32::Foundation::{POINT, SIZE};
 
+pub(super) struct ShowRequest {
+    pub(super) generation: u64,
+    pub(super) presentation_started_at: Instant,
+    pub(super) model: OverlayModel,
+    pub(super) config: OverlayCfg,
+    pub(super) dpi: u32,
+    pub(super) target_monitor: Option<String>,
+    pub(super) position: POINT,
+    pub(super) expires_at: Option<Instant>,
+    pub(super) mode: ShowMode,
+}
+
 pub(super) struct OverlayState {
+    pub(super) entry_id: u64,
+    pub(super) generation: u64,
+    pub(super) timer_id: usize,
     pub(super) graphics: OverlayGraphics,
     pub(super) surface: Option<OverlaySurface>,
     pub(super) surface_size: SIZE,
@@ -29,10 +42,11 @@ pub(super) struct OverlayState {
     pub(super) backdrop_enabled: bool,
     pub(super) motion: MotionPolicy,
     pub(super) base_position: POINT,
+    pub(super) position_tween: Option<PositionTween>,
     pub(super) phase: Phase,
     pub(super) phase_started: Instant,
-    pub(super) hold_until: Instant,
-    pub(super) last_presented: Instant,
+    /// Each card owns its own optional toast deadline.
+    pub(super) expires_at: Option<Instant>,
     pub(super) dpi: u32,
     pub(super) last_target_monitor: Option<String>,
     pub(super) last_render_dpi: Option<u32>,
@@ -40,11 +54,14 @@ pub(super) struct OverlayState {
 }
 
 impl OverlayState {
-    pub(super) fn new(graphics: OverlayGraphics) -> Self {
+    pub(super) fn new(graphics: OverlayGraphics, entry_id: u64) -> Self {
         let now = Instant::now();
         let preferences = SystemVisualPreferences::query();
         let config = crate::config::Config::default().overlay;
         Self {
+            entry_id,
+            generation: 0,
+            timer_id: super::timeline::TIMER_ID,
             graphics,
             surface: None,
             surface_size: SIZE::default(),
@@ -55,10 +72,10 @@ impl OverlayState {
             preferences,
             motion: motion_policy(preferences),
             base_position: POINT::default(),
+            position_tween: None,
             phase: Phase::Hidden,
             phase_started: now,
-            hold_until: now,
-            last_presented: now,
+            expires_at: None,
             dpi: 96,
             last_target_monitor: None,
             last_render_dpi: None,
@@ -68,11 +85,20 @@ impl OverlayState {
 
     pub(super) fn prepare_show(
         &mut self,
-        model: OverlayModel,
-        config: OverlayCfg,
+        request: ShowRequest,
         preferences: SystemVisualPreferences,
-        monitor: Option<crate::platform::monitor::MonitorGeometry>,
     ) -> Result<Option<ShowPlan>> {
+        let ShowRequest {
+            generation,
+            presentation_started_at,
+            model,
+            config,
+            dpi,
+            target_monitor,
+            position,
+            expires_at,
+            mode,
+        } = request;
         if model.rows.is_empty() || !config.enabled {
             return Ok(None);
         }
@@ -80,70 +106,59 @@ impl OverlayState {
         self.motion = motion_policy(preferences);
         self.config = config;
         let now = Instant::now();
-        let coalesce = self.phase != Phase::Hidden
-            && now.duration_since(self.last_presented) <= Duration::from_millis(COALESCE_WINDOW_MS);
-        self.model = if coalesce {
-            merge_overlay_models(&self.model, &model)
-        } else {
-            model
-        };
-        self.last_presented = now;
-        self.dpi =
-            crate::platform::dpi::effective_render_dpi(monitor.as_ref().map(|value| value.dpi));
-        self.last_target_monitor = monitor.as_ref().map(|value| value.device_name.clone());
+        let previous_position = self.position_at(now);
+        self.model = model;
+        self.expires_at = expires_at;
+        self.generation = generation;
+        self.timer_id = timer_id_for_generation(generation);
+        self.dpi = dpi.max(96);
+        self.last_target_monitor = target_monitor;
         self.last_render_dpi = Some(self.dpi);
-        self.last_shown = Some(SystemTime::now());
+        if mode == ShowMode::Present {
+            self.last_shown = Some(SystemTime::now());
+        }
         self.refresh_palette();
         self.surface_size =
             surface_geometry(self.config.scale, self.model.rows.len()).pixel_size(self.dpi);
-        self.base_position = position_for(
-            monitor.map(|value| value.work).unwrap_or(RECT_FALLBACK),
-            self.surface_size,
-            self.config.position,
-            self.dpi,
-        );
-        let appearance_elapsed_ms = now
-            .duration_since(self.phase_started)
-            .as_millis()
-            .min(u64::MAX as u128) as u64;
-        let timing = timing_after_show(
-            self.phase,
-            appearance_elapsed_ms,
-            self.motion,
-            coalesce,
-            self.config.duration_ms as u64,
-        );
+        let timing = timing_after_show(self.phase, self.motion, mode);
         self.phase = timing.phase;
         if timing.restart_phase {
-            self.phase_started = now;
+            self.phase_started = presentation_started_at;
+            self.position_tween = None;
+        } else if mode == ShowMode::Relayout {
+            self.position_tween =
+                PositionTween::start(previous_position, position, self.motion, now);
+        } else {
+            self.position_tween = None;
         }
-        self.hold_until = now + Duration::from_millis(timing.hold_after_now_ms);
+        self.base_position = position;
         Ok(Some(self.frame_plan()))
     }
 
     pub(super) fn frame_plan(&self) -> ShowPlan {
-        let (alpha, slide_dip) = self.frame_values();
-        let slide_px = (slide_dip * self.dpi as f32 / 96.0).round() as i32;
+        self.frame_plan_at(Instant::now())
+    }
+
+    fn frame_plan_at(&self, now: Instant) -> ShowPlan {
+        let (alpha, slide_dip) = self.frame_values(now);
+        let slide_px = (slide_dip * self.config.scale * self.dpi as f32 / 96.0).round() as i32;
         ShowPlan {
             position: POINT {
-                x: self.base_position.x,
-                y: self.base_position.y + slide_px,
+                x: self.position_at(now).x,
+                y: self.position_at(now).y + slide_px,
             },
             size: self.surface_size,
             region: window_region_for(self.surface_size, self.dpi),
             alpha,
-            timer_interval: self.timer_interval(),
-        }
-    }
-
-    pub(super) fn timer_interval(&self) -> u32 {
-        if self.motion == MotionPolicy::Reduced {
-            self.hold_until
-                .saturating_duration_since(Instant::now())
-                .as_millis()
-                .clamp(1, u32::MAX as u128) as u32
-        } else {
-            TIMER_MS
+            timer_id: self.timer_id,
+            timer_interval: timer_interval_for_card(
+                self.phase,
+                self.motion,
+                self.position_tween
+                    .is_some_and(|tween| !tween.is_finished(now)),
+                self.expires_at,
+                now,
+            ),
         }
     }
 
@@ -155,61 +170,30 @@ impl OverlayState {
                 .is_some_and(OverlaySurface::is_composition),
         );
         let palette = palette_for(self.config.appearance, self.preferences);
-        self.palette = if self.backdrop_enabled {
+        self.palette = if self.backdrop_enabled && !matches!(self.config.blur, OverlayBlur::Solid) {
             palette
         } else {
             opaque_palette(palette)
         };
     }
 
-    pub(super) fn prepare_visual_refresh(
-        &mut self,
-        preferences: SystemVisualPreferences,
-        monitor: Option<crate::platform::monitor::MonitorGeometry>,
-    ) -> Result<Option<ShowPlan>> {
-        let backdrop_enabled = composition_blur_enabled(
-            preferences,
-            self.surface
-                .as_ref()
-                .is_some_and(OverlaySurface::is_composition),
-        );
-        if preferences == self.preferences && backdrop_enabled == self.backdrop_enabled {
-            return Ok(None);
-        }
-        self.preferences = preferences;
-        self.motion = motion_policy(preferences);
-        self.dpi =
-            crate::platform::dpi::effective_render_dpi(monitor.as_ref().map(|value| value.dpi));
-        self.last_target_monitor = monitor.as_ref().map(|value| value.device_name.clone());
-        self.last_render_dpi = Some(self.dpi);
-        self.last_shown = Some(SystemTime::now());
-        self.refresh_palette();
-        if self.phase == Phase::Hidden {
-            return Ok(None);
-        }
-        self.surface_size =
-            surface_geometry(self.config.scale, self.model.rows.len()).pixel_size(self.dpi);
-        self.base_position = position_for(
-            monitor.map(|value| value.work).unwrap_or(RECT_FALLBACK),
-            self.surface_size,
-            self.config.position,
-            self.dpi,
-        );
-        if self.motion == MotionPolicy::Reduced {
-            self.phase = Phase::Holding;
-            self.phase_started = Instant::now();
-        }
-        Ok(Some(self.frame_plan()))
-    }
-
     pub(super) fn prepare_tick(&mut self) -> Option<TickPlan> {
         let now = Instant::now();
+        if self.phase == Phase::Hidden {
+            return None;
+        }
+        let tween_finished = self
+            .position_tween
+            .is_some_and(|tween| tween.is_finished(now));
+        if tween_finished {
+            self.position_tween = None;
+        }
         if self.motion == MotionPolicy::Reduced {
-            if now >= self.hold_until {
+            if self.expires_at.is_some_and(|expires_at| now >= expires_at) {
                 self.phase = Phase::Hidden;
                 return Some(TickPlan::Hide);
             }
-            return None;
+            return Some(TickPlan::Frame(self.frame_plan()));
         }
         match self.phase {
             Phase::Appearing => {
@@ -219,9 +203,15 @@ impl OverlayState {
                 }
             }
             Phase::Holding => {
-                if now >= self.hold_until {
+                if self.expires_at.is_some_and(|expires_at| now >= expires_at) {
                     self.phase = Phase::Leaving;
                     self.phase_started = now;
+                } else if self.expires_at.is_none() {
+                    return if tween_finished {
+                        Some(TickPlan::Frame(self.frame_plan_at(now)))
+                    } else {
+                        Some(TickPlan::StopTimer)
+                    };
                 }
             }
             Phase::Leaving => {
@@ -232,12 +222,12 @@ impl OverlayState {
             }
             Phase::Hidden => return None,
         }
-        Some(TickPlan::Frame(self.frame_plan()))
+        Some(TickPlan::Frame(self.frame_plan_at(now)))
     }
 
-    pub(super) fn frame_values(&self) -> (f32, f32) {
-        let elapsed = Instant::now()
-            .duration_since(self.phase_started)
+    pub(super) fn frame_values(&self, now: Instant) -> (f32, f32) {
+        let elapsed = now
+            .saturating_duration_since(self.phase_started)
             .as_secs_f32();
         if self.motion == MotionPolicy::Reduced {
             return (1.0, 0.0);
@@ -257,12 +247,23 @@ impl OverlayState {
         }
     }
 
+    fn position_at(&self, now: Instant) -> POINT {
+        self.position_tween
+            .map_or(self.base_position, |tween| tween.position_at(now))
+    }
+
     pub(super) fn surface_spec(&self, size: SIZE) -> SurfaceSpec {
         SurfaceSpec {
             size,
             dpi: self.dpi,
             blur_enabled: self.backdrop_enabled,
         }
+    }
+
+    pub(super) fn requires_window_region(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| !surface.is_composition())
     }
 
     pub(super) fn render_data(&self, alpha: f32) -> OverlayRenderData {
@@ -273,7 +274,7 @@ impl OverlayState {
             palette: self.palette,
             theme_mode: resolved_theme_mode(self.config.appearance, self.preferences),
             alpha,
-            opacity: self.config.opacity,
+            blur: self.config.blur,
         }
     }
 }

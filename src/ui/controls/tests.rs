@@ -2,9 +2,9 @@ use super::{
     device_value_rect, interaction_state, row_control_width, scroll_from_scrollbar_pointer,
     scrollbar_hit_rect, scrollbar_thumb_rect, search_caret_rect, search_text_rect,
     section_accent_rect, section_divider_y, section_title_text_rect, shortcut_icon_geometry,
-    titlebar_glyph_bounds, value_control_rect, value_control_rect_for, value_text_rect,
-    value_text_rect_for, ControlValue, Interaction, InteractionState,
-    COMPACT_MONITOR_CONTROL_WIDTH, CONTROL_WIDTH, VALUE_TEXT_PADDING,
+    slider_cluster_geometry, slider_track_rect, titlebar_glyph_bounds, value_control_rect,
+    value_control_rect_for, value_text_rect, value_text_rect_for, ControlValue, Interaction,
+    InteractionState, COMPACT_MONITOR_CONTROL_WIDTH, CONTROL_WIDTH, VALUE_TEXT_PADDING,
 };
 use crate::ui::layout::{Element, ElementId, ElementKind, Rect};
 use std::borrow::Cow;
@@ -67,6 +67,23 @@ fn value_text_geometry_reserves_chevron_and_stays_positive() {
     let hotkey = value_control_rect(row, ElementKind::Hotkey);
     let hotkey_text = value_text_rect(row, ElementKind::Hotkey);
     assert_eq!(hotkey_text.right(), hotkey.right() - VALUE_TEXT_PADDING);
+}
+
+#[test]
+fn slider_geometry_expands_help_column_and_reduces_reference_track() {
+    let row = Rect::new(248.0, 100.0, 680.0, 56.0);
+    let geometry = slider_cluster_geometry(row);
+    let reference_left = (row.inset(1.0).x + row.inset(1.0).w * 0.34)
+        .clamp(row.inset(1.0).x + 150.0, row.inset(1.0).x + 230.0);
+    let reference_width = geometry.value.x - 14.0 - reference_left;
+
+    assert_eq!(geometry.label.w, 300.0);
+    assert_eq!(geometry.description.w, geometry.label.w);
+    assert_eq!(slider_track_rect(row), geometry.track);
+    assert_eq!(geometry.track.w, 230.0);
+    assert!((geometry.track.w / reference_width - 2.0 / 3.0).abs() < 0.01);
+    assert_eq!(geometry.track.x - geometry.description.right(), 24.0);
+    assert_eq!(geometry.value.x - geometry.track.right(), 18.0);
 }
 
 #[test]

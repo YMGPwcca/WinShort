@@ -5,12 +5,14 @@
 //! details of every Direct3D, Direct2D and Composition resource.
 
 use super::backend::{OverlayGraphics, OverlayRenderData, SurfaceSpec};
-use super::drawing::draw_overlay;
+use super::drawing::{draw_overlay, OverlayDrawOptions};
 use super::effect::GaussianBlurEffectGraph;
 use super::layout::CARD_CORNER_RADIUS_DIP;
 use super::palette::composition_tint_alpha;
+use crate::config::model::OverlayBlur;
 use crate::error::{Error, Result};
 use crate::ui::theme::Color;
+use std::rc::Rc;
 
 use windows::core::{Interface, HSTRING};
 use windows::Foundation::Size;
@@ -50,12 +52,29 @@ struct CompositionDevices {
     _d3d_context: ID3D11DeviceContext,
 }
 
+/// Thread-owned Composition infrastructure shared by every overlay card.
+///
+/// The `Rc` is intentional: the runtime is created and consumed only on the
+/// main UI thread, so its dispatcher queue and graphics devices cannot drift
+/// across apartment/thread ownership boundaries.
+struct CompositionRuntimeInner {
+    compositor: Compositor,
+    devices: CompositionDevices,
+    _dispatcher: DispatcherQueueController,
+}
+
+#[derive(Clone)]
+pub(super) struct CompositionRuntime {
+    inner: Rc<CompositionRuntimeInner>,
+}
+
 struct CompositionScene {
     root: ContainerVisual,
     backdrop_visual: SpriteVisual,
     tint_visual: SpriteVisual,
     content_visual: SpriteVisual,
     _effect_brush: CompositionEffectBrush,
+    blur_amount: f32,
     tint_brush: CompositionColorBrush,
     content_brush: CompositionSurfaceBrush,
     geometry: CompositionRoundedRectangleGeometry,
@@ -63,14 +82,14 @@ struct CompositionScene {
 }
 
 pub(super) struct CompositionHost {
-    _dispatcher: DispatcherQueueController,
-    _compositor: Compositor,
     _target: DesktopWindowTarget,
     scene: CompositionScene,
     surface: CompositionDrawingSurface,
-    devices: CompositionDevices,
     size: SIZE,
     dpi: u32,
+    // Keep the shared thread runtime alive until this host's target/scene/surface
+    // have been released.
+    runtime: CompositionRuntime,
 }
 
 fn create_dispatcher() -> Result<DispatcherQueueController> {
@@ -83,14 +102,12 @@ fn create_dispatcher() -> Result<DispatcherQueueController> {
         .map_err(|e| Error::win("CreateDispatcherQueueController(overlay)", &e))
 }
 
-fn create_target(hwnd: HWND) -> Result<(Compositor, DesktopWindowTarget)> {
-    let compositor = Compositor::new().map_err(|e| Error::win("Compositor::new(overlay)", &e))?;
+fn create_target(compositor: &Compositor, hwnd: HWND) -> Result<DesktopWindowTarget> {
     let desktop: ICompositorDesktopInterop = compositor
         .cast()
         .map_err(|e| Error::win("ICompositorDesktopInterop(overlay)", &e))?;
-    let target = unsafe { desktop.CreateDesktopWindowTarget(hwnd, false) }
-        .map_err(|e| Error::win("CreateDesktopWindowTarget(overlay)", &e))?;
-    Ok((compositor, target))
+    unsafe { desktop.CreateDesktopWindowTarget(hwnd, false) }
+        .map_err(|e| Error::win("CreateDesktopWindowTarget(overlay)", &e))
 }
 
 fn create_devices(
@@ -143,6 +160,30 @@ fn create_devices(
     })
 }
 
+impl CompositionRuntime {
+    pub(super) fn create(graphics: &OverlayGraphics) -> Result<Self> {
+        let dispatcher = create_dispatcher()?;
+        let compositor =
+            Compositor::new().map_err(|e| Error::win("Compositor::new(overlay)", &e))?;
+        let devices = create_devices(&compositor, graphics)?;
+        Ok(Self {
+            inner: Rc::new(CompositionRuntimeInner {
+                compositor,
+                devices,
+                _dispatcher: dispatcher,
+            }),
+        })
+    }
+
+    fn compositor(&self) -> &Compositor {
+        &self.inner.compositor
+    }
+
+    fn graphics_device(&self) -> &CompositionGraphicsDevice {
+        &self.inner.devices.graphics_device
+    }
+}
+
 fn create_composition_surface(
     graphics_device: &CompositionGraphicsDevice,
     size: SIZE,
@@ -181,14 +222,21 @@ fn clear_composition_surface(surface: &CompositionDrawingSurface, dpi: u32) -> R
     }
 }
 
-fn create_backdrop_brush(compositor: &Compositor) -> Result<CompositionEffectBrush> {
+fn create_backdrop_brush(
+    compositor: &Compositor,
+    blur_amount: f32,
+) -> Result<CompositionEffectBrush> {
     let source_name = HSTRING::from("source");
     let source_parameter = CompositionEffectSourceParameter::Create(&source_name)
         .map_err(|e| Error::win("CreateEffectSourceParameter(overlay)", &e))?;
     let source: IGraphicsEffectSource = source_parameter
         .cast()
         .map_err(|e| Error::win("CastEffectSourceParameter(overlay)", &e))?;
-    let effect: IGraphicsEffect = GaussianBlurEffectGraph { source }.into();
+    let effect: IGraphicsEffect = GaussianBlurEffectGraph {
+        source,
+        blur_amount,
+    }
+    .into();
     let effect_factory = compositor
         .CreateEffectFactory(&effect)
         .map_err(|e| Error::win("CreateEffectFactory(overlay)", &e))?;
@@ -319,8 +367,9 @@ fn create_scene(
     root.SetSize(vector_size)
         .map_err(|e| Error::win("SetRootSize(overlay)", &e))?;
 
-    let effect_brush = create_backdrop_brush(compositor)?;
     let (geometry, clip) = create_clip(compositor, vector_size, dpi)?;
+    let effect_brush =
+        create_backdrop_brush(compositor, OverlayBlur::BlurMedium.blur_amount().unwrap())?;
     let backdrop_visual = create_backdrop_visual(compositor, vector_size, &clip, &effect_brush)?;
     let (tint_brush, tint_visual) = create_tint_layer(compositor, vector_size, &clip)?;
     let (content_brush, content_visual) =
@@ -345,6 +394,7 @@ fn create_scene(
         tint_visual,
         content_visual,
         _effect_brush: effect_brush,
+        blur_amount: OverlayBlur::BlurMedium.blur_amount().unwrap(),
         tint_brush,
         content_brush,
         geometry,
@@ -372,27 +422,23 @@ impl CompositionHost {
         hwnd: HWND,
         size: SIZE,
         dpi: u32,
-        graphics: &OverlayGraphics,
+        runtime: CompositionRuntime,
     ) -> Result<Self> {
-        let dispatcher = create_dispatcher()?;
-        let (compositor, target) = create_target(hwnd)?;
-        let devices = create_devices(&compositor, graphics)?;
-        let surface = create_composition_surface(&devices.graphics_device, size)?;
+        let target = create_target(runtime.compositor(), hwnd)?;
+        let surface = create_composition_surface(runtime.graphics_device(), size)?;
         clear_composition_surface(&surface, dpi)?;
-        let scene = create_scene(&compositor, &surface, size, dpi)?;
+        let scene = create_scene(runtime.compositor(), &surface, size, dpi)?;
         target
             .SetRoot(&scene.root)
             .map_err(|e| Error::win("SetCompositionRoot(overlay)", &e))?;
 
         Ok(Self {
-            _dispatcher: dispatcher,
-            _compositor: compositor,
             _target: target,
             scene,
             surface,
-            devices,
             size,
             dpi,
+            runtime,
         })
     }
 
@@ -400,7 +446,7 @@ impl CompositionHost {
         if self.size == spec.size && self.dpi == spec.dpi {
             return Ok(());
         }
-        let surface = create_composition_surface(&self.devices.graphics_device, spec.size)?;
+        let surface = create_composition_surface(self.runtime.graphics_device(), spec.size)?;
         clear_composition_surface(&surface, spec.dpi)?;
         self.scene
             .content_brush
@@ -434,8 +480,20 @@ impl CompositionHost {
         Ok(())
     }
 
-    pub(super) fn render(&self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
-        let blurred = spec.blur_enabled && !data.palette.opaque;
+    pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
+        if let Some(blur_amount) = data.blur.blur_amount() {
+            if (self.scene.blur_amount - blur_amount).abs() > f32::EPSILON {
+                let effect_brush = create_backdrop_brush(self.runtime.compositor(), blur_amount)?;
+                self.scene
+                    .backdrop_visual
+                    .SetBrush(&effect_brush)
+                    .map_err(|e| Error::win("SetBackdropBrush(overlay)", &e))?;
+                self.scene._effect_brush = effect_brush;
+                self.scene.blur_amount = blur_amount;
+            }
+        }
+        let blurred =
+            spec.blur_enabled && data.blur.blur_amount().is_some() && !data.palette.opaque;
         self.scene
             .backdrop_visual
             .SetIsVisible(blurred)
@@ -446,13 +504,13 @@ impl CompositionHost {
             .map_err(|e| Error::win("SetTintVisibility(overlay)", &e))?;
         self.scene
             .backdrop_visual
-            .SetOpacity((data.alpha * data.opacity.clamp(0.3, 1.0)).clamp(0.0, 1.0))
+            .SetOpacity(data.alpha.clamp(0.0, 1.0))
             .map_err(|e| Error::win("SetBackdropOpacity(overlay)", &e))?;
         self.scene
             .tint_visual
             .SetOpacity(data.alpha.clamp(0.0, 1.0))
             .map_err(|e| Error::win("SetTintOpacity(overlay)", &e))?;
-        let tint_alpha = composition_tint_alpha(data.theme_mode, data.opacity);
+        let tint_alpha = composition_tint_alpha(data.theme_mode, data.blur);
         self.scene
             .tint_brush
             .SetColor(WinRtColor {
@@ -496,13 +554,11 @@ impl CompositionHost {
             &data.model,
             data.scale,
             data.palette,
-            data.alpha
-                * if data.palette.opaque {
-                    1.0
-                } else {
-                    data.opacity.clamp(0.3, 1.0)
-                },
-            data.palette.opaque,
+            data.alpha,
+            OverlayDrawOptions {
+                fill_card: data.palette.opaque,
+                draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
+            },
         );
         let end_result = unsafe {
             surface_interop

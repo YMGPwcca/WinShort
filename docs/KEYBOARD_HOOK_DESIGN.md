@@ -76,12 +76,14 @@ Win-UP ever reaches Explorer. Property invariant A plus a pinned shrunk countere
 
 For ordinary (non-digit-first) Win-chord dispatches where the shell has seen nothing but a bare
 Win-down, recognition sets `dirty_win_chord` and posts it in the `WM_APP_ACTION` LPARAM. The
-**main thread** then runs `dispatcher::dirty_win_chord()`: a single SendInput batch of a
-harmless `VK_CONTROL` down+up pair. The shell sees Win+Ctrl activity → chord consumed → no
-Start menu on release. Partial sends re-send the lone UP best-effort. Residual race: the
-injection happens on the main thread shortly after dispatch, so an extremely fast physical
-Win release can still beat it; accepted and logged. Digit-first completions bypass the
-countermeasure entirely — their full Win cycle is swallowed instead.
+**main thread** then runs `dispatcher::dirty_win_chord()`: exactly one `INPUT_KEYBOARD` event
+with `wVk = 0xFF` and `KEYEVENTF_KEYUP`. This non-semantic dummy event follows the pattern used
+by Microsoft's PowerToys centralized keyboard hook: the shell sees Win-chord activity → chord
+consumed → no Start menu on release. The `SendInput` count is checked directly; there is no
+modifier partial-send cleanup because the dirtier presses no modifier. Residual race: the
+injection happens on the main thread shortly after dispatch, so an extremely fast physical Win
+release can still beat it; accepted and logged. Digit-first completions bypass the countermeasure
+entirely — their full Win cycle is swallowed instead.
 
 The keyboard-fallback backend needs no countermeasure: its injected `Ctrl+Win+Arrow` events are
 self-ignored (INJECTED flag) and naturally consume the chord.

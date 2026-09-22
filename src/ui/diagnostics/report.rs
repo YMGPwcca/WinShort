@@ -341,7 +341,25 @@ fn append_overlay(s: &crate::diagnostics::snapshot::DiagnosticsSnapshot, lines: 
         if s.overlay.enabled { "Yes" } else { "No" }.into(),
         None,
     );
-    row(lines, "Appearance", s.overlay.appearance.clone(), None);
+    row(
+        lines,
+        "Active cards",
+        s.overlay.active_card_count.to_string(),
+        None,
+    );
+    row(
+        lines,
+        "Permanent cards",
+        s.overlay.permanent_card_count.to_string(),
+        None,
+    );
+    row(
+        lines,
+        "Toast cards",
+        s.overlay.toast_card_count.to_string(),
+        None,
+    );
+    row(lines, "Blur", s.overlay.blur.clone(), None);
     row(
         lines,
         "Resolved appearance",
@@ -353,8 +371,52 @@ fn append_overlay(s: &crate::diagnostics::snapshot::DiagnosticsSnapshot, lines: 
     );
     row(
         lines,
-        "External audio changes",
-        if s.overlay.external_audio_changes {
+        "Microphone notifications",
+        if s.overlay.notifications.microphone {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Speaker notifications",
+        if s.overlay.notifications.speaker {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Current app audio notifications",
+        if s.overlay.notifications.current_app_audio {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Workspace notifications",
+        if s.overlay.notifications.workspace {
+            "Shown"
+        } else {
+            "Hidden"
+        }
+        .into(),
+        None,
+    );
+    row(
+        lines,
+        "Display profile notifications",
+        if s.overlay.notifications.display_profile {
             "Shown"
         } else {
             "Hidden"
@@ -421,6 +483,15 @@ fn append_overlay(s: &crate::diagnostics::snapshot::DiagnosticsSnapshot, lines: 
             .target_monitor
             .clone()
             .unwrap_or_else(|| "Never".into()),
+        None,
+    );
+    row(
+        lines,
+        "Active monitor summary",
+        s.overlay
+            .active_monitor_summary
+            .clone()
+            .unwrap_or_else(|| "None".into()),
         None,
     );
     row(

@@ -77,6 +77,13 @@ impl Motion {
         );
     }
 
+    pub fn clear(&mut self, id: ElementId, channel: MotionChannel) {
+        self.tweens.remove(&MotionKey {
+            element: id,
+            channel,
+        });
+    }
+
     pub fn clear_channel(&mut self, channel: MotionChannel) {
         self.tweens.retain(|key, _| key.channel != channel);
     }
@@ -206,7 +213,11 @@ mod tests {
             ElementId::DesktopsEnabled,
             ElementId::WinNumberEnabled,
             ElementId::OverlayEnabled,
-            ElementId::OverlayExternalChanges,
+            ElementId::OverlayMicrophone,
+            ElementId::OverlaySpeaker,
+            ElementId::OverlayCurrentAppAudio,
+            ElementId::OverlayWorkspace,
+            ElementId::OverlayDisplayProfile,
             ElementId::DebugLogging,
         ];
         let mut motion = Motion::default();
@@ -268,5 +279,15 @@ mod tests {
         assert!(motion
             .tweens
             .contains_key(&key(id, MotionChannel::ToggleState)));
+    }
+
+    #[test]
+    fn clearing_a_hover_tween_removes_residual_hover_immediately() {
+        let id = ElementId::OverlayEnabled;
+        let mut motion = Motion::default();
+        motion.animate_to(id, MotionChannel::Hover, 1.0, 140);
+        motion.clear(id, MotionChannel::Hover);
+        assert_eq!(motion.value(id, MotionChannel::Hover, 0.0), 0.0);
+        assert!(!motion.tweens.contains_key(&key(id, MotionChannel::Hover)));
     }
 }

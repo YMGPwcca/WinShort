@@ -1,6 +1,7 @@
 //! Painting for the diagnostics.
 
-use super::model::{Action, Layout, Line};
+use super::layout::{CONTENT_PADDING_X, SECTION_HEADER_HEIGHT};
+use super::model::{Action, Layout, Line, ReportSection};
 use super::report::compact;
 use super::state::DiagnosticsUi;
 use super::window::ROW_HEIGHT;
@@ -8,9 +9,9 @@ use crate::diagnostics::snapshot::Health;
 use crate::error::Result;
 use crate::ui::controls;
 use crate::ui::controls::Interaction;
-use crate::ui::layout::Rect;
-use crate::ui::renderer::{rect, BrushRole, Renderer, TextStyle};
-use crate::ui::theme::Theme;
+use crate::ui::layout::{top_chrome_separator_rect, Rect};
+use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
+use crate::ui::theme::UiTokens;
 use windows::Win32::Foundation::HWND;
 
 impl DiagnosticsUi {
@@ -19,10 +20,10 @@ impl DiagnosticsUi {
         self.scroll = layout.scroll;
         let renderer = match self.renderer.take() {
             Some(renderer) => renderer,
-            None => Renderer::new(hwnd, self.dpi, Theme::current())?,
+            None => Renderer::new(hwnd, self.dpi, crate::ui::theme::Theme::current())?,
         };
         renderer.begin();
-        draw_header(&renderer, layout.width);
+        self.draw_header(&renderer, &layout);
         draw_report(&renderer, &layout);
         self.draw_footer(&renderer, &layout);
         self.draw_actions(&renderer, &layout);
@@ -47,14 +48,15 @@ impl DiagnosticsUi {
             .action_status
             .as_deref()
             .unwrap_or("Support output is sanitized before it leaves this window");
-        renderer.text(
+        renderer.text_clipped(
             status,
-            rect(
-                24.0,
-                layout.footer.y + 12.0,
-                layout.width - 24.0,
-                layout.footer.y + 34.0,
-            ),
+            Rect::new(
+                CONTENT_PADDING_X,
+                layout.footer.y + 10.0,
+                layout.width - CONTENT_PADDING_X * 2.0,
+                22.0,
+            )
+            .d2d(),
             TextStyle::Caption,
             BrushRole::TextSecondary,
         );
@@ -85,81 +87,129 @@ impl DiagnosticsUi {
     }
 }
 
-fn draw_header(renderer: &Renderer, width: f32) {
-    controls::draw_app_mark(renderer, Rect::new(24.0, 22.0, 34.0, 34.0));
-    renderer.text(
-        "WinShort Diagnostics & Support",
-        rect(70.0, 16.0, width - 24.0, 44.0),
-        TextStyle::Title,
-        BrushRole::Text,
-    );
-    renderer.text(
-        "Everything WinShort knows about its current runtime",
-        rect(70.0, 44.0, width - 24.0, 68.0),
-        TextStyle::Subtitle,
-        BrushRole::TextSecondary,
-    );
+impl DiagnosticsUi {
+    fn draw_header(&self, renderer: &Renderer, layout: &Layout) {
+        renderer.fill_rect(layout.chrome.row.d2d(), BrushRole::Background);
+        let separator = top_chrome_separator_rect(layout.chrome.row);
+        renderer.line(
+            separator.x,
+            separator.y,
+            separator.right(),
+            separator.y,
+            BrushRole::Border,
+            1.0,
+        );
+        controls::draw_close_button_rect(
+            renderer,
+            layout.chrome.close,
+            self.hovered == Some(Action::Close),
+            self.pressed == Some(Action::Close),
+            self.focused == Some(Action::Close),
+        );
+        let title_x = CONTENT_PADDING_X + 46.0;
+        controls::draw_app_mark(renderer, Rect::new(CONTENT_PADDING_X, 56.0, 34.0, 34.0));
+        renderer.text_clipped(
+            "Diagnostics & Support",
+            Rect::new(
+                title_x,
+                48.0,
+                (layout.width - title_x - CONTENT_PADDING_X).max(1.0),
+                36.0,
+            )
+            .d2d(),
+            TextStyle::Title,
+            BrushRole::Text,
+        );
+        renderer.text_clipped(
+            "Review runtime health and support details",
+            Rect::new(
+                title_x,
+                82.0,
+                (layout.width - title_x - CONTENT_PADDING_X).max(1.0),
+                24.0,
+            )
+            .d2d(),
+            TextStyle::Subtitle,
+            BrushRole::TextSecondary,
+        );
+    }
 }
 
 fn draw_report(renderer: &Renderer, layout: &Layout) {
     renderer.push_clip(layout.content.d2d());
-    let mut y = layout.content.y + 8.0 - layout.scroll;
-    for line in &layout.lines {
-        if line.section {
-            draw_section_line(renderer, layout, line, y);
-            y += 34.0;
-        } else {
-            draw_data_line(renderer, layout, line, y);
-            y += ROW_HEIGHT;
+    for section in &layout.sections {
+        let rect = section.rect.translated_y(-layout.scroll);
+        if layout.content.intersects(rect) {
+            draw_section_card(renderer, section, rect);
         }
     }
     renderer.pop_clip();
 }
 
-fn draw_section_line(renderer: &Renderer, layout: &Layout, line: &Line, y: f32) {
-    if y + 30.0 < layout.content.y || y > layout.content.bottom() {
-        return;
-    }
-    renderer.text(
-        &line.key,
-        rect(24.0, y, layout.width - 24.0, y + 24.0),
+fn draw_section_card(renderer: &Renderer, section: &ReportSection, rect: Rect) {
+    renderer.fill_rounded(
+        rect.translated_y(2.0).d2d(),
+        UiTokens::CARD_RADIUS,
+        BrushRole::Shadow,
+    );
+    renderer.fill_rounded(rect.d2d(), UiTokens::CARD_RADIUS, BrushRole::Card);
+    renderer.stroke_rounded(rect.d2d(), UiTokens::CARD_RADIUS, BrushRole::Border, 1.0);
+    renderer.fill_rounded(
+        Rect::new(rect.x + 16.0, rect.y + 15.0, 3.0, 18.0).d2d(),
+        1.5,
+        BrushRole::Accent,
+    );
+    renderer.text_clipped(
+        &section.title,
+        Rect::new(rect.x + 30.0, rect.y + 8.0, rect.w - 46.0, 32.0).d2d(),
         TextStyle::Section,
         BrushRole::Text,
     );
     renderer.line(
-        24.0,
-        y + 27.0,
-        layout.width - 24.0,
-        y + 27.0,
+        rect.x + 16.0,
+        rect.y + SECTION_HEADER_HEIGHT,
+        rect.right() - 16.0,
+        rect.y + SECTION_HEADER_HEIGHT,
         BrushRole::Border,
         1.0,
     );
+
+    let label_width = (rect.w * 0.28).clamp(190.0, 240.0);
+    let value_x = rect.x + 16.0 + label_width + 20.0;
+    for (index, line) in section.rows.iter().enumerate() {
+        let y = rect.y + SECTION_HEADER_HEIGHT + index as f32 * ROW_HEIGHT;
+        if index > 0 {
+            renderer.line(
+                rect.x + 16.0,
+                y,
+                rect.right() - 16.0,
+                y,
+                BrushRole::Border,
+                1.0,
+            );
+        }
+        draw_data_line(renderer, rect, line, y, value_x);
+    }
 }
 
-fn draw_data_line(renderer: &Renderer, layout: &Layout, line: &Line, y: f32) {
-    if y + ROW_HEIGHT < layout.content.y || y > layout.content.bottom() {
-        return;
-    }
-    renderer.text(
+fn draw_data_line(renderer: &Renderer, rect: Rect, line: &Line, y: f32, value_x: f32) {
+    renderer.text_clipped(
         &line.key,
-        rect(32.0, y, 286.0, y + ROW_HEIGHT),
+        Rect::new(rect.x + 16.0, y, value_x - rect.x - 24.0, ROW_HEIGHT).d2d(),
         TextStyle::BodyStrong,
         BrushRole::Text,
     );
-    renderer.text(
+    let value_right = rect.right() - if line.health.is_some() { 42.0 } else { 16.0 };
+    renderer.text_clipped(
         &compact(&line.value),
-        rect(310.0, y, layout.width - 76.0, y + ROW_HEIGHT),
+        Rect::new(value_x, y, (value_right - value_x).max(1.0), ROW_HEIGHT).d2d(),
         TextStyle::Body,
-        if line.health == Some(Health::Error) {
-            BrushRole::Danger
-        } else {
-            BrushRole::TextSecondary
-        },
+        diagnostic_value_role(line.health),
     );
     if let Some(health) = line.health {
         renderer.ellipse(
-            layout.width - 38.0,
-            y + 14.0,
+            rect.right() - 24.0,
+            y + ROW_HEIGHT * 0.5,
             4.0,
             4.0,
             health_role(health),
@@ -167,14 +217,15 @@ fn draw_data_line(renderer: &Renderer, layout: &Layout, line: &Line, y: f32) {
             0.0,
         );
     }
-    renderer.line(
-        32.0,
-        y + ROW_HEIGHT - 1.0,
-        layout.width - 32.0,
-        y + ROW_HEIGHT - 1.0,
-        BrushRole::Border,
-        1.0,
-    );
+}
+
+fn diagnostic_value_role(health: Option<Health>) -> BrushRole {
+    match health {
+        Some(Health::Error) => BrushRole::Danger,
+        Some(Health::Warning) => BrushRole::Warning,
+        Some(Health::Unavailable) => BrushRole::TextDisabled,
+        Some(Health::Healthy) | None => BrushRole::TextSecondary,
+    }
 }
 
 fn health_role(health: Health) -> BrushRole {
@@ -183,5 +234,33 @@ fn health_role(health: Health) -> BrushRole {
         Health::Warning => BrushRole::Warning,
         Health::Unavailable => BrushRole::TextDisabled,
         Health::Error => BrushRole::Danger,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{diagnostic_value_role, health_role};
+    use crate::diagnostics::snapshot::Health;
+    use crate::ui::renderer::BrushRole;
+
+    #[test]
+    fn diagnostics_health_states_use_shared_theme_roles() {
+        assert_eq!(
+            diagnostic_value_role(Some(Health::Healthy)),
+            BrushRole::TextSecondary
+        );
+        assert_eq!(
+            diagnostic_value_role(Some(Health::Warning)),
+            BrushRole::Warning
+        );
+        assert_eq!(
+            diagnostic_value_role(Some(Health::Unavailable)),
+            BrushRole::TextDisabled
+        );
+        assert_eq!(
+            diagnostic_value_role(Some(Health::Error)),
+            BrushRole::Danger
+        );
+        assert_eq!(health_role(Health::Healthy), BrushRole::Success);
     }
 }

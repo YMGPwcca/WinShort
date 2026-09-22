@@ -547,24 +547,61 @@ fn format_diagnostics(
     );
     line(
         &mut out,
-        &format!("Appearance: {}", snapshot.overlay.appearance),
+        &format!("Active cards: {}", snapshot.overlay.active_card_count),
     );
     line(
         &mut out,
+        &format!("Permanent cards: {}", snapshot.overlay.permanent_card_count),
+    );
+    line(
+        &mut out,
+        &format!("Toast cards: {}", snapshot.overlay.toast_card_count),
+    );
+    line(
+        &mut out,
+        &format!("Appearance: {}", snapshot.overlay.appearance),
+    );
+    line(&mut out, &format!("Blur: {}", snapshot.overlay.blur));
+    line(
+        &mut out,
         &format!(
-            "Resolved appearance: {}",
-            snapshot
-                .overlay
-                .resolved_appearance
-                .as_deref()
-                .unwrap_or("unknown")
+            "Microphone notifications: {}",
+            yes_no(snapshot.overlay.notifications.microphone)
         ),
     );
     line(
         &mut out,
         &format!(
-            "External audio changes: {}",
-            yes_no(snapshot.overlay.external_audio_changes)
+            "Speaker notifications: {}",
+            yes_no(snapshot.overlay.notifications.speaker)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Current app audio notifications: {}",
+            yes_no(snapshot.overlay.notifications.current_app_audio)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "External current app change notifications: {}",
+            yes_no(snapshot.overlay.notifications.external_current_app_audio)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Workspace notifications: {}",
+            yes_no(snapshot.overlay.notifications.workspace)
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Display profile notifications: {}",
+            yes_no(snapshot.overlay.notifications.display_profile)
         ),
     );
     line(
@@ -614,6 +651,17 @@ fn format_diagnostics(
                 .target_monitor
                 .as_deref()
                 .unwrap_or("never")
+        ),
+    );
+    line(
+        &mut out,
+        &format!(
+            "Active monitor summary: {}",
+            snapshot
+                .overlay
+                .active_monitor_summary
+                .as_deref()
+                .unwrap_or("none")
         ),
     );
     line(
@@ -782,9 +830,17 @@ fn format_config(config: &Config, schema_version: u8, sanitizer: &mut Sanitizer)
             position: config.overlay.position.as_str().into(),
             monitor: safe_monitor(&config.overlay.monitor),
             scale: config.overlay.scale,
-            opacity: config.overlay.opacity,
+            blur: config.overlay.blur.as_str().into(),
             appearance: config.overlay.appearance.as_str().into(),
-            show_external_audio_changes: config.overlay.show_external_audio_changes,
+            show_microphone: config.overlay.notifications.microphone,
+            show_speaker: config.overlay.notifications.speaker,
+            show_current_app_audio: config.overlay.notifications.current_app_audio,
+            show_external_current_app_audio: config
+                .overlay
+                .notifications
+                .external_current_app_audio,
+            show_workspace: config.overlay.notifications.workspace,
+            show_display_profile: config.overlay.notifications.display_profile,
         },
         audio: SafeAudio {
             input_role: config.audio.input_role.as_str().into(),
@@ -950,9 +1006,14 @@ struct SafeOverlay {
     position: String,
     monitor: String,
     scale: f32,
-    opacity: f32,
+    blur: String,
     appearance: String,
-    show_external_audio_changes: bool,
+    show_microphone: bool,
+    show_speaker: bool,
+    show_current_app_audio: bool,
+    show_external_current_app_audio: bool,
+    show_workspace: bool,
+    show_display_profile: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1222,35 +1283,10 @@ fn add_file<W: Write + std::io::Seek>(
     Ok(())
 }
 
-pub fn open_logs(directory: Option<&Path>) -> Result<()> {
-    use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let directory = directory
+pub(crate) fn log_directory(directory: Option<&Path>) -> PathBuf {
+    directory
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| crate::config::data_dir().join("logs"));
-    fs::create_dir_all(&directory)
-        .map_err(|error| Error::config(format!("create log directory: {error}")))?;
-    let operation = HSTRING::from("open");
-    let target = HSTRING::from(directory.to_string_lossy().as_ref());
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(operation.as_ptr()),
-            PCWSTR(target.as_ptr()),
-            None,
-            None,
-            SW_SHOWNORMAL,
-        )
-    };
-    if result.0 as usize <= 32 {
-        return Err(Error::config(format!(
-            "open log directory failed ({})",
-            result.0 as usize
-        )));
-    }
-    Ok(())
+        .unwrap_or_else(|| crate::config::data_dir().join("logs"))
 }
 
 pub fn copy_diagnostics(
@@ -1463,6 +1499,8 @@ safe=1"#,
         let mut config = Config::default();
         config.audio.input_device = DeviceSelection::Endpoint("opaque-endpoint".into());
         config.audio.cycle_input_allowlist = Some(vec!["opaque-allowlist".into()]);
+        config.overlay.notifications.current_app_audio = true;
+        config.overlay.notifications.external_current_app_audio = false;
         config.hotkeys.toggle_output = None;
         config.hotkeys.set_disabled_hotkey(
             "toggle_output".into(),
@@ -1474,6 +1512,8 @@ safe=1"#,
         assert!(!output.contains("opaque-endpoint"));
         assert!(output.contains("endpoint#02"));
         assert!(!output.contains("opaque-allowlist"));
+        assert!(output.contains("show_current_app_audio = true"));
+        assert!(output.contains("show_external_current_app_audio = false"));
         assert!(output.contains("disabled"));
         assert!(output.contains("toggle_output"));
         assert!(output.contains("Ctrl+Alt+F20"));
@@ -1561,7 +1601,7 @@ safe=1"#,
                 health: Health::Healthy,
                 path: config_path,
                 source_schema_version: Some(1),
-                effective_schema_version: 2,
+                effective_schema_version: crate::config::model::CURRENT_SCHEMA_VERSION,
                 read_only: false,
                 warnings: Vec::new(),
                 repaired_fields: Vec::new(),
@@ -1573,9 +1613,14 @@ safe=1"#,
             overlay: OverlayDiagnostics {
                 health: Health::Healthy,
                 enabled: true,
+                active_card_count: 0,
+                permanent_card_count: 0,
+                toast_card_count: 0,
+                active_monitor_summary: None,
+                blur: "blur-medium".into(),
                 appearance: "system".into(),
                 resolved_appearance: Some("dark".into()),
-                external_audio_changes: true,
+                notifications: crate::config::model::OverlayNotifications::default(),
                 animations_enabled: Some(true),
                 high_contrast: Some(false),
                 disable_overlapped_content: Some(false),

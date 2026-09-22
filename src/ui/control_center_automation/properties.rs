@@ -83,7 +83,13 @@ pub(super) fn control_type(kind: ElementKind) -> i32 {
 }
 
 fn automation_id(id: ElementId) -> String {
-    format!("WinShort.ControlCenter.{id:?}")
+    let name = match id {
+        // OverlayBlur replaced the former opacity control internally, but
+        // this AutomationId is an external accessibility contract.
+        ElementId::OverlayBlur => "OverlayOpacity".to_owned(),
+        _ => format!("{id:?}"),
+    };
+    format!("WinShort.ControlCenter.{name}")
 }
 
 pub(super) fn element_unavailable_error() -> windows::core::Error {

@@ -246,9 +246,9 @@ pub(super) fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'stat
             "System or theme",
         ),
         (
-            ElementId::OverlayExternalChanges,
+            ElementId::OverlayCurrentAppAudio,
             ElementKind::Toggle,
-            "Windows audio changes",
+            "Current app audio",
             "Show changes",
         ),
         (
@@ -270,10 +270,10 @@ pub(super) fn legacy_rows() -> Vec<(ElementId, ElementKind, &'static str, &'stat
             "How long it stays",
         ),
         (
-            ElementId::OverlayOpacity,
+            ElementId::OverlayBlur,
             ElementKind::Slider,
-            "Opacity",
-            "Transparency",
+            "Blur",
+            "Five-stop background treatment",
         ),
         (
             ElementId::OverlayScale,

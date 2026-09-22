@@ -3,7 +3,10 @@
 
 use std::collections::HashMap;
 
-use crate::config::model::{Config, DeviceSelection};
+use crate::config::model::{
+    normalize_overlay_duration, normalize_overlay_scale, Config, DeviceSelection,
+    OVERLAY_DURATION_MAX_MS, OVERLAY_DURATION_MIN_MS,
+};
 use crate::keyboard::binding::{numbered_desktop_family, Hotkey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,18 +28,7 @@ impl Violation {
 pub fn validate(cfg: &Config) -> Vec<Violation> {
     let mut v = Vec::new();
 
-    if !(500..=10_000).contains(&cfg.overlay.duration_ms) {
-        v.push(Violation::new(
-            "overlay.duration_ms",
-            format!("must be 500–10000 (got {})", cfg.overlay.duration_ms),
-        ));
-    }
-    if !(0.7..=1.6).contains(&cfg.overlay.scale) {
-        v.push(Violation::new("overlay.scale", "must be 0.7–1.6"));
-    }
-    if !(0.3..=1.0).contains(&cfg.overlay.opacity) {
-        v.push(Violation::new("overlay.opacity", "must be 0.3–1.0"));
-    }
+    validate_overlay_values(cfg, &mut v);
 
     // Hotkey conflicts: same (modifiers, key) bound twice.
     let mut seen: HashMap<Hotkey, &'static str> = HashMap::new();
@@ -403,6 +395,26 @@ pub fn validate(cfg: &Config) -> Vec<Violation> {
     v
 }
 
+fn validate_overlay_values(cfg: &Config, violations: &mut Vec<Violation>) {
+    if cfg.overlay.duration_ms != normalize_overlay_duration(cfg.overlay.duration_ms) {
+        violations.push(Violation::new(
+            "overlay.duration_ms",
+            format!(
+                "must be {OVERLAY_DURATION_MIN_MS}–{OVERLAY_DURATION_MAX_MS} in {step}ms steps (got {})",
+                cfg.overlay.duration_ms,
+                step = crate::config::model::OVERLAY_DURATION_STEP_MS,
+            ),
+        ));
+    }
+    let normalized_scale = normalize_overlay_scale(cfg.overlay.scale);
+    if !cfg.overlay.scale.is_finite() || cfg.overlay.scale != normalized_scale {
+        violations.push(Violation::new(
+            "overlay.scale",
+            "must be 0.7–1.6 in 0.1 steps",
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,13 +426,58 @@ mod tests {
     }
 
     #[test]
+    fn overlay_duration_accepts_supported_boundaries_and_default() {
+        for duration_ms in [OVERLAY_DURATION_MIN_MS, 1300, OVERLAY_DURATION_MAX_MS] {
+            let mut config = Config::default();
+            config.overlay.duration_ms = duration_ms;
+            assert!(
+                validate(&config).is_empty(),
+                "duration {duration_ms} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_duration_rejects_values_outside_supported_range() {
+        for duration_ms in [
+            OVERLAY_DURATION_MIN_MS - 1,
+            OVERLAY_DURATION_MAX_MS + 1,
+            1051,
+        ] {
+            let mut config = Config::default();
+            config.overlay.duration_ms = duration_ms;
+            let violations = validate(&config);
+            assert_eq!(violations.len(), 1, "duration {duration_ms}");
+            assert_eq!(violations[0].field, "overlay.duration_ms");
+        }
+    }
+
+    #[test]
+    fn overlay_values_reject_off_grid_and_non_finite_values() {
+        let mut config = Config::default();
+        config.overlay.duration_ms = 1049;
+        config.overlay.scale = 0.73;
+        let violations = validate(&config);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "overlay.duration_ms"));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.field == "overlay.scale"));
+
+        config.overlay.scale = f32::INFINITY;
+        assert!(validate(&config)
+            .iter()
+            .any(|violation| violation.field == "overlay.scale"));
+    }
+
+    #[test]
     fn range_violations_reported() {
         let mut c = Config::default();
         c.overlay.duration_ms = 10;
         c.overlay.scale = 9.0;
-        c.overlay.opacity = 0.1;
         let v = validate(&c);
-        assert_eq!(v.len(), 3);
+        assert_eq!(v.len(), 2);
         assert!(v.iter().any(|x| x.field == "overlay.duration_ms"));
     }
 

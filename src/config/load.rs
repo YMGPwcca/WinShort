@@ -58,20 +58,35 @@ pub fn load(data_dir: &Path) -> (Config, Vec<String>) {
                     let mut migrations = Vec::new();
                     if parsed_schema < CURRENT_SCHEMA_VERSION {
                         let detail = match parsed_schema {
-                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
-                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
-                            3 => "v4 desktop workflow, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
-                            4 => "v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
-                            5 => "v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
-                            6 => "v7 audio allowlists, v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
-                            7 => "v8 display profiles, v9 profile hotkeys, and v10 disabled shortcut records defaulted",
-                            8 => "v9 profile hotkeys, confirmation state, and v10 disabled shortcut records defaulted",
-                            9 => "v10 disabled shortcut records defaulted",
+                            1 => "v2 overlay defaults, v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            2 => "v3 hotkey fields, v4 desktop controls, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            3 => "v4 desktop workflow, v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            4 => "v5 scratchpad fields, v7 audio allowlists, v8 display profiles, v9 profile hotkeys, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            5 => "v7 audio allowlists, v8 display profiles, v9 profile hotkeys, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            6 => "v7 audio allowlists, v8 display profiles, v9 profile hotkeys, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            7 => "v8 display profiles, v9 profile hotkeys, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            8 => "v9 profile hotkeys, confirmation state, v10 disabled shortcut records, and v11 overlay blur/notification settings defaulted",
+                            9 => "v10 disabled shortcut records and v11 overlay blur/notification settings defaulted",
+                            10 => "v11 overlay blur/notification settings defaulted",
                             _ => "newer fields defaulted",
                         };
                         migrations.push(format!(
                             "schema v{parsed_schema} migrated to v{CURRENT_SCHEMA_VERSION}: {detail}"
                         ));
+                    }
+                    if toml.overlay.opacity.is_some() {
+                        migrations.push(format!(
+                            "overlay.opacity migrated to overlay.blur = {}",
+                            cfg.overlay.blur.as_str()
+                        ));
+                    }
+                    if parsed_schema < CURRENT_SCHEMA_VERSION
+                        && toml.overlay.show_external_audio_changes.is_some()
+                    {
+                        migrations.push(
+                            "overlay.show_external_audio_changes preserved as the external current-app audio notification policy"
+                                .into(),
+                        );
                     }
                     if text.to_ascii_lowercase().contains("monitor = \"index:") {
                         migrations.push("overlay.monitor index:N mapped to primary".into());
@@ -214,8 +229,9 @@ mod tests {
         let (cfg, warnings) = load(&dir);
         let diagnostics = crate::config::load_diagnostics();
         assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(cfg.overlay.duration_ms, 1000);
         assert_eq!(cfg.overlay.appearance, OverlayAppearance::System);
-        assert!(cfg.overlay.show_external_audio_changes);
+        assert!(cfg.overlay.notifications.current_app_audio);
         assert_eq!(diagnostics.source_schema_version, Some(1));
         assert_eq!(diagnostics.effective_schema_version, CURRENT_SCHEMA_VERSION);
         assert!(diagnostics
@@ -224,6 +240,35 @@ mod tests {
             .any(|value| value.contains("schema v1 migrated")));
 
         crate::config::clear_config_readonly();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_repairs_overlay_values_to_the_same_ui_grid() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir = std::env::temp_dir().join(format!("ws_overlay_grid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            "schema_version = 11\n[overlay]\nduration_ms = 1051\nscale = 0.76\n",
+        )
+        .unwrap();
+
+        let (config, warnings) = load(&dir);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.overlay.duration_ms, 1100);
+        assert_eq!(config.overlay.scale, 0.8);
+        let diagnostics = crate::config::load_diagnostics();
+        assert!(diagnostics
+            .repaired_fields
+            .iter()
+            .any(|field| field == "overlay.duration_ms"));
+        assert!(diagnostics
+            .repaired_fields
+            .iter()
+            .any(|field| field == "overlay.scale"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -322,7 +367,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
-    fn saving_migrated_config_updates_diagnostics_to_v10() {
+    fn legacy_external_audio_policy_survives_save_and_reload() {
+        let _guard = crate::config::latch_guard();
+        crate::config::clear_config_readonly();
+        let dir =
+            std::env::temp_dir().join(format!("ws_schema_external_audio_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            r#"schema_version = 10
+[overlay]
+show_external_audio_changes = false
+"#,
+        )
+        .unwrap();
+
+        let (migrated, warnings) = load(&dir);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("show_external_audio_changes")));
+        assert!(migrated.overlay.notifications.current_app_audio);
+        assert!(!migrated.overlay.notifications.external_current_app_audio);
+
+        crate::config::save::save(&dir, &migrated).unwrap();
+        let saved_text = std::fs::read_to_string(config_path(&dir)).unwrap();
+        assert!(saved_text.contains("schema_version = 11"));
+        assert!(saved_text.contains("show_current_app_audio = true"));
+        assert!(saved_text.contains("show_external_audio_changes = false"));
+
+        let (reloaded, reload_warnings) = load(&dir);
+        assert!(reload_warnings.is_empty(), "{reload_warnings:?}");
+        assert!(reloaded.overlay.notifications.current_app_audio);
+        assert!(!reloaded.overlay.notifications.external_current_app_audio);
+        assert_eq!(reloaded, migrated);
+
+        let diagnostics = crate::config::load_diagnostics();
+        assert_eq!(
+            diagnostics.source_schema_version,
+            Some(CURRENT_SCHEMA_VERSION)
+        );
+        assert!(diagnostics.migrations.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_migrated_config_updates_diagnostics_to_v11() {
         let _guard = crate::config::latch_guard();
         crate::config::clear_config_readonly();
         let dir = std::env::temp_dir().join(format!("ws_schema_save_{}", std::process::id()));

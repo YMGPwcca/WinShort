@@ -5,6 +5,10 @@ use super::model::{
     AutomationFocusOwner, AutomationRange, AutomationRect, SettingsAutomationNode,
     SettingsAutomationSnapshot,
 };
+use crate::config::model::{
+    OVERLAY_DURATION_MAX_MS, OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_PAGE_STEP_MS,
+    OVERLAY_DURATION_STEP_MS,
+};
 #[cfg(not(test))]
 use crate::error::Error;
 use crate::error::Result;
@@ -136,8 +140,13 @@ pub(super) fn slider_range(
         return None;
     }
     let (minimum, maximum, small_change, large_change) = match id {
-        ElementId::OverlayDuration => (500.0, 10_000.0, 100.0, 500.0),
-        ElementId::OverlayOpacity => (0.3, 1.0, 0.05, 0.25),
+        ElementId::OverlayDuration => (
+            OVERLAY_DURATION_MIN_MS as f64,
+            OVERLAY_DURATION_MAX_MS as f64,
+            OVERLAY_DURATION_STEP_MS as f64,
+            OVERLAY_DURATION_PAGE_STEP_MS as f64,
+        ),
+        ElementId::OverlayBlur => (0.0, 4.0, 1.0, 2.0),
         ElementId::OverlayScale => (0.7, 1.6, 0.1, 0.5),
         _ => return None,
     };

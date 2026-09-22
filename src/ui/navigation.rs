@@ -180,6 +180,20 @@ static SEARCH_ITEMS: &[SearchItem] = &[
         target: ElementId::OverlayAppearance,
     },
     SearchItem {
+        title: "Overlay blur",
+        keywords: "status card backdrop transparent blur acrylic solid background",
+        page: Page::Overlay,
+        section: "Overlay",
+        target: ElementId::OverlayBlur,
+    },
+    SearchItem {
+        title: "Display profile notifications",
+        keywords: "overlay alerts microphone speaker current app audio workspace",
+        page: Page::Overlay,
+        section: "Notifications",
+        target: ElementId::OverlayMicrophone,
+    },
+    SearchItem {
         title: "Overlay position",
         keywords: "status card toast hud corner monitor grid top bottom center",
         page: Page::Overlay,

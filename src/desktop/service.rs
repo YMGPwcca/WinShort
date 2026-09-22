@@ -24,6 +24,57 @@ use crate::event::{AppEvent, DesktopActionKind};
 
 const SPECIAL_WORKSPACE_NAME: &str = "WinShort Special Desktop";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSwitchOutcome {
+    Changed { previous: GUID, target: GUID },
+    AlreadyActive { target: GUID },
+}
+
+fn switch_native_if_needed<F, E>(
+    current: GUID,
+    target: GUID,
+    switch: F,
+) -> std::result::Result<NativeSwitchOutcome, E>
+where
+    F: FnOnce(GUID) -> std::result::Result<(), E>,
+{
+    let outcome = if current == target {
+        NativeSwitchOutcome::AlreadyActive { target }
+    } else {
+        NativeSwitchOutcome::Changed {
+            previous: current,
+            target,
+        }
+    };
+    if let NativeSwitchOutcome::Changed { target, .. } = outcome {
+        switch(target)?;
+    }
+    Ok(outcome)
+}
+
+fn record_numbered_switch(
+    history: &mut DesktopHistory,
+    special_workspace: Option<GUID>,
+    special_return: &mut Option<GUID>,
+    outcome: NativeSwitchOutcome,
+) {
+    if let NativeSwitchOutcome::Changed { previous, target } = outcome {
+        if Some(previous) == special_workspace {
+            *special_return = None;
+            history.observe_desktop(target);
+        } else {
+            history.note_numbered_switch(Some(previous), target);
+        }
+    }
+}
+
+fn completed_numbered_switch_action(outcome: NativeSwitchOutcome) -> Option<DesktopActionKind> {
+    match outcome {
+        NativeSwitchOutcome::Changed { .. } => Some(DesktopActionKind::Switched),
+        NativeSwitchOutcome::AlreadyActive { .. } => None,
+    }
+}
+
 pub enum DesktopCommand {
     SwitchTo(usize),
     MoveForeground {
@@ -202,23 +253,24 @@ impl DesktopController {
 
     fn switch_to(&mut self, index: usize) {
         self.remember_current_foreground();
-        let previous = self
-            .native
-            .as_ref()
-            .and_then(|native| native.current_desktop_id().ok());
         match self.native_ensure_switch(index) {
-            Ok(target) => {
-                if previous == self.special_workspace {
-                    self.special_return = None;
-                    self.history.observe_desktop(target);
-                } else {
-                    self.history.note_numbered_switch(previous, target);
-                }
+            Ok(NativeSwitchOutcome::AlreadyActive { .. }) => {
+                // A successful request for the active desktop is a no-op. It
+                // refreshes status only; no transition state or action event.
+                self.publish_status();
+            }
+            Ok(outcome @ NativeSwitchOutcome::Changed { target, .. }) => {
+                record_numbered_switch(
+                    &mut self.history,
+                    self.special_workspace,
+                    &mut self.special_return,
+                    outcome,
+                );
                 self.last_served = Some(BackendKind::NativeShell);
                 if let Err(error) = self.restore_focus(target) {
                     self.publish_failure("restore desktop focus", error);
-                } else {
-                    self.publish_completed(DesktopActionKind::Switched);
+                } else if let Some(kind) = completed_numbered_switch_action(outcome) {
+                    self.publish_completed(kind);
                 }
                 self.publish_status();
             }
@@ -788,7 +840,10 @@ impl DesktopController {
         Ok(())
     }
 
-    fn native_ensure_switch(&mut self, index: usize) -> std::result::Result<GUID, DesktopError> {
+    fn native_ensure_switch(
+        &mut self,
+        index: usize,
+    ) -> std::result::Result<NativeSwitchOutcome, DesktopError> {
         self.native_ensure_count(index + 1)?;
         let ids = self.normal_desktop_ids()?;
         let target = ids
@@ -798,11 +853,12 @@ impl DesktopController {
                 requested: index,
                 count: ids.len(),
             })?;
-        self.native
+        let native = self
+            .native
             .as_ref()
-            .ok_or_else(|| self.native_unavailable_error("desktop switching"))?
-            .switch_to_id(target)?;
-        Ok(target)
+            .ok_or_else(|| self.native_unavailable_error("desktop switching"))?;
+        let current = native.current_desktop_id()?;
+        switch_native_if_needed(current, target, |target| native.switch_to_id(target))
     }
 
     fn recreate_native(&mut self) -> std::result::Result<(), DesktopError> {
@@ -1138,7 +1194,7 @@ fn desktop_thread(
 mod policy_tests {
     use super::*;
     use crate::desktop::backend::DesktopError;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     struct ScriptedBackend {
         errors: RefCell<Vec<DesktopError>>,
@@ -1208,6 +1264,73 @@ mod policy_tests {
         );
         assert!(!*backend.fallback_used.borrow());
     }
+
+    #[test]
+    fn already_active_native_target_skips_switch_and_completion() {
+        let current = GUID::from_u128(1);
+        let switch_calls = Cell::new(0);
+        let outcome = switch_native_if_needed(current, current, |_| {
+            switch_calls.set(switch_calls.get() + 1);
+            Ok::<(), ()>(())
+        })
+        .expect("same-target decision");
+
+        assert_eq!(
+            outcome,
+            NativeSwitchOutcome::AlreadyActive { target: current }
+        );
+        assert_eq!(switch_calls.get(), 0);
+        assert_eq!(completed_numbered_switch_action(outcome), None);
+    }
+
+    #[test]
+    fn changed_native_target_calls_switch_and_reports_identities() {
+        let previous = GUID::from_u128(1);
+        let target = GUID::from_u128(2);
+        let switched_to = Cell::new(None);
+        let outcome = switch_native_if_needed(previous, target, |id| {
+            switched_to.set(Some(id));
+            Ok::<(), ()>(())
+        })
+        .expect("changed-target decision");
+
+        assert_eq!(outcome, NativeSwitchOutcome::Changed { previous, target });
+        assert_eq!(switched_to.get(), Some(target));
+    }
+
+    #[test]
+    fn already_active_numbered_request_preserves_previous_history() {
+        let first = GUID::from_u128(1);
+        let current = GUID::from_u128(2);
+        let mut history = DesktopHistory::default();
+        history.note_numbered_switch(Some(first), current);
+        let mut special_return = Some(first);
+
+        record_numbered_switch(
+            &mut history,
+            None,
+            &mut special_return,
+            NativeSwitchOutcome::AlreadyActive { target: current },
+        );
+
+        assert_eq!(history.current(), Some(current));
+        assert_eq!(history.previous(), Some(first));
+        assert_eq!(special_return, Some(first));
+    }
+
+    #[test]
+    fn changed_numbered_switch_emits_switched_action() {
+        let outcome = NativeSwitchOutcome::Changed {
+            previous: GUID::from_u128(1),
+            target: GUID::from_u128(2),
+        };
+
+        assert_eq!(
+            completed_numbered_switch_action(outcome),
+            Some(DesktopActionKind::Switched)
+        );
+    }
+
     #[test]
     fn shell_surface_classes_are_never_meaningful_focus_candidates() {
         for class in [

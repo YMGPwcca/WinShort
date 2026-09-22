@@ -27,7 +27,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ui_acceptance.ps1
 ```
 
 The harness refuses to run beside an existing `winshort.exe`, uses
-`WINSHORT_DATA_DIR` for an isolated configuration root, exercises the real
+`WINSHORT_DATA_DIR` for an isolated configuration root, boots current-schema
+v11 for the normal matrix, keeps one dedicated v10 migration scenario, exercises
+the three-card permanent-microphone + speaker + workspace stack (including
+same-key replacement/expiry), verifies render failures remain hidden, and exercises the real
 second-instance Control Center activation and Win32 overlay path, captures
 Control Center/picker/runtime-overlay PNGs, and writes a JSON summary below
 `target/ui-acceptance-results/`.
@@ -189,6 +192,8 @@ Manual matrix:
   is the sole preview surface.
 - Overlay card styles: System, Dark, and Light each render one status card only,
   with no outer slab, halo, or duplicate shadow.
+- Overlay controls display the actual 0.7×–1.6× size multiplier, and Blur uses one
+  five-stop slider with keyboard and pointer transitions across all five treatments.
 - Custom titlebar: the fixed-size window has one blank draggable top region and one compact Close
   button. Minimize, Maximize/Restore, resize edges/corners, double-click maximize, and Snap
   Layout are unavailable; DPI, dark/light/high-contrast themes, and rounded corners remain
@@ -196,13 +201,13 @@ Manual matrix:
 - Close lifecycle: clicking Close cancels any picker first, discards only the uncommitted UI draft
   under existing policy, hides Control Center with SW_HIDE, preserves the process/tray, and
   allows the tray Open action to show the same fixed-size window again.
-- Overlay backdrop: with reduced opacity, content behind the overlay is visibly blurred by
-  documented DWM Desktop Acrylic (`DWMWA_SYSTEMBACKDROP_TYPE` /
-  `DWMSBT_TRANSIENTWINDOW`); High Contrast, disabled overlapped content, API failure, and
+- Overlay backdrop: Transparent disables the material, Light/Medium/Heavy blur
+  select distinct Gaussian blur treatments, and Solid renders an opaque accessible
+  card. High Contrast, disabled overlapped content, API failure, and
   transparency-disabled states use an opaque accessible surface.
-- Picker focus: opening a picker keeps the Control Center as the sole active top-level HWND;
-  the child host appears above D2D content, the real LISTBOX owns keyboard focus, arrows/Home/End/
-  PageUp/PageDown/Tab/Escape remain deterministic, and outside click/focus loss closes it.
+- Native picker: the child host appears above D2D content, the real LISTBOX owns
+  keyboard focus, arrows/Home/End/PageUp/PageDown/Tab/Escape remain deterministic,
+  and outside click/focus loss closes it.
 - Focus and automation: pointer clicks avoid a lingering heavy ring; clicking Search shows a
   visible caret and reports editable focus truthfully; Tab, Shift-Tab, keyboard activation,
   titlebar commands, and UIA focus remain truthful; UIA events arrive only after mutable
@@ -241,7 +246,8 @@ D modifier-release permutations never dispatch, E reset from any reachable prefi
 state.
 
 Start-menu countermeasure: `dirty_win_chord` flag posted with the action; main-thread
-`dispatcher::dirty_win_chord()` injects the VK_CONTROL pair (KEYBOARD_HOOK_DESIGN.md).
+`dispatcher::dirty_win_chord()` injects exactly one `INPUT_KEYBOARD` dummy key-up
+(`wVk = 0xFF`, `KEYEVENTF_KEYUP`) (KEYBOARD_HOOK_DESIGN.md).
 
 ## B. Binding table / parsing (AUTOMATED IN LOCAL GATE)
 
@@ -253,8 +259,9 @@ parse; canonical display ordering; numpad distinct from top row (#11).
 
 defaults load when file missing; corrupt file → defaults + warning; schema v2 → v3 migration
 preserves existing values and leaves the four new hotkeys unassigned; schema v9 → v10 migration
-preserves existing values and defaults the new disabled list to empty; schema-v10 disabled
-records round-trip with empty active fields; validation violations and repair idempotence
+preserves existing values and defaults the new disabled list to empty; schema v10 → v11 migration
+migrates legacy opacity/external-audio settings and defaults blur/category notifications; validation
+violations and repair idempotence
 (`config_props.rs`: endpoint-ID round-trips over generated opaque IDs, boundary repair
 idempotence); future-schema read-only latch (deterministic + arbitrary TOML fuzz strategy proving
 latched configs never enable writes); atomic save leaves no temp residue; round-trip
@@ -288,18 +295,20 @@ crispness at DPI 100–200% · single/multi monitor · per-monitor DPI moves inc
 (#49) · foreground-monitor follow · over fullscreen game (never steals focus) · rapid updates
 coalesce with timer reset · negative virtual-screen coordinates · monitor unplug/replug.
 
-The runtime overlay uses a non-layered Direct2D HWND with documented DWM Desktop Acrylic
-(`DwmSetWindowAttribute` / `DWMWA_SYSTEMBACKDROP_TYPE` /
-`DWMSBT_TRANSIENTWINDOW`) and `DwmExtendFrameIntoClientArea`. Reduced opacity must reveal
-blurred, not sharp, background content. High Contrast, `SPI_GETDISABLEOVERLAPPEDCONTENT`, an
-unsupported DWM attribute, or a failed frame extension must produce the opaque fallback.
-Preview uses unsaved draft appearance, scale, opacity, position, monitor, and duration without
-saving. External audio changes obey the saved policy; WinShort actions and status requests remain
-visible. Delayed status results refresh the multi-row status presentation. Coalesced updates
-preserve the full settled hold.
+- The runtime overlay uses the existing non-layered Composition-backed window and
+  Gaussian blur effect graph. The selected blur treatment must visibly change the
+  material; fallback conditions must remain opaque and accessible.
+- Preview uses unsaved draft appearance, scale, blur, position, monitor, and
+  duration without saving. Per-category notification toggles filter microphone,
+  speaker, current-app audio, workspace, and display-profile events; WinShort
+  actions and status requests remain subject to those category settings. Delayed
+  status results refresh the multi-row status presentation. Coalesced updates
+  preserve the full settled hold.
 
-Screenshot-driven QA automation is **planned**, not implemented (no `--debug-screenshot-*`
-flag exists).
+Screenshot-driven QA is implemented inside the isolated machine harness rather than through
+a `--debug-screenshot-*` product flag. It captures deterministic overlay/control-center surfaces,
+runs comparator/blur/outside-card checks, writes heatmaps plus a multi-card capture, and produces
+`runtime-overlay-visual-sheet.png` for the remaining human visual review gate.
 ## G. Process-level smoke (MANUAL / HARDWARE-DEPENDENT)
 
 release exe launches silently · tray icon present · double-click opens one Control Center window ·

@@ -1,13 +1,16 @@
 //! Rendering backend selection, resource creation and Composition failure recovery.
 
 use super::composition::CompositionHost;
-use super::drawing::draw_overlay;
+use super::drawing::{draw_overlay, OverlayDrawOptions};
+use super::layout::window_region_for;
 use super::model::OverlayModel;
 use super::palette::{opaque_palette, OverlayPalette};
 use super::state::OverlayState;
 use super::timeline::{Phase, ShowPlan};
-use super::window::{client_size, remove_no_redirection_bitmap};
+use super::window::{apply_window_region, client_size, remove_no_redirection_bitmap};
+use crate::config::model::OverlayBlur;
 use crate::error::{Error, Result};
+use std::time::Instant;
 
 use crate::ui::theme::{Color, ThemeMode};
 use windows::Win32::Foundation::{HWND, SIZE};
@@ -29,6 +32,11 @@ pub(super) fn render_prepared_frame(
     hwnd: HWND,
     plan: ShowPlan,
 ) -> Result<()> {
+    if std::env::var_os("WINSHORT_UI_ACCEPTANCE").is_some()
+        && std::env::var_os("WINSHORT_UI_ACCEPTANCE_FORCE_RENDER_FAILURE").is_some()
+    {
+        return Err(Error::internal("forced acceptance overlay render failure"));
+    }
     let (spec, data) = {
         let state = cell.borrow();
         if state.phase == Phase::Hidden {
@@ -62,7 +70,7 @@ pub(super) struct OverlayRenderData {
     pub(super) palette: OverlayPalette,
     pub(super) theme_mode: ThemeMode,
     pub(super) alpha: f32,
-    pub(super) opacity: f32,
+    pub(super) blur: OverlayBlur,
 }
 
 pub(super) enum OverlaySurface {
@@ -122,6 +130,7 @@ fn run_surface_operation(
                     }
                 }
                 if fallback_result.is_ok() {
+                    apply_window_region(hwnd, window_region_for(spec.size, spec.dpi));
                     surface = fallback;
                     switched_to_fallback = true;
                     result = Ok(());
@@ -174,7 +183,7 @@ pub(super) fn render_current_frame(
         if state.phase == Phase::Hidden {
             return Ok(());
         }
-        let (alpha, _) = state.frame_values();
+        let (alpha, _) = state.frame_values(Instant::now());
         (
             state.surface_spec(state.surface_size),
             state.render_data(alpha),
@@ -194,8 +203,7 @@ impl OverlaySurface {
             Self::Composition(host) => host.sync_geometry(spec),
         }
     }
-
-    pub(super) fn render(&self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
+    pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
         match self {
             Self::Hwnd(surface) => surface.render(data),
             Self::Composition(host) => host.render(data, spec),
@@ -219,13 +227,11 @@ impl HwndOverlaySurface {
                 &data.model,
                 data.scale,
                 data.palette,
-                data.alpha
-                    * if data.palette.opaque {
-                        1.0
-                    } else {
-                        data.opacity.clamp(0.3, 1.0)
-                    },
-                data.palette.opaque,
+                data.alpha,
+                OverlayDrawOptions {
+                    fill_card: data.palette.opaque,
+                    draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
+                },
             );
             let end_result = self
                 .target

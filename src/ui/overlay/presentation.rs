@@ -2,24 +2,28 @@
 
 use super::model::{concise, OverlayIcon, OverlayRow, OverlayTone};
 
+use crate::config::model::OverlayNotificationCategory;
 use crate::ui::presentation::{friendly_device, AudioDeviceKind};
 
 pub(crate) fn microphone_row(state: &crate::audio::AudioState) -> OverlayRow {
     use crate::audio::AudioState;
     match state {
         AudioState::Muted { volume_pct } => OverlayRow {
+            category: Some(OverlayNotificationCategory::Microphone),
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Muted,
             title: "Microphone muted".into(),
             detail: format!("{volume_pct}% input volume"),
         },
         AudioState::Active { volume_pct } => OverlayRow {
+            category: Some(OverlayNotificationCategory::Microphone),
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Active,
-            title: "Microphone".into(),
+            title: "Microphone unmuted".into(),
             detail: format!("Ready · {volume_pct}% input volume"),
         },
         AudioState::Unavailable { .. } => OverlayRow {
+            category: Some(OverlayNotificationCategory::Microphone),
             icon: OverlayIcon::Microphone,
             tone: OverlayTone::Unavailable,
             title: "Microphone unavailable".into(),
@@ -36,6 +40,7 @@ pub(crate) fn output_row(state: &crate::audio::OutputState) -> OverlayRow {
             muted,
             volume_pct,
         } => OverlayRow {
+            category: Some(OverlayNotificationCategory::Speaker),
             icon: OverlayIcon::Output,
             tone: if *muted {
                 OverlayTone::Muted
@@ -54,6 +59,7 @@ pub(crate) fn output_row(state: &crate::audio::OutputState) -> OverlayRow {
             },
         },
         OutputState::Unavailable { .. } => OverlayRow {
+            category: Some(OverlayNotificationCategory::Speaker),
             icon: OverlayIcon::Output,
             tone: OverlayTone::Unavailable,
             title: "Speakers unavailable".into(),
@@ -79,6 +85,7 @@ pub(crate) fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow
         ),
     };
     OverlayRow {
+        category: Some(OverlayNotificationCategory::CurrentAppAudio),
         icon: OverlayIcon::Application,
         tone,
         title: "Current app audio".into(),
@@ -96,6 +103,11 @@ pub(crate) fn device_cycle_row(
 ) -> OverlayRow {
     let input = matches!(flow, crate::audio::DeviceCycleFlow::Input);
     OverlayRow {
+        category: Some(if input {
+            OverlayNotificationCategory::Microphone
+        } else {
+            OverlayNotificationCategory::Speaker
+        }),
         icon: if input {
             OverlayIcon::Microphone
         } else {
@@ -124,6 +136,11 @@ pub(crate) fn device_cycle_row(
 pub(crate) fn device_cycle_no_devices_row(flow: crate::audio::DeviceCycleFlow) -> OverlayRow {
     let input = matches!(flow, crate::audio::DeviceCycleFlow::Input);
     OverlayRow {
+        category: Some(if input {
+            OverlayNotificationCategory::Microphone
+        } else {
+            OverlayNotificationCategory::Speaker
+        }),
         icon: if input {
             OverlayIcon::Microphone
         } else {
@@ -149,6 +166,11 @@ pub(crate) fn device_cycle_error_row(
 ) -> OverlayRow {
     let input = matches!(flow, crate::audio::DeviceCycleFlow::Input);
     OverlayRow {
+        category: Some(if input {
+            OverlayNotificationCategory::Microphone
+        } else {
+            OverlayNotificationCategory::Speaker
+        }),
         icon: if input {
             OverlayIcon::Microphone
         } else {
@@ -205,6 +227,7 @@ pub(crate) fn application_volume_row(state: &crate::audio::AppVolumeState) -> Ov
         }
     };
     OverlayRow {
+        category: Some(OverlayNotificationCategory::CurrentAppAudio),
         icon: OverlayIcon::Application,
         tone,
         title: "Current app audio".into(),

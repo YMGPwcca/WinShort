@@ -1,14 +1,14 @@
 //! Window for the overlay.
 
 use super::backend::{render_prepared_frame, OverlayGraphics, OverlaySurface};
-use super::composition::CompositionHost;
-use super::layout::{select_monitor, surface_geometry};
+use super::composition::{CompositionHost, CompositionRuntime};
+use super::layout::surface_geometry;
 use super::messages::overlay_wndproc;
-use super::model::OverlayModel;
 use super::palette::{acceptance_forces_composition_failure, resolved_theme_mode};
-use super::state::OverlayState;
-use super::timeline::{prepare_state_plan, Phase, ShowPlan, WindowRegion};
-use crate::config::model::OverlayCfg;
+use super::state::{OverlayState, ShowRequest};
+use super::timeline::{
+    prepare_state_plan, timer_id_for_generation, Phase, ShowPlan, WindowRegion, TIMER_ID,
+};
 use crate::error::{Error, Result};
 use crate::platform::visual::SystemVisualPreferences;
 use crate::platform::window as win;
@@ -20,16 +20,14 @@ use windows::Win32::Foundation::{HWND, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, GetClientRect, GetWindowLongPtrW, KillTimer, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
+    CreateWindowExW, DestroyWindow, GetClientRect, GetWindowLongPtrW, KillTimer, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
     WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const CLASS_NAME: &str = "WinShort.Overlay";
-
-pub(super) const TIMER_ID: usize = 2;
 
 static REGISTERED: OnceLock<u16> = OnceLock::new();
 
@@ -40,19 +38,26 @@ pub(crate) struct OverlayWindow {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OverlayRuntimeStatus {
     pub window_available: bool,
+    pub active_card_count: usize,
+    pub permanent_card_count: usize,
+    pub toast_card_count: usize,
+    /// None, one resolved device name, or a deterministic multiple (N) summary.
+    pub active_monitor_summary: Option<String>,
     pub resolved_appearance: Option<String>,
     pub animations_enabled: Option<bool>,
     pub high_contrast: Option<bool>,
     pub disable_overlapped_content: Option<bool>,
+    /// Legacy field with manager aggregate semantics: one monitor identity or
+    /// a deterministic multiple (N) summary, never an arbitrary first HWND.
     pub target_monitor: Option<String>,
+    /// Some only when every active window reports the same render DPI.
     pub render_dpi: Option<u32>,
     pub last_shown: Option<SystemTime>,
 }
 
-fn apply_show_plan(hwnd: HWND, plan: ShowPlan) -> Result<()> {
-    apply_frame_plan(hwnd, plan, true)?;
-    if let Err(error) = set_timer(hwnd, plan.timer_interval) {
-        apply_hide_window(hwnd);
+fn commit_prepared_show(hwnd: HWND, plan: ShowPlan) -> Result<()> {
+    if let Err(error) = set_timer(hwnd, plan.timer_id, plan.timer_interval) {
+        apply_hide_window(hwnd, plan.timer_id);
         return Err(error);
     }
     unsafe {
@@ -62,16 +67,21 @@ fn apply_show_plan(hwnd: HWND, plan: ShowPlan) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn set_timer(hwnd: HWND, interval: u32) -> Result<()> {
-    let timer = unsafe { SetTimer(Some(hwnd), TIMER_ID, interval, None) };
-    if timer == 0 {
-        Err(Error::internal("SetTimer(overlay) returned zero"))
+pub(super) fn set_timer(hwnd: HWND, timer_id: usize, interval: Option<u32>) -> Result<()> {
+    if let Some(interval) = interval {
+        let timer = unsafe { SetTimer(Some(hwnd), timer_id, interval, None) };
+        if timer == 0 {
+            return Err(Error::internal("SetTimer(overlay) returned zero"));
+        }
     } else {
-        Ok(())
+        unsafe {
+            let _ = KillTimer(Some(hwnd), timer_id);
+        }
     }
+    Ok(())
 }
 
-fn apply_window_region(hwnd: HWND, region: WindowRegion) {
+pub(super) fn apply_window_region(hwnd: HWND, region: WindowRegion) {
     let handle = unsafe {
         CreateRoundRectRgn(
             region.inset,
@@ -105,18 +115,18 @@ pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -
             plan.position.y,
             plan.size.cx,
             plan.size.cy,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE,
         )
         .map_err(|error| Error::win("SetWindowPos(overlay)", &error))?;
     }
     Ok(())
 }
 
-pub(super) fn apply_hide_window(hwnd: HWND) {
+pub(super) fn apply_hide_window(hwnd: HWND, timer_id: usize) {
     unsafe {
         // Hide/teardown is intentionally best-effort: a timer can already be
         // absent and ShowWindow returns prior visibility rather than an error.
-        let _ = KillTimer(Some(hwnd), TIMER_ID);
+        let _ = KillTimer(Some(hwnd), timer_id);
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
 }
@@ -163,10 +173,13 @@ pub(super) fn client_size(hwnd: HWND) -> Result<Option<SIZE>> {
 }
 
 impl OverlayWindow {
-    pub(crate) fn create() -> Result<Self> {
+    pub(super) fn create_with_graphics(
+        entry_id: u64,
+        graphics: OverlayGraphics,
+        composition_runtime: Option<CompositionRuntime>,
+    ) -> Result<Self> {
         let _atom = win::register_class_once(&REGISTERED, CLASS_NAME, Some(overlay_wndproc))?;
-        let graphics = OverlayGraphics::create()?;
-        let mut state = win::WindowCreation::new(OverlayState::new(graphics.clone()));
+        let mut state = win::WindowCreation::new(OverlayState::new(graphics.clone(), entry_id));
         let no_redirection = if acceptance_forces_composition_failure() {
             0
         } else {
@@ -200,25 +213,22 @@ impl OverlayWindow {
 
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
         let initial_size = surface_geometry(1.0, 1).pixel_size(dpi);
-        let composition = if acceptance_forces_composition_failure() {
-            Err(Error::internal("forced acceptance Composition failure"))
-        } else {
-            CompositionHost::create(hwnd, initial_size, dpi, &graphics)
-        };
-        let surface = match composition {
-            Ok(host) => OverlaySurface::Composition(host),
-            Err(error) => {
-                crate::warn_!(
-                    "overlay Composition unavailable; using opaque D2D fallback: {error}"
-                );
-                remove_no_redirection_bitmap(hwnd);
-                match graphics.create_surface(hwnd, dpi, initial_size) {
-                    Ok(surface) => OverlaySurface::Hwnd(surface),
-                    Err(fallback_error) => {
-                        return Err(fallback_error);
-                    }
+        let composition = composition_runtime.and_then(|runtime| {
+            match CompositionHost::create(hwnd, initial_size, dpi, runtime) {
+                Ok(host) => Some(host),
+                Err(error) => {
+                    crate::warn_!(
+                        "overlay Composition target unavailable; using opaque D2D fallback for this card: {error}"
+                    );
+                    None
                 }
             }
+        });
+        let surface = if let Some(host) = composition {
+            OverlaySurface::Composition(host)
+        } else {
+            remove_no_redirection_bitmap(hwnd);
+            OverlaySurface::Hwnd(graphics.create_surface(hwnd, dpi, initial_size)?)
         };
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(hwnd) }) else {
             return Err(Error::internal("overlay state missing after creation"));
@@ -233,32 +243,70 @@ impl OverlayWindow {
         Ok(Self { hwnd })
     }
 
-    pub(crate) fn show(&self, model: OverlayModel, config: OverlayCfg) -> Result<()> {
-        if model.rows.is_empty() || !config.enabled {
+    pub(crate) fn show_at(&self, request: ShowRequest) -> Result<()> {
+        if request.model.rows.is_empty() || !request.config.enabled {
             return Ok(());
         }
         let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
             return Err(Error::internal("overlay state missing"));
         };
+        let previous_timer_id = cell.borrow().timer_id;
         let preferences = SystemVisualPreferences::query();
-        let monitor = select_monitor(config.monitor.clone());
-        let plan = prepare_state_plan(cell, |state| {
-            state.prepare_show(model, config, preferences, monitor)
-        })?;
+        let plan = prepare_state_plan(cell, |state| state.prepare_show(request, preferences))?;
         let Some(plan) = plan else {
             return Ok(());
         };
-        apply_show_plan(self.hwnd, plan)?;
-        render_prepared_frame(cell, self.hwnd, plan)
+        if previous_timer_id != plan.timer_id {
+            set_timer(self.hwnd, previous_timer_id, None)?;
+        }
+        let apply_region = cell.borrow().requires_window_region();
+        apply_frame_plan(self.hwnd, plan, apply_region)?;
+        if let Err(error) = render_prepared_frame(cell, self.hwnd, plan) {
+            apply_hide_window(self.hwnd, plan.timer_id);
+            return Err(error);
+        }
+        commit_prepared_show(self.hwnd, plan)
+    }
+
+    pub(super) fn set_entry_id(&self, entry_id: u64, generation: u64) -> Result<()> {
+        let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
+            return Err(Error::internal("overlay state missing"));
+        };
+        let mut state = cell.borrow_mut();
+        state.phase = Phase::Hidden;
+        state.expires_at = None;
+        state.position_tween = None;
+        state.model = super::model::OverlayModel::default();
+        state.last_target_monitor = None;
+        state.last_render_dpi = None;
+        state.last_shown = None;
+        state.entry_id = entry_id;
+        state.generation = generation;
+        state.timer_id = timer_id_for_generation(generation);
+        Ok(())
+    }
+
+    pub(super) fn destroy(self) {
+        let hwnd = self.hwnd;
+        self.hide();
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
     }
 
     pub(crate) fn hide(&self) {
-        if let Some(cell) = unsafe { win::state_cell::<OverlayState>(self.hwnd) } {
+        let timer_id = if let Some(cell) = unsafe { win::state_cell::<OverlayState>(self.hwnd) } {
             {
-                cell.borrow_mut().phase = Phase::Hidden;
+                let mut state = cell.borrow_mut();
+                state.phase = Phase::Hidden;
+                state.expires_at = None;
+                state.position_tween = None;
+                state.timer_id
             }
-        }
-        apply_hide_window(self.hwnd);
+        } else {
+            TIMER_ID
+        };
+        apply_hide_window(self.hwnd, timer_id);
     }
 
     pub(crate) fn status(&self) -> OverlayRuntimeStatus {
@@ -267,8 +315,16 @@ impl OverlayWindow {
         };
         let state = cell.borrow();
         let resolved = resolved_theme_mode(state.config.appearance, state.preferences);
+        let assigned = state.entry_id != 0;
+        let is_permanent = assigned && state.expires_at.is_none();
         OverlayRuntimeStatus {
             window_available: true,
+            active_card_count: usize::from(assigned),
+            permanent_card_count: usize::from(is_permanent),
+            toast_card_count: usize::from(assigned && !is_permanent),
+            active_monitor_summary: assigned
+                .then(|| state.last_target_monitor.clone())
+                .flatten(),
             resolved_appearance: Some(
                 match resolved {
                     ThemeMode::Dark => "dark",

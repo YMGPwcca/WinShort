@@ -65,45 +65,42 @@ pub enum EngineOutcome {
     Dispatch {
         action: HotkeyAction,
         /// True when the shell has observed nothing but a bare Win-down so far;
-        /// unless a harmless chord-dirtying injection happens before Win release,
+        /// unless the non-semantic chord-dirtying injection happens before Win release,
         /// the shell will pop the Start menu (spec §17).
         dirty_win_chord: bool,
     },
 }
 
-/// Fixed-capacity set: keys whose DOWN was suppressed and whose UP must be too.
-#[derive(Debug, Default)]
-struct SuppressionSet([Option<u8>; 8]);
+/// Full virtual-key set: keys whose DOWN was suppressed and whose UP must be too.
+#[derive(Debug)]
+struct SuppressionSet([bool; 256]);
+
+impl Default for SuppressionSet {
+    fn default() -> Self {
+        Self([false; 256])
+    }
+}
 
 impl SuppressionSet {
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.0.iter().all(Option::is_none)
+        !self.0.iter().any(|suppressed| *suppressed)
     }
     fn insert(&mut self, vk: u16) {
-        let b = vk as u8;
-        if self.0.contains(&Some(b)) {
-            return;
-        }
-        for slot in self.0.iter_mut() {
-            if slot.is_none() {
-                *slot = Some(b);
-                return;
-            }
+        if let Some(slot) = self.0.get_mut(vk as usize) {
+            *slot = true;
         }
     }
     fn take(&mut self, vk: u16) -> bool {
-        let b = vk as u8;
-        for slot in self.0.iter_mut() {
-            if *slot == Some(b) {
-                *slot = None;
-                return true;
-            }
-        }
-        false
+        let Some(slot) = self.0.get_mut(vk as usize) else {
+            return false;
+        };
+        let was_suppressed = *slot;
+        *slot = false;
+        was_suppressed
     }
     fn clear(&mut self) {
-        self.0 = [None; 8];
+        self.0 = [false; 256];
     }
 }
 

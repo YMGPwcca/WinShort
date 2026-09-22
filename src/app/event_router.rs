@@ -1,6 +1,6 @@
 //! Main-thread application event routing by domain.
 
-use super::App;
+use super::{App, DeferredShellAction};
 use crate::event::{
     AudioEventOrigin, AudioRuntimeEvent, ConfigEvent, ControlCenterEvent, DesktopEvent,
     DiagnosticsEvent, DisplayEvent, OverlayEvent,
@@ -8,21 +8,39 @@ use crate::event::{
 use windows::Win32::Foundation::HWND;
 
 impl App {
-    pub(super) fn handle_control_center_event(&mut self, event: ControlCenterEvent) {
+    pub(super) fn handle_control_center_event(
+        &mut self,
+        event: ControlCenterEvent,
+    ) -> Option<DeferredShellAction> {
         match event {
-            ControlCenterEvent::Show => self.show_settings(),
-            ControlCenterEvent::OpenPicker(kind) => self.open_settings_picker(kind),
-            ControlCenterEvent::FocusFromPicker { reverse } => {
-                self.focus_settings_from_picker(reverse)
+            ControlCenterEvent::Show => {
+                self.show_settings();
+                None
             }
-            ControlCenterEvent::CommitPicker { commit } => self.commit_settings_picker(commit),
+            ControlCenterEvent::OpenPicker(kind) => {
+                self.open_settings_picker(kind);
+                None
+            }
+            ControlCenterEvent::OpenConfigFolder => Some(self.prepare_config_folder_open()),
+            ControlCenterEvent::FocusFromPicker { reverse } => {
+                self.focus_settings_from_picker(reverse);
+                None
+            }
+            ControlCenterEvent::CommitPicker { commit } => {
+                self.commit_settings_picker(commit);
+                None
+            }
             ControlCenterEvent::CancelPicker {
                 popup_hwnd,
                 restore_focus,
-            } => self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus),
+            } => {
+                self.cancel_settings_picker(HWND(popup_hwnd as *mut _), restore_focus);
+                None
+            }
             ControlCenterEvent::WindowClosed => {
                 self.close_settings_window();
                 self.remember_settings_position();
+                None
             }
         }
     }
@@ -80,13 +98,32 @@ impl App {
         }
     }
 
-    pub(super) fn handle_diagnostics_event(&mut self, event: DiagnosticsEvent) {
+    pub(super) fn handle_diagnostics_event(
+        &mut self,
+        event: DiagnosticsEvent,
+    ) -> Option<DeferredShellAction> {
         match event {
-            DiagnosticsEvent::Show => self.show_diagnostics(),
-            DiagnosticsEvent::RunSelfTest => self.run_diagnostics_self_test(),
-            DiagnosticsEvent::Copy => self.copy_diagnostics(),
-            DiagnosticsEvent::OpenLogs => self.open_diagnostics_logs(),
-            DiagnosticsEvent::CreateSupportBundle => self.start_support_bundle(),
+            DiagnosticsEvent::Show => {
+                self.show_diagnostics();
+                None
+            }
+            DiagnosticsEvent::RunSelfTest => {
+                self.run_diagnostics_self_test();
+                None
+            }
+            DiagnosticsEvent::Copy => {
+                self.copy_diagnostics();
+                None
+            }
+            DiagnosticsEvent::OpenLogs => Some(self.prepare_diagnostics_logs_open()),
+            DiagnosticsEvent::LogsOpenFinished { error } => {
+                self.finish_diagnostics_logs_open(error);
+                None
+            }
+            DiagnosticsEvent::CreateSupportBundle => {
+                self.start_support_bundle();
+                None
+            }
             DiagnosticsEvent::SupportBundleFinished { path, error } => {
                 if let Some(join) = self.support_bundle.take() {
                     if join.join().is_err() {
@@ -102,6 +139,7 @@ impl App {
                     };
                     window.set_action_status(status);
                 }
+                None
             }
         }
     }
@@ -110,6 +148,25 @@ impl App {
         match event {
             OverlayEvent::ShowStatus => self.show_status_overlay(),
             OverlayEvent::Preview { config } => self.show_preview_overlay(config),
+            OverlayEvent::CardExpired {
+                entry_id,
+                generation,
+            } => {
+                let config = crate::app::config();
+                if let Some(overlay) = &mut self.overlay {
+                    if let Err(error) = overlay.card_expired(entry_id, generation, &config.overlay)
+                    {
+                        crate::warn_!("overlay card expiry handling failed: {error}");
+                    }
+                }
+            }
+            OverlayEvent::VisualRefresh => {
+                if let Some(overlay) = &mut self.overlay {
+                    if let Err(error) = overlay.refresh_visuals() {
+                        crate::warn_!("overlay visual refresh failed: {error}");
+                    }
+                }
+            }
         }
     }
 
@@ -128,6 +185,12 @@ impl App {
                                 || config.virtual_desktops.scratchpad_toggle.is_some()),
                     );
                 }
+                if let Some(overlay) = &mut self.overlay {
+                    if let Err(error) = overlay.apply_config(&config.overlay) {
+                        crate::warn_!("overlay notification refresh failed: {error}");
+                    }
+                }
+                self.reconcile_microphone_overlay(false);
                 crate::info!("config applied (seq {seq}, origin {:?})", stamp.origin);
                 self.refresh_settings_runtime();
             }
@@ -140,13 +203,17 @@ impl App {
                 if let Some(desktop) = &self.desktop {
                     desktop.switch_previous();
                 } else {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::OverlayRow {
+                    self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                        crate::ui::overlay::OverlayKey::Workspace,
+                        crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                            category: Some(
+                                crate::config::model::OverlayNotificationCategory::Workspace,
+                            ),
                             icon: crate::ui::overlay::OverlayIcon::Info,
                             tone: crate::ui::overlay::OverlayTone::Unavailable,
                             title: "Previous desktop unavailable".into(),
                             detail: "Workspace service is not available right now".into(),
-                        },
+                        }),
                     ));
                 }
             }
@@ -154,13 +221,17 @@ impl App {
                 if let Some(desktop) = &self.desktop {
                     desktop.toggle_scratchpad();
                 } else {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::OverlayRow {
+                    self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                        crate::ui::overlay::OverlayKey::Workspace,
+                        crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                            category: Some(
+                                crate::config::model::OverlayNotificationCategory::Workspace,
+                            ),
                             icon: crate::ui::overlay::OverlayIcon::Info,
                             tone: crate::ui::overlay::OverlayTone::Unavailable,
                             title: "Special Desktop unavailable".into(),
                             detail: "Workspace service is not available right now".into(),
-                        },
+                        }),
                     ));
                 }
             }
@@ -193,25 +264,33 @@ impl App {
                         ("Special Desktop", "Returned to the previous desktop")
                     }
                 };
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                    crate::ui::overlay::OverlayRow {
+                self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                    crate::ui::overlay::OverlayKey::Workspace,
+                    crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                        category: Some(
+                            crate::config::model::OverlayNotificationCategory::Workspace,
+                        ),
                         icon: crate::ui::overlay::OverlayIcon::Workspace,
                         tone: crate::ui::overlay::OverlayTone::Changed,
                         title: title.into(),
                         detail: detail.into(),
-                    },
+                    }),
                 ));
                 self.refresh_settings_runtime();
             }
             DesktopEvent::ActionFailed { action, reason } => {
                 crate::error_!("desktop action {action} failed: {reason}");
-                self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                    crate::ui::overlay::OverlayRow {
+                self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                    crate::ui::overlay::OverlayKey::Workspace,
+                    crate::ui::overlay::OverlayModel::single(crate::ui::overlay::OverlayRow {
+                        category: Some(
+                            crate::config::model::OverlayNotificationCategory::Workspace,
+                        ),
                         icon: crate::ui::overlay::OverlayIcon::Info,
                         tone: crate::ui::overlay::OverlayTone::Unavailable,
                         title: "Couldn't change workspace".into(),
                         detail: "Try again or open Diagnostics for help".into(),
-                    },
+                    }),
                 ));
             }
             DesktopEvent::BackendChanged(status) => {
@@ -226,15 +305,27 @@ impl App {
             AudioRuntimeEvent::DeviceCycleResolved { request_id, result } => {
                 self.handle_device_cycle_result(request_id, result)
             }
-            AudioRuntimeEvent::MicrophoneStateChanged { state } => {
+            AudioRuntimeEvent::MicrophoneStateChanged { state, origin } => {
                 self.microphone_state = state;
                 self.microphone_seen = true;
                 self.refresh_settings_runtime();
+                self.reconcile_microphone_overlay(matches!(
+                    origin,
+                    AudioEventOrigin::WinShortAction(_)
+                ));
             }
-            AudioRuntimeEvent::OutputStateChanged { state } => {
+            AudioRuntimeEvent::OutputStateChanged { state, origin } => {
                 self.output_state = state;
                 self.output_seen = true;
                 self.refresh_settings_runtime();
+                if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
+                    self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                        crate::ui::overlay::OverlayKey::Speaker,
+                        crate::ui::overlay::OverlayModel::single(crate::ui::overlay::output_row(
+                            &self.output_state,
+                        )),
+                    ));
+                }
             }
             AudioRuntimeEvent::DefaultOutputChanged(_device) => {}
             AudioRuntimeEvent::DevicesChanged => {
@@ -261,7 +352,10 @@ impl App {
                     origin,
                     self.foreground_seen,
                     changed,
-                    crate::app::config().overlay.show_external_audio_changes,
+                    crate::app::config()
+                        .overlay
+                        .notifications
+                        .external_current_app_audio,
                     status_request_matches,
                 );
                 self.foreground_state = state;
@@ -269,18 +363,27 @@ impl App {
                 self.status_request_id = None;
                 if should_show {
                     if is_status_request {
-                        self.show_overlay_model(self.status_overlay_model());
+                        self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                            crate::ui::overlay::OverlayKey::Status,
+                            self.status_overlay_model(),
+                        ));
                     } else {
                         let row = crate::ui::overlay::application_row(&self.foreground_state);
-                        self.show_overlay_model(crate::ui::overlay::OverlayModel::single(row));
+                        self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                            crate::ui::overlay::OverlayKey::CurrentAppAudio,
+                            crate::ui::overlay::OverlayModel::single(row),
+                        ));
                     }
                 }
                 self.refresh_settings_runtime();
             }
             AudioRuntimeEvent::ForegroundVolumeChanged { state, origin } => {
                 if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
-                    self.show_overlay_model(crate::ui::overlay::OverlayModel::single(
-                        crate::ui::overlay::application_volume_row(&state),
+                    self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                        crate::ui::overlay::OverlayKey::CurrentAppAudio,
+                        crate::ui::overlay::OverlayModel::single(
+                            crate::ui::overlay::application_volume_row(&state),
+                        ),
                     ));
                 }
                 self.refresh_settings_runtime();
