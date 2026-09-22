@@ -1293,7 +1293,9 @@ mod tests {
         assert_eq!(restored.presented_at(), original_entry.presented_at());
         assert_eq!(restored.model().rows[0].title, "original");
         assert_eq!(
-            render_configs.get(&original.id).map(|config| config.duration_ms),
+            render_configs
+                .get(&original.id)
+                .map(|config| config.duration_ms),
             Some(1300)
         );
     }
