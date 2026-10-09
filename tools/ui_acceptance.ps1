@@ -916,7 +916,7 @@ function Measure-BackdropBlur {
     $inside = New-Object System.Drawing.Rectangle(
         ($ContextMargin + 2),
         ($ContextMargin + 20),
-        12,
+        7,
         ([Math]::Max(1, $CardHeight - 40))
     )
     $outside = New-Object System.Drawing.Rectangle(
@@ -1151,6 +1151,7 @@ monitor = "primary"
 scale = 1.0
 blur = "blur-medium"
 appearance = "$Appearance"
+hover_opacity = 1.0
 show_microphone = true
 show_speaker = true
 show_current_app_audio = true
@@ -1184,7 +1185,7 @@ show_display_profile = true
         } "$Name main message window did not appear"
         $overlayRectangle = Get-Rect ([WinShortUiAcceptance.Native]::WindowRect($overlayHwnd))
         $dpi = [WinShortUiAcceptance.Native]::Dpi($overlayHwnd)
-        $radius = [Math]::Max(1, [int][Math]::Round(14 * $dpi / 96.0))
+        $radius = [Math]::Max(1, [int][Math]::Round(12 * $dpi / 96.0))
         $contextMargin = 48
         $contextRectangle = Get-OverlayContextRectangle $overlayRectangle $contextMargin
         Assert-Condition ([WinShortUiAcceptance.PatternBackdrop]::Start(
@@ -1228,17 +1229,22 @@ show_display_profile = true
         $opaqueRegion = New-Object System.Drawing.Rectangle(
             2,
             20,
-            12,
+            7,
             ([Math]::Max(1, $overlayRectangle.Height - 40))
         )
         $opaqueEdgeEnergy = Measure-EdgeEnergy $shown $opaqueRegion
-        Assert-Condition ($opaqueEdgeEnergy -lt 2.0) "$Name fallback exposed high-frequency backdrop detail"
+        # Dense cards have a 10 DIP gutter; measure its empty interior rather
+        # than the icon that now starts at x=10. The checker must remain visible
+        # in the baseline so the unchanged opacity threshold stays meaningful.
+        $baselineEdgeEnergy = Measure-EdgeEnergy $baseline $opaqueRegion
         $screenshotPath = Join-Path $scenarioDirectory "runtime-overlay-$Name.png"
         $baselinePath = Join-Path $scenarioDirectory "runtime-overlay-$Name-baseline.png"
         Save-Bitmap $baseline $baselinePath
         $baseline = $null
         Save-Bitmap $shown $screenshotPath
         $shown = $null
+        Assert-Condition ($baselineEdgeEnergy -gt 10.0) "$Name fallback baseline lacked high-frequency backdrop detail"
+        Assert-Condition ($opaqueEdgeEnergy -lt 2.0) "$Name fallback exposed high-frequency backdrop detail"
         Assert-Condition ($result.InsideChanged -gt 20) "$Name overlay did not repaint (inside changed=$($result.InsideChanged))"
         Assert-Condition ($result.OutsideChanged -eq 0) "$Name fallback contaminated pixels outside the strict rounded card"
         Copy-ScenarioLogs $dataDirectory $scenarioDirectory $process
@@ -1261,7 +1267,7 @@ show_display_profile = true
             AntialiasFringePx = $result.AntialiasFringePx
             ColorTolerance = $result.ColorTolerance
             InsideEdgeEnergy = $opaqueEdgeEnergy
-            BaselineInsideEdgeEnergy = $null
+            BaselineInsideEdgeEnergy = $baselineEdgeEnergy
             Screenshot = $screenshotPath
             Heatmap = $result.HeatmapPath
             FallbackLogObserved = $fallbackLogObserved
@@ -1631,7 +1637,7 @@ show_display_profile = true
             $overlayRectangle = Get-Rect ([WinShortUiAcceptance.Native]::WindowRect($overlayHwnd))
             $dpi = [WinShortUiAcceptance.Native]::Dpi($overlayHwnd)
             $inset = 0
-            $radius = [Math]::Max(1, [int][Math]::Round(14 * $dpi / 96.0))
+            $radius = [Math]::Max(1, [int][Math]::Round(12 * $dpi / 96.0))
             $contextMargin = 48
             $contextRectangle = Get-OverlayContextRectangle $overlayRectangle $contextMargin
             Assert-Condition ([WinShortUiAcceptance.PatternBackdrop]::Start(
