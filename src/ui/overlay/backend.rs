@@ -42,7 +42,9 @@ pub(super) fn render_prepared_frame(
         if state.phase == Phase::Hidden {
             return Ok(());
         }
-        (state.surface_spec(plan.size), state.render_data(plan.alpha))
+        let mut data = state.render_data(plan.alpha, plan.compact);
+        data.hover_alpha = plan.hover_alpha;
+        (state.surface_spec(plan.size), data)
     };
     run_surface_operation(cell, hwnd, spec, Some(data))
 }
@@ -71,6 +73,8 @@ pub(super) struct OverlayRenderData {
     pub(super) theme_mode: ThemeMode,
     pub(super) alpha: f32,
     pub(super) blur: OverlayBlur,
+    pub(super) compact: f32,
+    pub(super) hover_alpha: f32,
 }
 
 pub(super) enum OverlaySurface {
@@ -107,7 +111,12 @@ fn run_surface_operation(
     let mut result = surface.sync_geometry(spec);
     if result.is_ok() {
         if let Some(data) = data.as_ref() {
-            result = surface.render(data, spec);
+            result = if surface.is_composition() {
+                surface.render(data, spec)
+            } else {
+                super::window::set_hover_opacity(hwnd, data.hover_alpha)
+                    .and_then(|()| surface.render(data, spec))
+            };
         }
     }
 
@@ -126,7 +135,8 @@ fn run_surface_operation(
                     if let Some(data) = data.as_ref() {
                         let mut fallback_data = data.clone();
                         fallback_data.palette = opaque_palette(fallback_data.palette);
-                        fallback_result = fallback.render(&fallback_data, fallback_spec);
+                        fallback_result = super::window::set_hover_opacity(hwnd, data.hover_alpha)
+                            .and_then(|()| fallback.render(&fallback_data, fallback_spec));
                     }
                 }
                 if fallback_result.is_ok() {
@@ -183,10 +193,11 @@ pub(super) fn render_current_frame(
         if state.phase == Phase::Hidden {
             return Ok(());
         }
-        let (alpha, _) = state.frame_values(Instant::now());
+        let now = Instant::now();
+        let (alpha, _) = state.frame_values(now);
         (
             state.surface_spec(state.surface_size),
-            state.render_data(alpha),
+            state.render_data(alpha, state.badge.value(now)),
         )
     };
     run_surface_operation(cell, hwnd, spec, Some(data))
@@ -229,6 +240,7 @@ impl HwndOverlaySurface {
                 data.palette,
                 data.alpha,
                 OverlayDrawOptions {
+                    compact: data.compact,
                     fill_card: data.palette.opaque,
                     draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
                 },

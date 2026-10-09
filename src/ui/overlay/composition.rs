@@ -40,7 +40,7 @@ use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
     CompositionColorBrush, CompositionDrawingSurface, CompositionEffectBrush,
     CompositionEffectSourceParameter, CompositionGeometricClip, CompositionGraphicsDevice,
-    CompositionRoundedRectangleGeometry, CompositionSurfaceBrush, Compositor, ContainerVisual,
+    CompositionRoundedRectangleGeometry, CompositionSurfaceBrush, Compositor, LayerVisual,
     SpriteVisual,
 };
 use windows_numerics::Vector2;
@@ -69,7 +69,7 @@ pub(super) struct CompositionRuntime {
 }
 
 struct CompositionScene {
-    root: ContainerVisual,
+    root: LayerVisual,
     backdrop_visual: SpriteVisual,
     tint_visual: SpriteVisual,
     content_visual: SpriteVisual,
@@ -362,8 +362,8 @@ fn create_scene(
 ) -> Result<CompositionScene> {
     let vector_size = composition_size(size);
     let root = compositor
-        .CreateContainerVisual()
-        .map_err(|e| Error::win("CreateContainerVisual(overlay)", &e))?;
+        .CreateLayerVisual()
+        .map_err(|e| Error::win("CreateLayerVisual(overlay)", &e))?;
     root.SetSize(vector_size)
         .map_err(|e| Error::win("SetRootSize(overlay)", &e))?;
 
@@ -481,6 +481,10 @@ impl CompositionHost {
     }
 
     pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
+        self.scene
+            .root
+            .SetOpacity(data.hover_alpha.clamp(0.1, 1.0))
+            .map_err(|error| Error::win("SetOverlayHoverOpacity", &error))?;
         if let Some(blur_amount) = data.blur.blur_amount() {
             if (self.scene.blur_amount - blur_amount).abs() > f32::EPSILON {
                 let effect_brush = create_backdrop_brush(self.runtime.compositor(), blur_amount)?;
@@ -556,6 +560,7 @@ impl CompositionHost {
             data.palette,
             data.alpha,
             OverlayDrawOptions {
+                compact: data.compact,
                 fill_card: data.palette.opaque,
                 draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
             },

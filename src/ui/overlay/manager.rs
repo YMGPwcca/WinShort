@@ -5,7 +5,10 @@
 
 use super::backend::{OverlayGraphics, RECT_FALLBACK};
 use super::composition::CompositionRuntime;
-use super::layout::{layout_cards, select_monitor, surface_geometry, CardPlacement, LayoutInput};
+use super::layout::{
+    layout_cards, presentation_geometry, select_monitor, surface_geometry, CardPlacement,
+    LayoutInput,
+};
 use super::model::OverlayModel;
 use super::palette::acceptance_forces_composition_failure;
 use super::state::ShowRequest;
@@ -80,6 +83,7 @@ pub(crate) struct OverlayRequest {
     pub(crate) key: OverlayKey,
     pub(crate) model: OverlayModel,
     pub(crate) lifetime: OverlayLifetime,
+    pub(crate) replace_key: Option<OverlayKey>,
 }
 
 impl OverlayRequest {
@@ -88,6 +92,7 @@ impl OverlayRequest {
             key,
             model,
             lifetime: OverlayLifetime::Permanent,
+            replace_key: None,
         }
     }
 
@@ -96,7 +101,14 @@ impl OverlayRequest {
             key,
             model,
             lifetime: OverlayLifetime::Toast,
+            replace_key: None,
         }
+    }
+
+    /// Explicit state transitions can keep a card's HWND and presentation.
+    pub(crate) fn replacing(mut self, key: OverlayKey) -> Self {
+        self.replace_key = Some(key);
+        self
     }
 }
 
@@ -210,7 +222,7 @@ impl OverlayRegistry {
         motion: MotionPolicy,
         placement: ResolvedPlacement,
     ) -> PresentOutcome {
-        let expires_at = match request.lifetime {
+        let mut expires_at = match request.lifetime {
             OverlayLifetime::Permanent => None,
             OverlayLifetime::Toast => Some(toast_deadline(now, motion, duration)),
         };
@@ -218,8 +230,17 @@ impl OverlayRegistry {
         if let Some(index) = self.replacement_index(&request) {
             let generation = self.next_generation();
             let entry = &mut self.entries[index];
-            let restart_appearance = !entry.lifetime.is_permanent();
-            let preserve_placement = entry.lifetime.is_permanent();
+            let transition = entry.key != request.key;
+            let restart_appearance = !entry.lifetime.is_permanent() && !transition;
+            let preserve_placement = entry.lifetime.is_permanent() || transition;
+            if transition
+                && request.lifetime == OverlayLifetime::Toast
+                && motion == MotionPolicy::Animated
+            {
+                expires_at =
+                    Some(now + Duration::from_millis(super::badge::BADGE_TWEEN_MS) + duration);
+            }
+            entry.key = request.key;
             entry.model = request.model;
             entry.lifetime = request.lifetime;
             entry.expires_at = expires_at;
@@ -346,6 +367,11 @@ impl OverlayRegistry {
         self.entries
             .iter()
             .position(|entry| entry.key == request.key)
+            .or_else(|| {
+                request
+                    .replace_key
+                    .and_then(|key| self.entries.iter().position(|entry| entry.key == key))
+            })
     }
 
     fn next_id(&mut self) -> u64 {
@@ -415,6 +441,14 @@ pub(crate) struct OverlayManager {
 }
 
 impl OverlayManager {
+    #[cfg(test)]
+    pub(super) fn test_hwnds(&self) -> Vec<windows::Win32::Foundation::HWND> {
+        self.windows
+            .iter()
+            .map(|managed| managed.window.hwnd)
+            .collect()
+    }
+
     pub(crate) fn create() -> Result<Self> {
         let graphics = OverlayGraphics::create()?;
         let composition_runtime = if acceptance_forces_composition_failure() {
@@ -749,7 +783,18 @@ impl OverlayManager {
                 }
                 let render_config = self.render_configs.get(&entry.id()).cloned()?;
                 let placement = entry.placement.clone();
-                Some(make_layout_entry(entry, render_config, placement))
+                let mut plan = make_layout_entry(entry, render_config, placement);
+                if entry.key() == OverlayKey::MicrophonePermanent
+                    && entry.is_permanent()
+                    && self.windows.iter().any(|managed| {
+                        managed.id == entry.id() && managed.window.reserves_compact()
+                    })
+                {
+                    plan.compact = true;
+                    plan.size = presentation_geometry(plan.render_config.scale, 1, 1.0)
+                        .pixel_size(plan.placement.dpi);
+                }
+                Some(plan)
             })
             .collect()
     }
@@ -783,6 +828,9 @@ impl OverlayManager {
             position: plan.card.position,
             expires_at: plan.entry.expires_at,
             mode,
+            collapsible_microphone: plan.entry.key == OverlayKey::MicrophonePermanent
+                && plan.entry.lifetime.is_permanent(),
+            layout_size: plan.entry.size,
         })
     }
 }
@@ -865,6 +913,7 @@ struct LayoutEntry {
     render_config: OverlayCfg,
     placement: ResolvedPlacement,
     size: windows::Win32::Foundation::SIZE,
+    compact: bool,
 }
 
 /// Stable identity for one independently laid out monitor/position group.
@@ -1002,6 +1051,7 @@ fn make_layout_entry(
         render_config,
         placement,
         size,
+        compact: false,
     }
 }
 
@@ -1130,8 +1180,12 @@ fn group_layout_entries(entries: Vec<LayoutEntry>) -> Vec<LayoutGroup> {
         let placement = group.placement.clone();
         entry.placement = placement.clone();
         if !entry.model.rows.is_empty() {
-            entry.size = surface_geometry(entry.render_config.scale, entry.model.rows.len())
-                .pixel_size(placement.dpi);
+            entry.size = presentation_geometry(
+                entry.render_config.scale,
+                entry.model.rows.len(),
+                if entry.compact { 1.0 } else { 0.0 },
+            )
+            .pixel_size(placement.dpi);
         }
         group.entries.push(entry);
     }
@@ -1199,6 +1253,7 @@ mod tests {
             render_config: config,
             placement,
             size,
+            compact: false,
         }
     }
 

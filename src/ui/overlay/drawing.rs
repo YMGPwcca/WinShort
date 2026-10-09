@@ -1,8 +1,8 @@
 //! Drawing for the overlay.
 
 use super::icons::draw_icon;
-use super::layout::{surface_geometry, CARD_CORNER_RADIUS_DIP, PAD, ROW_HEIGHT};
-use super::model::{OverlayModel, OverlayTone};
+use super::layout::{presentation_geometry, CARD_CORNER_RADIUS_DIP, PAD, ROW_HEIGHT};
+use super::model::{OverlayIcon, OverlayModel, OverlayTone};
 use super::palette::OverlayPalette;
 use crate::error::{Error, Result};
 
@@ -20,6 +20,7 @@ use windows::Win32::Graphics::DirectWrite::{
 
 #[derive(Clone, Copy)]
 pub(super) struct OverlayDrawOptions {
+    pub(super) compact: f32,
     pub(super) fill_card: bool,
     pub(super) draw_card_border: bool,
 }
@@ -35,7 +36,8 @@ pub(super) fn draw_overlay(
 ) -> Result<()> {
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
-        let geometry = surface_geometry(scale, model.rows.len());
+        let compact = options.compact.clamp(0.0, 1.0);
+        let geometry = presentation_geometry(scale, model.rows.len(), compact);
         let body = D2D_RECT_F {
             left: geometry.body_left,
             top: geometry.body_top,
@@ -80,11 +82,12 @@ pub(super) fn draw_overlay(
 
         let title_format = make_format(dwrite, 14.0 * scale, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let detail_format = make_format(dwrite, 12.0 * scale, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let text = color(with_alpha(palette.text, content_alpha));
-        let secondary = color(with_alpha(palette.secondary, content_alpha));
+        let text_alpha = content_alpha * (1.0 - compact * 3.0).max(0.0);
+        let text = color(with_alpha(palette.text, text_alpha));
+        let secondary = color(with_alpha(palette.secondary, text_alpha));
         let text_brush = target.CreateSolidColorBrush(&text, None)?;
         let secondary_brush = target.CreateSolidColorBrush(&secondary, None)?;
-        let unavailable_text = color(with_alpha(palette.unavailable_text, content_alpha));
+        let unavailable_text = color(with_alpha(palette.unavailable_text, text_alpha));
         let unavailable_brush = target.CreateSolidColorBrush(&unavailable_text, None)?;
 
         for (index, row) in model.rows.iter().enumerate() {
@@ -104,42 +107,21 @@ pub(super) fn draw_overlay(
                     None,
                 );
             }
-            let tone_color = match row.tone {
-                OverlayTone::Muted => palette.tone_muted,
-                OverlayTone::Active => palette.tone_active,
-                OverlayTone::Changed => palette.tone_changed,
-                OverlayTone::Unavailable => palette.tone_unavailable,
-            };
-            let tone = color(with_alpha(tone_color, content_alpha));
-            let tone_brush = target.CreateSolidColorBrush(&tone, None)?;
-            let icon_color = if row.tone == OverlayTone::Changed {
-                palette.changed_icon
-            } else {
-                palette.icon
-            };
-            let icon_brush_color = color(with_alpha(icon_color, content_alpha));
-            let icon_brush = target.CreateSolidColorBrush(&icon_brush_color, None)?;
-            let icon_center_x = left + 34.0 * scale;
-            let icon_center_y = y + ROW_HEIGHT * scale * 0.5;
-            target.FillEllipse(
-                &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
-                    point: windows_numerics::Vector2 {
-                        X: icon_center_x,
-                        Y: icon_center_y,
-                    },
-                    radiusX: 17.0 * scale,
-                    radiusY: 17.0 * scale,
-                },
-                &tone_brush,
-            );
-            draw_icon(
+            draw_badge(
                 target,
-                row.icon,
-                icon_center_x,
-                icon_center_y,
+                row,
+                windows_numerics::Vector2 {
+                    X: left + 34.0 * scale,
+                    Y: y + ROW_HEIGHT * scale * 0.5 - 13.0 * scale * compact,
+                },
                 scale,
-                &icon_brush,
-            );
+                palette,
+                content_alpha,
+                compact,
+            )?;
+            if text_alpha <= 0.0 {
+                continue;
+            }
 
             draw_text(
                 target,
@@ -170,6 +152,64 @@ pub(super) fn draw_overlay(
                 },
             );
         }
+        Ok(())
+    }
+}
+
+unsafe fn draw_badge(
+    target: &ID2D1RenderTarget,
+    row: &super::model::OverlayRow,
+    center: windows_numerics::Vector2,
+    scale: f32,
+    palette: OverlayPalette,
+    content_alpha: f32,
+    compact: f32,
+) -> Result<()> {
+    unsafe {
+        let tone_color = match row.tone {
+            OverlayTone::Muted => palette.tone_muted,
+            OverlayTone::Active => palette.tone_active,
+            OverlayTone::Changed => palette.tone_changed,
+            OverlayTone::Unavailable => palette.tone_unavailable,
+        };
+        let tone = color(with_alpha(tone_color, content_alpha));
+        let tone_brush = target.CreateSolidColorBrush(&tone, None)?;
+        let icon_color = if row.tone == OverlayTone::Changed {
+            palette.changed_icon
+        } else {
+            palette.icon
+        };
+        let icon_brush_color = color(with_alpha(icon_color, content_alpha));
+        let icon_brush = target.CreateSolidColorBrush(&icon_brush_color, None)?;
+        target.FillEllipse(
+            &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                point: windows_numerics::Vector2 {
+                    X: center.X,
+                    Y: center.Y,
+                },
+                radiusX: 17.0 * scale,
+                radiusY: 17.0 * scale,
+            },
+            &tone_brush,
+        );
+        draw_icon(target, row.icon, center.X, center.Y, scale, &icon_brush);
+
+        if compact > 0.0 && row.icon == OverlayIcon::Microphone && row.tone == OverlayTone::Muted {
+            target.DrawLine(
+                windows_numerics::Vector2 {
+                    X: center.X - 10.0 * scale,
+                    Y: center.Y - 11.0 * scale,
+                },
+                windows_numerics::Vector2 {
+                    X: center.X + 10.0 * scale,
+                    Y: center.Y + 11.0 * scale,
+                },
+                &icon_brush,
+                1.8 * scale,
+                None,
+            );
+        }
+
         Ok(())
     }
 }

@@ -1,9 +1,11 @@
 //! Status overlay API. Window lifetime, state, drawing and Composition have separate owners.
 
 mod backend;
+mod badge;
 mod composition;
 mod drawing;
 mod effect;
+mod hover;
 mod icons;
 mod layout;
 mod manager;
@@ -46,3 +48,6 @@ use windows::Win32::Foundation::{POINT, SIZE};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod native_tests;

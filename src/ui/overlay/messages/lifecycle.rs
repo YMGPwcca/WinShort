@@ -42,13 +42,9 @@ pub(super) unsafe fn handle_timer(
                     });
                 }
             }
-            Some(TickPlan::StopTimer) => {
-                if let Err(error) = set_timer(hwnd, timer_id, None) {
-                    crate::warn_!("overlay timer stop failed: {error}");
-                }
-            }
             Some(TickPlan::Frame(plan)) => {
-                if let Err(error) = apply_frame_plan(hwnd, plan, false) {
+                let apply_region = cell.borrow().requires_window_region();
+                if let Err(error) = apply_frame_plan(hwnd, plan, apply_region) {
                     crate::warn_!("overlay frame placement failed: {error}");
                 }
                 if let Err(error) = set_timer(hwnd, plan.timer_id, plan.timer_interval) {
@@ -56,6 +52,9 @@ pub(super) unsafe fn handle_timer(
                 }
                 if let Err(error) = render_prepared_frame(cell, hwnd, plan) {
                     crate::warn_!("overlay frame failed: {error}");
+                }
+                if plan.layout_changed {
+                    crate::event::post_main(crate::event::AppEvent::OverlayVisualRefresh);
                 }
             }
             None => {}
