@@ -17,6 +17,21 @@ pub struct MonitorGeometry {
     pub dpi: u32,
 }
 
+/// Read once for an overlay presentation/visual refresh, never during paint.
+pub(crate) fn refresh_period(device: Option<&str>) -> std::time::Duration {
+    let rate = device.and_then(|name| crate::display::active_refresh_rate(name).ok());
+    frame_period(rate.map(|(n, d)| n as f64 / d as f64).unwrap_or(60.0))
+}
+
+fn frame_period(hz: f64) -> std::time::Duration {
+    let hz = if hz.is_finite() && (10.0..=1000.0).contains(&hz) {
+        hz
+    } else {
+        60.0
+    };
+    std::time::Duration::from_secs_f64(1.0 / hz)
+}
+
 pub fn primary() -> Option<MonitorGeometry> {
     let hmon = unsafe { MonitorFromWindow(HWND::default(), MONITOR_DEFAULTTOPRIMARY) };
     if hmon.is_invalid() {
@@ -85,4 +100,17 @@ unsafe extern "system" fn enum_proc(
         list.push(g);
     }
     true.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn refresh_cadence_preserves_fractional_rates_and_high_refresh_displays() {
+        for hz in [60.0, 144.0, 165.0, 240.0, 360.0, 60000.0 / 1001.0] {
+            assert!((frame_period(hz).as_secs_f64() * hz - 1.0).abs() < 0.000001);
+        }
+        assert_eq!(frame_period(0.0), frame_period(60.0));
+        assert_eq!(frame_period(f64::NAN), frame_period(60.0));
+    }
 }

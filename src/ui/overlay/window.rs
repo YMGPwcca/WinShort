@@ -21,8 +21,8 @@ use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowR
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
-    KillTimer, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE,
+    HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
@@ -57,7 +57,12 @@ pub(crate) struct OverlayRuntimeStatus {
 }
 
 fn commit_prepared_show(hwnd: HWND, plan: ShowPlan) -> Result<()> {
-    if let Err(error) = set_timer(hwnd, plan.timer_id, plan.timer_interval) {
+    if let Err(error) = set_timer(
+        hwnd,
+        plan.timer_id,
+        plan.timer_interval,
+        plan.animation_active,
+    ) {
         apply_hide_window(hwnd, plan.timer_id);
         return Err(error);
     }
@@ -68,18 +73,29 @@ fn commit_prepared_show(hwnd: HWND, plan: ShowPlan) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn set_timer(hwnd: HWND, timer_id: usize, interval: Option<u32>) -> Result<()> {
-    if let Some(interval) = interval {
-        let timer = unsafe { SetTimer(Some(hwnd), timer_id, interval, None) };
-        if timer == 0 {
-            return Err(Error::internal("SetTimer(overlay) returned zero"));
+pub(super) fn set_timer(
+    hwnd: HWND,
+    timer_id: usize,
+    interval: Option<u32>,
+    animated: bool,
+) -> Result<()> {
+    // SAFETY: every caller runs on this overlay HWND's owning UI thread. Clone
+    // the clock and release the state borrow before signaling its worker.
+    let Some(cell) = (unsafe { win::state_cell::<OverlayState>(hwnd) }) else {
+        return Ok(());
+    };
+    let (clock, period) = {
+        let state = cell.borrow();
+        (state.graphics.clock.clone(), state.frame_period)
+    };
+    let mode = interval.map(|delay| {
+        if animated {
+            super::frame_clock::WakeMode::Frame(period)
+        } else {
+            super::frame_clock::WakeMode::Deadline(std::time::Duration::from_millis(delay as u64))
         }
-    } else {
-        unsafe {
-            let _ = KillTimer(Some(hwnd), timer_id);
-        }
-    }
-    Ok(())
+    });
+    clock.arm(hwnd, timer_id, mode)
 }
 
 pub(super) fn apply_window_region(hwnd: HWND, region: WindowRegion) {
@@ -167,7 +183,12 @@ pub(super) fn update_hover_pointer(
             .then(|| state.frame_plan())
     });
     if let Some(plan) = plan {
-        set_timer(hwnd, plan.timer_id, plan.timer_interval)?;
+        set_timer(
+            hwnd,
+            plan.timer_id,
+            plan.timer_interval,
+            plan.animation_active,
+        )?;
         render_prepared_frame(cell, hwnd, plan)?;
     }
     Ok(())
@@ -175,10 +196,10 @@ pub(super) fn update_hover_pointer(
 
 pub(super) fn apply_hide_window(hwnd: HWND, timer_id: usize) {
     super::hover::unregister(hwnd);
+    let _ = set_timer(hwnd, timer_id, None, false);
     unsafe {
         // Hide/teardown is intentionally best-effort: a timer can already be
         // absent and ShowWindow returns prior visibility rather than an error.
-        let _ = KillTimer(Some(hwnd), timer_id);
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
 }
@@ -315,7 +336,7 @@ impl OverlayWindow {
             return Ok(());
         };
         if previous_timer_id != plan.timer_id {
-            set_timer(self.hwnd, previous_timer_id, None)?;
+            set_timer(self.hwnd, previous_timer_id, None, false)?;
         }
         let apply_region = cell.borrow().requires_window_region();
         apply_frame_plan(self.hwnd, plan, apply_region)?;

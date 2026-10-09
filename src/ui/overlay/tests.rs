@@ -277,6 +277,155 @@ fn compact_microphone_geometry_is_square_at_every_supported_scale_and_dpi() {
 }
 
 #[test]
+fn content_measurement_shrinks_short_audio_cards_and_bounds_long_unicode_text() {
+    let graphics = super::backend::OverlayGraphics::create().unwrap();
+    let mut short = OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+        volume_pct: 100,
+    }));
+    super::drawing::measure_model(&graphics.dwrite, &mut short).unwrap();
+    let short_size = super::layout::model_geometry(1.0, &short, 0.0).pixel_size(96);
+    assert!(short_size.cx >= 200 && short_size.cx < 240);
+    assert_eq!(short_size.cy, 68);
+    let mut long = OverlayModel::single(OverlayRow::preview(
+        "Tên thiết bị âm thanh 很长的名称 🎧".repeat(12),
+        "Long device detail".repeat(20),
+    ));
+    super::drawing::measure_model(&graphics.dwrite, &mut long).unwrap();
+    assert_eq!(
+        super::layout::model_geometry(1.0, &long, 0.0)
+            .pixel_size(96)
+            .cx,
+        360
+    );
+    assert_eq!(
+        super::layout::model_geometry(1.0, &long, 1.0).pixel_size(96),
+        SIZE { cx: 52, cy: 52 }
+    );
+}
+
+#[test]
+fn app_mute_badge_is_independent_and_survives_volume_toast_expiry() {
+    let now = Instant::now();
+    let hold = Duration::from_secs(1);
+    let mut registry = OverlayRegistry::default();
+    for (key, icon) in [
+        (OverlayKey::MicrophonePermanent, OverlayIcon::Microphone),
+        (
+            OverlayKey::CurrentAppAudioPermanent,
+            OverlayIcon::Application,
+        ),
+    ] {
+        registry.present(
+            OverlayRequest::permanent(key, OverlayModel::single(row(icon, "muted"))),
+            hold,
+            now,
+        );
+    }
+    for (key, icon) in [
+        (OverlayKey::CurrentAppVolume, OverlayIcon::Application),
+        (OverlayKey::OutputDevice, OverlayIcon::Output),
+    ] {
+        registry.present(
+            OverlayRequest::toast(key, OverlayModel::single(row(icon, "feedback"))),
+            hold,
+            now,
+        );
+    }
+    assert_eq!(registry.entries().len(), 4);
+    assert_eq!(registry.remove_expired(now + hold).len(), 2);
+    assert_eq!(registry.entries().len(), 2);
+    assert!(registry.entries().iter().all(|entry| entry.is_permanent()));
+}
+
+#[test]
+fn app_unmute_and_remute_reuse_the_entry_while_volume_feedback_is_present() {
+    let now = Instant::now();
+    let hold = Duration::from_secs(1);
+    let mut registry = OverlayRegistry::default();
+    let muted = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::CurrentAppAudioPermanent,
+            OverlayModel::single(row(OverlayIcon::Application, "muted")),
+        ),
+        hold,
+        now,
+    );
+    let muted_generation = registry.entries()[0].generation();
+    let volume = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::CurrentAppVolume,
+            OverlayModel::single(row(OverlayIcon::Application, "volume")),
+        ),
+        hold,
+        now,
+    );
+    let unmuted = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::CurrentAppAudio,
+            OverlayModel::single(row(OverlayIcon::Application, "unmuted")),
+        )
+        .replacing(OverlayKey::CurrentAppAudioPermanent),
+        hold,
+        now,
+    );
+    assert_eq!(unmuted.id, muted.id);
+    assert!(!unmuted.restart_appearance);
+    assert_eq!(registry.entries().len(), 2);
+    assert_ne!(registry.entries()[0].generation(), muted_generation);
+    let remuted = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::CurrentAppAudioPermanent,
+            OverlayModel::single(row(OverlayIcon::Application, "muted again")),
+        )
+        .replacing(OverlayKey::CurrentAppAudio),
+        hold,
+        now,
+    );
+    assert_eq!(remuted.id, muted.id);
+    assert!(!remuted.restart_appearance);
+    assert_eq!(registry.remove_expired(now + hold)[0].id(), volume.id);
+    assert_eq!(registry.entries()[0].expires_at(), None);
+    assert_eq!(
+        registry.entries()[0].key(),
+        OverlayKey::CurrentAppAudioPermanent
+    );
+}
+
+#[test]
+fn app_notification_filter_removes_badge_mute_and_volume_toasts_together() {
+    let mut registry = OverlayRegistry::default();
+    let now = Instant::now();
+    for key in [
+        OverlayKey::CurrentAppAudioPermanent,
+        OverlayKey::CurrentAppAudio,
+        OverlayKey::CurrentAppVolume,
+    ] {
+        registry.present(
+            OverlayRequest::permanent(
+                key,
+                OverlayModel::single(row(OverlayIcon::Application, "app")),
+            ),
+            Duration::from_secs(1),
+            now,
+        );
+    }
+    registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "mic")),
+        ),
+        Duration::from_secs(1),
+        now,
+    );
+    let notifications = crate::config::model::OverlayNotifications {
+        current_app_audio: false,
+        ..Default::default()
+    };
+    assert_eq!(registry.filter_notifications(notifications).len(), 3);
+    assert_eq!(registry.entries()[0].key(), OverlayKey::MicrophonePermanent);
+}
+
+#[test]
 fn permanent_microphone_and_speaker_toast_are_independent() {
     let now = Instant::now();
     let mut registry = OverlayRegistry::default();
@@ -440,7 +589,7 @@ fn semantic_key_set_is_the_registry_card_upper_bound() {
         .iter()
         .copied()
         .collect::<std::collections::HashSet<_>>();
-    assert_eq!(keys.len(), 10);
+    assert_eq!(keys.len(), 12);
     assert_eq!(unique.len(), keys.len());
 }
 
@@ -999,17 +1148,17 @@ fn permanent_and_toast_layout_has_stable_slots_and_no_overlap() {
     assert!(top[1].position.y < top[2].position.y);
     for (index, pair) in top.windows(2).enumerate() {
         let height = [60, 60][index];
-        assert!(pair[0].position.y + height + 16 <= pair[1].position.y);
+        assert!(pair[0].position.y + height + 10 <= pair[1].position.y);
     }
 
     let bottom_inputs = [inputs[1], inputs[2]];
     let bottom = layout_cards(work, OverlayPosition::BottomRight, 96, 1.0, &bottom_inputs);
     assert!(bottom[0].position.y > bottom[1].position.y);
-    assert!(bottom[1].position.y + 90 + 16 <= bottom[0].position.y);
+    assert!(bottom[1].position.y + 90 + 10 <= bottom[0].position.y);
 
     let center = layout_cards(work, OverlayPosition::Center, 96, 1.0, &inputs[..2]);
     assert!(center[1].position.y > center[0].position.y);
-    assert!(center[0].position.y + 60 + 16 <= center[1].position.y);
+    assert!(center[0].position.y + 60 + 10 <= center[1].position.y);
 }
 
 #[test]
@@ -1049,6 +1198,7 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
             alpha: 1.0,
             timer_id: super::timeline::TIMER_ID,
             timer_interval: Some(TIMER_MS),
+            animation_active: true,
             compact: 0.0,
             hover_alpha: 1.0,
             layout_changed: false,

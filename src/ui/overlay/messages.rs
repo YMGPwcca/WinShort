@@ -9,9 +9,9 @@ use crate::platform::window as win;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, CREATESTRUCTW, HTTRANSPARENT, MA_NOACTIVATE, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETTINGCHANGE, WM_SIZE,
-    WM_SYSCOLORCHANGE, WM_THEMECHANGED, WM_TIMER,
+    DefWindowProcW, CREATESTRUCTW, HTTRANSPARENT, MA_NOACTIVATE, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT,
+    WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_THEMECHANGED,
 };
 
 pub(super) unsafe extern "system" fn overlay_wndproc(
@@ -31,6 +31,11 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         if msg == WM_NCDESTROY {
+            if let Some(cell) = win::state_cell::<OverlayState>(hwnd) {
+                let state = cell.borrow();
+                let _ = state.graphics.clock.arm(hwnd, state.timer_id, None);
+            }
+            super::hover::unregister(hwnd);
             drop(win::take_state::<OverlayState>(hwnd));
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
@@ -45,11 +50,19 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
                 }
                 LRESULT(0)
             }
-            WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+            WM_DISPLAYCHANGE | WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
                 lifecycle::handle_settingchange()
             }
-            WM_TIMER if wparam.0 == cell.borrow().timer_id => {
-                lifecycle::handle_timer(cell, hwnd, wparam.0)
+            super::frame_clock::FRAME_MESSAGE => {
+                let current = {
+                    let state = cell.borrow();
+                    state.timer_id == wparam.0 && state.graphics.clock.acknowledge(hwnd, wparam.0)
+                };
+                if current {
+                    lifecycle::handle_timer(cell, hwnd, wparam.0)
+                } else {
+                    LRESULT(0)
+                }
             }
             WM_PAINT => lifecycle::handle_paint(cell, hwnd),
             WM_SIZE => {

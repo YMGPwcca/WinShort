@@ -185,6 +185,11 @@ pub enum AudioCommand {
         pid: Option<u32>,
         request_id: u64,
     },
+    /// Read-only state after the selected external application changes.
+    ObserveForeground {
+        pid: Option<u32>,
+        request_id: u64,
+    },
     Shutdown,
 }
 
@@ -378,6 +383,7 @@ impl AudioController {
                             error: Some(e.to_string()),
                         });
                 self.post(AppEvent::ForegroundAudioChanged {
+                    pid,
                     state,
                     origin: crate::event::AudioEventOrigin::WinShortAction(request_id),
                 });
@@ -408,6 +414,7 @@ impl AudioController {
                 )
                 .unwrap_or_else(|error| AppVolumeState::error(None, error.to_string()));
                 self.post(AppEvent::ForegroundVolumeChanged {
+                    pid,
                     state,
                     origin: crate::event::AudioEventOrigin::WinShortAction(request_id),
                 });
@@ -431,26 +438,31 @@ impl AudioController {
             }
             // ConfigChanged is consumed by handle() above; refresh_config_if_needed
             // covers any residual revision drift.
-            AudioCommand::QueryForeground { pid, request_id } => {
-                let config = self.config.get();
-                let state =
-                    crate::audio::sessions::query_foreground(&self.enumerator, &config, pid)
-                        .unwrap_or_else(|e| crate::audio::AppAudioState {
-                            app_name: None,
-                            aggregate: crate::audio::Aggregate::Error,
-                            sessions: 0,
-                            error: Some(e.to_string()),
-                        });
-                self.post(AppEvent::ForegroundAudioChanged {
-                    state,
-                    origin: crate::event::AudioEventOrigin::StatusRequest(request_id),
-                });
-            }
+            AudioCommand::QueryForeground { pid, request_id } => self.query_foreground(
+                pid,
+                crate::event::AudioEventOrigin::StatusRequest(request_id),
+            ),
+            AudioCommand::ObserveForeground { pid, request_id } => self.query_foreground(
+                pid,
+                crate::event::AudioEventOrigin::ForegroundSelection(request_id),
+            ),
             AudioCommand::RefreshAll => self.apply_pending_rebuild(PendingRebuild::external()),
             AudioCommand::ConfigChanged { .. } => {}
             AudioCommand::Shutdown => return false,
         }
         true
+    }
+
+    fn query_foreground(&self, pid: Option<u32>, origin: crate::event::AudioEventOrigin) {
+        let config = self.config.get();
+        let state = crate::audio::sessions::query_foreground(&self.enumerator, &config, pid)
+            .unwrap_or_else(|e| crate::audio::AppAudioState {
+                app_name: None,
+                aggregate: crate::audio::Aggregate::Error,
+                sessions: 0,
+                error: Some(e.to_string()),
+            });
+        self.post(AppEvent::ForegroundAudioChanged { pid, state, origin });
     }
 
     fn apply_pending_rebuild(&mut self, pending: PendingRebuild) {

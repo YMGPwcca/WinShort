@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub(super) const POINTER_MESSAGE: u32 = 0x8120;
 const HOVER_MS: u64 = 140;
-const MAX_CARDS: usize = 10;
+const MAX_CARDS: usize = super::manager::OverlayKey::ALL.len();
 
 #[cfg(test)]
 pub(super) fn observer_active() -> bool {
@@ -162,6 +162,9 @@ impl Default for HoverMotion {
 }
 
 impl HoverMotion {
+    pub(super) fn is_animating(&self) -> bool {
+        self.started.is_some()
+    }
     pub(super) fn value(&self, now: Instant) -> f32 {
         let Some(started) = self.started else {
             return self.target;

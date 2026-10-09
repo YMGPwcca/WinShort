@@ -88,7 +88,12 @@ pub(crate) fn application_row(state: &crate::audio::AppAudioState) -> OverlayRow
         category: Some(OverlayNotificationCategory::CurrentAppAudio),
         icon: OverlayIcon::Application,
         tone,
-        title: "Current app audio".into(),
+        title: match state.aggregate {
+            Aggregate::AllMuted => "App audio muted",
+            Aggregate::AllActive => "App audio unmuted",
+            _ => "Current app audio",
+        }
+        .into(),
         detail: if let Some(app_name) = &state.app_name {
             format!("{app_name} · {detail}")
         } else {

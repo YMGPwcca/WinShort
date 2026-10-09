@@ -6,8 +6,8 @@ use super::*;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetWindowRect, IsWindowVisible, PeekMessageW, TranslateMessage,
-    WindowFromPoint, MSG, PM_REMOVE,
+    DispatchMessageW, GetWindowRect, IsWindowVisible, MsgWaitForMultipleObjectsEx, PeekMessageW,
+    TranslateMessage, WindowFromPoint, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
 };
 
 fn pump_for(duration: Duration) {
@@ -20,8 +20,103 @@ fn pump_for(duration: Duration) {
                 DispatchMessageW(&message);
             }
         }
-        std::thread::sleep(Duration::from_millis(5));
+        // Wait on messages so this harness does not cap a high-refresh frame
+        // source with its own fixed sleep or spin when overlays are idle.
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .max(1)
+            .min(u32::MAX as u128) as u32;
+        unsafe {
+            MsgWaitForMultipleObjectsEx(None, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
     }
+}
+
+#[test]
+#[ignore = "measures real overlay rendering cadence and briefly blocks its test UI thread"]
+fn native_refresh_animation_coalesces_frames_and_stops_when_idle() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.hover_opacity = 1.0;
+    manager
+        .present(
+            OverlayRequest::permanent(
+                OverlayKey::MicrophonePermanent,
+                OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+                    volume_pct: 100,
+                })),
+            ),
+            config,
+        )
+        .unwrap();
+    let hwnd = manager.test_hwnds()[0];
+    // The producer must leave at most one pending frame while rendering/input
+    // handling is stalled. It must not queue a burst of obsolete frames.
+    std::thread::sleep(Duration::from_millis(70));
+    let mut queued = Vec::new();
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(
+            &mut msg,
+            Some(hwnd),
+            super::frame_clock::FRAME_MESSAGE,
+            super::frame_clock::FRAME_MESSAGE,
+            PM_REMOVE,
+        )
+        .as_bool()
+        {
+            queued.push(msg);
+        }
+    }
+    assert_eq!(queued.len(), 1, "animation frame wakes must be coalesced");
+    for msg in queued {
+        unsafe {
+            DispatchMessageW(&msg);
+        }
+    }
+    pump_for(Duration::from_millis(1650));
+    let (period, frames, clock) = {
+        // SAFETY: this test owns the live HWND and reads its state only on the
+        // creating UI thread, outside native message dispatch.
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        (
+            state.frame_period,
+            state.test_frame_times.clone(),
+            state.graphics.clock.clone(),
+        )
+    };
+    let mut intervals = frames
+        .windows(2)
+        .map(|times| times[1].duration_since(times[0]))
+        .filter(|gap| *gap < Duration::from_millis(40))
+        .collect::<Vec<_>>();
+    intervals.sort();
+    assert!(
+        intervals.len() >= 8,
+        "animation produced too few real rendered frames"
+    );
+    let median = intervals[intervals.len() / 2];
+    let monitor_hz = 1.0 / period.as_secs_f64();
+    let rendered_hz = 1.0 / median.as_secs_f64();
+    println!("monitor={monitor_hz:.2} Hz, rendered median={rendered_hz:.2} fps, frames={}, idle targets={}", frames.len(), clock.active_targets());
+    if monitor_hz >= 120.0 {
+        assert!(
+            rendered_hz > 90.0,
+            "high-refresh animation is still capped near 60 fps"
+        );
+    }
+    assert_eq!(
+        clock.active_targets(),
+        0,
+        "settled permanent badges must stop clock work"
+    );
+    manager.shutdown();
 }
 
 #[test]
@@ -109,7 +204,7 @@ fn native_three_audio_cards_are_visible_and_separate() {
         let palette =
             super::palette::palette_for(config.appearance, SystemVisualPreferences::query());
         for (i, rect) in rectangles.iter().enumerate() {
-            let pixel = GetPixel(dc, rect.left + 46, rect.top + 47).0;
+            let pixel = GetPixel(dc, rect.left + 38, rect.top + 34).0;
             println!("badge at {rect:?}: #{pixel:06x}");
             let tone = if i == 0 {
                 palette.tone_muted
@@ -122,8 +217,8 @@ fn native_three_audio_cards_are_visible_and_separate() {
                 "visible HWND must contain its own rendered badge"
             );
             let hit = WindowFromPoint(windows::Win32::Foundation::POINT {
-                x: rect.left + 46,
-                y: rect.top + 47,
+                x: rect.left + 38,
+                y: rect.top + 34,
             });
             assert!(
                 !manager.test_hwnds().contains(&hit),
@@ -167,9 +262,10 @@ fn native_three_audio_cards_are_visible_and_separate() {
     assert_anchor(config.position, collapsed[0], expanding[0]);
     pump_for(Duration::from_millis(300));
     let expanded = manager.test_window_rectangles();
+    assert!(expanded[0].right - expanded[0].left > collapsed[0].right - collapsed[0].left);
     assert_eq!(
-        expanded[0].right - expanded[0].left,
-        rectangles[0].right - rectangles[0].left
+        expanded[0].bottom - expanded[0].top,
+        rectangles[0].bottom - rectangles[0].top
     );
     assert_anchor(config.position, rectangles[0], expanded[0]);
     capture("microphone-unmuted", &expanded[..1]);
@@ -196,6 +292,145 @@ fn assert_anchor(position: OverlayPosition, before: RECT, after: RECT) {
             assert_eq!(after.top, before.top);
         }
     }
+}
+
+#[test]
+#[ignore = "shows isolated test-owned app mute and audio overlay windows"]
+fn native_app_mute_badge_expands_in_place_and_stacks_with_mic_and_output() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.position = match std::env::var("WINSHORT_OVERLAY_TEST_POSITION").as_deref() {
+        Ok("bottom-right") => OverlayPosition::BottomRight,
+        Ok("center") => OverlayPosition::Center,
+        _ => OverlayPosition::TopLeft,
+    };
+    config.duration_ms = 10000;
+    config.hover_opacity = 1.0;
+    let app_state = crate::audio::AppAudioState {
+        app_name: Some("Example player".into()),
+        aggregate: crate::audio::Aggregate::AllMuted,
+        sessions: 1,
+        error: None,
+    };
+    manager
+        .present(
+            OverlayRequest::permanent(
+                OverlayKey::CurrentAppAudioPermanent,
+                OverlayModel::single(application_row(&app_state)),
+            ),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(300));
+    let hwnd = manager.test_hwnds()[0];
+    let expanded = manager.test_window_rectangles()[0];
+    capture("app-muted-full", &[expanded]);
+    pump_for(Duration::from_millis(1300));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(180));
+    let compact = manager.test_window_rectangles()[0];
+    assert_eq!(compact.right - compact.left, compact.bottom - compact.top);
+    assert!(compact.right - compact.left < expanded.right - expanded.left);
+    assert_anchor(config.position, expanded, compact);
+    let hit = unsafe {
+        WindowFromPoint(windows::Win32::Foundation::POINT {
+            x: compact.left + 10,
+            y: compact.top + 10,
+        })
+    };
+    assert_ne!(hit, hwnd, "app mute badge must allow click-through");
+    capture("app-muted-badge", &[compact]);
+
+    for request in [
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+                volume_pct: 100,
+            })),
+        ),
+        OverlayRequest::toast(
+            OverlayKey::OutputDevice,
+            OverlayModel::single(OverlayRow {
+                category: None,
+                icon: OverlayIcon::Output,
+                tone: OverlayTone::Changed,
+                title: "Next speaker".into(),
+                detail: "Example output".into(),
+            }),
+        ),
+        OverlayRequest::toast(
+            OverlayKey::CurrentAppVolume,
+            OverlayModel::single(OverlayRow {
+                category: None,
+                icon: OverlayIcon::Application,
+                tone: OverlayTone::Changed,
+                title: "App volume".into(),
+                detail: "Example player · 50%".into(),
+            }),
+        ),
+    ] {
+        manager.present(request, config.clone()).unwrap();
+    }
+    pump_for(Duration::from_millis(1650));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(180));
+    let cards = manager.test_window_rectangles();
+    assert_eq!(cards.len(), 4);
+    for (index, left) in cards.iter().enumerate() {
+        for right in &cards[index + 1..] {
+            assert!(
+                left.bottom <= right.top || right.bottom <= left.top,
+                "cards overlap: {left:?}, {right:?}"
+            );
+        }
+    }
+    assert_eq!(manager.status().permanent_card_count, 2);
+    capture("app-mic-output-volume", &cards);
+    manager
+        .remove_key(OverlayKey::MicrophonePermanent, &config)
+        .unwrap();
+    manager
+        .remove_key(OverlayKey::OutputDevice, &config)
+        .unwrap();
+    manager
+        .remove_key(OverlayKey::CurrentAppVolume, &config)
+        .unwrap();
+    pump_for(Duration::from_millis(300));
+    let compact = manager.test_window_rectangles()[0];
+    config.duration_ms = 1800;
+    let position = config.position;
+    manager
+        .present(
+            OverlayRequest::toast(
+                OverlayKey::CurrentAppAudio,
+                OverlayModel::single(application_row(&crate::audio::AppAudioState {
+                    aggregate: crate::audio::Aggregate::AllActive,
+                    ..app_state
+                })),
+            )
+            .replacing(OverlayKey::CurrentAppAudioPermanent),
+            config,
+        )
+        .unwrap();
+    assert_eq!(
+        manager.test_hwnds()[0],
+        hwnd,
+        "unmute must reuse the app badge HWND"
+    );
+    pump_for(Duration::from_millis(280));
+    let unmuted = manager.test_window_rectangles()[0];
+    assert!(unmuted.right - unmuted.left > compact.right - compact.left);
+    assert_eq!(unmuted.bottom - unmuted.top, expanded.bottom - expanded.top);
+    assert_anchor(position, compact, unmuted);
+    capture("app-unmuted", &[unmuted]);
+    pump_for(Duration::from_millis(2400));
+    assert!(
+        !unsafe { IsWindowVisible(hwnd).as_bool() },
+        "app unmute feedback must expire"
+    );
+    manager.shutdown();
 }
 
 fn capture(name: &str, rectangles: &[RECT]) {

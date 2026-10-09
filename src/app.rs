@@ -87,6 +87,9 @@ pub struct App {
     microphone_state: crate::audio::AudioState,
     output_state: crate::audio::OutputState,
     foreground_state: crate::audio::AppAudioState,
+    foreground_pid: Option<u32>,
+    foreground_query_id: Option<u64>,
+    foreground_request_floor: u64,
     microphone_seen: bool,
     output_seen: bool,
     foreground_seen: bool,
@@ -209,6 +212,9 @@ impl App {
                 reason: "Starting audio…".into(),
             },
             foreground_state: crate::audio::AppAudioState::no_external(),
+            foreground_pid: None,
+            foreground_query_id: None,
+            foreground_request_floor: 0,
             microphone_seen: false,
             output_seen: false,
             foreground_seen: false,
@@ -269,6 +275,11 @@ impl App {
         config: std::sync::Arc<crate::config::ConfigHandle>,
     ) -> Result<()> {
         self.audio = Some(crate::audio::AudioService::start(self.hwnd, config)?);
+        let pid = self
+            .foreground
+            .as_ref()
+            .and_then(|tracker| tracker.target_pid());
+        self.select_foreground_audio(pid, true);
         Ok(())
     }
 
@@ -663,7 +674,9 @@ impl App {
         status_request_matches: bool,
     ) -> bool {
         match origin {
-            AudioEventOrigin::Initial | AudioEventOrigin::Config(_) => false,
+            AudioEventOrigin::Initial
+            | AudioEventOrigin::Config(_)
+            | AudioEventOrigin::ForegroundSelection(_) => false,
             AudioEventOrigin::External => show_external_current_app_audio && seen && changed,
             AudioEventOrigin::WinShortAction(_) => true,
             AudioEventOrigin::StatusRequest(_) => status_request_matches,
@@ -1053,6 +1066,7 @@ impl App {
                     .foreground
                     .as_ref()
                     .and_then(|tracker| tracker.target_pid());
+                self.select_foreground_audio(pid, false);
                 if let Some(audio) = &self.audio {
                     audio.send(crate::audio::AudioCommand::ToggleForeground { pid, request_id });
                 } else {
@@ -1060,6 +1074,7 @@ impl App {
                         .degraded_reason("audio")
                         .unwrap_or_else(|| "audio subsystem unavailable".into());
                     self.route_event(AppEvent::ForegroundAudioChanged {
+                        pid,
                         state: crate::audio::AppAudioState {
                             app_name: None,
                             aggregate: crate::audio::Aggregate::Error,
@@ -1322,6 +1337,7 @@ impl App {
             .foreground
             .as_ref()
             .and_then(|tracker| tracker.target_pid());
+        self.select_foreground_audio(pid, false);
         if let Some(audio) = &self.audio {
             audio.send(crate::audio::AudioCommand::AdjustForegroundVolume {
                 pid,
@@ -1333,6 +1349,7 @@ impl App {
                 .degraded_reason("audio")
                 .unwrap_or_else(|| "audio subsystem unavailable".into());
             self.route_event(AppEvent::ForegroundVolumeChanged {
+                pid,
                 state: crate::audio::AppVolumeState::error(None, reason),
                 origin: AudioEventOrigin::WinShortAction(request_id),
             });
@@ -1389,6 +1406,85 @@ impl App {
             if let Err(error) = overlay.remove_key(key, config) {
                 error_!("overlay entry removal failed: {error}");
             }
+        }
+    }
+
+    fn select_foreground_audio(&mut self, pid: Option<u32>, refresh: bool) {
+        let changed = self.foreground_pid != pid;
+        if !changed && !refresh {
+            return;
+        }
+        if changed {
+            self.foreground_request_floor = self.next_audio_request_id;
+            self.foreground_pid = pid;
+            self.foreground_state = crate::audio::AppAudioState::no_external();
+            self.foreground_seen = false;
+            self.status_request_id = None;
+            let config = crate::app::config();
+            for key in [
+                crate::ui::overlay::OverlayKey::CurrentAppAudioPermanent,
+                crate::ui::overlay::OverlayKey::CurrentAppAudio,
+                crate::ui::overlay::OverlayKey::CurrentAppVolume,
+            ] {
+                self.remove_overlay_key(key, &config.overlay);
+            }
+            self.refresh_settings_runtime();
+        }
+        self.foreground_query_id = None;
+        if self.audio.is_some() {
+            let request_id = self.next_audio_request_id();
+            self.foreground_query_id = Some(request_id);
+            if let Some(audio) = &self.audio {
+                audio.send(crate::audio::AudioCommand::ObserveForeground { pid, request_id });
+            }
+        }
+    }
+
+    fn accepts_foreground_audio_result(
+        &mut self,
+        pid: Option<u32>,
+        origin: AudioEventOrigin,
+    ) -> bool {
+        if let Some(tracker) = &self.foreground {
+            self.select_foreground_audio(tracker.target_pid(), false);
+        }
+        if pid != self.foreground_pid {
+            return false;
+        }
+        // Returning to the same PID must not revive an action dispatched before
+        // a more recent selection. Queries also carry their own request identity.
+        !matches!(origin, AudioEventOrigin::WinShortAction(id) if id < self.foreground_request_floor)
+    }
+
+    fn reconcile_app_audio_overlay(&mut self, show_feedback: bool) {
+        use crate::audio::Aggregate;
+        use crate::ui::overlay::{OverlayKey, OverlayModel, OverlayRequest};
+        let config = crate::app::config();
+        if self.acceptance_overlay_only
+            || !config.overlay.enabled
+            || !config.overlay.notifications.current_app_audio
+        {
+            self.remove_overlay_key(OverlayKey::CurrentAppAudioPermanent, &config.overlay);
+            self.remove_overlay_key(OverlayKey::CurrentAppAudio, &config.overlay);
+            self.remove_overlay_key(OverlayKey::CurrentAppVolume, &config.overlay);
+            return;
+        }
+        let model =
+            OverlayModel::single(crate::ui::overlay::application_row(&self.foreground_state));
+        if self.foreground_state.aggregate == Aggregate::AllMuted {
+            self.show_overlay_with_config(
+                OverlayRequest::permanent(OverlayKey::CurrentAppAudioPermanent, model)
+                    .replacing(OverlayKey::CurrentAppAudio),
+                config.overlay.clone(),
+            );
+        } else if show_feedback {
+            self.show_overlay_with_config(
+                OverlayRequest::toast(OverlayKey::CurrentAppAudio, model)
+                    .replacing(OverlayKey::CurrentAppAudioPermanent),
+                config.overlay.clone(),
+            );
+        } else {
+            self.remove_overlay_key(OverlayKey::CurrentAppAudioPermanent, &config.overlay);
         }
     }
 
@@ -1485,11 +1581,22 @@ impl App {
     }
 
     fn status_overlay_model(&self) -> crate::ui::overlay::OverlayModel {
+        self.status_overlay_model_with_app(
+            std::env::var_os("WINSHORT_UI_ACCEPTANCE_NO_EXTERNAL").is_none(),
+        )
+    }
+
+    fn status_overlay_model_with_app(
+        &self,
+        include_current_app: bool,
+    ) -> crate::ui::overlay::OverlayModel {
         let mut rows = vec![
             crate::ui::overlay::microphone_row(&self.microphone_state),
             crate::ui::overlay::output_row(&self.output_state),
         ];
-        if self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp {
+        if include_current_app
+            && self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp
+        {
             rows.push(crate::ui::overlay::application_row(&self.foreground_state));
         }
         crate::ui::overlay::OverlayModel::from_rows(rows)
@@ -1600,6 +1707,7 @@ impl App {
             .as_ref()
             .and_then(|tracker| tracker.target_pid());
         if self.audio.is_some() {
+            self.select_foreground_audio(pid, false);
             self.status_request_id = Some(request_id);
             if let Some(audio) = &self.audio {
                 audio.send(crate::audio::AudioCommand::QueryForeground { pid, request_id });
@@ -2042,6 +2150,9 @@ mod shutdown_gate_tests {
                 reason: "test".into(),
             },
             foreground_state: crate::audio::AppAudioState::no_external(),
+            foreground_pid: None,
+            foreground_query_id: None,
+            foreground_request_floor: 0,
             microphone_seen: false,
             output_seen: false,
             foreground_seen: false,
@@ -2532,6 +2643,7 @@ mod shutdown_gate_tests {
         let mut app = test_app();
         app.status_request_id = Some(7);
         app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: None,
             state: crate::audio::AppAudioState {
                 app_name: Some("Test app".into()),
                 aggregate: crate::audio::Aggregate::AllActive,
@@ -2542,6 +2654,139 @@ mod shutdown_gate_tests {
         });
         assert_eq!(app.status_request_id, None);
         assert_eq!(app.status_overlay_model().rows.len(), 3);
+    }
+
+    fn app_audio_state(aggregate: crate::audio::Aggregate) -> crate::audio::AppAudioState {
+        crate::audio::AppAudioState {
+            app_name: Some("Player".into()),
+            aggregate,
+            sessions: 1,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn selected_app_mute_and_unmute_feedback_are_explicit() {
+        let mut app = test_app();
+        app.select_foreground_audio(Some(100), false);
+        for (aggregate, title) in [
+            (crate::audio::Aggregate::AllMuted, "App audio muted"),
+            (crate::audio::Aggregate::AllActive, "App audio unmuted"),
+        ] {
+            app.route_event(AppEvent::ForegroundAudioChanged {
+                pid: Some(100),
+                state: app_audio_state(aggregate),
+                origin: AudioEventOrigin::WinShortAction(1),
+            });
+            let model = app.test_last_overlay_model.take().unwrap();
+            assert_eq!(model.rows[0].title, title);
+            assert!(model.rows[0].detail.contains("Player"));
+        }
+    }
+
+    #[test]
+    fn changing_selected_app_drops_previous_state_and_delayed_results() {
+        let mut app = test_app();
+        app.select_foreground_audio(Some(100), false);
+        app.foreground_state = app_audio_state(crate::audio::Aggregate::AllMuted);
+        app.foreground_seen = true;
+        app.status_request_id = Some(8);
+        app.select_foreground_audio(Some(200), false);
+        assert_eq!(
+            app.foreground_state,
+            crate::audio::AppAudioState::no_external()
+        );
+        assert!(!app.foreground_seen);
+        assert_eq!(app.status_request_id, None);
+        for origin in [
+            AudioEventOrigin::WinShortAction(1),
+            AudioEventOrigin::StatusRequest(8),
+        ] {
+            app.route_event(AppEvent::ForegroundAudioChanged {
+                pid: Some(100),
+                state: app_audio_state(crate::audio::Aggregate::AllMuted),
+                origin,
+            });
+        }
+        app.route_event(AppEvent::ForegroundVolumeChanged {
+            pid: Some(100),
+            state: crate::audio::AppVolumeState::no_external(),
+            origin: AudioEventOrigin::WinShortAction(2),
+        });
+        assert!(!app.foreground_seen);
+        assert!(app.test_last_overlay_model.is_none());
+    }
+
+    #[test]
+    fn passive_selection_restores_muted_badge_without_an_unmute_toast() {
+        let mut app = test_app();
+        app.select_foreground_audio(Some(100), false);
+        app.foreground_query_id = Some(7);
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: Some(100),
+            state: app_audio_state(crate::audio::Aggregate::AllMuted),
+            origin: AudioEventOrigin::ForegroundSelection(6),
+        });
+        assert!(!app.foreground_seen);
+        assert!(app.test_last_overlay_model.is_none());
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: Some(100),
+            state: app_audio_state(crate::audio::Aggregate::AllMuted),
+            origin: AudioEventOrigin::ForegroundSelection(7),
+        });
+        assert_eq!(
+            app.test_last_overlay_model.take().unwrap().rows[0].title,
+            "App audio muted"
+        );
+        app.foreground_query_id = Some(8);
+        app.status_request_id = Some(9);
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: Some(100),
+            state: app_audio_state(crate::audio::Aggregate::AllActive),
+            origin: AudioEventOrigin::ForegroundSelection(8),
+        });
+        assert!(app.test_last_overlay_model.is_none());
+        assert_eq!(app.status_request_id, Some(9));
+    }
+
+    #[test]
+    fn action_invalidates_older_selection_result() {
+        let mut app = test_app();
+        app.select_foreground_audio(Some(100), false);
+        app.foreground_query_id = Some(5);
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: Some(100),
+            state: app_audio_state(crate::audio::Aggregate::AllActive),
+            origin: AudioEventOrigin::WinShortAction(6),
+        });
+        app.test_last_overlay_model = None;
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: Some(100),
+            state: app_audio_state(crate::audio::Aggregate::AllMuted),
+            origin: AudioEventOrigin::ForegroundSelection(5),
+        });
+        assert_eq!(
+            app.foreground_state.aggregate,
+            crate::audio::Aggregate::AllActive
+        );
+        assert!(app.test_last_overlay_model.is_none());
+    }
+
+    #[test]
+    fn returning_to_same_app_does_not_revive_a_delayed_action() {
+        let mut app = test_app();
+        app.select_foreground_audio(Some(100), false);
+        app.next_audio_request_id = 10;
+        app.select_foreground_audio(Some(200), false);
+        app.next_audio_request_id = 11;
+        app.select_foreground_audio(Some(100), false);
+        app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: Some(100),
+            state: app_audio_state(crate::audio::Aggregate::AllMuted),
+            origin: AudioEventOrigin::WinShortAction(10),
+        });
+        assert!(!app.foreground_seen);
+        assert!(app.test_last_overlay_model.is_none());
     }
 
     #[test]
@@ -2555,12 +2800,32 @@ mod shutdown_gate_tests {
     }
 
     #[test]
+    fn no_external_acceptance_snapshot_keeps_geometry_stable_across_selected_apps() {
+        let mut app = test_app();
+        let before = app.status_overlay_model_with_app(false);
+        for aggregate in [
+            crate::audio::Aggregate::AllMuted,
+            crate::audio::Aggregate::NoSession,
+        ] {
+            app.foreground_state = app_audio_state(aggregate);
+            let after = app.status_overlay_model_with_app(false);
+            assert_eq!(before.rows.len(), after.rows.len());
+            assert!(after
+                .rows
+                .iter()
+                .all(|row| row.icon != crate::ui::overlay::OverlayIcon::Application));
+            assert_eq!(app.status_overlay_model_with_app(true).rows.len(), 3);
+        }
+    }
+
+    #[test]
     fn stale_status_request_has_no_observable_effect() {
         let mut app = test_app();
         app.status_request_id = Some(8);
         let before = app.foreground_state.clone();
         let before_seen = app.foreground_seen;
         app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: None,
             state: crate::audio::AppAudioState {
                 app_name: Some("Stale app".into()),
                 aggregate: crate::audio::Aggregate::AllActive,
@@ -2582,6 +2847,7 @@ mod shutdown_gate_tests {
         let mut app = test_app();
         app.status_request_id = Some(8);
         app.route_event(AppEvent::ForegroundAudioChanged {
+            pid: None,
             state: crate::audio::AppAudioState {
                 app_name: Some("Action app".into()),
                 aggregate: crate::audio::Aggregate::AllActive,
