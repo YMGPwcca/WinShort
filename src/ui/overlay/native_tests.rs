@@ -6,8 +6,8 @@ use super::*;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetWindowRect, IsWindowVisible, PeekMessageW, TranslateMessage,
-    WindowFromPoint, MSG, PM_REMOVE,
+    DispatchMessageW, GetWindowRect, IsWindowVisible, MsgWaitForMultipleObjectsEx, PeekMessageW,
+    TranslateMessage, WindowFromPoint, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
 };
 
 fn pump_for(duration: Duration) {
@@ -20,8 +20,103 @@ fn pump_for(duration: Duration) {
                 DispatchMessageW(&message);
             }
         }
-        std::thread::sleep(Duration::from_millis(5));
+        // Wait on messages so this harness does not cap a high-refresh frame
+        // source with its own fixed sleep or spin when overlays are idle.
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .max(1)
+            .min(u32::MAX as u128) as u32;
+        unsafe {
+            MsgWaitForMultipleObjectsEx(None, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
     }
+}
+
+#[test]
+#[ignore = "measures real overlay rendering cadence and briefly blocks its test UI thread"]
+fn native_refresh_animation_coalesces_frames_and_stops_when_idle() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.hover_opacity = 1.0;
+    manager
+        .present(
+            OverlayRequest::permanent(
+                OverlayKey::MicrophonePermanent,
+                OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+                    volume_pct: 100,
+                })),
+            ),
+            config,
+        )
+        .unwrap();
+    let hwnd = manager.test_hwnds()[0];
+    // The producer must leave at most one pending frame while rendering/input
+    // handling is stalled. It must not queue a burst of obsolete frames.
+    std::thread::sleep(Duration::from_millis(70));
+    let mut queued = Vec::new();
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(
+            &mut msg,
+            Some(hwnd),
+            super::frame_clock::FRAME_MESSAGE,
+            super::frame_clock::FRAME_MESSAGE,
+            PM_REMOVE,
+        )
+        .as_bool()
+        {
+            queued.push(msg);
+        }
+    }
+    assert_eq!(queued.len(), 1, "animation frame wakes must be coalesced");
+    for msg in queued {
+        unsafe {
+            DispatchMessageW(&msg);
+        }
+    }
+    pump_for(Duration::from_millis(1650));
+    let (period, frames, clock) = {
+        // SAFETY: this test owns the live HWND and reads its state only on the
+        // creating UI thread, outside native message dispatch.
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        (
+            state.frame_period,
+            state.test_frame_times.clone(),
+            state.graphics.clock.clone(),
+        )
+    };
+    let mut intervals = frames
+        .windows(2)
+        .map(|times| times[1].duration_since(times[0]))
+        .filter(|gap| *gap < Duration::from_millis(40))
+        .collect::<Vec<_>>();
+    intervals.sort();
+    assert!(
+        intervals.len() >= 8,
+        "animation produced too few real rendered frames"
+    );
+    let median = intervals[intervals.len() / 2];
+    let monitor_hz = 1.0 / period.as_secs_f64();
+    let rendered_hz = 1.0 / median.as_secs_f64();
+    println!("monitor={monitor_hz:.2} Hz, rendered median={rendered_hz:.2} fps, frames={}, idle targets={}", frames.len(), clock.active_targets());
+    if monitor_hz >= 120.0 {
+        assert!(
+            rendered_hz > 90.0,
+            "high-refresh animation is still capped near 60 fps"
+        );
+    }
+    assert_eq!(
+        clock.active_targets(),
+        0,
+        "settled permanent badges must stop clock work"
+    );
+    manager.shutdown();
 }
 
 #[test]
@@ -109,7 +204,7 @@ fn native_three_audio_cards_are_visible_and_separate() {
         let palette =
             super::palette::palette_for(config.appearance, SystemVisualPreferences::query());
         for (i, rect) in rectangles.iter().enumerate() {
-            let pixel = GetPixel(dc, rect.left + 46, rect.top + 47).0;
+            let pixel = GetPixel(dc, rect.left + 38, rect.top + 34).0;
             println!("badge at {rect:?}: #{pixel:06x}");
             let tone = if i == 0 {
                 palette.tone_muted
@@ -122,8 +217,8 @@ fn native_three_audio_cards_are_visible_and_separate() {
                 "visible HWND must contain its own rendered badge"
             );
             let hit = WindowFromPoint(windows::Win32::Foundation::POINT {
-                x: rect.left + 46,
-                y: rect.top + 47,
+                x: rect.left + 38,
+                y: rect.top + 34,
             });
             assert!(
                 !manager.test_hwnds().contains(&hit),
@@ -167,9 +262,10 @@ fn native_three_audio_cards_are_visible_and_separate() {
     assert_anchor(config.position, collapsed[0], expanding[0]);
     pump_for(Duration::from_millis(300));
     let expanded = manager.test_window_rectangles();
+    assert!(expanded[0].right - expanded[0].left > collapsed[0].right - collapsed[0].left);
     assert_eq!(
-        expanded[0].right - expanded[0].left,
-        rectangles[0].right - rectangles[0].left
+        expanded[0].bottom - expanded[0].top,
+        rectangles[0].bottom - rectangles[0].top
     );
     assert_anchor(config.position, rectangles[0], expanded[0]);
     capture("microphone-unmuted", &expanded[..1]);
@@ -325,7 +421,8 @@ fn native_app_mute_badge_expands_in_place_and_stacks_with_mic_and_output() {
     );
     pump_for(Duration::from_millis(280));
     let unmuted = manager.test_window_rectangles()[0];
-    assert_eq!(unmuted.right - unmuted.left, expanded.right - expanded.left);
+    assert!(unmuted.right - unmuted.left > compact.right - compact.left);
+    assert_eq!(unmuted.bottom - unmuted.top, expanded.bottom - expanded.top);
     assert_anchor(position, compact, unmuted);
     capture("app-unmuted", &[unmuted]);
     pump_for(Duration::from_millis(2400));

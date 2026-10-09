@@ -1,7 +1,9 @@
 //! Drawing for the overlay.
 
 use super::icons::draw_icon;
-use super::layout::{presentation_geometry, CARD_CORNER_RADIUS_DIP, PAD, ROW_HEIGHT};
+use super::layout::{
+    model_geometry, CARD_CORNER_RADIUS_DIP, PAD, ROW_HEIGHT, TEXT_LEFT, TEXT_RIGHT,
+};
 use super::model::{OverlayIcon, OverlayModel, OverlayTone};
 use super::palette::OverlayPalette;
 use crate::error::{Error, Result};
@@ -15,7 +17,8 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteFactory, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
+    DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 
 #[derive(Clone, Copy)]
@@ -37,7 +40,7 @@ pub(super) fn draw_overlay(
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
         let compact = options.compact.clamp(0.0, 1.0);
-        let geometry = presentation_geometry(scale, model.rows.len(), compact);
+        let geometry = model_geometry(scale, model, compact);
         let body = D2D_RECT_F {
             left: geometry.body_left,
             top: geometry.body_top,
@@ -95,11 +98,11 @@ pub(super) fn draw_overlay(
             if index > 0 {
                 target.DrawLine(
                     windows_numerics::Vector2 {
-                        X: left + 58.0 * scale,
+                        X: left + TEXT_LEFT * scale,
                         Y: y,
                     },
                     windows_numerics::Vector2 {
-                        X: body.right - 16.0 * scale,
+                        X: body.right - TEXT_RIGHT * scale,
                         Y: y,
                     },
                     &border_brush,
@@ -111,8 +114,8 @@ pub(super) fn draw_overlay(
                 target,
                 row,
                 windows_numerics::Vector2 {
-                    X: left + 34.0 * scale,
-                    Y: y + ROW_HEIGHT * scale * 0.5 - 13.0 * scale * compact,
+                    X: left + 26.0 * scale,
+                    Y: y + ROW_HEIGHT * scale * 0.5 - 8.0 * scale * compact,
                 },
                 scale,
                 palette,
@@ -128,10 +131,10 @@ pub(super) fn draw_overlay(
                 &row.title,
                 &title_format,
                 D2D_RECT_F {
-                    left: left + 62.0 * scale,
-                    top: y + 8.0 * scale,
-                    right: body.right - 18.0 * scale,
-                    bottom: y + 32.0 * scale,
+                    left: left + TEXT_LEFT * scale,
+                    top: y + 4.0 * scale,
+                    right: body.right - TEXT_RIGHT * scale,
+                    bottom: y + 24.0 * scale,
                 },
                 &text_brush,
             );
@@ -140,10 +143,10 @@ pub(super) fn draw_overlay(
                 &row.detail,
                 &detail_format,
                 D2D_RECT_F {
-                    left: left + 62.0 * scale,
-                    top: y + 30.0 * scale,
-                    right: body.right - 18.0 * scale,
-                    bottom: y + 54.0 * scale,
+                    left: left + TEXT_LEFT * scale,
+                    top: y + 24.0 * scale,
+                    right: body.right - TEXT_RIGHT * scale,
+                    bottom: y + 44.0 * scale,
                 },
                 if row.tone == OverlayTone::Unavailable {
                     &unavailable_brush
@@ -187,8 +190,8 @@ unsafe fn draw_badge(
                     X: center.X,
                     Y: center.Y,
                 },
-                radiusX: 17.0 * scale,
-                radiusY: 17.0 * scale,
+                radiusX: 16.0 * scale,
+                radiusY: 16.0 * scale,
             },
             &tone_brush,
         );
@@ -239,8 +242,41 @@ unsafe fn make_format(
         format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
         format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        let sign = dwrite.CreateEllipsisTrimmingSign(&format)?;
+        format.SetTrimming(
+            &DWRITE_TRIMMING {
+                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                ..Default::default()
+            },
+            &sign,
+        )?;
         Ok(format)
     }
+}
+
+/// Measure once per content update, using the exact painting fonts in DIPs.
+pub(super) fn measure_model(dwrite: &IDWriteFactory, model: &mut OverlayModel) -> Result<()> {
+    use super::layout::{MAX_WIDTH, MIN_WIDTH};
+    // SAFETY: the factory and all temporary text objects belong to the UI thread.
+    // Owned UTF-16 buffers remain valid throughout each synchronous layout call.
+    unsafe {
+        let title = make_format(dwrite, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let detail = make_format(dwrite, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let mut text_width = 0.0_f32;
+        for row in &model.rows {
+            for (value, format) in [(&row.title, &title), (&row.detail, &detail)] {
+                let wide: Vec<u16> = value.encode_utf16().collect();
+                let layout = dwrite.CreateTextLayout(&wide, format, 16384.0, 64.0)?;
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                layout.GetMetrics(&mut metrics)?;
+                text_width = text_width.max(metrics.widthIncludingTrailingWhitespace);
+            }
+        }
+        // One extra DIP protects the last glyph's antialiased edge.
+        model.width_dip =
+            Some((TEXT_LEFT + text_width.ceil() + TEXT_RIGHT + 1.0).clamp(MIN_WIDTH, MAX_WIDTH));
+    }
+    Ok(())
 }
 
 unsafe fn draw_text(

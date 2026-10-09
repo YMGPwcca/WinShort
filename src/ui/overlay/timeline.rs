@@ -53,8 +53,9 @@ fn deadline_interval_ms(now: Instant, deadline: Instant) -> u32 {
 /// Choose the next HWND timer interval without coupling the fully-visible hold
 /// phase to the animation cadence.
 ///
-/// Animated appear/leave frames and active position tweens still tick at
-/// `TIMER_MS`. A stationary toast in `Holding` arms directly to its expiry
+/// `TIMER_MS` marks animation work in this pure policy; the native frame clock
+/// replaces that marker with the target monitor's refresh cadence. A toast in
+/// `Holding` arms directly to its expiry
 /// deadline, while permanent cards stop their timer entirely.
 pub(super) fn timer_interval_for_card(
     phase: Phase,
@@ -112,6 +113,7 @@ pub(super) struct ShowPlan {
     pub(super) layout_changed: bool,
     pub(super) timer_id: usize,
     pub(super) timer_interval: Option<u32>,
+    pub(super) animation_active: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

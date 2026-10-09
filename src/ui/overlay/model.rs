@@ -44,6 +44,8 @@ impl OverlayRow {
 pub(crate) struct OverlayModel {
     pub rows: Vec<OverlayRow>,
     pub(super) bypass_categories: bool,
+    /// Cached unscaled DirectWrite measurement, refreshed when rows change.
+    pub(super) width_dip: Option<f32>,
 }
 
 pub(super) fn concise(value: &str) -> String {
@@ -60,6 +62,7 @@ impl OverlayModel {
         Self {
             rows: vec![row],
             bypass_categories: false,
+            width_dip: None,
         }
     }
 
@@ -67,6 +70,7 @@ impl OverlayModel {
         Self {
             rows: vec![row],
             bypass_categories: true,
+            width_dip: None,
         }
     }
 
@@ -74,6 +78,7 @@ impl OverlayModel {
         Self {
             rows,
             bypass_categories: false,
+            width_dip: None,
         }
     }
 
@@ -92,6 +97,7 @@ impl OverlayModel {
         Self {
             rows,
             bypass_categories: false,
+            width_dip: None,
         }
     }
 }

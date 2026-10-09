@@ -2,7 +2,7 @@
 
 use super::backend::{OverlayGraphics, OverlayRenderData, OverlaySurface, SurfaceSpec};
 use super::badge::BadgeMotion;
-use super::layout::{presentation_geometry, window_region_for};
+use super::layout::{model_geometry, window_region_for};
 use super::model::OverlayModel;
 use super::palette::{
     composition_blur_enabled, opaque_palette, palette_for, resolved_theme_mode, OverlayPalette,
@@ -29,6 +29,7 @@ pub(super) struct ShowRequest {
     pub(super) mode: ShowMode,
     pub(super) collapsible_mute: bool,
     pub(super) layout_size: SIZE,
+    pub(super) frame_period: Duration,
 }
 
 pub(super) struct OverlayState {
@@ -57,6 +58,9 @@ pub(super) struct OverlayState {
     pub(super) last_target_monitor: Option<String>,
     pub(super) last_render_dpi: Option<u32>,
     pub(super) last_shown: Option<SystemTime>,
+    pub(super) frame_period: Duration,
+    #[cfg(test)]
+    pub(super) test_frame_times: Vec<Instant>,
 }
 
 impl OverlayState {
@@ -89,6 +93,9 @@ impl OverlayState {
             last_target_monitor: None,
             last_render_dpi: None,
             last_shown: None,
+            frame_period: Duration::from_secs_f64(1.0 / 60.0),
+            #[cfg(test)]
+            test_frame_times: Vec::new(),
         }
     }
 
@@ -109,6 +116,7 @@ impl OverlayState {
             mode,
             collapsible_mute,
             layout_size,
+            frame_period,
         } = request;
         if model.rows.is_empty() || !config.enabled {
             return Ok(None);
@@ -121,6 +129,7 @@ impl OverlayState {
         self.badge
             .update(collapsible_mute, presentation_started_at, self.motion, now);
         self.layout_size = layout_size;
+        self.frame_period = frame_period;
         self.model = model;
         self.expires_at = expires_at;
         self.generation = generation;
@@ -190,6 +199,13 @@ impl OverlayState {
             layout_changed: false,
             timer_id: self.timer_id,
             timer_interval,
+            animation_active: self.motion == MotionPolicy::Animated
+                && (matches!(self.phase, Phase::Appearing | Phase::Leaving)
+                    || self
+                        .position_tween
+                        .is_some_and(|tween| !tween.is_finished(now))
+                    || self.badge.is_animating()
+                    || self.hover.is_animating()),
         }
     }
 
@@ -203,12 +219,7 @@ impl OverlayState {
     }
 
     fn presentation_size(&self, now: Instant) -> SIZE {
-        presentation_geometry(
-            self.config.scale,
-            self.model.rows.len(),
-            self.badge.value(now),
-        )
-        .pixel_size(self.dpi)
+        model_geometry(self.config.scale, &self.model, self.badge.value(now)).pixel_size(self.dpi)
     }
 
     fn presentation_offset(&self, size: SIZE) -> POINT {

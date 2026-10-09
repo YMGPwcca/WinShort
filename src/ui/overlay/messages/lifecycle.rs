@@ -47,7 +47,12 @@ pub(super) unsafe fn handle_timer(
                 if let Err(error) = apply_frame_plan(hwnd, plan, apply_region) {
                     crate::warn_!("overlay frame placement failed: {error}");
                 }
-                if let Err(error) = set_timer(hwnd, plan.timer_id, plan.timer_interval) {
+                if let Err(error) = set_timer(
+                    hwnd,
+                    plan.timer_id,
+                    plan.timer_interval,
+                    plan.animation_active,
+                ) {
                     crate::warn_!("overlay frame timer update failed: {error}");
                 }
                 if let Err(error) = render_prepared_frame(cell, hwnd, plan) {

@@ -1352,6 +1352,40 @@ fn monitor_friendly_name(path: &DISPLAYCONFIG_PATH_INFO) -> String {
         .unwrap_or_else(|| "Monitor".into())
 }
 
+/// Read the active scan-out refresh rational for a GDI monitor identity.
+/// This never changes topology or mode and does not enumerate inactive paths.
+pub(crate) fn active_refresh_rate(gdi_name: &str) -> Result<(u32, u32)> {
+    let state = query_state()?;
+    for path in &state.paths {
+        let mut request = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: path.sourceInfo.adapterId,
+                id: path.sourceInfo.id,
+            },
+            ..Default::default()
+        };
+        // SAFETY: the stack request's header identifies its exact buffer size
+        // and source identity; DisplayConfigGetDeviceInfo is a synchronous read.
+        let status = unsafe {
+            DisplayConfigGetDeviceInfo(
+                (&mut request as *mut DISPLAYCONFIG_SOURCE_DEVICE_NAME).cast(),
+            )
+        };
+        if status == 0
+            && utf16_string(&request.viewGdiDeviceName)
+                .is_some_and(|name| name.eq_ignore_ascii_case(gdi_name))
+        {
+            let rate = path.targetInfo.refreshRate;
+            if rate.Numerator != 0 && rate.Denominator != 0 {
+                return Ok((rate.Numerator, rate.Denominator));
+            }
+        }
+    }
+    Err(Error::internal("active monitor refresh rate unavailable"))
+}
+
 fn adapter_friendly_name(path: &DISPLAYCONFIG_PATH_INFO) -> String {
     let mut request = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
         header: DISPLAYCONFIG_DEVICE_INFO_HEADER {

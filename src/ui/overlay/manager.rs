@@ -5,10 +5,9 @@
 
 use super::backend::{OverlayGraphics, RECT_FALLBACK};
 use super::composition::CompositionRuntime;
-use super::layout::{
-    layout_cards, presentation_geometry, select_monitor, surface_geometry, CardPlacement,
-    LayoutInput,
-};
+#[cfg(test)]
+use super::layout::surface_geometry;
+use super::layout::{layout_cards, model_geometry, select_monitor, CardPlacement, LayoutInput};
 use super::model::OverlayModel;
 use super::palette::acceptance_forces_composition_failure;
 use super::state::ShowRequest;
@@ -496,7 +495,11 @@ impl OverlayManager {
         })
     }
 
-    pub(crate) fn present(&mut self, request: OverlayRequest, config: OverlayCfg) -> Result<()> {
+    pub(crate) fn present(
+        &mut self,
+        mut request: OverlayRequest,
+        config: OverlayCfg,
+    ) -> Result<()> {
         if !config.enabled {
             self.clear();
             return Ok(());
@@ -504,6 +507,7 @@ impl OverlayManager {
         if request.model.rows.is_empty() {
             return Ok(());
         }
+        super::drawing::measure_model(&self.graphics.dwrite, &mut request.model)?;
         let snapshot = PresentationStateSnapshot::capture(&self.registry, &self.render_configs);
         let presentation_started_at = Instant::now();
         let motion = motion_policy(crate::platform::visual::SystemVisualPreferences::query());
@@ -558,6 +562,9 @@ impl OverlayManager {
         for id in remove_ids {
             self.render_configs.remove(&id);
             self.release_window(id);
+        }
+        for entry in &mut self.registry.entries {
+            super::drawing::measure_model(&self.graphics.dwrite, &mut entry.model)?;
         }
         self.adopt_runtime_config(config);
         self.sync_layout(None)
@@ -804,7 +811,7 @@ impl OverlayManager {
                     })
                 {
                     plan.compact = true;
-                    plan.size = presentation_geometry(plan.render_config.scale, 1, 1.0)
+                    plan.size = model_geometry(plan.render_config.scale, &plan.model, 1.0)
                         .pixel_size(plan.placement.dpi);
                 }
                 Some(plan)
@@ -844,6 +851,9 @@ impl OverlayManager {
             collapsible_mute: plan.entry.key.is_compact_mute()
                 && plan.entry.lifetime.is_permanent(),
             layout_size: plan.entry.size,
+            frame_period: crate::platform::monitor::refresh_period(
+                plan.entry.placement.key.monitor.as_deref(),
+            ),
         })
     }
 }
@@ -1050,8 +1060,7 @@ fn make_layout_entry(
     render_config: OverlayCfg,
     placement: ResolvedPlacement,
 ) -> LayoutEntry {
-    let size =
-        surface_geometry(render_config.scale, entry.model().rows.len()).pixel_size(placement.dpi);
+    let size = model_geometry(render_config.scale, entry.model(), 0.0).pixel_size(placement.dpi);
     LayoutEntry {
         id: entry.id(),
         generation: entry.generation(),
@@ -1193,9 +1202,9 @@ fn group_layout_entries(entries: Vec<LayoutEntry>) -> Vec<LayoutGroup> {
         let placement = group.placement.clone();
         entry.placement = placement.clone();
         if !entry.model.rows.is_empty() {
-            entry.size = presentation_geometry(
+            entry.size = model_geometry(
                 entry.render_config.scale,
-                entry.model.rows.len(),
+                &entry.model,
                 if entry.compact { 1.0 } else { 0.0 },
             )
             .pixel_size(placement.dpi);
@@ -1590,7 +1599,7 @@ mod tests {
         );
         assert_eq!(
             preview.card.position.y,
-            permanent.card.position.y + permanent.entry.size.cy + 16
+            permanent.card.position.y + permanent.entry.size.cy + 10
         );
         assert!(preview.card.position.y >= permanent.card.position.y + permanent.entry.size.cy);
     }
@@ -1651,8 +1660,8 @@ mod tests {
         let second_gap = planned(&all_plans, 4).card.position.y
             - planned(&all_plans, 3).card.position.y
             - planned(&all_plans, 3).entry.size.cy;
-        assert_eq!(first_gap, 16);
-        assert_eq!(second_gap, 26);
+        assert_eq!(first_gap, 10);
+        assert_eq!(second_gap, 16);
         assert_eq!(
             planned(&all_plans, 1).card.position,
             planned(&first_only, 1).card.position

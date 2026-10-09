@@ -36,6 +36,9 @@ pub(super) struct BadgeMotion {
 }
 
 impl BadgeMotion {
+    pub(super) fn is_animating(&self) -> bool {
+        self.tween.is_some()
+    }
     pub(super) fn value(&self, now: Instant) -> f32 {
         self.tween.map_or(self.settled, |tween| tween.value(now))
     }

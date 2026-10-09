@@ -277,6 +277,33 @@ fn compact_microphone_geometry_is_square_at_every_supported_scale_and_dpi() {
 }
 
 #[test]
+fn content_measurement_shrinks_short_audio_cards_and_bounds_long_unicode_text() {
+    let graphics = super::backend::OverlayGraphics::create().unwrap();
+    let mut short = OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+        volume_pct: 100,
+    }));
+    super::drawing::measure_model(&graphics.dwrite, &mut short).unwrap();
+    let short_size = super::layout::model_geometry(1.0, &short, 0.0).pixel_size(96);
+    assert!(short_size.cx >= 200 && short_size.cx < 240);
+    assert_eq!(short_size.cy, 68);
+    let mut long = OverlayModel::single(OverlayRow::preview(
+        "Tên thiết bị âm thanh 很长的名称 🎧".repeat(12),
+        "Long device detail".repeat(20),
+    ));
+    super::drawing::measure_model(&graphics.dwrite, &mut long).unwrap();
+    assert_eq!(
+        super::layout::model_geometry(1.0, &long, 0.0)
+            .pixel_size(96)
+            .cx,
+        360
+    );
+    assert_eq!(
+        super::layout::model_geometry(1.0, &long, 1.0).pixel_size(96),
+        SIZE { cx: 52, cy: 52 }
+    );
+}
+
+#[test]
 fn app_mute_badge_is_independent_and_survives_volume_toast_expiry() {
     let now = Instant::now();
     let hold = Duration::from_secs(1);
@@ -1121,17 +1148,17 @@ fn permanent_and_toast_layout_has_stable_slots_and_no_overlap() {
     assert!(top[1].position.y < top[2].position.y);
     for (index, pair) in top.windows(2).enumerate() {
         let height = [60, 60][index];
-        assert!(pair[0].position.y + height + 16 <= pair[1].position.y);
+        assert!(pair[0].position.y + height + 10 <= pair[1].position.y);
     }
 
     let bottom_inputs = [inputs[1], inputs[2]];
     let bottom = layout_cards(work, OverlayPosition::BottomRight, 96, 1.0, &bottom_inputs);
     assert!(bottom[0].position.y > bottom[1].position.y);
-    assert!(bottom[1].position.y + 90 + 16 <= bottom[0].position.y);
+    assert!(bottom[1].position.y + 90 + 10 <= bottom[0].position.y);
 
     let center = layout_cards(work, OverlayPosition::Center, 96, 1.0, &inputs[..2]);
     assert!(center[1].position.y > center[0].position.y);
-    assert!(center[0].position.y + 60 + 16 <= center[1].position.y);
+    assert!(center[0].position.y + 60 + 10 <= center[1].position.y);
 }
 
 #[test]
@@ -1171,6 +1198,7 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
             alpha: 1.0,
             timer_id: super::timeline::TIMER_ID,
             timer_interval: Some(TIMER_MS),
+            animation_active: true,
             compact: 0.0,
             hover_alpha: 1.0,
             layout_changed: false,

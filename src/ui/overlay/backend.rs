@@ -46,7 +46,12 @@ pub(super) fn render_prepared_frame(
         data.hover_alpha = plan.hover_alpha;
         (state.surface_spec(plan.size), data)
     };
-    run_surface_operation(cell, hwnd, spec, Some(data))
+    let result = run_surface_operation(cell, hwnd, spec, Some(data));
+    #[cfg(test)]
+    if result.is_ok() {
+        cell.borrow_mut().test_frame_times.push(Instant::now());
+    }
+    result
 }
 
 pub(super) const RECT_FALLBACK: windows::Win32::Foundation::RECT =
@@ -92,6 +97,7 @@ pub(super) struct HwndOverlaySurface {
 pub(super) struct OverlayGraphics {
     pub(super) factory: ID2D1Factory1,
     pub(super) dwrite: IDWriteFactory,
+    pub(super) clock: std::sync::Arc<super::frame_clock::FrameClock>,
 }
 
 fn run_surface_operation(
@@ -287,7 +293,11 @@ impl OverlayGraphics {
             .map_err(|e| Error::win("D2D1CreateFactory(overlay)", &e))?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
                 .map_err(|e| Error::win("DWriteCreateFactory(overlay)", &e))?;
-            Ok(Self { factory, dwrite })
+            Ok(Self {
+                factory,
+                dwrite,
+                clock: super::frame_clock::FrameClock::create()?,
+            })
         }
     }
 

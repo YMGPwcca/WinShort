@@ -4,13 +4,18 @@ use super::timeline::WindowRegion;
 use crate::config::model::{MonitorChoice, OverlayPosition};
 use windows::Win32::Foundation::{POINT, RECT, SIZE};
 
-const BASE_WIDTH: f32 = 372.0;
+const BASE_WIDTH: f32 = 240.0;
+pub(super) const MIN_WIDTH: f32 = 200.0;
+pub(super) const MAX_WIDTH: f32 = 360.0;
+pub(super) const BADGE_SIZE: f32 = 52.0;
+pub(super) const TEXT_LEFT: f32 = 52.0;
+pub(super) const TEXT_RIGHT: f32 = 12.0;
 
-pub(super) const ROW_HEIGHT: f32 = 62.0;
+pub(super) const ROW_HEIGHT: f32 = 48.0;
 
-pub(super) const PAD: f32 = 16.0;
+pub(super) const PAD: f32 = 10.0;
 
-pub(super) const CARD_CORNER_RADIUS_DIP: f32 = 14.0;
+pub(super) const CARD_CORNER_RADIUS_DIP: f32 = 12.0;
 
 /// The existing card padding is also the separation between independent
 /// cards. This keeps the stack rhythm aligned with the renderer's content
@@ -41,13 +46,31 @@ pub(super) fn surface_geometry(scale: f32, row_count: usize) -> SurfaceGeometry 
     presentation_geometry(scale, row_count, 0.0)
 }
 
-/// A 68-DIP square keeps the existing 34-DIP badge with 17-DIP padding.
+/// A 52-DIP square fits a 32-DIP icon badge and 10-DIP padding.
 pub(super) fn presentation_geometry(scale: f32, row_count: usize, compact: f32) -> SurfaceGeometry {
+    geometry_with_width(scale, row_count, BASE_WIDTH, compact)
+}
+
+pub(super) fn model_geometry(
+    scale: f32,
+    model: &super::model::OverlayModel,
+    compact: f32,
+) -> SurfaceGeometry {
+    geometry_with_width(
+        scale,
+        model.rows.len(),
+        model.width_dip.unwrap_or(BASE_WIDTH),
+        compact,
+    )
+}
+
+fn geometry_with_width(scale: f32, row_count: usize, width: f32, compact: f32) -> SurfaceGeometry {
     let scale = scale.clamp(0.7, 1.6);
     let compact = compact.clamp(0.0, 1.0);
-    let body_width = (BASE_WIDTH + (68.0 - BASE_WIDTH) * compact) * scale;
+    let width = width.clamp(MIN_WIDTH, MAX_WIDTH);
+    let body_width = (width + (BADGE_SIZE - width) * compact) * scale;
     let expanded_height = PAD * 2.0 + ROW_HEIGHT * row_count as f32;
-    let body_height = (expanded_height + (68.0 - expanded_height) * compact) * scale;
+    let body_height = (expanded_height + (BADGE_SIZE - expanded_height) * compact) * scale;
     SurfaceGeometry {
         width: body_width,
         height: body_height,

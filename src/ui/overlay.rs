@@ -5,6 +5,7 @@ mod badge;
 mod composition;
 mod drawing;
 mod effect;
+mod frame_clock;
 mod hover;
 mod icons;
 mod layout;

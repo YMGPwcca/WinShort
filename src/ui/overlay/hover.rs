@@ -162,6 +162,9 @@ impl Default for HoverMotion {
 }
 
 impl HoverMotion {
+    pub(super) fn is_animating(&self) -> bool {
+        self.started.is_some()
+    }
     pub(super) fn value(&self, now: Instant) -> f32 {
         let Some(started) = self.started else {
             return self.target;
