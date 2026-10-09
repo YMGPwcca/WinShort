@@ -20,6 +20,7 @@ duration_ms = 1300              # valid 1000..=5000; 100 ms steps
 position = "bottom-center"      # top-left|top-center|top-right|center-left|center|center-right|bottom-left|bottom-center|bottom-right
 monitor = "cursor"              # cursor | primary (legacy device selectors remain readable)
 scale = 1.0                     # valid 0.7..=1.6
+hover_opacity = 0.3             # 0.1..=1.0 in 0.1 steps; 1.0 disables hover fading
 blur = "blur-medium"             # transparent | blur-light | blur-medium | blur-heavy | solid
 appearance = "system"            # system | dark | light
 show_microphone = true           # show microphone notifications
