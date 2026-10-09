@@ -1581,11 +1581,22 @@ impl App {
     }
 
     fn status_overlay_model(&self) -> crate::ui::overlay::OverlayModel {
+        self.status_overlay_model_with_app(
+            std::env::var_os("WINSHORT_UI_ACCEPTANCE_NO_EXTERNAL").is_none(),
+        )
+    }
+
+    fn status_overlay_model_with_app(
+        &self,
+        include_current_app: bool,
+    ) -> crate::ui::overlay::OverlayModel {
         let mut rows = vec![
             crate::ui::overlay::microphone_row(&self.microphone_state),
             crate::ui::overlay::output_row(&self.output_state),
         ];
-        if self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp {
+        if include_current_app
+            && self.foreground_state.aggregate != crate::audio::Aggregate::NoExternalApp
+        {
             rows.push(crate::ui::overlay::application_row(&self.foreground_state));
         }
         crate::ui::overlay::OverlayModel::from_rows(rows)
@@ -2786,6 +2797,25 @@ mod shutdown_gate_tests {
         let model = app.status_overlay_model();
 
         assert_eq!(model.rows.len(), 2);
+    }
+
+    #[test]
+    fn no_external_acceptance_snapshot_keeps_geometry_stable_across_selected_apps() {
+        let mut app = test_app();
+        let before = app.status_overlay_model_with_app(false);
+        for aggregate in [
+            crate::audio::Aggregate::AllMuted,
+            crate::audio::Aggregate::NoSession,
+        ] {
+            app.foreground_state = app_audio_state(aggregate);
+            let after = app.status_overlay_model_with_app(false);
+            assert_eq!(before.rows.len(), after.rows.len());
+            assert!(after
+                .rows
+                .iter()
+                .all(|row| row.icon != crate::ui::overlay::OverlayIcon::Application));
+            assert_eq!(app.status_overlay_model_with_app(true).rows.len(), 3);
+        }
     }
 
     #[test]

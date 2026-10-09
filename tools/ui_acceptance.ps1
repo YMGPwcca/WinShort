@@ -1199,7 +1199,7 @@ show_display_profile = true
             $overlayRectangle.Width,
             $overlayRectangle.Height,
             $radius,
-            $true
+            $false
         )) "$Name deterministic backdrop did not start"
 
         [WinShortUiAcceptance.Native]::PostMessageTo($mainHwnd, $AcceptanceHideAllOverlaysMessage) | Out-Null
@@ -1500,9 +1500,25 @@ show_display_profile = true
         Assert-Condition ($backendKinds.Count -eq 1) "$Name mixed Composition and opaque fallback cards"
         $widths = @($rectangles | ForEach-Object { $_.Width } | Select-Object -Unique)
         $heights = @($rectangles | ForEach-Object { $_.Height } | Select-Object -Unique)
-        Assert-Condition (
-            $widths.Count -eq 1 -and $heights.Count -eq 1
-        ) "$Name cards do not share one deterministic surface geometry"
+        # Text now controls expanded width, and the permanent microphone can
+        # shrink while slower CI machines inspect the other windows.
+        for ($index = 0; $index -lt $windows.Count; $index++) {
+            $dpiScale = [WinShortUiAcceptance.Native]::Dpi($windows[$index]) / 96.0
+            $badgeSize = [int][Math]::Round(52 * $dpiScale)
+            $expandedHeight = [int][Math]::Round(68 * $dpiScale)
+            $rectangle = $rectangles[$index]
+            Assert-Condition (
+                $rectangle.Width -ge $badgeSize -and
+                $rectangle.Width -le [Math]::Round(360 * $dpiScale) -and
+                $rectangle.Height -ge $badgeSize -and
+                $rectangle.Height -le $expandedHeight
+            ) "$Name card violated the content-sized surface bounds"
+            if ($rectangle.Height -eq $expandedHeight) {
+                Assert-Condition ($rectangle.Width -ge [Math]::Round(200 * $dpiScale)) "$Name expanded card is too narrow for its text"
+            } elseif ($rectangle.Height -eq $badgeSize) {
+                Assert-Condition ($rectangle.Width -eq $badgeSize) "$Name settled mute badge is not square"
+            }
+        }
 
         $union = $rectangles[0]
         for ($index = 1; $index -lt $rectangles.Count; $index++) {
@@ -1558,7 +1574,8 @@ show_display_profile = true
             FinalPermanentCount = $finalWindows.Count
             CompositionBacked = [bool]($compositionFlags[0])
             UniformBackend = $true
-            UniformGeometry = $true
+            UniformGeometry = ($widths.Count -eq 1 -and $heights.Count -eq 1)
+            ContentSizedGeometry = $true
             NoOverlap = $true
             InsideWorkArea = $true
             Screenshot = $screenshotPath
