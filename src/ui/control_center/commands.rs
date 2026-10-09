@@ -83,7 +83,8 @@ impl SettingsUi {
             },
             ShellElement::Nav(page) => self.activate_navigation(page),
             ShellElement::Search => self.focus.set_target(Some(ElementId::Search)),
-            ShellElement::SearchResult(index) => self.activate_search_result(index),
+            ShellElement::SearchResult(index) => self.activate_search_result(hwnd, index),
+            ShellElement::ResumeDisplayDraft => self.set_page(Page::Displays),
             ShellElement::OnboardingContinue => {
                 self.onboarding_step = Some(OnboardingStep::Shortcuts);
                 self.reset_scroll();
@@ -163,6 +164,9 @@ impl SettingsUi {
                 ConfigToggle::DisplayProfiles,
             ),
             DisplayElement::ProfileCard(index) => self.activate_display_profile_card(hwnd, index),
+            DisplayElement::ProfileAction(index) => {
+                self.activate_display_profile_action(hwnd, index)
+            }
             DisplayElement::OutputCard(index) => self.toggle_display_output(index),
             DisplayElement::TopologyChoice(index) => self.set_display_topology(index),
             DisplayElement::WizardBack => self.move_display_editor(hwnd, false),
@@ -269,12 +273,16 @@ impl SettingsUi {
             OverlayElement::Preview => post_main(crate::event::AppEvent::PreviewOverlay {
                 config: self.draft.overlay.clone(),
             }),
-            OverlayElement::Duration | OverlayElement::Blur | OverlayElement::Scale => {}
+            OverlayElement::Duration
+            | OverlayElement::Blur
+            | OverlayElement::Scale
+            | OverlayElement::HoverOpacity => {}
         }
     }
 
     fn activate_system(&mut self, hwnd: HWND, element: SystemElement) {
         match element {
+            SystemElement::CopyVersionInfo => self.copy_version_info(hwnd),
             SystemElement::StartWithWindows => self.toggle_startup_registration(hwnd),
             SystemElement::StartHotkeysEnabled => self.activate_config_toggle(
                 hwnd,
@@ -296,6 +304,7 @@ impl SettingsUi {
             SystemElement::DiagnosticsStatus => Some(crate::event::AppEvent::ShowDiagnostics),
             SystemElement::OpenConfigFolder => Some(crate::event::AppEvent::OpenConfigFolder),
             SystemElement::StartWithWindows
+            | SystemElement::CopyVersionInfo
             | SystemElement::StartHotkeysEnabled
             | SystemElement::DebugLogging
             | SystemElement::ResetSettings => None,

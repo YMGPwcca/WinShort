@@ -10,8 +10,8 @@ pub(super) fn add_home(layout: &mut SettingsLayout) {
     let mut y = layout.content_column.y + 28.0;
     add_heading(
         layout,
-        "Welcome back",
-        "What WinShort is doing right now.",
+        "Home",
+        "Audio, workspaces and shortcut status.",
         &mut y,
     );
     add_heading(layout, "Audio", "Your current Windows devices.", &mut y);
@@ -69,7 +69,7 @@ pub(super) fn add_home(layout: &mut SettingsLayout) {
     add_heading(
         layout,
         "Display and shortcuts",
-        "The two things you reach for most often.",
+        "Profiles and shortcut status.",
         &mut y,
     );
     add_section_content_gap(&mut y);

@@ -11,6 +11,7 @@ fn overlay_layout_has_no_duplicate_windows_audio_toggle() {
     assert!(layout.element(ElementId::OverlayWorkspace).is_some());
     assert!(layout.element(ElementId::OverlayDisplayProfile).is_some());
     assert!(layout.element(ElementId::OverlayBlur).is_some());
+    assert!(layout.element(ElementId::OverlayHoverOpacity).is_some());
     for (id, description) in [
         (
             ElementId::OverlayScale,

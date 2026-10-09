@@ -148,6 +148,7 @@ pub(super) fn slider_range(
         ),
         ElementId::OverlayBlur => (0.0, 4.0, 1.0, 2.0),
         ElementId::OverlayScale => (0.7, 1.6, 0.1, 0.5),
+        ElementId::OverlayHoverOpacity => (0.1, 1.0, 0.1, 0.5),
         _ => return None,
     };
     Some(AutomationRange {

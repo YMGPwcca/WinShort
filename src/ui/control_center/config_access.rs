@@ -57,6 +57,13 @@ pub(crate) struct ControlCenterAccess {
 }
 
 impl ControlCenterAccess {
+    #[cfg(test)]
+    pub(super) fn for_test_data_dir(data_dir: fn() -> PathBuf) -> Self {
+        Self {
+            data_dir,
+            ..Self::system()
+        }
+    }
     pub(crate) const fn system() -> Self {
         Self {
             data_dir: crate::config::data_dir,

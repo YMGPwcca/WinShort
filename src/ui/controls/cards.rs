@@ -155,26 +155,14 @@ pub(crate) fn draw_profile_card(
         TextStyle::CaptionRight,
         BrushRole::TextSecondary,
     );
-    draw_button_style(
-        r,
-        Rect::new(rect.right() - 136.0, rect.y + 64.0, 116.0, 30.0),
-        if selected && confirmed {
-            "Activate"
-        } else if selected {
-            "Review"
-        } else {
-            "Select"
-        },
-        if selected && confirmed {
-            ButtonStyle::Primary
-        } else {
-            ButtonStyle::Secondary
-        },
-        Interaction {
-            focused: false,
-            ..interaction
-        },
-    );
+    if selected {
+        r.text(
+            "Selected",
+            Rect::new(rect.right() - 136.0, rect.y + 40.0, 116.0, 18.0).d2d(),
+            TextStyle::CaptionRight,
+            BrushRole::TextSecondary,
+        );
+    }
     if selected {
         r.stroke_rounded(rect.d2d(), 12.0, BrushRole::Accent, 1.25);
     }

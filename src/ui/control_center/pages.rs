@@ -84,7 +84,9 @@ impl SettingsUi {
             | ShellElement::Nav(_)
             | ShellElement::SearchResult(_)
             | ShellElement::WindowClose => {}
-            ShellElement::OnboardingContinue | ShellElement::OnboardingOpen => {
+            ShellElement::OnboardingContinue
+            | ShellElement::OnboardingOpen
+            | ShellElement::ResumeDisplayDraft => {
                 self.draw_standard_element(renderer, element, interaction)
             }
         }
@@ -221,6 +223,22 @@ impl SettingsUi {
                     controls::draw_profile_card(renderer, element.rect, &card, interaction);
                 }
             }
+            DisplayElement::ProfileAction(index) => {
+                let primary = self
+                    .profile_card_data(index as usize)
+                    .is_some_and(|card| card.selected && card.readiness.is_ready());
+                self.paint_action_element(
+                    renderer,
+                    element,
+                    interaction,
+                    if primary {
+                        controls::ButtonStyle::Primary
+                    } else {
+                        controls::ButtonStyle::Secondary
+                    },
+                    false,
+                );
+            }
             DisplayElement::OutputCard(index) => {
                 if let Some(card) = self.display_output_card_data(index as usize) {
                     controls::draw_display_route_card(renderer, element, &card, interaction);
@@ -238,7 +256,18 @@ impl SettingsUi {
                     .unwrap_or("No profile selected");
                 controls::draw_profile_name_row(renderer, element, name, interaction);
             }
-            DisplayElement::NewProfile | DisplayElement::TestApply => self.paint_action_element(
+            DisplayElement::NewProfile => self.paint_action_element(
+                renderer,
+                element,
+                interaction,
+                if element.kind == ElementKind::ButtonSecondary {
+                    controls::ButtonStyle::Secondary
+                } else {
+                    controls::ButtonStyle::Primary
+                },
+                true,
+            ),
+            DisplayElement::TestApply => self.paint_action_element(
                 renderer,
                 element,
                 interaction,
@@ -369,7 +398,8 @@ impl SettingsUi {
             | OverlayElement::Monitor
             | OverlayElement::Duration
             | OverlayElement::Blur
-            | OverlayElement::Scale => {
+            | OverlayElement::Scale
+            | OverlayElement::HoverOpacity => {
                 self.draw_standard_element(renderer, element, interaction);
             }
         }
@@ -388,6 +418,7 @@ impl SettingsUi {
             | SystemElement::DebugLogging
             | SystemElement::DiagnosticsStatus
             | SystemElement::OpenConfigFolder
+            | SystemElement::CopyVersionInfo
             | SystemElement::ResetSettings => {
                 self.draw_standard_element(renderer, element, interaction);
             }

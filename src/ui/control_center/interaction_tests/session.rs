@@ -139,6 +139,27 @@ fn blur_slider_snaps_to_discrete_treatments() {
 }
 
 #[test]
+fn hover_opacity_slider_supports_pointer_keyboard_and_automation_values() {
+    let mut ui = empty_settings_ui();
+    ui.set_slider_from_ratio(ElementId::OverlayHoverOpacity, 0.0);
+    assert_eq!(ui.draft.overlay.hover_opacity, 0.1);
+    assert!(ui.set_slider_from_value(ElementId::OverlayHoverOpacity, 0.3));
+    assert_eq!(ui.draft.overlay.hover_opacity, 0.3);
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayHoverOpacity, 0.3, 1.0),
+        0.4
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayHoverOpacity, 0.3, f32::INFINITY),
+        1.0
+    );
+    assert_eq!(
+        SettingsUi::slider_value(ElementId::OverlayHoverOpacity, 0.3, f32::NEG_INFINITY),
+        0.1
+    );
+}
+
+#[test]
 fn current_app_layout_flag_tracks_external_runtime_target() {
     let mut ui = empty_settings_ui();
     assert!(!ui.layout_context().current_app_audio_available);

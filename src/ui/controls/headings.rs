@@ -5,7 +5,7 @@ use crate::ui::renderer::{BrushRole, Renderer, TextStyle};
 use crate::ui::theme::UiTokens;
 
 pub(crate) fn section_title_text_rect(rect: Rect) -> Rect {
-    Rect::new(rect.x + 12.0, rect.y + 20.0, (rect.w - 12.0).max(1.0), 28.0)
+    Rect::new(rect.x + 12.0, rect.y, (rect.w - 12.0).max(1.0), 26.0)
 }
 
 pub(crate) fn section_accent_rect(rect: Rect) -> Rect {
@@ -38,15 +38,15 @@ pub(crate) fn draw_section_header(r: &Renderer, rect: Rect, title: &str, descrip
                 description,
                 TextStyle::SectionDescription,
                 title_rect.w,
-                (rect.h - 54.0).max(20.0),
+                (rect.h - 30.0).max(20.0),
             )
-            .unwrap_or_else(|| (rect.h - 54.0).max(20.0))
-            .clamp(20.0, (rect.h - 54.0).max(20.0));
+            .unwrap_or_else(|| (rect.h - 30.0).max(20.0))
+            .clamp(20.0, (rect.h - 30.0).max(20.0));
         r.text_clipped(
             description,
             Rect::new(
                 title_rect.x,
-                rect.y + 54.0,
+                rect.y + 30.0,
                 title_rect.w,
                 description_height,
             )
@@ -70,13 +70,13 @@ pub(crate) fn draw_page_header(r: &Renderer, rect: Rect, title: &str, descriptio
                 description,
                 TextStyle::Subtitle,
                 rect.w,
-                (rect.h - 46.0).max(30.0),
+                (rect.h - 40.0).max(30.0),
             )
-            .unwrap_or_else(|| (rect.h - 46.0).max(30.0))
-            .clamp(22.0, (rect.h - 46.0).max(30.0));
+            .unwrap_or_else(|| (rect.h - 40.0).max(30.0))
+            .clamp(22.0, (rect.h - 40.0).max(30.0));
         r.text_clipped(
             description,
-            Rect::new(rect.x, rect.y + 46.0, rect.w, description_height).d2d(),
+            Rect::new(rect.x, rect.y + 40.0, rect.w, description_height).d2d(),
             TextStyle::Subtitle,
             BrushRole::TextSecondary,
         );

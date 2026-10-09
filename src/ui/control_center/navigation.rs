@@ -8,9 +8,6 @@ use windows::Win32::Foundation::HWND;
 
 impl SettingsUi {
     pub(super) fn set_page(&mut self, page: Page) {
-        if page != Page::Displays && self.display.is_editing() {
-            self.replace_draft((*self.config_access.current()).clone());
-        }
         self.page = page;
         if page == Page::Overlay {
             self.refresh_overlay_preview_aspect();
@@ -28,18 +25,40 @@ impl SettingsUi {
         }
     }
 
-    pub(super) fn activate_search_result(&mut self, index: u8) {
+    pub(super) fn activate_search_result(&mut self, hwnd: HWND, index: u8) {
         let results = search(&self.search_query);
         let Some(result) = results.get(index as usize) else {
             return;
         };
-        let page = result.item.page;
-        let target = result.item.target;
+        self.open_search_destination(hwnd, result.item.page, result.item.target);
+    }
+
+    pub(super) fn open_search_destination(&mut self, hwnd: HWND, page: Page, target: ElementId) {
         self.set_page(page);
-        self.focus.set_target(Some(target));
         if page == Page::Displays {
             self.refresh_display_outputs();
         }
+        self.rebuild_layout(hwnd);
+        let fallback = match page {
+            Page::Displays => ElementId::DisplayProfilesEnabled,
+            Page::Workspaces => ElementId::DesktopsEnabled,
+            Page::Overlay => ElementId::OverlayEnabled,
+            _ => ElementId::Nav(page),
+        };
+        let target = if self.layout.element(target).is_some() && !self.is_disabled(target) {
+            target
+        } else if self.layout.element(fallback).is_some() {
+            fallback
+        } else {
+            ElementId::Nav(page)
+        };
+        self.focus.set_indicator_visible(true);
+        self.focus.set_target(Some(target));
+        self.scroll_focus_into_view(target);
+        self.rebuild_layout(hwnd);
+        self.sync_search_caret(hwnd);
+        super::native::invalidate(hwnd);
+        self.publish_automation_snapshot(hwnd);
     }
 
     pub(super) fn activate_special_workspace(&mut self, hwnd: HWND) {

@@ -51,6 +51,7 @@ fn sample_profile(id: &str, name: &str, confirmed: bool) -> crate::display::Disp
 mod audio;
 mod displays;
 mod focus;
+mod native_review;
 mod navigation;
 mod overlay;
 mod pickers;

@@ -1307,7 +1307,7 @@ fn validate_clipboard_owner(owner: windows::Win32::Foundation::HWND) -> Result<(
 }
 
 #[cfg(windows)]
-fn copy_unicode_text(owner: windows::Win32::Foundation::HWND, text: &str) -> Result<()> {
+pub(crate) fn copy_unicode_text(owner: windows::Win32::Foundation::HWND, text: &str) -> Result<()> {
     use std::ptr::NonNull;
     use windows::Win32::Foundation::{GlobalFree, HANDLE};
     use windows::Win32::System::DataExchange::{
@@ -1363,7 +1363,10 @@ fn copy_unicode_text(owner: windows::Win32::Foundation::HWND, text: &str) -> Res
 }
 
 #[cfg(not(windows))]
-fn copy_unicode_text(_owner: windows::Win32::Foundation::HWND, _text: &str) -> Result<()> {
+pub(crate) fn copy_unicode_text(
+    _owner: windows::Win32::Foundation::HWND,
+    _text: &str,
+) -> Result<()> {
     Err(Error::config(
         "Unicode clipboard is only available on Windows",
     ))

@@ -1,4 +1,61 @@
 use super::*;
+use crate::ui::layout::LayoutContext;
+
+#[test]
+fn profile_selection_and_activation_have_distinct_hit_targets_and_keyboard_stops() {
+    let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, Page::Displays, "", 3, None);
+    let card = layout
+        .element(ElementId::DisplayProfileCard(0))
+        .unwrap()
+        .rect;
+    let action = layout
+        .element(ElementId::DisplayProfileAction(0))
+        .unwrap()
+        .rect;
+    assert_eq!(
+        layout.hit_test(card.x + 20.0, card.y + 20.0),
+        Some(ElementId::DisplayProfileCard(0))
+    );
+    assert_eq!(
+        layout.hit_test(action.x + action.w / 2.0, action.y + action.h / 2.0),
+        Some(ElementId::DisplayProfileAction(0))
+    );
+    assert!(layout
+        .focus_order()
+        .contains(&ElementId::DisplayProfileCard(0)));
+    assert!(layout
+        .focus_order()
+        .contains(&ElementId::DisplayProfileAction(0)));
+}
+
+#[test]
+fn management_actions_follow_the_selected_row_before_the_remaining_profiles() {
+    let context = LayoutContext {
+        profile_count: 32,
+        selected_profile_index: Some(4),
+        ..Default::default()
+    };
+    let layout = SettingsLayout::build_shell_with_context(
+        960.0,
+        660.0,
+        0.0,
+        Page::Displays,
+        "",
+        context,
+        None,
+    );
+    let selected = layout
+        .element(ElementId::DisplayProfileCard(4))
+        .unwrap()
+        .rect;
+    let edit = layout.element(ElementId::EditDisplayProfile).unwrap().rect;
+    let next_row = layout
+        .element(ElementId::DisplayProfileCard(6))
+        .unwrap()
+        .rect;
+    assert!(edit.y > selected.bottom());
+    assert!(edit.bottom() < next_row.y);
+}
 
 #[test]
 fn display_profiles_use_a_responsive_grid() {

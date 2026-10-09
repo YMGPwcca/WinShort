@@ -23,6 +23,7 @@ mod keyboard;
 mod platform;
 mod tray;
 mod ui;
+mod version;
 
 use std::path::PathBuf;
 

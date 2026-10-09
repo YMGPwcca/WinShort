@@ -142,6 +142,11 @@ fn slider_ranges_expose_model_units() {
     assert_eq!(blur.value, 2.0);
     assert_eq!(blur.small_change, 1.0);
     assert_eq!(blur.large_change, 2.0);
+    let hover = slider_range(ElementId::OverlayHoverOpacity, ElementKind::Slider, 0.0)
+        .expect("hover opacity range");
+    assert_eq!(hover.minimum, 0.1);
+    assert_eq!(hover.maximum, 1.0);
+    assert_eq!(hover.small_change, 0.1);
 }
 
 #[test]
