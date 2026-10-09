@@ -198,6 +198,144 @@ fn assert_anchor(position: OverlayPosition, before: RECT, after: RECT) {
     }
 }
 
+#[test]
+#[ignore = "shows isolated test-owned app mute and audio overlay windows"]
+fn native_app_mute_badge_expands_in_place_and_stacks_with_mic_and_output() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.position = match std::env::var("WINSHORT_OVERLAY_TEST_POSITION").as_deref() {
+        Ok("bottom-right") => OverlayPosition::BottomRight,
+        Ok("center") => OverlayPosition::Center,
+        _ => OverlayPosition::TopLeft,
+    };
+    config.duration_ms = 10000;
+    config.hover_opacity = 1.0;
+    let app_state = crate::audio::AppAudioState {
+        app_name: Some("Example player".into()),
+        aggregate: crate::audio::Aggregate::AllMuted,
+        sessions: 1,
+        error: None,
+    };
+    manager
+        .present(
+            OverlayRequest::permanent(
+                OverlayKey::CurrentAppAudioPermanent,
+                OverlayModel::single(application_row(&app_state)),
+            ),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(300));
+    let hwnd = manager.test_hwnds()[0];
+    let expanded = manager.test_window_rectangles()[0];
+    capture("app-muted-full", &[expanded]);
+    pump_for(Duration::from_millis(1300));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(180));
+    let compact = manager.test_window_rectangles()[0];
+    assert_eq!(compact.right - compact.left, compact.bottom - compact.top);
+    assert!(compact.right - compact.left < expanded.right - expanded.left);
+    assert_anchor(config.position, expanded, compact);
+    let hit = unsafe {
+        WindowFromPoint(windows::Win32::Foundation::POINT {
+            x: compact.left + 10,
+            y: compact.top + 10,
+        })
+    };
+    assert_ne!(hit, hwnd, "app mute badge must allow click-through");
+    capture("app-muted-badge", &[compact]);
+
+    for request in [
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+                volume_pct: 100,
+            })),
+        ),
+        OverlayRequest::toast(
+            OverlayKey::OutputDevice,
+            OverlayModel::single(OverlayRow {
+                category: None,
+                icon: OverlayIcon::Output,
+                tone: OverlayTone::Changed,
+                title: "Next speaker".into(),
+                detail: "Example output".into(),
+            }),
+        ),
+        OverlayRequest::toast(
+            OverlayKey::CurrentAppVolume,
+            OverlayModel::single(OverlayRow {
+                category: None,
+                icon: OverlayIcon::Application,
+                tone: OverlayTone::Changed,
+                title: "App volume".into(),
+                detail: "Example player · 50%".into(),
+            }),
+        ),
+    ] {
+        manager.present(request, config.clone()).unwrap();
+    }
+    pump_for(Duration::from_millis(1650));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(180));
+    let cards = manager.test_window_rectangles();
+    assert_eq!(cards.len(), 4);
+    for (index, left) in cards.iter().enumerate() {
+        for right in &cards[index + 1..] {
+            assert!(
+                left.bottom <= right.top || right.bottom <= left.top,
+                "cards overlap: {left:?}, {right:?}"
+            );
+        }
+    }
+    assert_eq!(manager.status().permanent_card_count, 2);
+    capture("app-mic-output-volume", &cards);
+    manager
+        .remove_key(OverlayKey::MicrophonePermanent, &config)
+        .unwrap();
+    manager
+        .remove_key(OverlayKey::OutputDevice, &config)
+        .unwrap();
+    manager
+        .remove_key(OverlayKey::CurrentAppVolume, &config)
+        .unwrap();
+    pump_for(Duration::from_millis(300));
+    let compact = manager.test_window_rectangles()[0];
+    config.duration_ms = 1800;
+    let position = config.position;
+    manager
+        .present(
+            OverlayRequest::toast(
+                OverlayKey::CurrentAppAudio,
+                OverlayModel::single(application_row(&crate::audio::AppAudioState {
+                    aggregate: crate::audio::Aggregate::AllActive,
+                    ..app_state
+                })),
+            )
+            .replacing(OverlayKey::CurrentAppAudioPermanent),
+            config,
+        )
+        .unwrap();
+    assert_eq!(
+        manager.test_hwnds()[0],
+        hwnd,
+        "unmute must reuse the app badge HWND"
+    );
+    pump_for(Duration::from_millis(280));
+    let unmuted = manager.test_window_rectangles()[0];
+    assert_eq!(unmuted.right - unmuted.left, expanded.right - expanded.left);
+    assert_anchor(position, compact, unmuted);
+    capture("app-unmuted", &[unmuted]);
+    pump_for(Duration::from_millis(2400));
+    assert!(
+        !unsafe { IsWindowVisible(hwnd).as_bool() },
+        "app unmute feedback must expire"
+    );
+    manager.shutdown();
+}
+
 fn capture(name: &str, rectangles: &[RECT]) {
     let Some(root) = std::env::var_os("WINSHORT_OVERLAY_CAPTURE_DIR") else {
         return;

@@ -277,6 +277,128 @@ fn compact_microphone_geometry_is_square_at_every_supported_scale_and_dpi() {
 }
 
 #[test]
+fn app_mute_badge_is_independent_and_survives_volume_toast_expiry() {
+    let now = Instant::now();
+    let hold = Duration::from_secs(1);
+    let mut registry = OverlayRegistry::default();
+    for (key, icon) in [
+        (OverlayKey::MicrophonePermanent, OverlayIcon::Microphone),
+        (
+            OverlayKey::CurrentAppAudioPermanent,
+            OverlayIcon::Application,
+        ),
+    ] {
+        registry.present(
+            OverlayRequest::permanent(key, OverlayModel::single(row(icon, "muted"))),
+            hold,
+            now,
+        );
+    }
+    for (key, icon) in [
+        (OverlayKey::CurrentAppVolume, OverlayIcon::Application),
+        (OverlayKey::OutputDevice, OverlayIcon::Output),
+    ] {
+        registry.present(
+            OverlayRequest::toast(key, OverlayModel::single(row(icon, "feedback"))),
+            hold,
+            now,
+        );
+    }
+    assert_eq!(registry.entries().len(), 4);
+    assert_eq!(registry.remove_expired(now + hold).len(), 2);
+    assert_eq!(registry.entries().len(), 2);
+    assert!(registry.entries().iter().all(|entry| entry.is_permanent()));
+}
+
+#[test]
+fn app_unmute_and_remute_reuse_the_entry_while_volume_feedback_is_present() {
+    let now = Instant::now();
+    let hold = Duration::from_secs(1);
+    let mut registry = OverlayRegistry::default();
+    let muted = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::CurrentAppAudioPermanent,
+            OverlayModel::single(row(OverlayIcon::Application, "muted")),
+        ),
+        hold,
+        now,
+    );
+    let muted_generation = registry.entries()[0].generation();
+    let volume = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::CurrentAppVolume,
+            OverlayModel::single(row(OverlayIcon::Application, "volume")),
+        ),
+        hold,
+        now,
+    );
+    let unmuted = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::CurrentAppAudio,
+            OverlayModel::single(row(OverlayIcon::Application, "unmuted")),
+        )
+        .replacing(OverlayKey::CurrentAppAudioPermanent),
+        hold,
+        now,
+    );
+    assert_eq!(unmuted.id, muted.id);
+    assert!(!unmuted.restart_appearance);
+    assert_eq!(registry.entries().len(), 2);
+    assert_ne!(registry.entries()[0].generation(), muted_generation);
+    let remuted = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::CurrentAppAudioPermanent,
+            OverlayModel::single(row(OverlayIcon::Application, "muted again")),
+        )
+        .replacing(OverlayKey::CurrentAppAudio),
+        hold,
+        now,
+    );
+    assert_eq!(remuted.id, muted.id);
+    assert!(!remuted.restart_appearance);
+    assert_eq!(registry.remove_expired(now + hold)[0].id(), volume.id);
+    assert_eq!(registry.entries()[0].expires_at(), None);
+    assert_eq!(
+        registry.entries()[0].key(),
+        OverlayKey::CurrentAppAudioPermanent
+    );
+}
+
+#[test]
+fn app_notification_filter_removes_badge_mute_and_volume_toasts_together() {
+    let mut registry = OverlayRegistry::default();
+    let now = Instant::now();
+    for key in [
+        OverlayKey::CurrentAppAudioPermanent,
+        OverlayKey::CurrentAppAudio,
+        OverlayKey::CurrentAppVolume,
+    ] {
+        registry.present(
+            OverlayRequest::permanent(
+                key,
+                OverlayModel::single(row(OverlayIcon::Application, "app")),
+            ),
+            Duration::from_secs(1),
+            now,
+        );
+    }
+    registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "mic")),
+        ),
+        Duration::from_secs(1),
+        now,
+    );
+    let notifications = crate::config::model::OverlayNotifications {
+        current_app_audio: false,
+        ..Default::default()
+    };
+    assert_eq!(registry.filter_notifications(notifications).len(), 3);
+    assert_eq!(registry.entries()[0].key(), OverlayKey::MicrophonePermanent);
+}
+
+#[test]
 fn permanent_microphone_and_speaker_toast_are_independent() {
     let now = Instant::now();
     let mut registry = OverlayRegistry::default();
@@ -440,7 +562,7 @@ fn semantic_key_set_is_the_registry_card_upper_bound() {
         .iter()
         .copied()
         .collect::<std::collections::HashSet<_>>();
-    assert_eq!(keys.len(), 10);
+    assert_eq!(keys.len(), 12);
     assert_eq!(unique.len(), keys.len());
 }
 

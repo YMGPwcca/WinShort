@@ -1,4 +1,4 @@
-//! The permanent microphone's expanded-to-badge transition. No idle frame loop.
+//! Permanent mute cards' expanded-to-badge transition. No idle frame loop.
 
 use super::timeline::{MotionPolicy, APPEAR_MS, TIMER_MS};
 use std::time::{Duration, Instant};

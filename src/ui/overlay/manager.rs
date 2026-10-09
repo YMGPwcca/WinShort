@@ -28,6 +28,8 @@ pub(crate) enum OverlayKey {
     MicrophoneToast,
     Speaker,
     CurrentAppAudio,
+    CurrentAppAudioPermanent,
+    CurrentAppVolume,
     Workspace,
     DisplayProfile,
     Status,
@@ -37,11 +39,13 @@ pub(crate) enum OverlayKey {
 }
 
 impl OverlayKey {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::MicrophonePermanent,
         Self::MicrophoneToast,
         Self::Speaker,
         Self::CurrentAppAudio,
+        Self::CurrentAppAudioPermanent,
+        Self::CurrentAppVolume,
         Self::InputDevice,
         Self::OutputDevice,
         Self::Workspace,
@@ -54,7 +58,9 @@ impl OverlayKey {
         match self {
             Self::MicrophonePermanent => 0,
             Self::Speaker => 1,
-            Self::CurrentAppAudio => 2,
+            Self::CurrentAppAudioPermanent => 2,
+            Self::CurrentAppAudio => 10,
+            Self::CurrentAppVolume => 11,
             Self::Workspace => 3,
             Self::DisplayProfile => 4,
             Self::Status => 5,
@@ -63,6 +69,13 @@ impl OverlayKey {
             Self::OutputDevice => 8,
             Self::MicrophoneToast => 9,
         }
+    }
+
+    fn is_compact_mute(self) -> bool {
+        matches!(
+            self,
+            Self::MicrophonePermanent | Self::CurrentAppAudioPermanent
+        )
     }
 }
 
@@ -784,7 +797,7 @@ impl OverlayManager {
                 let render_config = self.render_configs.get(&entry.id()).cloned()?;
                 let placement = entry.placement.clone();
                 let mut plan = make_layout_entry(entry, render_config, placement);
-                if entry.key() == OverlayKey::MicrophonePermanent
+                if entry.key().is_compact_mute()
                     && entry.is_permanent()
                     && self.windows.iter().any(|managed| {
                         managed.id == entry.id() && managed.window.reserves_compact()
@@ -828,7 +841,7 @@ impl OverlayManager {
             position: plan.card.position,
             expires_at: plan.entry.expires_at,
             mode,
-            collapsible_microphone: plan.entry.key == OverlayKey::MicrophonePermanent
+            collapsible_mute: plan.entry.key.is_compact_mute()
                 && plan.entry.lifetime.is_permanent(),
             layout_size: plan.entry.size,
         })

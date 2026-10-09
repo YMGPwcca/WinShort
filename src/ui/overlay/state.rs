@@ -27,7 +27,7 @@ pub(super) struct ShowRequest {
     pub(super) position: POINT,
     pub(super) expires_at: Option<Instant>,
     pub(super) mode: ShowMode,
-    pub(super) collapsible_microphone: bool,
+    pub(super) collapsible_mute: bool,
     pub(super) layout_size: SIZE,
 }
 
@@ -107,7 +107,7 @@ impl OverlayState {
             position,
             expires_at,
             mode,
-            collapsible_microphone,
+            collapsible_mute,
             layout_size,
         } = request;
         if model.rows.is_empty() || !config.enabled {
@@ -118,12 +118,8 @@ impl OverlayState {
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
         self.config = config;
-        self.badge.update(
-            collapsible_microphone,
-            presentation_started_at,
-            self.motion,
-            now,
-        );
+        self.badge
+            .update(collapsible_mute, presentation_started_at, self.motion, now);
         self.layout_size = layout_size;
         self.model = model;
         self.expires_at = expires_at;

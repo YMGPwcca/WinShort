@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub(super) const POINTER_MESSAGE: u32 = 0x8120;
 const HOVER_MS: u64 = 140;
-const MAX_CARDS: usize = 10;
+const MAX_CARDS: usize = super::manager::OverlayKey::ALL.len();
 
 #[cfg(test)]
 pub(super) fn observer_active() -> bool {

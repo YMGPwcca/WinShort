@@ -191,6 +191,8 @@ impl App {
                     }
                 }
                 self.reconcile_microphone_overlay(false);
+                self.reconcile_app_audio_overlay(false);
+                self.select_foreground_audio(self.foreground_pid, true);
                 crate::info!("config applied (seq {seq}, origin {:?})", stamp.origin);
                 self.refresh_settings_runtime();
             }
@@ -239,6 +241,13 @@ impl App {
                 if let Some(desktop) = &self.desktop {
                     desktop.foreground_changed(hwnd_raw);
                 }
+                // Resolve the current target rather than an older HWND queued before
+                // another focus change. Queries are read-only on the audio worker.
+                let pid = self
+                    .foreground
+                    .as_ref()
+                    .and_then(|tracker| tracker.target_pid());
+                self.select_foreground_audio(pid, false);
             }
             DesktopEvent::ActionCompleted { kind } => {
                 let (title, detail) = match kind {
@@ -335,7 +344,18 @@ impl App {
                 }
                 self.refresh_settings_runtime();
             }
-            AudioRuntimeEvent::ForegroundAudioChanged { state, origin } => {
+            AudioRuntimeEvent::ForegroundAudioChanged { pid, state, origin } => {
+                if !self.accepts_foreground_audio_result(pid, origin) {
+                    crate::log_debug!("dropping audio result for a previous foreground app");
+                    return;
+                }
+                if let AudioEventOrigin::ForegroundSelection(request_id) = origin {
+                    if self.foreground_query_id != Some(request_id) {
+                        crate::log_debug!("dropping stale foreground selection result");
+                        return;
+                    }
+                    self.foreground_query_id = None;
+                }
                 let changed = self.foreground_state != state;
                 let is_status_request = matches!(origin, AudioEventOrigin::StatusRequest(_));
                 let status_request_matches = match origin {
@@ -360,27 +380,26 @@ impl App {
                 );
                 self.foreground_state = state;
                 self.foreground_seen = true;
-                self.status_request_id = None;
-                if should_show {
-                    if is_status_request {
-                        self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
-                            crate::ui::overlay::OverlayKey::Status,
-                            self.status_overlay_model(),
-                        ));
-                    } else {
-                        let row = crate::ui::overlay::application_row(&self.foreground_state);
-                        self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
-                            crate::ui::overlay::OverlayKey::CurrentAppAudio,
-                            crate::ui::overlay::OverlayModel::single(row),
-                        ));
-                    }
+                if !matches!(origin, AudioEventOrigin::ForegroundSelection(_)) {
+                    self.status_request_id = None;
+                    self.foreground_query_id = None;
+                }
+                self.reconcile_app_audio_overlay(should_show && !is_status_request);
+                if should_show && is_status_request {
+                    self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
+                        crate::ui::overlay::OverlayKey::Status,
+                        self.status_overlay_model(),
+                    ));
                 }
                 self.refresh_settings_runtime();
             }
-            AudioRuntimeEvent::ForegroundVolumeChanged { state, origin } => {
+            AudioRuntimeEvent::ForegroundVolumeChanged { pid, state, origin } => {
+                if !self.accepts_foreground_audio_result(pid, origin) {
+                    return;
+                }
                 if matches!(origin, AudioEventOrigin::WinShortAction(_)) {
                     self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
-                        crate::ui::overlay::OverlayKey::CurrentAppAudio,
+                        crate::ui::overlay::OverlayKey::CurrentAppVolume,
                         crate::ui::overlay::OverlayModel::single(
                             crate::ui::overlay::application_volume_row(&state),
                         ),

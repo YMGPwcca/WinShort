@@ -194,7 +194,10 @@ unsafe fn draw_badge(
         );
         draw_icon(target, row.icon, center.X, center.Y, scale, &icon_brush);
 
-        if compact > 0.0 && row.icon == OverlayIcon::Microphone && row.tone == OverlayTone::Muted {
+        if compact > 0.0
+            && matches!(row.icon, OverlayIcon::Microphone | OverlayIcon::Application)
+            && row.tone == OverlayTone::Muted
+        {
             target.DrawLine(
                 windows_numerics::Vector2 {
                     X: center.X - 10.0 * scale,

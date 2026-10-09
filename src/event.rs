@@ -130,6 +130,8 @@ pub enum AudioEventOrigin {
     Config(ConfigCommitOrigin),
     WinShortAction(u64),
     StatusRequest(u64),
+    /// Read-only state for the selected external application, without a toast.
+    ForegroundSelection(u64),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopActionKind {
@@ -242,10 +244,12 @@ pub enum AppEvent {
     /// The application deliberately does not surface a duplicate endpoint OSD.
     DefaultOutputChanged(crate::audio::state::DeviceId),
     ForegroundAudioChanged {
+        pid: Option<u32>,
         state: AppAudioState,
         origin: AudioEventOrigin,
     },
     ForegroundVolumeChanged {
+        pid: Option<u32>,
         state: AppVolumeState,
         origin: AudioEventOrigin,
     },
@@ -382,10 +386,12 @@ pub(crate) enum AudioRuntimeEvent {
     DefaultOutputChanged(crate::audio::state::DeviceId),
     DevicesChanged,
     ForegroundAudioChanged {
+        pid: Option<u32>,
         state: AppAudioState,
         origin: AudioEventOrigin,
     },
     ForegroundVolumeChanged {
+        pid: Option<u32>,
         state: AppVolumeState,
         origin: AudioEventOrigin,
     },
@@ -509,11 +515,11 @@ impl From<AppEvent> for RoutedAppEvent {
                 Self::Audio(AudioRuntimeEvent::DefaultOutputChanged(device))
             }
             AppEvent::DevicesChanged => Self::Audio(AudioRuntimeEvent::DevicesChanged),
-            AppEvent::ForegroundAudioChanged { state, origin } => {
-                Self::Audio(AudioRuntimeEvent::ForegroundAudioChanged { state, origin })
+            AppEvent::ForegroundAudioChanged { pid, state, origin } => {
+                Self::Audio(AudioRuntimeEvent::ForegroundAudioChanged { pid, state, origin })
             }
-            AppEvent::ForegroundVolumeChanged { state, origin } => {
-                Self::Audio(AudioRuntimeEvent::ForegroundVolumeChanged { state, origin })
+            AppEvent::ForegroundVolumeChanged { pid, state, origin } => {
+                Self::Audio(AudioRuntimeEvent::ForegroundVolumeChanged { pid, state, origin })
             }
         }
     }
