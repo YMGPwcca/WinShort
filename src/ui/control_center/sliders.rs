@@ -25,6 +25,10 @@ impl SettingsUi {
             ElementId::OverlayBlur => {
                 self.draft.overlay.blur = OverlayBlur::from_index((ratio * 4.0).round() as usize);
             }
+            ElementId::OverlayHoverOpacity => {
+                self.draft.overlay.hover_opacity =
+                    crate::config::model::normalize_hover_opacity(0.1 + ratio * 0.9);
+            }
             ElementId::OverlayScale => {
                 self.draft.overlay.scale = normalize_overlay_scale(
                     OVERLAY_SCALE_MIN + ratio * (OVERLAY_SCALE_MAX - OVERLAY_SCALE_MIN),
@@ -43,6 +47,7 @@ impl SettingsUi {
             }
             ElementId::OverlayBlur => value / 4.0,
             ElementId::OverlayScale => (value - 0.7) / 0.9,
+            ElementId::OverlayHoverOpacity => (value - 0.1) / 0.9,
             _ => return false,
         };
         self.set_slider_from_ratio(id, ratio as f32);
@@ -70,6 +75,8 @@ impl SettingsUi {
                 (ElementId::OverlayBlur, false) => 4.0,
                 (ElementId::OverlayScale, true) => OVERLAY_SCALE_MIN,
                 (ElementId::OverlayScale, false) => OVERLAY_SCALE_MAX,
+                (ElementId::OverlayHoverOpacity, true) => 0.1,
+                (ElementId::OverlayHoverOpacity, false) => 1.0,
                 _ => current,
             };
         }
@@ -92,13 +99,19 @@ impl SettingsUi {
             }
             ElementId::OverlayScale => normalize_overlay_scale(current + step * OVERLAY_SCALE_STEP)
                 .clamp(OVERLAY_SCALE_MIN, OVERLAY_SCALE_MAX),
+            ElementId::OverlayHoverOpacity => {
+                crate::config::model::normalize_hover_opacity(current + step * 0.1)
+            }
             _ => current,
         }
     }
 
     pub(super) fn adjust_focused_slider(&mut self, hwnd: HWND, vk: u16) -> bool {
         let Some(
-            id @ (ElementId::OverlayDuration | ElementId::OverlayBlur | ElementId::OverlayScale),
+            id @ (ElementId::OverlayDuration
+            | ElementId::OverlayBlur
+            | ElementId::OverlayScale
+            | ElementId::OverlayHoverOpacity),
         ) = self.focus.target()
         else {
             return false;
@@ -127,6 +140,10 @@ impl SettingsUi {
             }
             ElementId::OverlayScale => {
                 self.draft.overlay.scale = Self::slider_value(id, self.draft.overlay.scale, step);
+            }
+            ElementId::OverlayHoverOpacity => {
+                self.draft.overlay.hover_opacity =
+                    Self::slider_value(id, self.draft.overlay.hover_opacity, step);
             }
             _ => return false,
         }

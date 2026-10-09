@@ -20,7 +20,11 @@ pub(super) fn add_heading(
     let height = if page_header {
         UiTokens::PAGE_HEADER_HEIGHT
     } else {
-        UiTokens::SECTION_HEADER_HEIGHT
+        if description.is_empty() {
+            32.0
+        } else {
+            UiTokens::SECTION_HEADER_HEIGHT
+        }
     };
     layout.sections.push(SectionLabel {
         title: title.into(),
@@ -305,6 +309,14 @@ pub(super) fn add_profile_card(
         rect: Rect::new(x, row_y, card_w, UiTokens::PROFILE_CARD_HEIGHT),
         label: "Display profile".into(),
         description: "Select this saved arrangement".into(),
+        scrolls: true,
+    });
+    layout.elements.push(Element {
+        id: ElementId::DisplayProfileAction(id),
+        kind: ElementKind::ButtonSecondary,
+        rect: Rect::new(x + card_w - 136.0, row_y + 64.0, 116.0, 30.0),
+        label: "Activate or review profile".into(),
+        description: "Apply a tested profile or review its setup".into(),
         scrolls: true,
     });
 }

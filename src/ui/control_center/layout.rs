@@ -12,6 +12,18 @@ impl SettingsUi {
         let rollback = self.display_rollback_status();
         LayoutContext {
             profile_count: self.draft.display_profiles.profiles.len(),
+            selected_profile_index: self
+                .draft
+                .display_profiles
+                .active_profile
+                .as_ref()
+                .and_then(|id| {
+                    self.draft
+                        .display_profiles
+                        .profiles
+                        .iter()
+                        .position(|profile| profile.id.eq_ignore_ascii_case(id))
+                }),
             display_output_count: self.display_route_candidates().len(),
             display_route_count: self
                 .draft

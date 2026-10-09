@@ -107,13 +107,9 @@ impl SettingsUi {
                 if let Some(result) = search(&self.search_query).first() {
                     let page = result.item.page;
                     let target = result.item.target;
-                    self.set_page(page);
-                    {
-                        let value = Some(target);
-                        self.focus.set_target(value);
-                    };
+                    self.open_search_destination(hwnd, page, target);
                 }
-                None
+                return true;
             }
             _ => return false,
         };

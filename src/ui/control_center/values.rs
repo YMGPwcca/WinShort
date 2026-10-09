@@ -43,6 +43,9 @@ impl SettingsUi {
                 },
             )),
             ShellElement::WindowClose => ControlValue::Action(Cow::Borrowed("Close")),
+            ShellElement::ResumeDisplayDraft => {
+                ControlValue::Action(Cow::Borrowed("Continue display edits"))
+            }
             ShellElement::OnboardingContinue => ControlValue::Action(Cow::Borrowed("Continue")),
             ShellElement::OnboardingOpen => ControlValue::Action(Cow::Borrowed("Open WinShort")),
         }
@@ -123,6 +126,16 @@ impl SettingsUi {
 
     fn display_value(&self, element: DisplayElement) -> ControlValue<'_> {
         match element {
+            DisplayElement::ProfileAction(index) => ControlValue::Action(Cow::Borrowed(
+                if self
+                    .profile_card_data(index as usize)
+                    .is_some_and(|card| card.readiness.is_ready())
+                {
+                    "Activate"
+                } else {
+                    "Review"
+                },
+            )),
             DisplayElement::ProfileCard(index) => ControlValue::Text(Cow::Owned(
                 self.draft
                     .display_profiles
@@ -319,12 +332,21 @@ impl SettingsUi {
                 label: Cow::Owned(overlay_scale_label(self.draft.overlay.scale)),
             },
             OverlayElement::Preview => ControlValue::Action(Cow::Borrowed("Show on screen")),
+            OverlayElement::HoverOpacity => ControlValue::Slider {
+                ratio: (self.draft.overlay.hover_opacity - 0.1) / 0.9,
+                label: Cow::Owned(if self.draft.overlay.hover_opacity >= 1.0 {
+                    "100% (off)".into()
+                } else {
+                    format!("{:.0}%", self.draft.overlay.hover_opacity * 100.0)
+                }),
+            },
         }
     }
 
     fn system_value(&self, element: SystemElement) -> ControlValue<'_> {
         match element {
             SystemElement::StartWithWindows => ControlValue::Toggle(self.startup_enabled),
+            SystemElement::CopyVersionInfo => ControlValue::Action(Cow::Borrowed("Copy")),
             SystemElement::StartHotkeysEnabled => {
                 ControlValue::Toggle(ConfigToggle::PauseShortcuts.selected(&self.draft))
             }

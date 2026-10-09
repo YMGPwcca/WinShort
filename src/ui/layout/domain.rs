@@ -24,6 +24,7 @@ pub(crate) enum ShellElement {
     Search,
     Nav(Page),
     SearchResult(u8),
+    ResumeDisplayDraft,
     WindowClose,
     OnboardingContinue,
     OnboardingOpen,
@@ -58,6 +59,7 @@ pub(crate) enum AudioElement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DisplayElement {
     ProfileCard(u8),
+    ProfileAction(u8),
     OutputCard(u8),
     TopologyChoice(u8),
     WizardBack,
@@ -147,11 +149,13 @@ pub(crate) enum OverlayElement {
     Duration,
     Blur,
     Scale,
+    HoverOpacity,
     Preview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SystemElement {
+    CopyVersionInfo,
     StartWithWindows,
     StartHotkeysEnabled,
     DebugLogging,
@@ -166,6 +170,7 @@ impl ElementId {
             Self::Search => ElementDomain::Shell(ShellElement::Search),
             Self::Nav(page) => ElementDomain::Shell(ShellElement::Nav(page)),
             Self::SearchResult(index) => ElementDomain::Shell(ShellElement::SearchResult(index)),
+            Self::ResumeDisplayDraft => ElementDomain::Shell(ShellElement::ResumeDisplayDraft),
             Self::WindowClose => ElementDomain::Shell(ShellElement::WindowClose),
             Self::OnboardingContinue => ElementDomain::Shell(ShellElement::OnboardingContinue),
             Self::OnboardingOpen => ElementDomain::Shell(ShellElement::OnboardingOpen),
@@ -200,6 +205,9 @@ impl ElementId {
 
             Self::DisplayProfileCard(index) => {
                 ElementDomain::Displays(DisplayElement::ProfileCard(index))
+            }
+            Self::DisplayProfileAction(index) => {
+                ElementDomain::Displays(DisplayElement::ProfileAction(index))
             }
             Self::DisplayOutputCard(index) => {
                 ElementDomain::Displays(DisplayElement::OutputCard(index))
@@ -296,6 +304,7 @@ impl ElementId {
             Self::OverlayDuration => ElementDomain::Overlay(OverlayElement::Duration),
             Self::OverlayBlur => ElementDomain::Overlay(OverlayElement::Blur),
             Self::OverlayScale => ElementDomain::Overlay(OverlayElement::Scale),
+            Self::OverlayHoverOpacity => ElementDomain::Overlay(OverlayElement::HoverOpacity),
             Self::OverlayPreview => ElementDomain::Overlay(OverlayElement::Preview),
 
             Self::StartWithWindows => ElementDomain::System(SystemElement::StartWithWindows),
@@ -304,6 +313,7 @@ impl ElementId {
             Self::DiagnosticsStatus => ElementDomain::System(SystemElement::DiagnosticsStatus),
             Self::OpenConfigFolder => ElementDomain::System(SystemElement::OpenConfigFolder),
             Self::ResetSettings => ElementDomain::System(SystemElement::ResetSettings),
+            Self::CopyVersionInfo => ElementDomain::System(SystemElement::CopyVersionInfo),
         }
     }
 }

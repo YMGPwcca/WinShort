@@ -202,10 +202,10 @@ fn permanent_microphone_entry_is_unique_and_never_expires() {
 }
 
 #[test]
-fn unmute_removes_permanent_entry_before_creating_a_new_toast() {
+fn unmute_reuses_permanent_entry_as_a_toast_with_a_new_generation() {
     let now = Instant::now();
     let mut registry = OverlayRegistry::default();
-    registry.present(
+    let muted = registry.present(
         OverlayRequest::permanent(
             OverlayKey::MicrophonePermanent,
             OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
@@ -213,26 +213,67 @@ fn unmute_removes_permanent_entry_before_creating_a_new_toast() {
         Duration::from_millis(1300),
         now,
     );
-    assert_eq!(
-        registry.remove_key(OverlayKey::MicrophonePermanent),
-        vec![1]
-    );
+    let muted_generation = registry.entries()[0].generation();
     let toast = registry.present(
         OverlayRequest::toast(
             OverlayKey::MicrophoneToast,
             OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
-        ),
+        )
+        .replacing(OverlayKey::MicrophonePermanent),
         Duration::from_millis(1300),
         now,
     );
 
-    assert!(toast.inserted);
+    assert!(!toast.inserted);
+    assert_eq!(toast.id, muted.id);
+    assert!(!toast.restart_appearance);
+    assert_ne!(registry.entries()[0].generation(), muted_generation);
     assert_eq!(registry.entries().len(), 1);
     assert_eq!(registry.entries()[0].key(), OverlayKey::MicrophoneToast);
     assert!(matches!(
         registry.entries()[0].lifetime(),
         OverlayLifetime::Toast
     ));
+}
+
+#[test]
+fn remute_reuses_unmute_toast_and_becomes_permanent_again() {
+    let now = Instant::now();
+    let mut registry = OverlayRegistry::default();
+    let toast = registry.present(
+        OverlayRequest::toast(
+            OverlayKey::MicrophoneToast,
+            OverlayModel::single(row(OverlayIcon::Microphone, "unmuted")),
+        ),
+        Duration::from_secs(1),
+        now,
+    );
+    let muted = registry.present(
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(row(OverlayIcon::Microphone, "muted")),
+        )
+        .replacing(OverlayKey::MicrophoneToast),
+        Duration::from_secs(1),
+        now,
+    );
+    assert_eq!(muted.id, toast.id);
+    assert!(!muted.restart_appearance);
+    assert_eq!(registry.entries().len(), 1);
+    assert_eq!(registry.entries()[0].expires_at(), None);
+    assert!(registry.entries()[0].is_permanent());
+}
+
+#[test]
+fn compact_microphone_geometry_is_square_at_every_supported_scale_and_dpi() {
+    for scale in [0.7, 1.0, 1.6] {
+        for dpi in [96, 120, 144, 192] {
+            let expanded = super::layout::presentation_geometry(scale, 1, 0.0).pixel_size(dpi);
+            let compact = super::layout::presentation_geometry(scale, 1, 1.0).pixel_size(dpi);
+            assert_eq!(compact.cx, compact.cy);
+            assert!(compact.cx < expanded.cx && compact.cy < expanded.cy);
+        }
+    }
 }
 
 #[test]
@@ -1008,6 +1049,9 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
             alpha: 1.0,
             timer_id: super::timeline::TIMER_ID,
             timer_interval: Some(TIMER_MS),
+            compact: 0.0,
+            hover_alpha: 1.0,
+            layout_changed: false,
         }
     });
 

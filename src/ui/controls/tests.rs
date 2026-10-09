@@ -172,7 +172,8 @@ fn section_accent_is_centered_on_title_text_geometry() {
     let accent = section_accent_rect(heading);
     assert_eq!(accent.x, heading.x);
     assert_eq!(accent.y + accent.h * 0.5, title.y + title.h * 0.5);
-    assert!(heading.y + 8.0 < title.y);
+    assert!(title.y >= heading.y);
+    assert!(title.bottom() <= heading.bottom());
 }
 #[test]
 fn section_divider_stays_inside_named_section_gap() {

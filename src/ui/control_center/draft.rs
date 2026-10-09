@@ -52,6 +52,7 @@ impl SettingsUi {
                 self.display.clear_dirty();
                 self.validation.clear();
                 self.applied_until = Some(Instant::now() + Duration::from_secs(2));
+                self.applied_message = super::painting::APPLIED_STATUS;
                 start_timer(hwnd);
                 true
             }

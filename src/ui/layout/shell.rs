@@ -62,6 +62,7 @@ impl SettingsLayout {
     ) -> Self {
         let mut context = LayoutContext {
             profile_count,
+            selected_profile_index: (profile_count > 0).then_some(0),
             ..LayoutContext::default()
         };
         if page == Page::Displays {
@@ -89,6 +90,16 @@ impl SettingsLayout {
     ) -> Self {
         let mut layout = Self::shell_base(width, height, page);
         layout.add_chrome();
+        if context.display_draft_dirty && page != Page::Displays && onboarding_step.is_none() {
+            layout.elements.push(Element {
+                id: ElementId::ResumeDisplayDraft,
+                kind: ElementKind::ButtonSecondary,
+                rect: Rect::new(layout.width - 196.0, layout.footer.y + 3.0, 180.0, 28.0),
+                label: "Continue display edits".into(),
+                description: "Return to the pending display profile draft".into(),
+                scrolls: false,
+            });
+        }
         if let Some(step) = onboarding_step {
             add_onboarding(&mut layout, step);
         } else if query.trim().is_empty() {

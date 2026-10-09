@@ -48,7 +48,7 @@ The shell is a fixed 960 × 660 DIP utility window with DPI-scaled physical dime
 - 34 DIP status footer;
 - 32 DIP page margins;
 - 40 DIP single top-chrome row with one 44 × 32 DIP Close hit target and a blank draggable caption gap; the sidebar brand remains in its separate 80 DIP row;
-- 92 DIP page headers and 88 DIP section headers; non-page headings share one 20 DIP inter-section breathing-room token;
+- 80 DIP page headers and 68 DIP section headers (32 DIP when no description is needed); non-page headings share one 20 DIP inter-section breathing-room token;
 - 12 DIP section-content gap before a section's first control and 8 DIP ROW_GAP between sibling rows/cards;
 - 58 DIP setting rows with an 8 DIP rhythm;
 - one shared 206 DIP right-side control column for dropdowns, keycaps, and equivalent value controls, with a compact 136 DIP Monitor variant for the split Overlay status row;
@@ -101,7 +101,7 @@ The page configures workspace behavior only. Numbered desktop switching remains 
 
 ### Displays
 
-Displays is an overview first: saved profiles appear as cards with profile name, friendly screen summary, topology, shortcut, readiness, and a contextual Activate or Review action. Management actions sit in a selected-profile toolbar; Create from current and Replace from current are named separately, Delete is destructive and confirmed twice, and the overview does not duplicate the selected profile in a second generic picker.
+Displays is an overview first: saved profiles appear as cards with profile name, friendly screen summary, topology, shortcut, readiness, and a contextual Activate or Review action. Card bodies only select; Activate/Review are separate keyboard/UIA controls. Management actions show the selected profile name directly below its row; Create from current and Replace from current are named separately, Delete is destructive and confirmed twice, and the overview does not duplicate the selected profile in a second generic picker.
 
 Editing enters a real four-step workflow:
 
@@ -223,3 +223,9 @@ The shell is constructed from cached state and never requires every optional wor
 ## Verification expectations
 
 Native visual acceptance remains a real Windows/manual concern. Automated tests cover search policy, first-run safety, layout geometry, profile-card layout, terminology, picker semantics, UIA snapshots/actions, overlay copy, and existing backend safety state machines. No screenshot or manual acceptance is claimed unless exercised on the final revision.
+
+### Draft navigation and build identity
+
+Leaving Displays retains pending edits. Other pages expose a Continue display edits footer action; Test/Keep or explicit Discard still owns the display draft transaction. Search clicks and Enter reveal and focus their destination, falling back to the master switch when the requested control is unavailable.
+
+System > About shows the compiled revision (including a modified marker), UTC build date and a Copy version info action. Copied info includes a build ID that distinguishes builds from the same commit.

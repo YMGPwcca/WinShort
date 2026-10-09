@@ -107,6 +107,9 @@ pub(super) struct ShowPlan {
     pub(super) size: SIZE,
     pub(super) region: WindowRegion,
     pub(super) alpha: f32,
+    pub(super) compact: f32,
+    pub(super) hover_alpha: f32,
+    pub(super) layout_changed: bool,
     pub(super) timer_id: usize,
     pub(super) timer_interval: Option<u32>,
 }
@@ -122,7 +125,6 @@ pub(super) struct WindowRegion {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum TickPlan {
     Hide,
-    StopTimer,
     Frame(ShowPlan),
 }
 

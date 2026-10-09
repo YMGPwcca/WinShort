@@ -24,6 +24,7 @@ pub(crate) enum ElementId {
     Search,
     Nav(Page),
     SearchResult(u8),
+    ResumeDisplayDraft,
     WindowClose,
     HomeSpeaker,
     HomeCurrentDesktop,
@@ -34,6 +35,7 @@ pub(crate) enum ElementId {
     HomeShortcutHealth,
     HomeDiagnostics,
     DisplayProfileCard(u8),
+    DisplayProfileAction(u8),
     DisplayOutputCard(u8),
     DisplayTopologyChoice(u8),
     InputCycleMode(u8),
@@ -104,9 +106,11 @@ pub(crate) enum ElementId {
     OverlayDuration,
     OverlayBlur,
     OverlayScale,
+    OverlayHoverOpacity,
     OverlayPreview,
     OpenConfigFolder,
     ResetSettings,
+    CopyVersionInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +140,7 @@ pub(crate) enum RegionKind {
     DisplaySafety,
     DisplayWizardSteps,
     DisplayWizardSummary,
+    SelectedDisplayProfile,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +173,7 @@ pub(crate) struct SectionLabel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LayoutContext {
     pub profile_count: usize,
+    pub selected_profile_index: Option<usize>,
     pub display_output_count: usize,
     pub display_route_count: usize,
     pub display_editor_step: Option<DisplayWizardStep>,
@@ -190,6 +196,7 @@ impl Default for LayoutContext {
     fn default() -> Self {
         Self {
             profile_count: 0,
+            selected_profile_index: None,
             display_output_count: 0,
             display_route_count: 0,
             display_editor_step: None,

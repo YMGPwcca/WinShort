@@ -35,6 +35,7 @@ pub struct OverlayCfg {
     pub position: OverlayPosition,
     pub monitor: MonitorChoice,
     pub scale: f32,
+    pub hover_opacity: f32,
     pub blur: OverlayBlur,
     pub appearance: OverlayAppearance,
     pub notifications: OverlayNotifications,
@@ -47,6 +48,15 @@ pub const OVERLAY_DURATION_PAGE_STEP_MS: u32 = 500;
 pub const OVERLAY_SCALE_MIN: f32 = 0.7;
 pub const OVERLAY_SCALE_MAX: f32 = 1.6;
 pub const OVERLAY_SCALE_STEP: f32 = 0.1;
+
+pub fn normalize_hover_opacity(value: f32) -> f32 {
+    let value = if value.is_finite() { value } else { 0.3 };
+    (value.clamp(0.1, 1.0) * 10.0).round() / 10.0
+}
+
+fn default_hover_opacity() -> f32 {
+    0.3
+}
 
 pub fn normalize_overlay_duration(duration_ms: u32) -> u32 {
     let clamped = duration_ms.clamp(OVERLAY_DURATION_MIN_MS, OVERLAY_DURATION_MAX_MS);
@@ -511,6 +521,7 @@ impl Default for Config {
                 position: OverlayPosition::BottomCenter,
                 monitor: MonitorChoice::Cursor,
                 scale: 1.0,
+                hover_opacity: default_hover_opacity(),
                 blur: OverlayBlur::BlurMedium,
                 appearance: OverlayAppearance::System,
                 notifications: OverlayNotifications::default(),
@@ -617,6 +628,8 @@ pub struct OverlayToml {
     pub monitor: String,
     #[serde(default = "default_scale")]
     pub scale: f32,
+    #[serde(default = "default_hover_opacity")]
+    pub hover_opacity: f32,
     #[serde(default = "default_blur")]
     pub blur: String,
     #[serde(default = "default_appearance")]
@@ -650,6 +663,7 @@ impl Default for OverlayToml {
             position: default_position(),
             monitor: default_monitor(),
             scale: default_scale(),
+            hover_opacity: default_hover_opacity(),
             blur: default_blur(),
             appearance: default_appearance(),
             show_microphone: true,
@@ -934,6 +948,7 @@ impl Config {
                 position: self.overlay.position.as_str().into(),
                 monitor: self.overlay.monitor.as_str(),
                 scale: self.overlay.scale,
+                hover_opacity: self.overlay.hover_opacity,
                 blur: self.overlay.blur.as_str().into(),
                 appearance: self.overlay.appearance.as_str().into(),
                 show_microphone: self.overlay.notifications.microphone,
@@ -1076,6 +1091,7 @@ impl Config {
             None => warnings.push(format!("overlay.monitor: unknown `{}`", t.overlay.monitor)),
         }
         c.overlay.scale = t.overlay.scale;
+        c.overlay.hover_opacity = t.overlay.hover_opacity;
         if t.schema_version < CURRENT_SCHEMA_VERSION {
             if let Some(opacity) = t.overlay.opacity {
                 c.overlay.blur = OverlayBlur::from_legacy_opacity(opacity);
@@ -1318,6 +1334,7 @@ pub fn known_keys(section: &str) -> Option<&'static [&'static str]> {
             "blur",
             "opacity",
             "scale",
+            "hover_opacity",
             "appearance",
             "show_microphone",
             "show_speaker",
@@ -1430,6 +1447,10 @@ impl Config {
                 }
                 "overlay.scale" => {
                     self.overlay.scale = normalize_overlay_scale(self.overlay.scale);
+                }
+                "overlay.hover_opacity" => {
+                    self.overlay.hover_opacity =
+                        normalize_hover_opacity(self.overlay.hover_opacity);
                 }
                 _ => {}
             }
@@ -1796,7 +1817,28 @@ show_external_audio_changes = false
         assert!(saved.contains("blur = \"blur-light\""));
         assert!(saved.contains("show_current_app_audio = true"));
         assert!(saved.contains("show_external_audio_changes = false"));
-        assert!(!saved.contains("opacity"));
+        assert!(!saved.lines().any(|line| line.starts_with("opacity =")));
+    }
+
+    #[test]
+    fn hover_opacity_defaults_roundtrips_and_repairs_without_changing_blur() {
+        let boundary: ConfigToml =
+            toml::from_str("schema_version = 11\n[overlay]\nblur = 'blur-heavy'\n").unwrap();
+        let (mut config, _) = Config::from_toml(&boundary);
+        assert_eq!(config.overlay.hover_opacity, 0.3);
+        config.overlay.hover_opacity = 1.0;
+        let saved = toml::to_string(&config.to_toml()).unwrap();
+        let parsed: ConfigToml = toml::from_str(&saved).unwrap();
+        let (restored, _) = Config::from_toml(&parsed);
+        assert_eq!(restored.overlay.hover_opacity, 1.0);
+        assert_eq!(restored.overlay.blur, OverlayBlur::BlurHeavy);
+        for (value, expected) in [(f32::NAN, 0.3), (0.0, 0.1), (1.5, 1.0), (0.34, 0.3)] {
+            config.overlay.hover_opacity = value;
+            let violations = crate::config::validate(&config);
+            config.repair(&violations);
+            assert_eq!(config.overlay.hover_opacity, expected);
+            assert_eq!(config.overlay.blur, OverlayBlur::BlurHeavy);
+        }
     }
     #[test]
     fn legacy_opacity_boundaries_never_introduce_new_treatments() {

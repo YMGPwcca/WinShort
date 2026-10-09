@@ -10,26 +10,60 @@ impl SettingsUi {
         if let Some(profile) = self.draft.display_profiles.profiles.get(index as usize) {
             let id = profile.id.clone();
             let route_count = profile.routes.len();
-            let ready = self.inventory.profile_readiness(profile).is_ready();
             let already_selected = self
                 .draft
                 .display_profiles
                 .active_profile
                 .as_deref()
                 .is_some_and(|active| active.eq_ignore_ascii_case(&id));
-            if already_selected && ready {
-                post_main(crate::event::AppEvent::ApplyDisplayProfile {
-                    profile: profile.clone(),
-                });
-            } else if already_selected {
-                self.display.open(DisplayWizardStep::Review, false);
-                self.display.select_first_route(route_count);
-            } else {
+            if !already_selected {
                 let before = self.draft.clone();
                 self.draft.display_profiles.active_profile = Some(id);
                 self.display.select_first_route(route_count);
-                self.commit_local_change(hwnd, before);
+                if self.commit_local_change(hwnd, before) {
+                    self.applied_message = "Profile selected";
+                }
             }
+            self.focus
+                .set_target(Some(crate::ui::layout::ElementId::DisplayProfileCard(
+                    index,
+                )));
+            self.rebuild_layout(hwnd);
+            self.scroll_focus_into_view(crate::ui::layout::ElementId::DisplayProfileCard(index));
+        }
+    }
+
+    pub(super) fn activate_display_profile_action(&mut self, hwnd: HWND, index: u8) {
+        let Some(profile) = self
+            .draft
+            .display_profiles
+            .profiles
+            .get(index as usize)
+            .cloned()
+        else {
+            return;
+        };
+        self.activate_display_profile_card(hwnd, index);
+        if !self
+            .draft
+            .display_profiles
+            .active_profile
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(&profile.id))
+        {
+            return;
+        }
+        if self.inventory.profile_readiness(&profile).is_ready() {
+            self.focus
+                .set_target(Some(crate::ui::layout::ElementId::DisplayProfileAction(
+                    index,
+                )));
+            post_main(crate::event::AppEvent::ApplyDisplayProfile { profile });
+        } else {
+            self.display.open(DisplayWizardStep::Review, false);
+            self.display.select_first_route(profile.routes.len());
+            self.focus
+                .set_target(Some(crate::ui::layout::ElementId::DisplayWizardCancel));
         }
     }
 

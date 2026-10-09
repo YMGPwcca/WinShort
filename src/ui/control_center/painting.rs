@@ -197,6 +197,19 @@ impl SettingsUi {
                 RegionKind::DisplayWizardSummary => {
                     self.draw_display_wizard_summary(renderer, region.rect)
                 }
+                RegionKind::SelectedDisplayProfile => {
+                    let name = self
+                        .draft
+                        .display_profiles
+                        .active()
+                        .map_or("No profile selected", |profile| profile.name.as_str());
+                    renderer.text_clipped(
+                        &format!("Manage: {name}"),
+                        region.rect.d2d(),
+                        TextStyle::Section,
+                        BrushRole::Text,
+                    );
+                }
             }
         }
     }
@@ -306,9 +319,9 @@ impl SettingsUi {
                 "Display recovery is active — use Revert to retry".into()
             }
         } else if self.display.is_editing() {
-            "Display draft — changes aren't applied until you test and keep them".into()
+            "Display draft retained — return to Displays to test or discard it".into()
         } else if self.applied_until.is_some() {
-            APPLIED_STATUS.into()
+            self.applied_message.into()
         } else if self.onboarding_step.is_some() {
             "You can change these choices later".into()
         } else {
@@ -328,12 +341,27 @@ impl SettingsUi {
             UiRect::new(
                 24.0,
                 self.layout.footer.y + 8.0,
-                self.layout.width - 48.0,
+                self.layout.width
+                    - 48.0
+                    - if self.layout.element(ElementId::ResumeDisplayDraft).is_some() {
+                        200.0
+                    } else {
+                        0.0
+                    },
                 22.0,
             )
             .d2d(),
             TextStyle::Caption,
             role,
         );
+        if let Some(element) = self.layout.element(ElementId::ResumeDisplayDraft) {
+            controls::draw_button(
+                renderer,
+                element.rect,
+                "Continue display edits",
+                false,
+                self.interaction(element.id, false),
+            );
+        }
     }
 }

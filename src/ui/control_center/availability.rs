@@ -34,7 +34,8 @@ impl SettingsUi {
             | ShellElement::SearchResult(_)
             | ShellElement::WindowClose
             | ShellElement::OnboardingContinue
-            | ShellElement::OnboardingOpen => false,
+            | ShellElement::OnboardingOpen
+            | ShellElement::ResumeDisplayDraft => false,
         }
     }
 
@@ -78,6 +79,17 @@ impl SettingsUi {
         let rollback = self.display_rollback_status();
         let rollback_active = rollback.active();
         match element {
+            DisplayElement::ProfileAction(index) => {
+                !self.draft.display_profiles.enabled
+                    || self
+                        .draft
+                        .display_profiles
+                        .profiles
+                        .get(index as usize)
+                        .is_none()
+                    || rollback_active
+                    || self.display.is_dirty()
+            }
             DisplayElement::Profile => {
                 !self.draft.display_profiles.enabled
                     || self.draft.display_profiles.active().is_none()
@@ -229,6 +241,7 @@ impl SettingsUi {
             | OverlayElement::Duration
             | OverlayElement::Blur
             | OverlayElement::Scale
+            | OverlayElement::HoverOpacity
             | OverlayElement::Preview => !self.draft.overlay.enabled,
         }
     }
@@ -240,6 +253,7 @@ impl SettingsUi {
             | SystemElement::DebugLogging
             | SystemElement::DiagnosticsStatus
             | SystemElement::OpenConfigFolder
+            | SystemElement::CopyVersionInfo
             | SystemElement::ResetSettings => false,
         }
     }

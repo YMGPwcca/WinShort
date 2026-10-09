@@ -38,9 +38,16 @@ pub(super) struct CardPlacement {
 }
 
 pub(super) fn surface_geometry(scale: f32, row_count: usize) -> SurfaceGeometry {
+    presentation_geometry(scale, row_count, 0.0)
+}
+
+/// A 68-DIP square keeps the existing 34-DIP badge with 17-DIP padding.
+pub(super) fn presentation_geometry(scale: f32, row_count: usize, compact: f32) -> SurfaceGeometry {
     let scale = scale.clamp(0.7, 1.6);
-    let body_width = BASE_WIDTH * scale;
-    let body_height = (PAD * 2.0 + ROW_HEIGHT * row_count as f32) * scale;
+    let compact = compact.clamp(0.0, 1.0);
+    let body_width = (BASE_WIDTH + (68.0 - BASE_WIDTH) * compact) * scale;
+    let expanded_height = PAD * 2.0 + ROW_HEIGHT * row_count as f32;
+    let body_height = (expanded_height + (68.0 - expanded_height) * compact) * scale;
     SurfaceGeometry {
         width: body_width,
         height: body_height,

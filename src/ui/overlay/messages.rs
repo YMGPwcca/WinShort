@@ -38,6 +38,13 @@ pub(super) unsafe extern "system" fn overlay_wndproc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         };
         match msg {
+            super::hover::POINTER_MESSAGE => {
+                let point = super::hover::take_pointer(hwnd);
+                if let Err(error) = super::window::update_hover_pointer(cell, hwnd, point) {
+                    crate::warn_!("overlay hover update failed: {error}");
+                }
+                LRESULT(0)
+            }
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
                 lifecycle::handle_settingchange()
             }

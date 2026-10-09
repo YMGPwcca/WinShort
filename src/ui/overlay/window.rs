@@ -16,15 +16,16 @@ use crate::ui::theme::ThemeMode;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HWND, RECT, SIZE};
+use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetClientRect, GetWindowLongPtrW, KillTimer, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DestroyWindow, GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
+    KillTimer, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub(crate) const CLASS_NAME: &str = "WinShort.Overlay";
@@ -119,10 +120,61 @@ pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -
         )
         .map_err(|error| Error::win("SetWindowPos(overlay)", &error))?;
     }
+    super::hover::refresh(hwnd);
+    Ok(())
+}
+
+pub(super) fn set_hover_opacity(hwnd: HWND, opacity: f32) -> Result<()> {
+    // SAFETY: callers own the layered overlay HWND on this thread. This changes
+    // only its constant alpha and preserves the transparent hit-test style.
+    unsafe {
+        SetLayeredWindowAttributes(
+            hwnd,
+            COLORREF(0),
+            (opacity.clamp(0.1, 1.0) * 255.0).round() as u8,
+            LWA_ALPHA,
+        )
+    }
+    .map_err(|error| Error::win("SetLayeredWindowAttributes(overlay hover)", &error))
+}
+
+pub(super) fn update_hover_pointer(
+    cell: &std::cell::RefCell<OverlayState>,
+    hwnd: HWND,
+    point: POINT,
+) -> Result<()> {
+    let mut rect = RECT::default();
+    // SAFETY: hwnd is the dispatching overlay's HWND and rect is a writable
+    // stack RECT; no state borrow spans the native operation.
+    unsafe { GetWindowRect(hwnd, &mut rect) }
+        .map_err(|error| Error::win("GetWindowRect(overlay hover)", &error))?;
+    let inside = point.x >= rect.left
+        && point.x < rect.right
+        && point.y >= rect.top
+        && point.y < rect.bottom;
+    let plan = prepare_state_plan(cell, |state| {
+        if state.phase == Phase::Hidden {
+            return None;
+        }
+        let opacity = if inside && !state.preferences.high_contrast {
+            state.config.hover_opacity
+        } else {
+            1.0
+        };
+        state
+            .hover
+            .set_target(opacity, state.motion, std::time::Instant::now())
+            .then(|| state.frame_plan())
+    });
+    if let Some(plan) = plan {
+        set_timer(hwnd, plan.timer_id, plan.timer_interval)?;
+        render_prepared_frame(cell, hwnd, plan)?;
+    }
     Ok(())
 }
 
 pub(super) fn apply_hide_window(hwnd: HWND, timer_id: usize) {
+    super::hover::unregister(hwnd);
     unsafe {
         // Hide/teardown is intentionally best-effort: a timer can already be
         // absent and ShowWindow returns prior visibility rather than an error.
@@ -192,6 +244,7 @@ impl OverlayWindow {
                         | WS_EX_TOOLWINDOW.0
                         | WS_EX_NOACTIVATE.0
                         | WS_EX_TRANSPARENT.0
+                        | WS_EX_LAYERED.0
                         | no_redirection,
                 ),
                 PCWSTR(HSTRING::from(CLASS_NAME).as_ptr()),
@@ -210,6 +263,11 @@ impl OverlayWindow {
         .map_err(|e| Error::win("CreateWindowExW(overlay)", &e))?;
         // SAFETY: this constructor exclusively owns the newly created HWND.
         let construction = unsafe { win::WindowConstructionGuard::new(hwnd) };
+        // WS_EX_TRANSPARENT on a layered HWND makes User32 skip this window
+        // for hit testing across threads/processes. HTTRANSPARENT alone only
+        // searches windows belonging to this window's thread.
+        unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA) }
+            .map_err(|error| Error::win("SetLayeredWindowAttributes(overlay)", &error))?;
 
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
         let initial_size = surface_geometry(1.0, 1).pixel_size(dpi);
@@ -265,7 +323,19 @@ impl OverlayWindow {
             apply_hide_window(self.hwnd, plan.timer_id);
             return Err(error);
         }
-        commit_prepared_show(self.hwnd, plan)
+        commit_prepared_show(self.hwnd, plan)?;
+        let hover_enabled = {
+            let state = cell.borrow();
+            state.config.hover_opacity < 1.0 && !state.preferences.high_contrast
+        };
+        if let Err(error) = super::hover::register(self.hwnd, hover_enabled) {
+            crate::warn_!("overlay hover observation unavailable: {error}");
+        }
+        let mut point = POINT::default();
+        if unsafe { GetCursorPos(&mut point) }.is_ok() {
+            update_hover_pointer(cell, self.hwnd, point)?;
+        }
+        Ok(())
     }
 
     pub(super) fn set_entry_id(&self, entry_id: u64, generation: u64) -> Result<()> {
@@ -276,6 +346,9 @@ impl OverlayWindow {
         state.phase = Phase::Hidden;
         state.expires_at = None;
         state.position_tween = None;
+        state.badge = super::badge::BadgeMotion::default();
+        state.hover = super::hover::HoverMotion::default();
+        state.layout_size = SIZE::default();
         state.model = super::model::OverlayModel::default();
         state.last_target_monitor = None;
         state.last_render_dpi = None;
@@ -301,6 +374,8 @@ impl OverlayWindow {
                 state.phase = Phase::Hidden;
                 state.expires_at = None;
                 state.position_tween = None;
+                state.badge = super::badge::BadgeMotion::default();
+                state.hover = super::hover::HoverMotion::default();
                 state.timer_id
             }
         } else {
@@ -339,5 +414,10 @@ impl OverlayWindow {
             render_dpi: state.last_render_dpi,
             last_shown: state.last_shown,
         }
+    }
+
+    pub(super) fn reserves_compact(&self) -> bool {
+        unsafe { win::state_cell::<OverlayState>(self.hwnd) }
+            .is_some_and(|cell| cell.borrow().badge.reserves_compact())
     }
 }

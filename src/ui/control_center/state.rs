@@ -384,6 +384,7 @@ pub(crate) struct SettingsUi {
     pub(super) scroll: f32,
     pub(super) motion: Motion,
     pub(super) applied_until: Option<Instant>,
+    pub(super) applied_message: &'static str,
     pub(super) automation: Option<SettingsAutomation>,
 }
 
@@ -429,6 +430,7 @@ impl SettingsUi {
             scroll: 0.0,
             motion: Motion::default(),
             applied_until: None,
+            applied_message: super::painting::APPLIED_STATUS,
             automation: None,
         }
     }

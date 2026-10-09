@@ -71,7 +71,7 @@ pub(super) fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext)
     add_heading(
         layout,
         "Display profiles",
-        "Select a profile to activate it or open its editor.",
+        "Select a profile, then use Activate or Review.",
         &mut y,
     );
     add_section_content_gap(&mut y);
@@ -85,54 +85,65 @@ pub(super) fn add_displays(layout: &mut SettingsLayout, context: &LayoutContext)
         );
         return;
     }
+    add_profile_grid(layout, context, &mut y);
+}
+
+fn add_profile_grid(layout: &mut SettingsLayout, context: &LayoutContext, y: &mut f32) {
     let count = context.profile_count.min(32);
     let columns = if layout.content_column.w >= 660.0 {
         2
     } else {
         1
     };
-    let profile_start = y;
-    for index in 0..count {
-        add_profile_card(
-            layout,
-            &mut y,
-            index as u8,
-            index,
-            if count == 1 { 1 } else { columns },
-        );
-    }
-    let rows = count.div_ceil(columns);
-    y = profile_start
-        + rows as f32 * UiTokens::PROFILE_CARD_HEIGHT
-        + rows.saturating_sub(1) as f32 * UiTokens::ROW_GAP;
-    add_heading(
+    let new_y = *y;
+    add_element(
         layout,
-        "Manage selected profile",
-        "Actions stay with the profile they change.",
-        &mut y,
+        y,
+        ElementId::NewDisplayProfile,
+        ElementKind::ButtonSecondary,
+        "New from current",
+        "Create a profile from the current Windows arrangement",
+        Rect::new(layout.content_column.x, new_y, 180.0, 36.0),
     );
-    add_section_content_gap(&mut y);
+    let selected_row = context
+        .selected_profile_index
+        .filter(|index| *index < count)
+        .map(|index| index / columns);
+    for row in 0..count.div_ceil(columns) {
+        for index in row * columns..((row + 1) * columns).min(count) {
+            add_profile_card(
+                layout,
+                y,
+                index as u8,
+                index % columns,
+                if count == 1 { 1 } else { columns },
+            );
+        }
+        *y += UiTokens::PROFILE_ROW_STEP;
+        if selected_row == Some(row) {
+            add_region(layout, RegionKind::SelectedDisplayProfile, y, 32.0);
+            add_profile_actions(layout, y);
+            *y += UiTokens::SECTION_GAP;
+        }
+    }
+}
+
+fn add_profile_actions(layout: &mut SettingsLayout, y: &mut f32) {
     add_button_grid(
         layout,
-        &mut y,
+        y,
         &[
-            (
-                ElementId::NewDisplayProfile,
-                ElementKind::ButtonPrimary,
-                "New from current",
-                "Create a profile from the current arrangement",
-            ),
             (
                 ElementId::EditDisplayProfile,
                 ElementKind::ButtonSecondary,
                 "Edit profile",
-                "Open the guided editor",
+                "Open the selected profile's editor",
             ),
             (
                 ElementId::UpdateDisplayProfile,
                 ElementKind::ButtonSecondary,
                 "Replace from current",
-                "Update this profile from Windows' arrangement",
+                "Update the selected profile from Windows' arrangement",
             ),
             (
                 ElementId::DuplicateDisplayProfile,

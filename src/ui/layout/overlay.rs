@@ -260,6 +260,12 @@ pub(super) fn add_overlay(layout: &mut SettingsLayout, context: &LayoutContext) 
             "Duration",
             "Choose how long the overlay stays visible",
         ),
+        (
+            ElementId::OverlayHoverOpacity,
+            ElementKind::Slider,
+            "Opacity on hover",
+            "Reveal what's behind the card · 100% turns fading off",
+        ),
     ] {
         let slider_y = y;
         add_element(

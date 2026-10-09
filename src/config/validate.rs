@@ -406,6 +406,13 @@ fn validate_overlay_values(cfg: &Config, violations: &mut Vec<Violation>) {
             ),
         ));
     }
+    let hover = super::model::normalize_hover_opacity(cfg.overlay.hover_opacity);
+    if !cfg.overlay.hover_opacity.is_finite() || cfg.overlay.hover_opacity != hover {
+        violations.push(Violation::new(
+            "overlay.hover_opacity",
+            "must be 0.1..=1.0 in 0.1 steps",
+        ));
+    }
     let normalized_scale = normalize_overlay_scale(cfg.overlay.scale);
     if !cfg.overlay.scale.is_finite() || cfg.overlay.scale != normalized_scale {
         violations.push(Violation::new(

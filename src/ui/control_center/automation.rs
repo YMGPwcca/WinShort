@@ -106,7 +106,8 @@ impl SettingsUi {
             | ShellElement::SearchResult(_)
             | ShellElement::WindowClose
             | ShellElement::OnboardingContinue
-            | ShellElement::OnboardingOpen => {}
+            | ShellElement::OnboardingOpen
+            | ShellElement::ResumeDisplayDraft => {}
         }
     }
 
@@ -223,19 +224,42 @@ impl SettingsUi {
                 let Some(profile) = self.draft.display_profiles.profiles.get(index as usize) else {
                     return;
                 };
-                node.name = profile.name.clone();
+                let selected = self
+                    .draft
+                    .display_profiles
+                    .active_profile
+                    .as_deref()
+                    .is_some_and(|id| id.eq_ignore_ascii_case(&profile.id));
+                node.name = if selected {
+                    format!("{} (selected)", profile.name)
+                } else {
+                    format!("Select {}", profile.name)
+                };
                 let ready = self
                     .profile_card_data(index as usize)
                     .is_some_and(|card| card.readiness.is_ready());
                 node.help_text = if ready {
-                    "Select this ready display profile to activate it".into()
+                    "Select this profile; use its separate Activate button to apply it".into()
                 } else if self.inventory.error().is_some() {
-                    "Windows display information is unavailable; readiness is unknown".into()
+                    "Select this profile; use Review to inspect unavailable display information"
+                        .into()
                 } else if profile.confirmed {
-                    "Review this profile; a saved screen needs attention".into()
+                    "Select this profile; its Review button opens the saved screens that need attention".into()
                 } else {
                     "Select this profile and test it before activation".into()
                 };
+            }
+            DisplayElement::ProfileAction(index) => {
+                if let Some(profile) = self.draft.display_profiles.profiles.get(index as usize) {
+                    let action = if self.inventory.profile_readiness(profile).is_ready() {
+                        "Activate"
+                    } else {
+                        "Review"
+                    };
+                    node.name = format!("{action} {}", profile.name);
+                    node.help_text =
+                        "This button applies a tested profile or opens its review".into();
+                }
             }
             DisplayElement::WizardSummary => {
                 let Some(profile) = self.draft.display_profiles.active() else {
@@ -288,6 +312,17 @@ impl SettingsUi {
             | DisplayElement::KeepChange
             | DisplayElement::UndoChange
             | DisplayElement::DiscardEdits => {}
+        }
+        if matches!(
+            element,
+            DisplayElement::EditProfile
+                | DisplayElement::UpdateProfile
+                | DisplayElement::DuplicateProfile
+                | DisplayElement::DeleteProfile
+        ) {
+            if let Some(profile) = self.draft.display_profiles.active() {
+                node.name = format!("{} — {}", node.name, profile.name);
+            }
         }
     }
 
@@ -361,6 +396,7 @@ impl SettingsUi {
             | OverlayElement::Duration
             | OverlayElement::Blur
             | OverlayElement::Scale
+            | OverlayElement::HoverOpacity
             | OverlayElement::Preview => {}
         }
     }
@@ -376,6 +412,7 @@ impl SettingsUi {
             | SystemElement::DebugLogging
             | SystemElement::DiagnosticsStatus
             | SystemElement::OpenConfigFolder
+            | SystemElement::CopyVersionInfo
             | SystemElement::ResetSettings => {}
         }
     }

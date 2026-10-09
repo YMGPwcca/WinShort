@@ -188,10 +188,66 @@ static SEARCH_ITEMS: &[SearchItem] = &[
     },
     SearchItem {
         title: "Display profile notifications",
-        keywords: "overlay alerts microphone speaker current app audio workspace",
+        keywords: "overlay display profile notifications alerts",
+        page: Page::Overlay,
+        section: "Notifications",
+        target: ElementId::OverlayDisplayProfile,
+    },
+    SearchItem {
+        title: "Microphone notifications",
+        keywords: "overlay alerts mic muted input notifications",
         page: Page::Overlay,
         section: "Notifications",
         target: ElementId::OverlayMicrophone,
+    },
+    SearchItem {
+        title: "Speaker notifications",
+        keywords: "overlay alerts speaker output notifications",
+        page: Page::Overlay,
+        section: "Notifications",
+        target: ElementId::OverlaySpeaker,
+    },
+    SearchItem {
+        title: "Current app audio notifications",
+        keywords: "overlay alerts current app audio notifications",
+        page: Page::Overlay,
+        section: "Notifications",
+        target: ElementId::OverlayCurrentAppAudio,
+    },
+    SearchItem {
+        title: "Workspace notifications",
+        keywords: "overlay alerts workspace desktop notifications",
+        page: Page::Overlay,
+        section: "Notifications",
+        target: ElementId::OverlayWorkspace,
+    },
+    SearchItem {
+        title: "Overlay size",
+        keywords: "status card scale size",
+        page: Page::Overlay,
+        section: "Size and timing",
+        target: ElementId::OverlayScale,
+    },
+    SearchItem {
+        title: "Overlay duration",
+        keywords: "status card timeout duration time seconds",
+        page: Page::Overlay,
+        section: "Size and timing",
+        target: ElementId::OverlayDuration,
+    },
+    SearchItem {
+        title: "Opacity on hover",
+        keywords: "overlay hover mouse pointer opacity fade transparency",
+        page: Page::Overlay,
+        section: "Size and timing",
+        target: ElementId::OverlayHoverOpacity,
+    },
+    SearchItem {
+        title: "Version and build info",
+        keywords: "about version build date revision copy",
+        page: Page::System,
+        section: "About",
+        target: ElementId::CopyVersionInfo,
     },
     SearchItem {
         title: "Overlay position",
@@ -232,6 +288,26 @@ static SEARCH_ITEMS: &[SearchItem] = &[
 
 pub fn search_items() -> &'static [SearchItem] {
     SEARCH_ITEMS
+}
+
+#[cfg(test)]
+mod destination_regressions {
+    use super::*;
+
+    #[test]
+    fn overlay_settings_search_points_to_the_matching_controls() {
+        for (query, target) in [
+            (
+                "display profile notifications",
+                ElementId::OverlayDisplayProfile,
+            ),
+            ("opacity hover", ElementId::OverlayHoverOpacity),
+            ("overlay size", ElementId::OverlayScale),
+            ("overlay duration", ElementId::OverlayDuration),
+        ] {
+            assert_eq!(search(query).first().unwrap().item.target, target);
+        }
+    }
 }
 
 fn page_priority(page: Page) -> u8 {

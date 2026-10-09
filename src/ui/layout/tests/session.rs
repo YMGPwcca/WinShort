@@ -103,11 +103,7 @@ fn every_page_has_a_heading_and_reachable_navigation() {
     let pages = Page::PRIMARY.into_iter().chain(Page::SECONDARY);
     for page in pages {
         let layout = SettingsLayout::build_shell(960.0, 660.0, 0.0, page, "", 0, None);
-        let expected = if page == Page::Home {
-            "Welcome back"
-        } else {
-            page.label()
-        };
+        let expected = page.label();
         assert_eq!(
             layout
                 .sections
@@ -265,7 +261,13 @@ fn headers_reserve_separate_title_and_description_geometry_at_each_scale() {
         for height in [660.0, 900.0, 1200.0] {
             let layout = SettingsLayout::build_shell(width, height, 0.0, Page::Audio, "", 0, None);
             for section in &layout.sections {
-                assert!(section.height >= if section.page_header { 84.0 } else { 64.0 });
+                let title_height = if section.page_header { 36.0 } else { 26.0 };
+                let description_top = if section.page_header { 40.0 } else { 30.0 };
+                assert!(title_height <= section.height);
+                if !section.description.is_empty() {
+                    assert!(description_top >= title_height);
+                    assert!(section.height - description_top >= 36.0);
+                }
             }
         }
     }

@@ -61,8 +61,8 @@ impl UiTokens {
     pub const ROW_GAP: f32 = 8.0;
     pub const SECTION_CONTENT_GAP: f32 = 12.0;
     pub const SECTION_GAP: f32 = 20.0;
-    pub const PAGE_HEADER_HEIGHT: f32 = 92.0;
-    pub const SECTION_HEADER_HEIGHT: f32 = 88.0;
+    pub const PAGE_HEADER_HEIGHT: f32 = 80.0;
+    pub const SECTION_HEADER_HEIGHT: f32 = 68.0;
     pub const CARD_RADIUS: f32 = 12.0;
     pub const CONTROL_RADIUS: f32 = 7.0;
     pub const NAV_RADIUS: f32 = 8.0;

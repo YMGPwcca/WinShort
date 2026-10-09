@@ -1,7 +1,8 @@
 //! Overlay state transitions and frame planning. Native operations consume owned plans.
 
 use super::backend::{OverlayGraphics, OverlayRenderData, OverlaySurface, SurfaceSpec};
-use super::layout::{surface_geometry, window_region_for};
+use super::badge::BadgeMotion;
+use super::layout::{presentation_geometry, window_region_for};
 use super::model::OverlayModel;
 use super::palette::{
     composition_blur_enabled, opaque_palette, palette_for, resolved_theme_mode, OverlayPalette,
@@ -10,7 +11,7 @@ use super::timeline::{
     motion_policy, timer_id_for_generation, timer_interval_for_card, timing_after_show,
     MotionPolicy, Phase, PositionTween, ShowMode, ShowPlan, TickPlan, APPEAR_MS, LEAVE_MS,
 };
-use crate::config::model::{OverlayBlur, OverlayCfg};
+use crate::config::model::{OverlayBlur, OverlayCfg, OverlayPosition};
 use crate::error::Result;
 use crate::platform::visual::SystemVisualPreferences;
 use std::time::{Duration, Instant, SystemTime};
@@ -26,6 +27,8 @@ pub(super) struct ShowRequest {
     pub(super) position: POINT,
     pub(super) expires_at: Option<Instant>,
     pub(super) mode: ShowMode,
+    pub(super) collapsible_microphone: bool,
+    pub(super) layout_size: SIZE,
 }
 
 pub(super) struct OverlayState {
@@ -43,6 +46,9 @@ pub(super) struct OverlayState {
     pub(super) motion: MotionPolicy,
     pub(super) base_position: POINT,
     pub(super) position_tween: Option<PositionTween>,
+    pub(super) badge: BadgeMotion,
+    pub(super) hover: super::hover::HoverMotion,
+    pub(super) layout_size: SIZE,
     pub(super) phase: Phase,
     pub(super) phase_started: Instant,
     /// Each card owns its own optional toast deadline.
@@ -73,6 +79,9 @@ impl OverlayState {
             motion: motion_policy(preferences),
             base_position: POINT::default(),
             position_tween: None,
+            badge: BadgeMotion::default(),
+            hover: super::hover::HoverMotion::default(),
+            layout_size: SIZE::default(),
             phase: Phase::Hidden,
             phase_started: now,
             expires_at: None,
@@ -98,15 +107,24 @@ impl OverlayState {
             position,
             expires_at,
             mode,
+            collapsible_microphone,
+            layout_size,
         } = request;
         if model.rows.is_empty() || !config.enabled {
             return Ok(None);
         }
+        let now = Instant::now();
+        let previous_position = self.presentation_position(now, self.presentation_size(now));
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
         self.config = config;
-        let now = Instant::now();
-        let previous_position = self.position_at(now);
+        self.badge.update(
+            collapsible_microphone,
+            presentation_started_at,
+            self.motion,
+            now,
+        );
+        self.layout_size = layout_size;
         self.model = model;
         self.expires_at = expires_at;
         self.generation = generation;
@@ -118,16 +136,18 @@ impl OverlayState {
             self.last_shown = Some(SystemTime::now());
         }
         self.refresh_palette();
-        self.surface_size =
-            surface_geometry(self.config.scale, self.model.rows.len()).pixel_size(self.dpi);
+        let offset = self.presentation_offset(self.presentation_size(now));
+        let previous_anchor = POINT {
+            x: previous_position.x - offset.x,
+            y: previous_position.y - offset.y,
+        };
         let timing = timing_after_show(self.phase, self.motion, mode);
         self.phase = timing.phase;
         if timing.restart_phase {
             self.phase_started = presentation_started_at;
             self.position_tween = None;
         } else if mode == ShowMode::Relayout {
-            self.position_tween =
-                PositionTween::start(previous_position, position, self.motion, now);
+            self.position_tween = PositionTween::start(previous_anchor, position, self.motion, now);
         } else {
             self.position_tween = None;
         }
@@ -142,24 +162,87 @@ impl OverlayState {
     fn frame_plan_at(&self, now: Instant) -> ShowPlan {
         let (alpha, slide_dip) = self.frame_values(now);
         let slide_px = (slide_dip * self.config.scale * self.dpi as f32 / 96.0).round() as i32;
+        let compact = self.badge.value(now);
+        let size = self.presentation_size(now);
+        let position = self.presentation_position(now, size);
+        let card_timer = timer_interval_for_card(
+            self.phase,
+            self.motion,
+            self.position_tween
+                .is_some_and(|tween| !tween.is_finished(now)),
+            self.expires_at,
+            now,
+        );
+        let timer_interval = [
+            card_timer,
+            self.badge.timer_interval(now),
+            self.hover.timer_interval(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         ShowPlan {
             position: POINT {
-                x: self.position_at(now).x,
-                y: self.position_at(now).y + slide_px,
+                x: position.x,
+                y: position.y + slide_px,
             },
-            size: self.surface_size,
-            region: window_region_for(self.surface_size, self.dpi),
+            size,
+            region: window_region_for(size, self.dpi),
             alpha,
+            compact,
+            hover_alpha: self.hover.value(now),
+            layout_changed: false,
             timer_id: self.timer_id,
-            timer_interval: timer_interval_for_card(
-                self.phase,
-                self.motion,
-                self.position_tween
-                    .is_some_and(|tween| !tween.is_finished(now)),
-                self.expires_at,
-                now,
-            ),
+            timer_interval,
         }
+    }
+
+    fn presentation_position(&self, now: Instant, size: SIZE) -> POINT {
+        let position = self.position_at(now);
+        let offset = self.presentation_offset(size);
+        POINT {
+            x: position.x + offset.x,
+            y: position.y + offset.y,
+        }
+    }
+
+    fn presentation_size(&self, now: Instant) -> SIZE {
+        presentation_geometry(
+            self.config.scale,
+            self.model.rows.len(),
+            self.badge.value(now),
+        )
+        .pixel_size(self.dpi)
+    }
+
+    fn presentation_offset(&self, size: SIZE) -> POINT {
+        let dx = self.layout_size.cx - size.cx;
+        let dy = self.layout_size.cy - size.cy;
+        let x = match self.config.position {
+            OverlayPosition::TopRight
+            | OverlayPosition::CenterRight
+            | OverlayPosition::BottomRight => dx,
+            OverlayPosition::TopCenter
+            | OverlayPosition::Center
+            | OverlayPosition::BottomCenter => dx / 2,
+            _ => 0,
+        };
+        let y = if matches!(
+            self.config.position,
+            OverlayPosition::BottomLeft
+                | OverlayPosition::BottomCenter
+                | OverlayPosition::BottomRight
+        ) {
+            dy
+        } else if matches!(
+            self.config.position,
+            OverlayPosition::CenterLeft | OverlayPosition::Center | OverlayPosition::CenterRight
+        ) {
+            dy / 2
+        } else {
+            0
+        };
+        POINT { x, y }
     }
 
     pub(super) fn refresh_palette(&mut self) {
@@ -178,23 +261,35 @@ impl OverlayState {
     }
 
     pub(super) fn prepare_tick(&mut self) -> Option<TickPlan> {
-        let now = Instant::now();
+        self.prepare_tick_at(Instant::now())
+    }
+
+    pub(super) fn prepare_tick_at(&mut self, now: Instant) -> Option<TickPlan> {
         if self.phase == Phase::Hidden {
             return None;
         }
+        let layout_changed = self.badge.tick(self.motion, now);
+        self.hover.tick(now);
         let tween_finished = self
             .position_tween
             .is_some_and(|tween| tween.is_finished(now));
         if tween_finished {
             self.position_tween = None;
         }
-        if self.motion == MotionPolicy::Reduced {
-            if self.expires_at.is_some_and(|expires_at| now >= expires_at) {
-                self.phase = Phase::Hidden;
-                return Some(TickPlan::Hide);
-            }
-            return Some(TickPlan::Frame(self.frame_plan()));
+        if self.motion == MotionPolicy::Animated {
+            self.advance_phase(now);
+        } else if self.expires_at.is_some_and(|expires_at| now >= expires_at) {
+            self.phase = Phase::Hidden;
         }
+        if self.phase == Phase::Hidden {
+            return Some(TickPlan::Hide);
+        }
+        let mut plan = self.frame_plan_at(now);
+        plan.layout_changed = layout_changed;
+        Some(TickPlan::Frame(plan))
+    }
+
+    fn advance_phase(&mut self, now: Instant) {
         match self.phase {
             Phase::Appearing => {
                 if now.duration_since(self.phase_started) >= Duration::from_millis(APPEAR_MS) {
@@ -206,23 +301,15 @@ impl OverlayState {
                 if self.expires_at.is_some_and(|expires_at| now >= expires_at) {
                     self.phase = Phase::Leaving;
                     self.phase_started = now;
-                } else if self.expires_at.is_none() {
-                    return if tween_finished {
-                        Some(TickPlan::Frame(self.frame_plan_at(now)))
-                    } else {
-                        Some(TickPlan::StopTimer)
-                    };
                 }
             }
             Phase::Leaving => {
                 if now.duration_since(self.phase_started) >= Duration::from_millis(LEAVE_MS) {
                     self.phase = Phase::Hidden;
-                    return Some(TickPlan::Hide);
                 }
             }
-            Phase::Hidden => return None,
+            Phase::Hidden => {}
         }
-        Some(TickPlan::Frame(self.frame_plan_at(now)))
     }
 
     pub(super) fn frame_values(&self, now: Instant) -> (f32, f32) {
@@ -266,7 +353,7 @@ impl OverlayState {
             .is_some_and(|surface| !surface.is_composition())
     }
 
-    pub(super) fn render_data(&self, alpha: f32) -> OverlayRenderData {
+    pub(super) fn render_data(&self, alpha: f32, compact: f32) -> OverlayRenderData {
         OverlayRenderData {
             dwrite: self.graphics.dwrite.clone(),
             model: self.model.clone(),
@@ -275,6 +362,8 @@ impl OverlayState {
             theme_mode: resolved_theme_mode(self.config.appearance, self.preferences),
             alpha,
             blur: self.config.blur,
+            compact,
+            hover_alpha: self.hover.value(Instant::now()),
         }
     }
 }

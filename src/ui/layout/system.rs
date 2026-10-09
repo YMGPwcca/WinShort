@@ -7,12 +7,7 @@ use super::shell::SettingsLayout;
 
 pub(super) fn add_system(layout: &mut SettingsLayout) {
     let mut y = layout.content_column.y + 28.0;
-    add_heading(
-        layout,
-        "System",
-        "Small choices that shape how WinShort lives on your PC.",
-        &mut y,
-    );
+    add_heading(layout, "System", "Startup, shortcuts and support.", &mut y);
     add_heading(
         layout,
         "Startup",
@@ -43,12 +38,7 @@ pub(super) fn add_system(layout: &mut SettingsLayout) {
         "Pause all shortcuts",
         "Temporarily stop global shortcut actions",
     );
-    add_heading(
-        layout,
-        "Support",
-        "Keep technical details available when you need them.",
-        &mut y,
-    );
+    add_heading(layout, "Support", "", &mut y);
     add_section_content_gap(&mut y);
     let diagnostics_y = y;
     add_element(
@@ -83,7 +73,7 @@ pub(super) fn add_system(layout: &mut SettingsLayout) {
     add_heading(
         layout,
         "Reset",
-        "Reset is destructive and always asks twice.",
+        "Restore settings, shortcuts and profiles to defaults.",
         &mut y,
     );
     add_section_content_gap(&mut y);
@@ -102,10 +92,13 @@ pub(super) fn add_system(layout: &mut SettingsLayout) {
             52.0,
         ),
     );
-    add_heading(
+    add_heading(layout, "About", &crate::version::summary(), &mut y);
+    add_row(
         layout,
-        "About",
-        concat!("WinShort · Version ", env!("CARGO_PKG_VERSION")),
         &mut y,
+        ElementId::CopyVersionInfo,
+        ElementKind::ButtonSecondary,
+        "Copy version info",
+        &format!("Built {}", env!("WINSHORT_BUILD_DATE")),
     );
 }

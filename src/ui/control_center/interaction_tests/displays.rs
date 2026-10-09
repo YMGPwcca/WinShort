@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn reselecting_a_profile_does_not_open_review_or_change_the_draft() {
+    let mut ui = empty_settings_ui();
+    ui.draft.display_profiles.enabled = true;
+    ui.draft.display_profiles.profiles = vec![sample_profile("selected", "Selected setup", false)];
+    ui.draft.display_profiles.active_profile = Some("selected".into());
+    let before = ui.draft.clone();
+    ui.activate_display_profile_card(HWND::default(), 0);
+    assert_eq!(ui.draft, before);
+    assert!(!ui.display.is_editing());
+}
+
+#[test]
 fn advanced_display_topology_stays_selected_in_picker() {
     let mut config = Config::default();
     let mut profile = sample_profile("custom", "Custom layout", true);

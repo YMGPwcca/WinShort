@@ -1419,25 +1419,18 @@ impl App {
 
         match self.microphone_state {
             crate::audio::AudioState::Muted { .. } => {
-                self.remove_overlay_key(
-                    crate::ui::overlay::OverlayKey::MicrophoneToast,
-                    &config.overlay,
-                );
                 self.show_overlay_with_config(
                     crate::ui::overlay::OverlayRequest::permanent(
                         crate::ui::overlay::OverlayKey::MicrophonePermanent,
                         crate::ui::overlay::OverlayModel::single(
                             crate::ui::overlay::microphone_row(&self.microphone_state),
                         ),
-                    ),
+                    )
+                    .replacing(crate::ui::overlay::OverlayKey::MicrophoneToast),
                     config.overlay.clone(),
                 );
             }
             crate::audio::AudioState::Active { .. } => {
-                self.remove_overlay_key(
-                    crate::ui::overlay::OverlayKey::MicrophonePermanent,
-                    &config.overlay,
-                );
                 if show_unmute_feedback {
                     self.show_overlay_with_config(
                         crate::ui::overlay::OverlayRequest::toast(
@@ -1445,8 +1438,14 @@ impl App {
                             crate::ui::overlay::OverlayModel::single(
                                 crate::ui::overlay::microphone_row(&self.microphone_state),
                             ),
-                        ),
+                        )
+                        .replacing(crate::ui::overlay::OverlayKey::MicrophonePermanent),
                         config.overlay.clone(),
+                    );
+                } else {
+                    self.remove_overlay_key(
+                        crate::ui::overlay::OverlayKey::MicrophonePermanent,
+                        &config.overlay,
                     );
                 }
             }
