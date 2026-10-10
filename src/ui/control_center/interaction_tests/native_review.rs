@@ -73,6 +73,44 @@ fn capture(hwnd: HWND, name: &str) {
 }
 
 #[test]
+fn native_control_center_exposes_winshort_icons_to_the_shell() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, ICON_BIG, ICON_SMALL, WM_GETICON};
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let ui = empty_settings_ui();
+    let window = ControlCenterWindow::create(
+        ui.devices,
+        super::super::config_access::ConfigAccess::unavailable(),
+        super::super::config_access::ControlCenterAccess::for_test_data_dir(fixture_dir),
+    )
+    .unwrap();
+    struct OwnedWindow(HWND);
+    impl Drop for OwnedWindow {
+        fn drop(&mut self) {
+            // SAFETY: this test owns the hidden HWND on its creating thread.
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+    let _owned = OwnedWindow(window.hwnd);
+    for kind in [ICON_SMALL, ICON_BIG] {
+        // SAFETY: the hidden window remains alive, and WM_GETICON takes only
+        // integer parameters and returns a borrowed process-lifetime HICON.
+        let icon = unsafe {
+            SendMessageW(
+                window.hwnd,
+                WM_GETICON,
+                Some(WPARAM(kind as usize)),
+                Some(LPARAM(0)),
+            )
+        };
+        assert_ne!(
+            icon.0, 0,
+            "Shell preview needs the app's small and large icons"
+        );
+    }
+}
+
+#[test]
 #[ignore = "shows test-owned native Control Center windows for visual inspection"]
 fn native_ui_review_capture() {
     crate::platform::dpi::set_process_awareness();

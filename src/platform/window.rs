@@ -53,6 +53,40 @@ pub(crate) fn apply_chrome(hwnd: HWND, theme: crate::ui::theme::Theme) {
     }
 }
 
+/// Give shell thumbnails and window switching the embedded application icon.
+/// Call on the owning UI thread after constructing the window.
+pub(crate) fn set_application_icon(hwnd: HWND) -> Result<(), crate::error::Error> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        LoadIconW, SendMessageW, ICON_BIG, ICON_SMALL, WM_SETICON,
+    };
+    const APPLICATION_ICON_RESOURCE_ID: u16 = 1;
+    // SAFETY: the executable module and its resource 1 (assets/winshort.ico)
+    // live for the process lifetime. LoadIconW returns a shared HICON, which
+    // must not be destroyed while Windows still uses it.
+    let icon = unsafe {
+        let module = GetModuleHandleW(None)
+            .map_err(|error| crate::error::Error::win("GetModuleHandleW(icon)", &error))?;
+        LoadIconW(
+            Some(module.into()),
+            PCWSTR(usize::from(APPLICATION_ICON_RESOURCE_ID) as *const u16),
+        )
+    }
+    .map_err(|error| crate::error::Error::win("LoadIconW(application)", &error))?;
+    for kind in [ICON_SMALL, ICON_BIG] {
+        // SAFETY: the caller owns this HWND on the current UI thread, no state
+        // borrow spans dispatch, and the shared icon outlives the window.
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_SETICON,
+                Some(WPARAM(kind as usize)),
+                Some(LPARAM(icon.0 as isize)),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Interior-mutable per-window state stored (boxed) in `GWLP_USERDATA`.
 ///
 /// The WndProc recovers the cell with [`state_cell`] and scopes a

@@ -106,6 +106,7 @@ impl DiagnosticsWindow {
         .map_err(|error| Error::win("CreateWindowExW(diagnostics)", &error))?;
         // SAFETY: this constructor exclusively owns the newly created HWND.
         let construction = unsafe { win::WindowConstructionGuard::new(hwnd) };
+        win::set_application_icon(hwnd)?;
         win::apply_chrome(hwnd, crate::ui::theme::Theme::current());
         let hwnd = construction.complete();
         Ok(Self { hwnd })
