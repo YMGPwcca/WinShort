@@ -2,6 +2,7 @@
 //! No app singleton, audio worker, display apply, live config write or clipboard action.
 
 use super::*;
+use std::os::windows::process::CommandExt;
 use std::time::{Duration, Instant};
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, DispatchMessageW, GetWindowRect, PeekMessageW, SetWindowPos, ShowWindow,
@@ -53,6 +54,7 @@ fn capture(hwnd: HWND, name: &str) {
     );
     let mut child = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000)
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -126,9 +128,13 @@ fn native_ui_review_capture() {
         .unwrap();
         let _ = ShowWindow(window.hwnd, SW_SHOWNOACTIVATE);
     }
+    let overlay_only = std::env::var_os("WINSHORT_UI_REVIEW_OVERLAY_ONLY").is_some();
     for theme in ["dark", "light"] {
         std::env::set_var("WINSHORT_UI_ACCEPTANCE_THEME", theme);
         for page in [Page::Home, Page::Displays, Page::Overlay, Page::System] {
+            if overlay_only && page != Page::Overlay {
+                continue;
+            }
             {
                 let mut state = cell.borrow_mut();
                 state.renderer = None;
@@ -150,6 +156,9 @@ fn native_ui_review_capture() {
             ),
             (Page::System, ElementId::CopyVersionInfo, "version-info"),
         ] {
+            if overlay_only {
+                continue;
+            }
             cell.borrow_mut()
                 .open_search_destination(window.hwnd, page, target);
             pump();

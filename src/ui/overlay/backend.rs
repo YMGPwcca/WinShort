@@ -39,13 +39,16 @@ pub(super) fn render_prepared_frame(
     }
     let (spec, data) = {
         let state = cell.borrow();
-        if state.phase == Phase::Hidden {
+        if state.phase == Phase::Hidden || state.parked {
             return Ok(());
         }
         let mut data = state.render_data(plan.alpha, plan.compact);
         data.hover_alpha = plan.hover_alpha;
         data.model.width_dip = Some(plan.content_width);
         data.text_alpha = plan.text_alpha;
+        data.cluster_extra = plan.cluster_extra;
+        data.cluster_primary_offset = plan.cluster_primary_offset;
+        data.join_alpha = plan.join_alpha;
         (state.surface_spec(plan.size), data)
     };
     let result = run_surface_operation(cell, hwnd, spec, Some(data));
@@ -77,6 +80,11 @@ pub(super) struct OverlayRenderData {
     pub(super) model: OverlayModel,
     pub(super) previous_text: Option<OverlayModel>,
     pub(super) text_alpha: f32,
+    pub(super) cluster_extra: f32,
+    pub(super) cluster_primary_offset: f32,
+    pub(super) cluster_side: Option<super::group::Side>,
+    pub(super) cluster_peers: Vec<super::group::ClusterIcon>,
+    pub(super) join_alpha: f32,
     pub(super) scale: f32,
     pub(super) palette: OverlayPalette,
     pub(super) theme_mode: ThemeMode,
@@ -93,6 +101,7 @@ pub(super) enum OverlaySurface {
 
 pub(super) struct HwndOverlaySurface {
     target: ID2D1HwndRenderTarget,
+    app_bitmaps: super::exe_icon::BitmapCache,
     size: SIZE,
     dpi: u32,
 }
@@ -124,7 +133,7 @@ fn run_surface_operation(
             result = if surface.is_composition() {
                 surface.render(data, spec)
             } else {
-                super::window::set_hover_opacity(hwnd, data.hover_alpha)
+                super::window::set_hover_opacity(hwnd, data.hover_alpha * data.join_alpha)
                     .and_then(|()| surface.render(data, spec))
             };
         }
@@ -145,8 +154,11 @@ fn run_surface_operation(
                     if let Some(data) = data.as_ref() {
                         let mut fallback_data = data.clone();
                         fallback_data.palette = opaque_palette(fallback_data.palette);
-                        fallback_result = super::window::set_hover_opacity(hwnd, data.hover_alpha)
-                            .and_then(|()| fallback.render(&fallback_data, fallback_spec));
+                        fallback_result = super::window::set_hover_opacity(
+                            hwnd,
+                            data.hover_alpha * data.join_alpha,
+                        )
+                        .and_then(|()| fallback.render(&fallback_data, fallback_spec));
                     }
                 }
                 if fallback_result.is_ok() {
@@ -200,7 +212,7 @@ pub(super) fn render_current_frame(
 ) -> Result<()> {
     let (spec, data) = {
         let state = cell.borrow();
-        if state.phase == Phase::Hidden {
+        if state.phase == Phase::Hidden || state.parked {
             return Ok(());
         }
         let now = Instant::now();
@@ -221,7 +233,8 @@ impl OverlaySurface {
     pub(super) fn sync_geometry(&mut self, spec: SurfaceSpec) -> Result<()> {
         match self {
             Self::Hwnd(surface) => surface.sync_geometry(spec),
-            Self::Composition(host) => host.sync_geometry(spec),
+            // Composition resizes its scene only after the new content is ready.
+            Self::Composition(_) => Ok(()),
         }
     }
     pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
@@ -250,6 +263,11 @@ impl HwndOverlaySurface {
                 data.palette,
                 data.alpha,
                 OverlayDrawOptions {
+                    app_bitmaps: &self.app_bitmaps,
+                    cluster_extra: data.cluster_extra,
+                    cluster_primary_offset: data.cluster_primary_offset,
+                    cluster_side: data.cluster_side,
+                    cluster_peers: &data.cluster_peers,
                     previous_text: data.previous_text.as_ref(),
                     text_alpha: data.text_alpha,
                     compact: data.compact,
@@ -338,7 +356,12 @@ impl OverlayGraphics {
                 .map_err(|e| Error::win("CreateHwndRenderTarget(overlay)", &e))?;
             target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             target.SetDpi(dpi as f32, dpi as f32);
-            Ok(HwndOverlaySurface { target, size, dpi })
+            Ok(HwndOverlaySurface {
+                target,
+                size,
+                dpi,
+                app_bitmaps: Default::default(),
+            })
         }
     }
 }

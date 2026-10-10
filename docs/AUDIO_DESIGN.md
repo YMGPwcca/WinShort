@@ -88,6 +88,12 @@ Executed on the audio worker when the foreground action fires
 Aggregate semantics (`audio/state.rs::Aggregate`): `NoSession`, `AllMuted`, `AllActive`,
 `Mixed`, `NoExternalApp`, `Error` (operational failure — never masked as NoSession, #17d).
 
+### Persistent muted-executable inventory
+
+`audio/applications.rs` reads live sessions across all active render endpoints on the audio worker. It skips expired sessions and system-sound PID zero, combines sessions from the same normalized full executable path, and supplies executable groups to the scope observer. Published badges use confirmed mute state from the shortcut scope; fully muted global groups remain eligible for discovery. Unavailable image paths retain a PID-private identity; same-name installations at different paths stay independent. The UI uses this inventory for persistent executable badges, separate from the selected-app state used by shortcuts and Show Status.
+
+A worker-owned watch remembers each muted target with the same foreground session resolution used by the shortcut. Background discovery also tests the shortcut scope for mixed executable groups, because another endpoint can expose an unrelated unmuted session. Those global sessions do not overrule a known target. Lack of a session or an operational query failure keeps the last known badge; confirmed unmute or process exit clears it. PID reuse across executable paths is rejected. The worker scans at most once per second during normal operation and immediately after app mute toggles. It publishes changed snapshots only. Operational scan failures leave the previous snapshot intact, while successful scoped reads remove programs that unmuted and process-lifetime checks remove exited programs. This observer does not write session mute/volume, configuration, or persisted rules. Existing foreground mute/volume resolution and operation semantics stay intact.
+
 ### Foreground-app volume adjustment
 
 The Phase-1 volume actions reuse the same foreground session resolution ladder

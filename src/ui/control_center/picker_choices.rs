@@ -439,6 +439,7 @@ fn overlay_appearance_parts(draft: &Config) -> PickerParts {
 fn overlay_position_parts(draft: &Config) -> PickerParts {
     let choices = OverlayPosition::ALL
         .into_iter()
+        .filter(|position| *position != OverlayPosition::Center)
         .map(|position| {
             PickerChoice::commit(position.label(), PickerCommit::OverlayPosition(position))
         })

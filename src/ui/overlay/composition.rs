@@ -40,8 +40,8 @@ use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
     CompositionColorBrush, CompositionDrawingSurface, CompositionEffectBrush,
     CompositionEffectSourceParameter, CompositionGeometricClip, CompositionGraphicsDevice,
-    CompositionRoundedRectangleGeometry, CompositionSurfaceBrush, Compositor, LayerVisual,
-    SpriteVisual,
+    CompositionRoundedRectangleGeometry, CompositionStretch, CompositionSurfaceBrush, Compositor,
+    LayerVisual, SpriteVisual,
 };
 use windows_numerics::Vector2;
 
@@ -86,6 +86,8 @@ pub(super) struct CompositionHost {
     scene: CompositionScene,
     surface: CompositionDrawingSurface,
     size: SIZE,
+    surface_size: SIZE,
+    app_bitmaps: super::exe_icon::BitmapCache,
     dpi: u32,
     // Keep the shared thread runtime alive until this host's target/scene/surface
     // have been released.
@@ -339,6 +341,17 @@ fn create_content_layer(
     let brush = compositor
         .CreateSurfaceBrushWithSurface(surface)
         .map_err(|e| Error::win("CreateSurfaceBrush(overlay)", &e))?;
+    // Retain the largest backing canvas through a contraction. Clip the
+    // visual at its current size without scaling or centering the old canvas.
+    brush
+        .SetStretch(CompositionStretch::None)
+        .map_err(|e| Error::win("SetContentStretch(overlay)", &e))?;
+    brush
+        .SetHorizontalAlignmentRatio(0.0)
+        .map_err(|e| Error::win("SetContentHorizontalAlignment(overlay)", &e))?;
+    brush
+        .SetVerticalAlignmentRatio(0.0)
+        .map_err(|e| Error::win("SetContentVerticalAlignment(overlay)", &e))?;
     let visual = compositor
         .CreateSpriteVisual()
         .map_err(|e| Error::win("CreateContentVisual(overlay)", &e))?;
@@ -437,21 +450,17 @@ impl CompositionHost {
             scene,
             surface,
             size,
+            surface_size: size,
+            app_bitmaps: Default::default(),
             dpi,
             runtime,
         })
     }
 
-    pub(super) fn sync_geometry(&mut self, spec: SurfaceSpec) -> Result<()> {
+    fn publish_geometry(&mut self, spec: SurfaceSpec) -> Result<()> {
         if self.size == spec.size && self.dpi == spec.dpi {
             return Ok(());
         }
-        let surface = create_composition_surface(self.runtime.graphics_device(), spec.size)?;
-        clear_composition_surface(&surface, spec.dpi)?;
-        self.scene
-            .content_brush
-            .SetSurface(&surface)
-            .map_err(|e| Error::win("SetCompositionSurface(overlay)", &e))?;
         let vector_size = composition_size(spec.size);
         self.scene
             .root
@@ -474,16 +483,45 @@ impl CompositionHost {
             .geometry
             .SetCornerRadius(composition_radius(spec.dpi))
             .map_err(|e| Error::win("SetShapeRadius(overlay)", &e))?;
-        self.surface = surface;
         self.size = spec.size;
         self.dpi = spec.dpi;
         Ok(())
     }
 
     pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
+        let canvas_size = SIZE {
+            cx: self.surface_size.cx.max(spec.size.cx),
+            cy: self.surface_size.cy.max(spec.size.cy),
+        };
+        let surface = if canvas_size == self.surface_size {
+            self.surface.clone()
+        } else {
+            create_composition_surface(self.runtime.graphics_device(), canvas_size)?
+        };
+        // Never publish a freshly cleared/empty surface from WM_SIZE. Finish
+        // drawing before binding a larger canvas or changing the scene clip.
+        draw_content(&surface, data, spec, &self.app_bitmaps)?;
+        if canvas_size != self.surface_size {
+            self.scene
+                .content_brush
+                .SetSurface(&surface)
+                .map_err(|e| Error::win("SetCompositionSurface(overlay)", &e))?;
+            self.surface = surface;
+            self.surface_size = canvas_size;
+        }
+        self.publish_geometry(spec)?;
+        self.update_material(data, spec)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_surface(&self) -> CompositionDrawingSurface {
+        self.surface.clone()
+    }
+
+    fn update_material(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
         self.scene
             .root
-            .SetOpacity(data.hover_alpha.clamp(0.1, 1.0))
+            .SetOpacity(data.hover_alpha.clamp(0.1, 1.0) * data.join_alpha.clamp(0.0, 1.0))
             .map_err(|error| Error::win("SetOverlayHoverOpacity", &error))?;
         if let Some(blur_amount) = data.blur.blur_amount() {
             if (self.scene.blur_amount - blur_amount).abs() > f32::EPSILON {
@@ -525,54 +563,67 @@ impl CompositionHost {
             })
             .map_err(|e| Error::win("SetTintColor(overlay)", &e))?;
 
-        let surface_interop: ICompositionDrawingSurfaceInterop = self
-            .surface
-            .cast()
-            .map_err(|e| Error::win("CastCompositionSurface(overlay)", &e))?;
-        let mut draw_offset = POINT::default();
-        let drawing_context: ID2D1DeviceContext = unsafe {
-            surface_interop
-                .BeginDraw(None, &mut draw_offset)
-                .map_err(|e| Error::win("BeginCompositionDraw(overlay)", &e))?
-        };
-        let transform = windows_numerics::Matrix3x2 {
-            M11: 1.0,
-            M12: 0.0,
-            M21: 0.0,
-            M22: 1.0,
-            M31: draw_offset.x as f32,
-            M32: draw_offset.y as f32,
-        };
-        unsafe {
-            drawing_context.SetDpi(spec.dpi as f32, spec.dpi as f32);
-            drawing_context.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            drawing_context.SetTransform(&transform);
-        }
-        unsafe {
-            let transparent = Color::rgba(0, 0, 0, 0).d2d();
-            drawing_context.Clear(Some(&transparent));
-        }
-        let draw_result = draw_overlay(
-            &drawing_context,
-            &data.dwrite,
-            &data.model,
-            data.scale,
-            data.palette,
-            data.alpha,
-            OverlayDrawOptions {
-                previous_text: data.previous_text.as_ref(),
-                text_alpha: data.text_alpha,
-                compact: data.compact,
-                fill_card: data.palette.opaque,
-                draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
-            },
-        );
-        let end_result = unsafe {
-            surface_interop
-                .EndDraw()
-                .map_err(|e| Error::win("EndCompositionDraw(overlay)", &e))
-        };
-        draw_result?;
-        end_result
+        Ok(())
     }
+}
+
+fn draw_content(
+    surface: &CompositionDrawingSurface,
+    data: &OverlayRenderData,
+    spec: SurfaceSpec,
+    app_bitmaps: &super::exe_icon::BitmapCache,
+) -> Result<()> {
+    let surface_interop: ICompositionDrawingSurfaceInterop = surface
+        .cast()
+        .map_err(|e| Error::win("CastCompositionSurface(overlay)", &e))?;
+    let mut draw_offset = POINT::default();
+    let drawing_context: ID2D1DeviceContext = unsafe {
+        surface_interop
+            .BeginDraw(None, &mut draw_offset)
+            .map_err(|e| Error::win("BeginCompositionDraw(overlay)", &e))?
+    };
+    let transform = windows_numerics::Matrix3x2 {
+        M11: 1.0,
+        M12: 0.0,
+        M21: 0.0,
+        M22: 1.0,
+        M31: draw_offset.x as f32,
+        M32: draw_offset.y as f32,
+    };
+    unsafe {
+        drawing_context.SetDpi(spec.dpi as f32, spec.dpi as f32);
+        drawing_context.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        drawing_context.SetTransform(&transform);
+    }
+    unsafe {
+        let transparent = Color::rgba(0, 0, 0, 0).d2d();
+        drawing_context.Clear(Some(&transparent));
+    }
+    let draw_result = draw_overlay(
+        &drawing_context,
+        &data.dwrite,
+        &data.model,
+        data.scale,
+        data.palette,
+        data.alpha,
+        OverlayDrawOptions {
+            app_bitmaps,
+            cluster_extra: data.cluster_extra,
+            cluster_primary_offset: data.cluster_primary_offset,
+            cluster_side: data.cluster_side,
+            cluster_peers: &data.cluster_peers,
+            previous_text: data.previous_text.as_ref(),
+            text_alpha: data.text_alpha,
+            compact: data.compact,
+            fill_card: data.palette.opaque,
+            draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,
+        },
+    );
+    let end_result = unsafe {
+        surface_interop
+            .EndDraw()
+            .map_err(|e| Error::win("EndCompositionDraw(overlay)", &e))
+    };
+    draw_result?;
+    end_result
 }

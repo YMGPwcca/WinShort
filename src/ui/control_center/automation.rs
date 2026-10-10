@@ -382,7 +382,12 @@ impl SettingsUi {
         match element {
             OverlayElement::PositionCell(index) => {
                 node.name = overlay_position_label(index as usize).into();
-                node.help_text = "Choose this overlay position".into();
+                node.help_text = if index == 4 {
+                    "Center position is unavailable"
+                } else {
+                    "Choose this overlay position"
+                }
+                .into();
             }
             OverlayElement::Enabled
             | OverlayElement::Microphone

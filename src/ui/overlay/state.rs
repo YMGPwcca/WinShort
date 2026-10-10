@@ -15,7 +15,7 @@ use crate::config::model::{OverlayBlur, OverlayCfg, OverlayPosition};
 use crate::error::Result;
 use crate::platform::visual::SystemVisualPreferences;
 use std::time::{Duration, Instant, SystemTime};
-use windows::Win32::Foundation::{POINT, SIZE};
+use windows::Win32::Foundation::{HWND, POINT, SIZE};
 
 pub(super) struct ShowRequest {
     pub(super) generation: u64,
@@ -31,6 +31,10 @@ pub(super) struct ShowRequest {
     pub(super) animate_content: bool,
     pub(super) layout_size: SIZE,
     pub(super) frame_period: Duration,
+    pub(super) cluster: Option<super::group::ClusterRequest>,
+    pub(super) join: Option<super::group::JoinRequest>,
+    pub(super) behind_badge: Option<HWND>,
+    pub(super) edge_entrance: bool,
 }
 
 pub(super) struct OverlayState {
@@ -50,6 +54,13 @@ pub(super) struct OverlayState {
     pub(super) position_tween: Option<PositionTween>,
     pub(super) badge: BadgeMotion,
     pub(super) content: super::content::ContentMotion,
+    pub(super) cluster: super::group::ClusterMotion,
+    pub(super) join: Option<super::group::JoinMotion>,
+    pub(super) compacted_at: Option<Instant>,
+    pub(super) collapse_origin: Option<POINT>,
+    pub(super) parked: bool,
+    pub(super) behind_badge: Option<HWND>,
+    pub(super) edge_entrance: bool,
     pub(super) hover: super::hover::HoverMotion,
     pub(super) layout_size: SIZE,
     pub(super) phase: Phase,
@@ -87,6 +98,13 @@ impl OverlayState {
             position_tween: None,
             badge: BadgeMotion::default(),
             content: super::content::ContentMotion::default(),
+            cluster: super::group::ClusterMotion::default(),
+            join: None,
+            compacted_at: None,
+            collapse_origin: None,
+            parked: false,
+            behind_badge: None,
+            edge_entrance: false,
             hover: super::hover::HoverMotion::default(),
             layout_size: SIZE::default(),
             phase: Phase::Hidden,
@@ -121,6 +139,10 @@ impl OverlayState {
             animate_content,
             layout_size,
             frame_period,
+            cluster,
+            join,
+            behind_badge,
+            edge_entrance,
         } = request;
         if model.rows.is_empty() || !config.enabled {
             return Ok(None);
@@ -129,6 +151,10 @@ impl OverlayState {
         let previous_position = self.presentation_position(now, self.presentation_size(now));
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
+        self.parked = false;
+        self.behind_badge = behind_badge;
+        self.cluster.update(cluster, self.motion, now);
+        self.update_join(join, previous_position);
         self.config = config;
         self.content.update(
             &self.model,
@@ -140,6 +166,12 @@ impl OverlayState {
         );
         self.badge
             .update(collapsible_mute, presentation_started_at, self.motion, now);
+        if !self.badge.reserves_compact() {
+            self.compacted_at = None;
+        }
+        if self.badge.collapse_started().is_none() {
+            self.collapse_origin = None;
+        }
         self.layout_size = layout_size;
         self.frame_period = frame_period;
         self.model = model;
@@ -161,6 +193,7 @@ impl OverlayState {
         let timing = timing_after_show(self.phase, self.motion, mode);
         self.phase = timing.phase;
         if timing.restart_phase {
+            self.edge_entrance = edge_entrance;
             self.phase_started = presentation_started_at;
             self.position_tween = None;
         } else if mode == ShowMode::Relayout {
@@ -179,6 +212,11 @@ impl OverlayState {
     fn frame_plan_at(&self, now: Instant) -> ShowPlan {
         let (alpha, slide_dip) = self.frame_values(now);
         let slide_px = (slide_dip * self.config.scale * self.dpi as f32 / 96.0).round() as i32;
+        let slide = if self.edge_entrance {
+            entrance_offset(self.config.position, slide_px)
+        } else {
+            POINT { x: 0, y: slide_px }
+        };
         let compact = self.badge.value(now);
         let size = self.presentation_size(now);
         let position = self.presentation_position(now, size);
@@ -195,14 +233,18 @@ impl OverlayState {
             self.badge.timer_interval(now),
             self.hover.timer_interval(),
             self.content.timer_interval(),
+            self.cluster.timer_interval(),
+            self.join
+                .filter(|join| !join.finished(now))
+                .map(|_| super::timeline::TIMER_MS),
         ]
         .into_iter()
         .flatten()
         .min();
         ShowPlan {
             position: POINT {
-                x: position.x,
-                y: position.y + slide_px,
+                x: position.x + slide.x,
+                y: position.y + slide.y,
             },
             size,
             region: window_region_for(size, self.dpi),
@@ -214,6 +256,10 @@ impl OverlayState {
             timer_interval,
             content_width: self.content.width(&self.model, now),
             text_alpha: self.content.text_alpha(now),
+            cluster_extra: self.cluster.extra(now) * compact,
+            cluster_primary_offset: self.cluster.primary_offset(now) * compact,
+            join_alpha: self.join.map_or(1.0, |join| join.alpha(now)),
+            behind_badge: self.behind_badge,
             animation_active: self.motion == MotionPolicy::Animated
                 && (matches!(self.phase, Phase::Appearing | Phase::Leaving)
                     || self
@@ -221,11 +267,16 @@ impl OverlayState {
                         .is_some_and(|tween| !tween.is_finished(now))
                     || self.badge.is_animating()
                     || self.content.is_animating()
+                    || self.cluster.timer_interval().is_some()
+                    || self.join.is_some_and(|join| !join.finished(now))
                     || self.hover.is_animating()),
         }
     }
 
     fn presentation_position(&self, now: Instant, size: SIZE) -> POINT {
+        if let Some(join) = self.join {
+            return join.position(now);
+        }
         let position = self.position_at(now);
         let offset = self.presentation_offset(size);
         POINT {
@@ -235,26 +286,32 @@ impl OverlayState {
     }
 
     fn presentation_size(&self, now: Instant) -> SIZE {
-        geometry_with_width(
+        let mut geometry = geometry_with_width(
             self.config.scale,
             self.model.rows.len(),
             self.content.width(&self.model, now),
             self.badge.value(now),
-        )
-        .pixel_size(self.dpi)
+        );
+        geometry.width += self.cluster.extra(now) * self.badge.value(now) * self.config.scale;
+        geometry.body_right = geometry.width;
+        geometry.pixel_size(self.dpi)
     }
 
     fn presentation_offset(&self, size: SIZE) -> POINT {
         let dx = self.layout_size.cx - size.cx;
         let dy = self.layout_size.cy - size.cy;
-        let x = match self.config.position {
-            OverlayPosition::TopRight
-            | OverlayPosition::CenterRight
-            | OverlayPosition::BottomRight => dx,
-            OverlayPosition::TopCenter
-            | OverlayPosition::Center
-            | OverlayPosition::BottomCenter => dx / 2,
-            _ => 0,
+        let x = match self.cluster.side() {
+            Some(super::group::Side::Left) => dx,
+            Some(super::group::Side::Right) => 0,
+            None => match self.config.position {
+                OverlayPosition::TopRight
+                | OverlayPosition::CenterRight
+                | OverlayPosition::BottomRight => dx,
+                OverlayPosition::TopCenter
+                | OverlayPosition::Center
+                | OverlayPosition::BottomCenter => dx / 2,
+                _ => 0,
+            },
         };
         let y = if matches!(
             self.config.position,
@@ -294,10 +351,22 @@ impl OverlayState {
     }
 
     pub(super) fn prepare_tick_at(&mut self, now: Instant) -> Option<TickPlan> {
-        if self.phase == Phase::Hidden {
+        if self.phase == Phase::Hidden || self.parked {
             return None;
         }
-        let layout_changed = self.badge.tick(self.motion, now);
+        let old_collapse = self.badge.collapse_started();
+        let collapse_position = self.presentation_position(now, self.presentation_size(now));
+        let mut layout_changed = self.badge.tick(self.motion, now);
+        if old_collapse != self.badge.collapse_started() {
+            self.collapse_origin = Some(collapse_position);
+        }
+        if self.badge.reserves_compact() && self.compacted_at.is_none() {
+            self.compacted_at = Some(now);
+        }
+        layout_changed |= self.cluster.tick(now);
+        if let Some(join) = &mut self.join {
+            layout_changed |= join.tick(now);
+        }
         self.hover.tick(now);
         self.content.tick(now);
         let tween_finished = self
@@ -392,6 +461,15 @@ impl OverlayState {
             model,
             previous_text: self.content.previous.clone(),
             text_alpha: self.content.text_alpha(now),
+            cluster_extra: self.cluster.extra(now) * compact,
+            cluster_primary_offset: self.cluster.primary_offset(now) * compact,
+            cluster_side: self.cluster.side(),
+            cluster_peers: if compact >= 0.999 {
+                self.cluster.icons(now)
+            } else {
+                Vec::new()
+            },
+            join_alpha: self.join.map_or(1.0, |join| join.alpha(now)),
             scale: self.config.scale,
             palette: self.palette,
             theme_mode: resolved_theme_mode(self.config.appearance, self.preferences),
@@ -399,6 +477,155 @@ impl OverlayState {
             blur: self.config.blur,
             compact,
             hover_alpha: self.hover.value(Instant::now()),
+        }
+    }
+
+    fn update_join(&mut self, request: Option<super::group::JoinRequest>, from: POINT) {
+        match request {
+            None => self.join = None,
+            Some(request) => {
+                if self.join.is_some_and(|join| {
+                    join.request.started == request.started
+                        && join.request.position == request.position
+                }) {
+                    return;
+                }
+                let from = if self.badge.collapse_started() == Some(request.started) {
+                    self.collapse_origin.unwrap_or(from)
+                } else {
+                    from
+                };
+                self.join = Some(super::group::JoinMotion::new(from, request));
+            }
+        }
+    }
+}
+
+fn entrance_offset(position: OverlayPosition, distance: i32) -> POINT {
+    let (x, y) = match position {
+        OverlayPosition::TopLeft => (-1, -1),
+        OverlayPosition::TopCenter => (0, -1),
+        OverlayPosition::TopRight => (1, -1),
+        OverlayPosition::CenterLeft => (-1, 0),
+        OverlayPosition::CenterRight => (1, 0),
+        OverlayPosition::BottomLeft => (-1, 1),
+        OverlayPosition::BottomCenter => (0, 1),
+        OverlayPosition::BottomRight => (1, 1),
+        OverlayPosition::Center => (0, 0),
+    };
+    POINT {
+        x: x * distance,
+        y: y * distance,
+    }
+}
+
+#[cfg(test)]
+mod entrance_tests {
+    use super::*;
+    #[test]
+    fn frame_plan_applies_direction_only_to_the_first_card_and_honors_dpi_and_reduced_motion() {
+        let _com = crate::platform::com::ComApartment::init_sta();
+        let graphics = super::super::backend::OverlayGraphics::create().unwrap();
+        let mut state = OverlayState::new(graphics, 0);
+        state.model = OverlayModel::single(super::super::model::OverlayRow::preview(
+            "Preview",
+            "Direction",
+        ));
+        state.motion = MotionPolicy::Animated;
+        state.phase = Phase::Appearing;
+        state.edge_entrance = true;
+        state.dpi = 144;
+        state.base_position = POINT { x: 300, y: 300 };
+        let start = state.phase_started;
+        state.layout_size = state.presentation_size(start);
+        for (position, expected) in [
+            (OverlayPosition::TopLeft, (-18, -18)),
+            (OverlayPosition::TopCenter, (0, -18)),
+            (OverlayPosition::TopRight, (18, -18)),
+            (OverlayPosition::CenterLeft, (-18, 0)),
+            (OverlayPosition::CenterRight, (18, 0)),
+            (OverlayPosition::BottomLeft, (-18, 18)),
+            (OverlayPosition::BottomCenter, (0, 18)),
+            (OverlayPosition::BottomRight, (18, 18)),
+        ] {
+            state.config.position = position;
+            let plan = state.frame_plan_at(start);
+            assert_eq!((plan.position.x - 300, plan.position.y - 300), expected);
+            assert_eq!(
+                state
+                    .frame_plan_at(start + Duration::from_millis(APPEAR_MS))
+                    .position,
+                state.base_position
+            );
+        }
+        state.edge_entrance = false;
+        assert_eq!(
+            state.frame_plan_at(start).position,
+            POINT { x: 300, y: 318 }
+        );
+        state.edge_entrance = true;
+        state.motion = MotionPolicy::Reduced;
+        assert_eq!(state.frame_plan_at(start).position, state.base_position);
+    }
+
+    #[test]
+    fn first_card_exits_back_toward_its_entrance_at_every_corner_and_edge() {
+        let _com = crate::platform::com::ComApartment::init_sta();
+        let graphics = super::super::backend::OverlayGraphics::create().unwrap();
+        let mut state = OverlayState::new(graphics, 0);
+        state.model = OverlayModel::single(super::super::model::OverlayRow::preview(
+            "Preview",
+            "Exit direction",
+        ));
+        state.motion = MotionPolicy::Animated;
+        state.phase = Phase::Leaving;
+        state.edge_entrance = true;
+        state.dpi = 144;
+        state.base_position = POINT { x: 300, y: 300 };
+        let start = state.phase_started;
+        state.layout_size = state.presentation_size(start);
+        let middle = start + Duration::from_millis(LEAVE_MS / 2);
+        for (position, expected) in [
+            (OverlayPosition::TopLeft, (-6, -6)),
+            (OverlayPosition::TopCenter, (0, -6)),
+            (OverlayPosition::TopRight, (6, -6)),
+            (OverlayPosition::CenterLeft, (-6, 0)),
+            (OverlayPosition::CenterRight, (6, 0)),
+            (OverlayPosition::BottomLeft, (-6, 6)),
+            (OverlayPosition::BottomCenter, (0, 6)),
+            (OverlayPosition::BottomRight, (6, 6)),
+        ] {
+            state.config.position = position;
+            assert_eq!(state.frame_plan_at(start).position, state.base_position);
+            let plan = state.frame_plan_at(middle);
+            assert_eq!((plan.position.x - 300, plan.position.y - 300), expected);
+            assert!(plan.alpha > 0.0 && plan.alpha < 1.0);
+        }
+        state.edge_entrance = false;
+        assert_eq!(
+            state.frame_plan_at(middle).position,
+            POINT { x: 300, y: 306 }
+        );
+        state.edge_entrance = true;
+        state.motion = MotionPolicy::Reduced;
+        assert_eq!(state.frame_plan_at(middle).position, state.base_position);
+    }
+
+    #[test]
+    fn first_card_comes_from_each_named_corner_or_edge_and_settles_at_anchor() {
+        for (position, expected) in [
+            (OverlayPosition::TopLeft, (-12, -12)),
+            (OverlayPosition::TopCenter, (0, -12)),
+            (OverlayPosition::TopRight, (12, -12)),
+            (OverlayPosition::CenterLeft, (-12, 0)),
+            (OverlayPosition::CenterRight, (12, 0)),
+            (OverlayPosition::BottomLeft, (-12, 12)),
+            (OverlayPosition::BottomCenter, (0, 12)),
+            (OverlayPosition::BottomRight, (12, 12)),
+        ] {
+            let offset = entrance_offset(position, 12);
+            assert_eq!((offset.x, offset.y), expected);
+            assert_eq!(entrance_offset(position, 0), POINT::default());
         }
     }
 }

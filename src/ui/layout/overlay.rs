@@ -102,7 +102,11 @@ fn add_overlay_position_elements(layout: &mut SettingsLayout, controls: Rect) {
             ElementId::OverlayPositionCell(index),
             ElementKind::Choice,
             "Overlay position",
-            "Choose this position",
+            if index == 4 {
+                "Center position is unavailable"
+            } else {
+                "Choose this position"
+            },
             overlay_position_grid_rect(controls, index as usize),
         );
     }

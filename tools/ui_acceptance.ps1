@@ -1463,6 +1463,11 @@ show_display_profile = true
             ).Count -eq 3)
         } "$Name did not expose exactly three overlay HWNDs" | Out-Null
 
+        # This assertion checks settled stacking, not transient entrance frames.
+        # Corner and stacked cards can start moving at different times/offsets.
+        # Let the 140 ms entrance and 220 ms relayout finish before sampling.
+        Start-Sleep -Milliseconds 250
+
         $windows = @([WinShortUiAcceptance.Native]::FindVisibleWindowsForProcess(
             $process.Id,
             'WinShort.Overlay'
@@ -1492,7 +1497,7 @@ show_display_profile = true
                 )
                 Assert-Condition (
                     $intersection.Width -eq 0 -or $intersection.Height -eq 0
-                ) "$Name cards overlap"
+                ) "$Name cards overlap: $($rectangles[$left]) / $($rectangles[$right])"
             }
         }
 

@@ -69,6 +69,18 @@ fn commit_prepared_show(hwnd: HWND, plan: ShowPlan) -> Result<()> {
     unsafe {
         // ShowWindow reports the previous visibility state, not operation failure.
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        // Establish stacking once when presenting a card. Frame updates must
+        // not alternate the host and joining peer at the top of the z-order.
+        SetWindowPos(
+            hwnd,
+            Some(plan.behind_badge.unwrap_or(HWND_TOPMOST)),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        )
+        .map_err(|error| Error::win("SetOverlayStacking", &error))?;
     }
     Ok(())
 }
@@ -127,12 +139,12 @@ pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -
     unsafe {
         SetWindowPos(
             hwnd,
-            Some(HWND_TOPMOST),
+            Some(plan.behind_badge.unwrap_or(HWND_TOPMOST)),
             plan.position.x,
             plan.position.y,
             plan.size.cx,
             plan.size.cy,
-            SWP_NOACTIVATE,
+            SWP_NOACTIVATE | SWP_NOZORDER,
         )
         .map_err(|error| Error::win("SetWindowPos(overlay)", &error))?;
     }
@@ -147,7 +159,7 @@ pub(super) fn set_hover_opacity(hwnd: HWND, opacity: f32) -> Result<()> {
         SetLayeredWindowAttributes(
             hwnd,
             COLORREF(0),
-            (opacity.clamp(0.1, 1.0) * 255.0).round() as u8,
+            (opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
             LWA_ALPHA,
         )
     }
@@ -169,7 +181,7 @@ pub(super) fn update_hover_pointer(
         && point.y >= rect.top
         && point.y < rect.bottom;
     let plan = prepare_state_plan(cell, |state| {
-        if state.phase == Phase::Hidden {
+        if state.phase == Phase::Hidden || state.parked {
             return None;
         }
         let opacity = if inside && !state.preferences.high_contrast {
@@ -369,6 +381,12 @@ impl OverlayWindow {
         state.position_tween = None;
         state.badge = super::badge::BadgeMotion::default();
         state.content = super::content::ContentMotion::default();
+        state.cluster = super::group::ClusterMotion::default();
+        state.join = None;
+        state.compacted_at = None;
+        state.collapse_origin = None;
+        state.parked = false;
+        state.behind_badge = None;
         state.hover = super::hover::HoverMotion::default();
         state.layout_size = SIZE::default();
         state.model = super::model::OverlayModel::default();
@@ -398,6 +416,12 @@ impl OverlayWindow {
                 state.position_tween = None;
                 state.badge = super::badge::BadgeMotion::default();
                 state.content = super::content::ContentMotion::default();
+                state.cluster = super::group::ClusterMotion::default();
+                state.join = None;
+                state.compacted_at = None;
+                state.collapse_origin = None;
+                state.parked = false;
+                state.behind_badge = None;
                 state.hover = super::hover::HoverMotion::default();
                 state.timer_id
             }
@@ -405,6 +429,44 @@ impl OverlayWindow {
             TIMER_ID
         };
         apply_hide_window(self.hwnd, timer_id);
+    }
+
+    pub(super) fn compacted_at(&self) -> Option<std::time::Instant> {
+        // SAFETY: manager getters run on the HWND's owning UI thread.
+        unsafe { win::state_cell::<OverlayState>(self.hwnd) }
+            .and_then(|cell| cell.borrow().compacted_at)
+    }
+    pub(super) fn collapse_started(&self) -> Option<std::time::Instant> {
+        // SAFETY: manager reads the live state on the owning UI thread.
+        unsafe { win::state_cell::<OverlayState>(self.hwnd) }
+            .and_then(|cell| cell.borrow().badge.collapse_started())
+    }
+
+    /// Hide only the peer's native surface; its independent audio entry and
+    /// settled badge state must survive so unmute can reuse this same HWND.
+    pub(super) fn park(&self, request: ShowRequest) -> Result<()> {
+        let position = request.position;
+        // SAFETY: this object owns the live HWND on the UI thread. No state
+        // borrow spans the native hide or worker-clock operation.
+        let Some(cell) = (unsafe { win::state_cell::<OverlayState>(self.hwnd) }) else {
+            return Ok(());
+        };
+        let preferences = SystemVisualPreferences::query();
+        prepare_state_plan(cell, |state| state.prepare_show(request, preferences))?;
+        let timer_id = {
+            let mut state = cell.borrow_mut();
+            state.parked = true;
+            state.base_position = position;
+            state.position_tween = None;
+            state.join = None;
+            state.timer_id
+        };
+        super::hover::unregister(self.hwnd);
+        set_timer(self.hwnd, timer_id, None, false)?;
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
+        Ok(())
     }
 
     pub(crate) fn status(&self) -> OverlayRuntimeStatus {

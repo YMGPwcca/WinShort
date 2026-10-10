@@ -7,7 +7,7 @@ fn row(icon: OverlayIcon, title: &str) -> OverlayRow {
     let category = match icon {
         OverlayIcon::Microphone => crate::config::model::OverlayNotificationCategory::Microphone,
         OverlayIcon::Output => crate::config::model::OverlayNotificationCategory::Speaker,
-        OverlayIcon::Application => {
+        OverlayIcon::Application | OverlayIcon::Executable(_) => {
             crate::config::model::OverlayNotificationCategory::CurrentAppAudio
         }
         OverlayIcon::Workspace | OverlayIcon::Info => {
@@ -316,7 +316,7 @@ fn app_mute_badge_is_independent_and_survives_volume_toast_expiry() {
         ),
     ] {
         registry.present(
-            OverlayRequest::permanent(key, OverlayModel::single(row(icon, "muted"))),
+            OverlayRequest::permanent(key, OverlayModel::single(row(icon.clone(), "muted"))),
             hold,
             now,
         );
@@ -326,7 +326,7 @@ fn app_mute_badge_is_independent_and_survives_volume_toast_expiry() {
         (OverlayKey::OutputDevice, OverlayIcon::Output),
     ] {
         registry.present(
-            OverlayRequest::toast(key, OverlayModel::single(row(icon, "feedback"))),
+            OverlayRequest::toast(key, OverlayModel::single(row(icon.clone(), "feedback"))),
             hold,
             now,
         );
@@ -535,7 +535,7 @@ fn repeated_device_presentations_replace_one_entry_for_each_device_key() {
             last = Some(registry.present(
                 OverlayRequest::toast(
                     key,
-                    OverlayModel::single(row(icon, &format!("device-{index}"))),
+                    OverlayModel::single(row(icon.clone(), &format!("device-{index}"))),
                 ),
                 Duration::from_millis(1300),
                 now + Duration::from_millis(index),
@@ -564,12 +564,12 @@ fn repeated_display_and_speaker_presentations_keep_singleton_keys() {
         (OverlayKey::Speaker, OverlayIcon::Output),
     ] {
         registry.present(
-            OverlayRequest::toast(key, OverlayModel::single(row(icon, "first"))),
+            OverlayRequest::toast(key, OverlayModel::single(row(icon.clone(), "first"))),
             Duration::from_millis(1000),
             now,
         );
         registry.present(
-            OverlayRequest::toast(key, OverlayModel::single(row(icon, "latest"))),
+            OverlayRequest::toast(key, OverlayModel::single(row(icon.clone(), "latest"))),
             Duration::from_millis(1000),
             now + Duration::from_millis(100),
         );
@@ -583,7 +583,7 @@ fn repeated_display_and_speaker_presentations_keep_singleton_keys() {
 }
 
 #[test]
-fn semantic_key_set_is_the_registry_card_upper_bound() {
+fn fixed_key_set_has_unique_semantics() {
     let keys = OverlayKey::ALL;
     let unique = keys
         .iter()
@@ -823,7 +823,11 @@ fn disabled_notification_categories_are_removed_before_rendering() {
     };
     let filtered = model.clone().filter_enabled(notifications);
     assert_eq!(
-        filtered.rows.iter().map(|row| row.icon).collect::<Vec<_>>(),
+        filtered
+            .rows
+            .iter()
+            .map(|row| row.icon.clone())
+            .collect::<Vec<_>>(),
         vec![OverlayIcon::Output, OverlayIcon::Application]
     );
 
@@ -833,7 +837,11 @@ fn disabled_notification_categories_are_removed_before_rendering() {
     };
     let filtered = model.filter_enabled(notifications);
     assert_eq!(
-        filtered.rows.iter().map(|row| row.icon).collect::<Vec<_>>(),
+        filtered
+            .rows
+            .iter()
+            .map(|row| row.icon.clone())
+            .collect::<Vec<_>>(),
         vec![OverlayIcon::Microphone, OverlayIcon::Application]
     );
 }
@@ -1201,6 +1209,10 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
             animation_active: true,
             content_width: 240.0,
             text_alpha: 1.0,
+            cluster_extra: 0.0,
+            cluster_primary_offset: 0.0,
+            join_alpha: 1.0,
+            behind_badge: None,
             compact: 0.0,
             hover_alpha: 1.0,
             layout_changed: false,

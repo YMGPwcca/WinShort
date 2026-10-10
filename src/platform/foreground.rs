@@ -177,6 +177,27 @@ pub fn process_name(pid: u32) -> Option<String> {
     }
 }
 
+/// None means an access/query failure, not proof that a watched program exited.
+pub(crate) fn process_is_running(pid: u32) -> Option<bool> {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let process = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(process) => process,
+            Err(error) if error.code() == windows::core::HRESULT::from_win32(87) => {
+                return Some(false)
+            }
+            Err(_) => return None,
+        };
+        let mut code = 0;
+        let result = GetExitCodeProcess(process, &mut code);
+        let _ = CloseHandle(process);
+        result.ok().map(|()| code == STILL_ACTIVE.0 as u32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,6 +15,7 @@ pub(super) unsafe fn draw_icon(
     unsafe {
         let w = 1.8 * scale;
         match icon {
+            OverlayIcon::Executable(_) => {}
             OverlayIcon::Microphone => {
                 target.DrawRoundedRectangle(
                     &D2D1_ROUNDED_RECT {

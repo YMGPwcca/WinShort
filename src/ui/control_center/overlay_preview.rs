@@ -164,6 +164,9 @@ impl SettingsUi {
 
     pub(super) fn set_overlay_position(&mut self, hwnd: HWND, index: usize) {
         let position = overlay_position(index);
+        if position == OverlayPosition::Center {
+            return;
+        }
         let before = self.draft.clone();
         self.draft.overlay.position = position;
         self.commit_local_change(hwnd, before);

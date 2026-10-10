@@ -24,10 +24,15 @@ use windows::Win32::Graphics::DirectWrite::{
 #[derive(Clone, Copy)]
 pub(super) struct OverlayDrawOptions<'a> {
     pub(super) compact: f32,
+    pub(super) app_bitmaps: &'a super::exe_icon::BitmapCache,
     pub(super) fill_card: bool,
     pub(super) draw_card_border: bool,
     pub(super) previous_text: Option<&'a OverlayModel>,
     pub(super) text_alpha: f32,
+    pub(super) cluster_extra: f32,
+    pub(super) cluster_primary_offset: f32,
+    pub(super) cluster_side: Option<super::group::Side>,
+    pub(super) cluster_peers: &'a [super::group::ClusterIcon],
 }
 
 pub(super) fn draw_overlay(
@@ -39,18 +44,19 @@ pub(super) fn draw_overlay(
     content_alpha: f32,
     options: OverlayDrawOptions<'_>,
 ) -> Result<()> {
+    options.app_bitmaps.retain(model, options.cluster_peers);
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
         let compact = options.compact.clamp(0.0, 1.0);
-        let geometry = model_geometry(scale, model, compact);
+        let mut geometry = model_geometry(scale, model, compact);
+        geometry.width += options.cluster_extra * scale;
+        geometry.body_right = geometry.width;
         let body = D2D_RECT_F {
             left: geometry.body_left,
             top: geometry.body_top,
             right: geometry.body_right,
             bottom: geometry.body_bottom,
         };
-        let left = geometry.body_left;
-        let top = geometry.body_top;
         if options.fill_card {
             let surface = color(with_alpha(palette.surface, content_alpha));
             let surface_brush = target.CreateSolidColorBrush(&surface, None)?;
@@ -89,36 +95,20 @@ pub(super) fn draw_overlay(
         let detail_format = make_format(dwrite, 12.0 * scale, DWRITE_FONT_WEIGHT_NORMAL)?;
         let text_alpha = content_alpha * (1.0 - compact * 3.0).max(0.0);
 
-        for (index, row) in model.rows.iter().enumerate() {
-            let y = top + PAD * scale + index as f32 * ROW_HEIGHT * scale;
-            if index > 0 {
-                target.DrawLine(
-                    windows_numerics::Vector2 {
-                        X: left + TEXT_LEFT * scale,
-                        Y: y,
-                    },
-                    windows_numerics::Vector2 {
-                        X: body.right - TEXT_RIGHT * scale,
-                        Y: y,
-                    },
-                    &border_brush,
-                    1.0,
-                    None,
-                );
-            }
-            draw_badge(
-                target,
-                row,
-                windows_numerics::Vector2 {
-                    X: left + 26.0 * scale,
-                    Y: y + ROW_HEIGHT * scale * 0.5 - 8.0 * scale * compact,
-                },
+        draw_badges(
+            target,
+            model,
+            body,
+            &border_brush,
+            BadgeStyle {
                 scale,
                 palette,
                 content_alpha,
                 compact,
-            )?;
-        }
+                app_bitmaps: options.app_bitmaps,
+            },
+            options,
+        )?;
         let formats = [&title_format, &detail_format];
         if let Some(previous) = options.previous_text {
             draw_text_layer(
@@ -142,6 +132,94 @@ pub(super) fn draw_overlay(
         )?;
         Ok(())
     }
+}
+
+unsafe fn draw_badges(
+    target: &ID2D1RenderTarget,
+    model: &OverlayModel,
+    body: D2D_RECT_F,
+    border_brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
+    style: BadgeStyle<'_>,
+    options: OverlayDrawOptions<'_>,
+) -> Result<()> {
+    let BadgeStyle {
+        scale,
+        palette,
+        content_alpha,
+        compact,
+        ..
+    } = style;
+    let (left, top) = (body.left, body.top);
+    unsafe {
+        for (index, row) in model.rows.iter().enumerate() {
+            let y = top + PAD * scale + index as f32 * ROW_HEIGHT * scale;
+            if index > 0 {
+                target.DrawLine(
+                    windows_numerics::Vector2 {
+                        X: left + TEXT_LEFT * scale,
+                        Y: y,
+                    },
+                    windows_numerics::Vector2 {
+                        X: body.right - TEXT_RIGHT * scale,
+                        Y: y,
+                    },
+                    border_brush,
+                    1.0,
+                    None,
+                );
+            }
+            draw_badge(
+                target,
+                row,
+                windows_numerics::Vector2 {
+                    X: left
+                        + (26.0
+                            + if options.cluster_side == Some(super::group::Side::Left) {
+                                options.cluster_extra
+                            } else {
+                                0.0
+                            })
+                            * scale
+                        + options.cluster_primary_offset * scale,
+                    Y: y + ROW_HEIGHT * scale * 0.5 - 8.0 * scale * compact,
+                },
+                BadgeStyle {
+                    scale,
+                    palette,
+                    content_alpha,
+                    compact,
+                    app_bitmaps: options.app_bitmaps,
+                },
+            )?;
+        }
+        for peer in options.cluster_peers {
+            if peer.alpha <= 0.001 {
+                continue;
+            }
+            let primary_x = 26.0
+                + if options.cluster_side == Some(super::group::Side::Left) {
+                    options.cluster_extra
+                } else {
+                    0.0
+                };
+            draw_badge(
+                target,
+                &peer.row,
+                windows_numerics::Vector2 {
+                    X: left + (primary_x + peer.offset) * scale,
+                    Y: top + 26.0 * scale,
+                },
+                BadgeStyle {
+                    scale,
+                    palette,
+                    content_alpha: content_alpha * peer.alpha,
+                    compact: 1.0,
+                    app_bitmaps: options.app_bitmaps,
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 unsafe fn draw_text_layer(
@@ -190,15 +268,40 @@ unsafe fn draw_text_layer(
     Ok(())
 }
 
-unsafe fn draw_badge(
-    target: &ID2D1RenderTarget,
-    row: &super::model::OverlayRow,
-    center: windows_numerics::Vector2,
+#[derive(Clone, Copy)]
+struct BadgeStyle<'a> {
     scale: f32,
     palette: OverlayPalette,
     content_alpha: f32,
     compact: f32,
+    app_bitmaps: &'a super::exe_icon::BitmapCache,
+}
+
+unsafe fn draw_badge(
+    target: &ID2D1RenderTarget,
+    row: &super::model::OverlayRow,
+    center: windows_numerics::Vector2,
+    style: BadgeStyle<'_>,
 ) -> Result<()> {
+    if let OverlayIcon::Executable(icon) = &row.icon {
+        return draw_executable_badge(target, icon, center, row.tone, style);
+    }
+    draw_vector_badge(target, row, center, style)
+}
+
+fn draw_vector_badge(
+    target: &ID2D1RenderTarget,
+    row: &super::model::OverlayRow,
+    center: windows_numerics::Vector2,
+    style: BadgeStyle<'_>,
+) -> Result<()> {
+    let BadgeStyle {
+        scale,
+        palette,
+        content_alpha,
+        compact,
+        ..
+    } = style;
     unsafe {
         let tone_color = match row.tone {
             OverlayTone::Muted => palette.tone_muted,
@@ -226,12 +329,16 @@ unsafe fn draw_badge(
             },
             &tone_brush,
         );
-        draw_icon(target, row.icon, center.X, center.Y, scale, &icon_brush);
+        draw_icon(
+            target,
+            row.icon.clone(),
+            center.X,
+            center.Y,
+            scale,
+            &icon_brush,
+        );
 
-        if compact > 0.0
-            && matches!(row.icon, OverlayIcon::Microphone | OverlayIcon::Application)
-            && row.tone == OverlayTone::Muted
-        {
+        if slashed_mute_symbol(row, compact) {
             target.DrawLine(
                 windows_numerics::Vector2 {
                     X: center.X - 10.0 * scale,
@@ -249,6 +356,81 @@ unsafe fn draw_badge(
 
         Ok(())
     }
+}
+
+fn slashed_mute_symbol(row: &super::model::OverlayRow, compact: f32) -> bool {
+    compact > 0.0
+        && row.tone == OverlayTone::Muted
+        && matches!(row.icon, OverlayIcon::Microphone | OverlayIcon::Application)
+}
+
+fn draw_executable_badge(
+    target: &ID2D1RenderTarget,
+    icon: &super::exe_icon::ExecutableIcon,
+    center: windows_numerics::Vector2,
+    tone: OverlayTone,
+    style: BadgeStyle<'_>,
+) -> Result<()> {
+    let BadgeStyle {
+        scale,
+        palette,
+        content_alpha: alpha,
+        app_bitmaps: cache,
+        ..
+    } = style;
+    cache.draw(
+        target,
+        icon,
+        D2D_RECT_F {
+            left: center.X - 16.0 * scale,
+            top: center.Y - 16.0 * scale,
+            right: center.X + 16.0 * scale,
+            bottom: center.Y + 16.0 * scale,
+        },
+        alpha,
+    )?;
+    if tone != OverlayTone::Muted {
+        return Ok(());
+    }
+    let dot = windows_numerics::Vector2 {
+        X: center.X + 11.0 * scale,
+        Y: center.Y + 11.0 * scale,
+    };
+    unsafe {
+        let fill =
+            target.CreateSolidColorBrush(&color(with_alpha(palette.tone_muted, alpha)), None)?;
+        target.FillEllipse(
+            &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                point: dot,
+                radiusX: 7.0 * scale,
+                radiusY: 7.0 * scale,
+            },
+            &fill,
+        );
+        let brush = target.CreateSolidColorBrush(&color(with_alpha(palette.icon, alpha)), None)?;
+        draw_icon(
+            target,
+            OverlayIcon::Output,
+            dot.X,
+            dot.Y,
+            scale * 0.35,
+            &brush,
+        );
+        target.DrawLine(
+            windows_numerics::Vector2 {
+                X: dot.X - 4.0 * scale,
+                Y: dot.Y - 4.0 * scale,
+            },
+            windows_numerics::Vector2 {
+                X: dot.X + 4.0 * scale,
+                Y: dot.Y + 4.0 * scale,
+            },
+            &brush,
+            1.2 * scale,
+            None,
+        );
+    }
+    Ok(())
 }
 
 unsafe fn make_format(

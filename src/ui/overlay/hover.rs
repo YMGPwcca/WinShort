@@ -3,7 +3,7 @@
 
 use super::timeline::{MotionPolicy, TIMER_MS};
 use crate::error::{Error, Result};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -14,7 +14,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub(super) const POINTER_MESSAGE: u32 = 0x8120;
 const HOVER_MS: u64 = 140;
-const MAX_CARDS: usize = super::manager::OverlayKey::ALL.len();
 
 #[cfg(test)]
 pub(super) fn observer_active() -> bool {
@@ -22,10 +21,14 @@ pub(super) fn observer_active() -> bool {
 }
 
 thread_local! {
-    static TARGETS: Cell<[isize; MAX_CARDS]> = const { Cell::new([0; MAX_CARDS]) };
-    static PENDING: Cell<u16> = const { Cell::new(0) };
+    static TARGETS: RefCell<Vec<HoverTarget>> = const { RefCell::new(Vec::new()) };
     static POINTER: Cell<POINT> = const { Cell::new(POINT { x: 0, y: 0 }) };
     static HOOK: Cell<isize> = const { Cell::new(0) };
+}
+
+struct HoverTarget {
+    hwnd: isize,
+    pending: bool,
 }
 
 pub(super) fn register(hwnd: HWND, enabled: bool) -> Result<()> {
@@ -33,62 +36,51 @@ pub(super) fn register(hwnd: HWND, enabled: bool) -> Result<()> {
         unregister(hwnd);
         return Ok(());
     }
-    let mut targets = TARGETS.get();
     let handle = hwnd.0 as isize;
-    if targets.contains(&handle) {
+    if TARGETS.with_borrow(|targets| targets.iter().any(|target| target.hwnd == handle)) {
         refresh(hwnd);
         return Ok(());
     }
-    let Some(slot) = targets.iter_mut().find(|value| **value == 0) else {
-        return Err(Error::internal("overlay hover target capacity exhausted"));
-    };
     if HOOK.get() == 0 {
-        // SAFETY: the executable module outlives this callback. The low-level
-        // hook runs on this installing thread, which owns all TARGETS HWNDs and
-        // pumps their messages; unregister releases the hook on the same thread.
+        // This callback runs on the installing UI thread; it only queues wakes.
         let module = unsafe { GetModuleHandleW(None) }
-            .map_err(|error| Error::win("GetModuleHandleW(overlay hover)", &error))?;
+            .map_err(|e| Error::win("GetModuleHandleW(overlay hover)", &e))?;
         let hook =
             unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(module.into()), 0) }
-                .map_err(|error| Error::win("SetWindowsHookExW(overlay hover)", &error))?;
+                .map_err(|e| Error::win("SetWindowsHookExW(overlay hover)", &e))?;
         HOOK.set(hook.0 as isize);
     }
-    *slot = handle;
-    TARGETS.set(targets);
+    TARGETS.with_borrow_mut(|targets| {
+        targets.push(HoverTarget {
+            hwnd: handle,
+            pending: false,
+        })
+    });
     refresh(hwnd);
     Ok(())
 }
 
 pub(super) fn unregister(hwnd: HWND) {
-    let mut targets = TARGETS.get();
-    for (index, target) in targets.iter_mut().enumerate() {
-        if *target == hwnd.0 as isize {
-            *target = 0;
-            PENDING.set(PENDING.get() & !(1 << index));
-        }
-    }
-    TARGETS.set(targets);
-    if targets.iter().all(|target| *target == 0) {
+    let empty = TARGETS.with_borrow_mut(|targets| {
+        targets.retain(|target| target.hwnd != hwnd.0 as isize);
+        targets.is_empty()
+    });
+    if empty {
         let hook = HOOK.replace(0);
         if hook != 0 {
-            // SAFETY: HOOK contains the hook created by this thread. Clear it
-            // before release so repeated teardown cannot reuse a freed handle.
             let _ = unsafe { UnhookWindowsHookEx(HHOOK(hook as *mut _)) };
         }
     }
 }
 
-fn enqueue(index: usize, hwnd: isize) {
-    let mask = 1 << index;
-    if PENDING.get() & mask != 0 {
+fn enqueue(target: &mut HoverTarget) {
+    if target.pending {
         return;
     }
-    PENDING.set(PENDING.get() | mask);
-    // SAFETY: targets are registered/unregistered by their owning thread. No
-    // pointer payload crosses the queue; destroyed HWNDs simply reject the wake.
+    target.pending = true;
     if unsafe {
         PostMessageW(
-            Some(HWND(hwnd as *mut _)),
+            Some(HWND(target.hwnd as *mut _)),
             POINTER_MESSAGE,
             WPARAM(0),
             LPARAM(0),
@@ -96,51 +88,49 @@ fn enqueue(index: usize, hwnd: isize) {
     }
     .is_err()
     {
-        PENDING.set(PENDING.get() & !mask);
+        target.pending = false;
     }
 }
 
 pub(super) fn refresh(hwnd: HWND) {
     let mut point = POINT::default();
-    // SAFETY: the API writes a POINT into this valid stack allocation.
     if unsafe { GetCursorPos(&mut point) }.is_err() {
         return;
     }
     POINTER.set(point);
-    if let Some(index) = TARGETS
-        .get()
-        .iter()
-        .position(|target| *target == hwnd.0 as isize)
-    {
-        enqueue(index, hwnd.0 as isize);
-    }
+    TARGETS.with_borrow_mut(|targets| {
+        if let Some(target) = targets
+            .iter_mut()
+            .find(|target| target.hwnd == hwnd.0 as isize)
+        {
+            enqueue(target);
+        }
+    });
 }
 
 pub(super) fn take_pointer(hwnd: HWND) -> POINT {
-    if let Some(index) = TARGETS
-        .get()
-        .iter()
-        .position(|target| *target == hwnd.0 as isize)
-    {
-        PENDING.set(PENDING.get() & !(1 << index));
-    }
+    TARGETS.with_borrow_mut(|targets| {
+        if let Some(target) = targets
+            .iter_mut()
+            .find(|target| target.hwnd == hwnd.0 as isize)
+        {
+            target.pending = false;
+        }
+    });
     POINTER.get()
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && wparam.0 as u32 == WM_MOUSEMOVE {
-        // SAFETY: a nonnegative WH_MOUSE_LL notification supplies a live
-        // MSLLHOOKSTRUCT for this synchronous callback. Only copy its POINT.
         let point = unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt };
         POINTER.set(point);
-        for (index, hwnd) in TARGETS.get().into_iter().enumerate() {
-            if hwnd != 0 {
-                enqueue(index, hwnd);
+        TARGETS.with_borrow_mut(|targets| {
+            for target in targets {
+                enqueue(target);
             }
-        }
+        });
     }
-    // SAFETY: forward the original callback arguments unmodified, including
-    // negative codes, so observation never consumes another application's input.
+    // Observation must always forward input unmodified.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 

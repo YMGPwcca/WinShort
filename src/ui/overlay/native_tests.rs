@@ -6,8 +6,9 @@ use super::*;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetWindowRect, IsWindowVisible, MsgWaitForMultipleObjectsEx, PeekMessageW,
-    TranslateMessage, WindowFromPoint, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
+    DispatchMessageW, GetWindow, GetWindowRect, IsWindowVisible, MsgWaitForMultipleObjectsEx,
+    PeekMessageW, TranslateMessage, WindowFromPoint, GW_HWNDPREV, MSG, MWMO_INPUTAVAILABLE,
+    PM_REMOVE, QS_ALLINPUT,
 };
 
 fn pump_for(duration: Duration) {
@@ -31,6 +32,585 @@ fn pump_for(duration: Duration) {
             MsgWaitForMultipleObjectsEx(None, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         }
     }
+}
+
+#[test]
+#[ignore = "shows test-owned multi-application bar with actual executable icons; does not touch audio"]
+fn native_multiple_executable_badges_extend_and_shrink_one_bar() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.position = OverlayPosition::Center;
+    config.hover_opacity = 1.0;
+    config.duration_ms = 1000;
+    let mic = || {
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+                volume_pct: 100,
+            })),
+        )
+    };
+    let mic_last = std::env::var_os("WINSHORT_GROUP_TEST_MIC_LAST").is_some();
+    if mic_last {
+        config.position = if std::env::var("WINSHORT_GROUP_TEST_MIC_LAST").as_deref() == Ok("right")
+        {
+            OverlayPosition::TopRight
+        } else {
+            OverlayPosition::TopLeft
+        };
+    }
+    let system = std::env::var("WINDIR").unwrap();
+    let paths = [
+        format!("{system}\\System32\\notepad.exe"),
+        format!("{system}\\System32\\cmd.exe"),
+        format!("{system}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+    ];
+    let models = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let mut row = application_row(&crate::audio::AppAudioState {
+                app_name: Some(format!("Test app {}", index + 1)),
+                aggregate: crate::audio::Aggregate::AllMuted,
+                sessions: 1,
+                error: None,
+            });
+            row.icon = executable_icon(path).expect("real executable icon");
+            OverlayModel::single(row)
+        })
+        .collect::<Vec<_>>();
+    if mic_last {
+        manager
+            .present(
+                OverlayRequest::permanent(OverlayKey::ApplicationPermanent(1), models[0].clone()),
+                config.clone(),
+            )
+            .unwrap();
+    } else {
+        manager.present(mic(), config.clone()).unwrap();
+    }
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    let host = manager.test_hwnds()[0];
+    let anchor = manager.test_window_rectangles()[0];
+    for (index, model) in models.iter().enumerate() {
+        if mic_last && index == 0 {
+            continue;
+        }
+        manager
+            .present(
+                OverlayRequest::permanent(
+                    OverlayKey::ApplicationPermanent(index as u64 + 1),
+                    model.clone(),
+                )
+                .replacing(OverlayKey::ApplicationToast(index as u64 + 1)),
+                config.clone(),
+            )
+            .unwrap();
+    }
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(250));
+    manager.refresh_visuals().unwrap();
+    if mic_last {
+        manager.present(mic(), config.clone()).unwrap();
+        pump_for(Duration::from_millis(1500));
+        manager.refresh_visuals().unwrap();
+        pump_for(Duration::from_millis(250));
+        manager.refresh_visuals().unwrap();
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) }
+                .unwrap();
+        let state = cell.borrow();
+        assert_eq!(
+            state.cluster.primary_offset(Instant::now()),
+            if config.position == OverlayPosition::TopRight {
+                -88.0
+            } else {
+                44.0
+            }
+        );
+        let icons = state.cluster.icons(Instant::now());
+        let microphone = icons
+            .iter()
+            .find(|peer| peer.row.icon == OverlayIcon::Microphone)
+            .unwrap();
+        assert_eq!(
+            microphone.offset,
+            if config.position == OverlayPosition::TopRight {
+                -132.0
+            } else {
+                0.0
+            },
+            "microphone must be the first visual member even when programs muted earlier"
+        );
+    }
+    let bars = manager.test_window_rectangles();
+    assert_eq!(bars.len(), 1, "mic plus three programs must share one bar");
+    let factor = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(host) } as f32 / 96.0;
+    assert_eq!(
+        bars[0].right - bars[0].left,
+        (184.0 * factor).round() as i32
+    );
+    if config.position == OverlayPosition::TopRight {
+        assert_eq!((bars[0].right, bars[0].top), (anchor.right, anchor.top));
+    } else {
+        assert_eq!((bars[0].left, bars[0].top), (anchor.left, anchor.top));
+    }
+    assert_eq!(manager.status().permanent_card_count, 4);
+    assert_eq!(manager.test_hwnds().len(), 4);
+    capture("multiple-exe-muted", &bars);
+    let peer_ids = {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) }
+                .unwrap();
+        cell.borrow()
+            .cluster
+            .icons(Instant::now())
+            .iter()
+            .map(|peer| peer.id)
+            .collect::<Vec<_>>()
+    };
+    manager
+        .present(
+            OverlayRequest::permanent(OverlayKey::ApplicationPermanent(1), models[0].clone()),
+            config.clone(),
+        )
+        .unwrap();
+    {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) }
+                .unwrap();
+        let state = cell.borrow();
+        assert_eq!(
+            state
+                .cluster
+                .icons(Instant::now())
+                .iter()
+                .map(|peer| peer.id)
+                .collect::<Vec<_>>(),
+            peer_ids,
+            "passive metadata refresh must not shuffle settled executable slots"
+        );
+        assert_eq!(
+            state.graphics.clock.active_targets(),
+            0,
+            "settled bars must not wake every frame"
+        );
+    }
+    let mut active = models[1].clone();
+    active.rows[0].tone = OverlayTone::Active;
+    active.rows[0].title = "App audio unmuted".into();
+    active.rows[0].detail = "Test app 2 · Active".into();
+    manager
+        .present(
+            OverlayRequest::toast(OverlayKey::ApplicationToast(2), active)
+                .replacing(OverlayKey::ApplicationPermanent(2)),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(350));
+    manager.refresh_visuals().unwrap();
+    assert_eq!(manager.status().permanent_card_count, 3);
+    assert_eq!(manager.test_window_rectangles().len(), 2);
+    let remaining = manager.test_window_rectangles()[0];
+    assert_eq!(
+        remaining.right - remaining.left,
+        (140.0 * factor).round() as i32
+    );
+    capture("multiple-exe-unmuted", &manager.test_window_rectangles());
+    manager
+        .remove_key(OverlayKey::ApplicationPermanent(1), &config)
+        .unwrap();
+    pump_for(Duration::from_millis(350));
+    assert_eq!(
+        manager.status().permanent_card_count,
+        2,
+        "closing one app keeps the other app and mic"
+    );
+    manager
+        .present(
+            OverlayRequest::permanent(OverlayKey::ApplicationPermanent(2), models[1].clone())
+                .replacing(OverlayKey::ApplicationToast(2)),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    assert_eq!(
+        manager.status().permanent_card_count,
+        3,
+        "remute must keep independent identities"
+    );
+    assert_eq!(manager.test_window_rectangles().len(), 1);
+    manager.clear();
+    let cell = unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) };
+    if let Some(cell) = cell {
+        assert_eq!(cell.borrow().graphics.clock.active_targets(), 0);
+    }
+}
+
+#[test]
+#[ignore = "shows test-owned mic/app badges and exercises grouping, peeling, and rapid remute"]
+fn native_mute_group_keeps_audio_entries_independent() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.position = match std::env::var("WINSHORT_OVERLAY_TEST_POSITION").as_deref() {
+        Ok("top-left") => OverlayPosition::TopLeft,
+        Ok("center") => OverlayPosition::Center,
+        _ => OverlayPosition::TopRight,
+    };
+    config.hover_opacity = 1.0;
+    config.duration_ms = 5000;
+    let mic = || {
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+                volume_pct: 100,
+            })),
+        )
+        .replacing(OverlayKey::MicrophoneToast)
+    };
+    let app = || {
+        OverlayRequest::permanent(
+            OverlayKey::CurrentAppAudioPermanent,
+            OverlayModel::single(application_row(&crate::audio::AppAudioState {
+                app_name: Some("Example player".into()),
+                aggregate: crate::audio::Aggregate::AllMuted,
+                sessions: 1,
+                error: None,
+            })),
+        )
+        .replacing(OverlayKey::CurrentAppAudio)
+    };
+    let app_first = std::env::var_os("WINSHORT_GROUP_TEST_APP_FIRST").is_some();
+    manager
+        .present(if app_first { app() } else { mic() }, config.clone())
+        .unwrap();
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(180));
+    let first_hwnd = manager.test_hwnds()[0];
+    let first = manager.test_window_rectangles()[0];
+    assert_eq!(first.right - first.left, first.bottom - first.top);
+    manager
+        .present(if app_first { mic() } else { app() }, config.clone())
+        .unwrap();
+    let peer_hwnd = manager.test_hwnds()[1];
+    pump_for(Duration::from_millis(300));
+    assert_eq!(
+        manager.test_window_rectangles().len(),
+        2,
+        "new mute must show its full card before grouping"
+    );
+    let unchanged = manager.test_window_rectangles()[0];
+    assert_eq!(
+        (unchanged.left, unchanged.top),
+        (first.left, first.top),
+        "the existing badge must stay anchored"
+    );
+    // Keep the timing check free of the screenshot helper's blocking child
+    // process; slow captures can consume the entire contraction interval.
+    let full = manager.test_window_rectangles()[1];
+    assert!(
+        full.top > first.bottom,
+        "new mute feedback must use the same vertical lane as unmute"
+    );
+    let full_surface = {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        match state.surface.as_ref().unwrap() {
+            super::backend::OverlaySurface::Composition(host) => Some(host.test_surface()),
+            super::backend::OverlaySurface::Hwnd(_) => None,
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let started = {
+            let cell = unsafe {
+                crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd)
+            }
+            .unwrap();
+            cell.borrow().badge.collapse_started().is_some()
+        };
+        if started {
+            break;
+        }
+        assert!(Instant::now() < deadline, "peer did not begin contracting");
+        pump_for(Duration::from_millis(5));
+    }
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(35));
+    {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        if let Some(full_surface) = &full_surface {
+            let super::backend::OverlaySurface::Composition(host) = state.surface.as_ref().unwrap()
+            else {
+                panic!("Composition must not fall back while contracting");
+            };
+            assert_eq!(host.test_surface(), *full_surface,
+                "contraction must retain the populated canvas instead of publishing empty replacements");
+        }
+        let compact = state.badge.value(Instant::now());
+        let collapse_start = state.badge.collapse_started().unwrap();
+        let join = state.join.expect("joining must start during contraction");
+        assert!(
+            join.position(collapse_start).y >= full.top,
+            "joining must begin at the full card below the badge"
+        );
+        assert!(
+            join.request.position.y < join.position(collapse_start).y,
+            "contraction must move toward the adjacent badge slot"
+        );
+        assert_eq!(
+            join.request.started, collapse_start,
+            "join must use the contraction clock, not a second animation after it"
+        );
+        if collapse_start.elapsed() < Duration::from_millis(super::group::GROUP_MS) {
+            assert!(compact > 0.0 && compact < 1.0);
+        } else {
+            // Some fallback drivers block Resize/EndDraw for the whole tween.
+            // Catch-up must go straight to the shared final position.
+            assert_eq!(compact, 1.0);
+            assert!(join.finished(Instant::now()));
+        }
+    }
+    // Reproduce a host frame arriving after the peer frame: neither moving
+    // nor resizing the host may jump it above the joining icon.
+    let peer_above_host = || {
+        let mut previous = unsafe { GetWindow(first_hwnd, GW_HWNDPREV) }.unwrap();
+        while !previous.is_invalid() {
+            if previous == peer_hwnd {
+                return true;
+            }
+            previous = unsafe { GetWindow(previous, GW_HWNDPREV) }.unwrap();
+        }
+        false
+    };
+    assert!(peer_above_host());
+    {
+        let cell = unsafe {
+            crate::platform::window::state_cell::<super::state::OverlayState>(first_hwnd)
+        }
+        .unwrap();
+        let state = cell.borrow();
+        let plan = state.frame_plan();
+        let apply_region = state.requires_window_region();
+        drop(state);
+        super::window::apply_frame_plan(first_hwnd, plan, apply_region).unwrap();
+    }
+    assert!(
+        peer_above_host(),
+        "animation frames must preserve the joining peer above the host"
+    );
+    pump_for(Duration::from_millis(250));
+    manager.refresh_visuals().unwrap();
+    let grouped = manager.test_window_rectangles();
+    assert_eq!(
+        grouped.len(),
+        1,
+        "two compact mute entries must share one visible surface"
+    );
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(first_hwnd) } as f32 / 96.0;
+    assert_eq!(
+        grouped[0].right - grouped[0].left,
+        (96.0 * dpi).round() as i32
+    );
+    assert_eq!(
+        grouped[0].bottom - grouped[0].top,
+        (52.0 * dpi).round() as i32
+    );
+    assert_eq!(manager.status().permanent_card_count, 2);
+    assert_eq!(manager.test_hwnds(), vec![first_hwnd, peer_hwnd]);
+    assert!(!unsafe { IsWindowVisible(peer_hwnd).as_bool() });
+    {
+        let cell = unsafe {
+            crate::platform::window::state_cell::<super::state::OverlayState>(first_hwnd)
+        }
+        .unwrap();
+        let state = cell.borrow();
+        assert_eq!(
+            state.graphics.clock.active_targets(),
+            0,
+            "settled groups must stop all frame wakes"
+        );
+    }
+    let hit = unsafe {
+        WindowFromPoint(windows::Win32::Foundation::POINT {
+            x: grouped[0].left + 10,
+            y: grouped[0].top + 25,
+        })
+    };
+    assert!(
+        !manager.test_hwnds().contains(&hit),
+        "group must remain click-through"
+    );
+    capture("group-joined", &grouped);
+    let old_generation = {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd) }
+                .unwrap();
+        cell.borrow().generation
+    };
+    let refreshed_row = if app_first {
+        microphone_row(&crate::audio::AudioState::Muted { volume_pct: 80 })
+    } else {
+        application_row(&crate::audio::AppAudioState {
+            app_name: Some("Refreshed player".into()),
+            aggregate: crate::audio::Aggregate::AllMuted,
+            sessions: 1,
+            error: None,
+        })
+    };
+    let refreshed_detail = refreshed_row.detail.clone();
+    manager
+        .present(
+            OverlayRequest::permanent(
+                if app_first {
+                    OverlayKey::MicrophonePermanent
+                } else {
+                    OverlayKey::CurrentAppAudioPermanent
+                },
+                OverlayModel::single(refreshed_row),
+            ),
+            config.clone(),
+        )
+        .unwrap();
+    {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        assert!(state.parked);
+        assert_ne!(
+            state.generation, old_generation,
+            "parked entries must receive current assignment metadata"
+        );
+        assert_eq!(state.model.rows[0].detail, refreshed_detail);
+    }
+    config.duration_ms = 700;
+    let (toast_key, permanent_key, row) = if app_first {
+        (
+            OverlayKey::MicrophoneToast,
+            OverlayKey::MicrophonePermanent,
+            microphone_row(&crate::audio::AudioState::Active { volume_pct: 100 }),
+        )
+    } else {
+        (
+            OverlayKey::CurrentAppAudio,
+            OverlayKey::CurrentAppAudioPermanent,
+            application_row(&crate::audio::AppAudioState {
+                app_name: Some("Example player".into()),
+                aggregate: crate::audio::Aggregate::AllActive,
+                sessions: 1,
+                error: None,
+            }),
+        )
+    };
+    manager
+        .present(
+            OverlayRequest::toast(toast_key, OverlayModel::single(row)).replacing(permanent_key),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(320));
+    assert!(
+        unsafe { IsWindowVisible(peer_hwnd).as_bool() },
+        "unmute must reuse the parked peer HWND"
+    );
+    assert_eq!(manager.status().permanent_card_count, 1);
+    assert_eq!(manager.test_window_rectangles().len(), 2);
+    capture("group-peer-unmuted", &manager.test_window_rectangles());
+    manager
+        .present(if app_first { mic() } else { app() }, config.clone())
+        .unwrap();
+    pump_for(Duration::from_millis(1600));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(300));
+    manager.refresh_visuals().unwrap();
+    assert_eq!(
+        manager.test_window_rectangles().len(),
+        1,
+        "remute must regroup without stale toast expiry"
+    );
+    assert_eq!(manager.status().permanent_card_count, 2);
+    // The hosting member must peel too, while the former peer becomes a
+    // standalone badge above the expanding feedback surface.
+    let (host_toast, host_key, host_row) = if app_first {
+        (
+            OverlayKey::CurrentAppAudio,
+            OverlayKey::CurrentAppAudioPermanent,
+            application_row(&crate::audio::AppAudioState {
+                app_name: Some("Example player".into()),
+                aggregate: crate::audio::Aggregate::AllActive,
+                sessions: 1,
+                error: None,
+            }),
+        )
+    } else {
+        (
+            OverlayKey::MicrophoneToast,
+            OverlayKey::MicrophonePermanent,
+            microphone_row(&crate::audio::AudioState::Active { volume_pct: 100 }),
+        )
+    };
+    manager
+        .present(
+            OverlayRequest::toast(host_toast, OverlayModel::single(host_row)).replacing(host_key),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(30));
+    {
+        let cell = unsafe {
+            crate::platform::window::state_cell::<super::state::OverlayState>(first_hwnd)
+        }
+        .unwrap();
+        assert_eq!(cell.borrow().behind_badge, Some(peer_hwnd));
+    }
+    pump_for(Duration::from_millis(300));
+    assert_eq!(manager.test_window_rectangles().len(), 2);
+    assert_eq!(manager.status().permanent_card_count, 1);
+    capture("group-host-unmuted", &manager.test_window_rectangles());
+    manager
+        .present(if app_first { app() } else { mic() }, config.clone())
+        .unwrap();
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(300));
+    manager.refresh_visuals().unwrap();
+    assert_eq!(manager.test_window_rectangles().len(), 1);
+    // Removing the currently hosting member (foreground changes or category
+    // disabling) promotes the parked member without replaying its full hold.
+    let host_hwnd = manager
+        .test_hwnds()
+        .into_iter()
+        .find(|hwnd| unsafe { IsWindowVisible(*hwnd).as_bool() })
+        .unwrap();
+    let (remove_key, survivor) = if host_hwnd == first_hwnd {
+        (host_key, peer_hwnd)
+    } else {
+        (permanent_key, first_hwnd)
+    };
+    manager.remove_key(remove_key, &config).unwrap();
+    pump_for(Duration::from_millis(300));
+    let remaining = manager.test_window_rectangles();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(
+        remaining[0].right - remaining[0].left,
+        remaining[0].bottom - remaining[0].top
+    );
+    assert!(unsafe { IsWindowVisible(survivor).as_bool() });
+    manager.shutdown();
 }
 
 #[test]
@@ -455,9 +1035,10 @@ fn native_app_mute_badge_expands_in_place_and_stacks_with_mic_and_output() {
     }
     pump_for(Duration::from_millis(1650));
     manager.refresh_visuals().unwrap();
-    pump_for(Duration::from_millis(180));
+    pump_for(Duration::from_millis(300));
+    manager.refresh_visuals().unwrap();
     let cards = manager.test_window_rectangles();
-    assert_eq!(cards.len(), 4);
+    assert_eq!(cards.len(), 3);
     for (index, left) in cards.iter().enumerate() {
         for right in &cards[index + 1..] {
             assert!(
@@ -542,6 +1123,7 @@ impl OverlayManager {
     fn test_window_rectangles(&self) -> Vec<RECT> {
         self.test_hwnds()
             .into_iter()
+            .filter(|hwnd| unsafe { IsWindowVisible(*hwnd).as_bool() })
             .map(|hwnd| unsafe {
                 assert!(IsWindowVisible(hwnd).as_bool());
                 let mut rect = RECT::default();
