@@ -38,7 +38,10 @@ impl MutedApplications {
             .iter_mut()
             .find(|entry| entry.info.identity == info.identity)
         {
-            if info.state.aggregate != Aggregate::Error {
+            if !matches!(
+                info.state.aggregate,
+                Aggregate::Error | Aggregate::NoSession
+            ) {
                 entry.muted = info.state.aggregate == Aggregate::AllMuted;
                 entry.info = info;
             }
@@ -102,7 +105,10 @@ impl super::App {
             row.icon = entry.icon.clone();
             let request =
                 OverlayRequest::toast(OverlayKey::ApplicationToast(id), OverlayModel::single(row));
-            let request = if info.state.aggregate == Aggregate::Error {
+            let request = if matches!(
+                info.state.aggregate,
+                Aggregate::Error | Aggregate::NoSession
+            ) {
                 request
             } else {
                 request.replacing(OverlayKey::ApplicationPermanent(id))

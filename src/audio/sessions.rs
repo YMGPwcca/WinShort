@@ -222,17 +222,7 @@ fn toggle_once(
     for e in &failures {
         crate::warn_!("foreground audio SetMute/GetMute failed: {e}");
     }
-    let aggregate = if muted_now == sessions.len() && failures.is_empty() {
-        if target_muted {
-            Aggregate::AllMuted
-        } else {
-            Aggregate::AllActive
-        }
-    } else if muted_now == 0 && !all_muted {
-        Aggregate::AllActive
-    } else {
-        Aggregate::Mixed
-    };
+    let aggregate = toggle_readback(sessions.len(), muted_now, !failures.is_empty());
     crate::log_debug!(
         "foreground audio pid={pid} sessions={} before={} after={:?}",
         sessions.len(),
@@ -249,6 +239,30 @@ fn toggle_once(
         sessions: sessions.len(),
         error: None,
     })
+}
+
+fn toggle_readback(total: usize, muted: usize, failed: bool) -> Aggregate {
+    if failed {
+        Aggregate::Mixed
+    } else if muted == total {
+        Aggregate::AllMuted
+    } else if muted == 0 {
+        Aggregate::AllActive
+    } else {
+        Aggregate::Mixed
+    }
+}
+
+#[cfg(test)]
+mod toggle_readback_tests {
+    use super::*;
+    #[test]
+    fn successful_unmute_is_active_and_partial_readback_stays_mixed() {
+        assert_eq!(toggle_readback(2, 0, false), Aggregate::AllActive);
+        assert_eq!(toggle_readback(2, 2, false), Aggregate::AllMuted);
+        assert_eq!(toggle_readback(2, 1, false), Aggregate::Mixed);
+        assert_eq!(toggle_readback(2, 0, true), Aggregate::Mixed);
+    }
 }
 
 fn adjust_volume_once(

@@ -9,7 +9,17 @@ use windows::Win32::Media::Audio::{
 };
 use windows::Win32::System::Com::CLSCTX_ALL;
 
+#[cfg(test)]
 pub(super) fn muted_applications(
+    enumerator: &IMMDeviceEnumerator,
+) -> Result<Vec<ApplicationAudioInfo>> {
+    Ok(application_inventory(enumerator)?
+        .into_iter()
+        .filter(|app| app.state.aggregate == Aggregate::AllMuted)
+        .collect())
+}
+
+pub(super) fn application_inventory(
     enumerator: &IMMDeviceEnumerator,
 ) -> Result<Vec<ApplicationAudioInfo>> {
     let devices = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }
@@ -25,10 +35,7 @@ pub(super) fn muted_applications(
             .map_err(|e| Error::win("MutedApplicationSessions", &e))?;
         read_sessions(&manager, &mut identities, &mut apps)?;
     }
-    Ok(apps
-        .into_values()
-        .filter(|app| app.state.aggregate == Aggregate::AllMuted)
-        .collect())
+    Ok(apps.into_values().collect())
 }
 
 fn read_sessions(
@@ -51,7 +58,7 @@ fn read_sessions(
             continue;
         };
         let pid = unsafe { control2.GetProcessId() }.unwrap_or(0);
-        if pid == 0 {
+        if pid == 0 || crate::platform::foreground::process_is_running(pid) == Some(false) {
             continue;
         }
         let volume: ISimpleAudioVolume = control
@@ -84,10 +91,20 @@ fn add_session(
     muted: bool,
 ) {
     let app = apps.entry(info.identity.clone()).or_insert(info);
+    app.state.aggregate = if app.state.sessions == 0 {
+        if muted {
+            Aggregate::AllMuted
+        } else {
+            Aggregate::AllActive
+        }
+    } else {
+        match (app.state.aggregate, muted) {
+            (Aggregate::AllMuted, true) => Aggregate::AllMuted,
+            (Aggregate::AllActive, false) => Aggregate::AllActive,
+            _ => Aggregate::Mixed,
+        }
+    };
     app.state.sessions += 1;
-    if !muted {
-        app.state.aggregate = Aggregate::Mixed;
-    }
 }
 
 #[cfg(test)]
@@ -105,6 +122,51 @@ mod tests {
             },
         )
     }
+    #[test]
+    #[ignore = "read-only comparison of live grouped inventory and foreground mute scope"]
+    fn native_compare_program_mute_scopes() {
+        let _com = crate::platform::com::ComApartment::init_mta();
+        let enumerator: IMMDeviceEnumerator = unsafe {
+            windows::Win32::System::Com::CoCreateInstance(
+                &windows::Win32::Media::Audio::MMDeviceEnumerator,
+                None,
+                CLSCTX_ALL,
+            )
+        }
+        .unwrap();
+        let path = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+            .join("WinShort/config.toml");
+        let wire: crate::config::model::ConfigToml =
+            toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let (config, _) = crate::config::Config::from_toml(&wire);
+        for app in application_inventory(&enumerator).unwrap() {
+            if ["zen", "spotify"].iter().any(|name| {
+                app.state
+                    .app_name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case(name)
+            }) {
+                println!(
+                    "Grouped {:?}: {:?}, sessions={}, representative pid={}",
+                    app.state.app_name, app.state.aggregate, app.state.sessions, app.pid
+                );
+            }
+        }
+        for pid in std::env::var("WINSHORT_AUDIO_PROBE_PIDS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|s| s.parse::<u32>().ok())
+        {
+            let state =
+                crate::audio::sessions::query_foreground(&enumerator, &config, Some(pid)).unwrap();
+            println!(
+                "Scoped pid={pid} {:?}: {:?}, sessions={}",
+                state.app_name, state.aggregate, state.sessions
+            );
+        }
+    }
+
     #[test]
     #[ignore = "reads live Core Audio sessions without mutating audio or configuration"]
     fn native_read_only_inventory_is_executable_keyed() {

@@ -1,5 +1,6 @@
 //! Core Audio subsystem. All COM interfaces stay on the dedicated MTA worker.
 
+mod application_watch;
 mod applications;
 pub mod controller;
 pub mod devices;

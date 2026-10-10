@@ -305,6 +305,7 @@ struct AudioController {
     pending_default_switches: Vec<PendingDefaultSwitch>,
     muted_applications: Option<Vec<crate::audio::state::ApplicationAudioInfo>>,
     last_application_scan: Option<std::time::Instant>,
+    application_watch: super::application_watch::ApplicationWatch,
 }
 
 impl AudioController {
@@ -343,6 +344,7 @@ impl AudioController {
             pending_default_switches: Vec::new(),
             muted_applications: None,
             last_application_scan: None,
+            application_watch: Default::default(),
         };
         controller.rebuild_all(true, initial.value, crate::event::AudioEventOrigin::Initial);
         Ok(controller)
@@ -386,6 +388,7 @@ impl AudioController {
                             sessions: 0,
                             error: Some(e.to_string()),
                         });
+                self.remember_application_target(pid, &state);
                 self.post(AppEvent::ForegroundAudioChanged {
                     pid,
                     state,
@@ -458,7 +461,7 @@ impl AudioController {
         true
     }
 
-    fn query_foreground(&self, pid: Option<u32>, origin: crate::event::AudioEventOrigin) {
+    fn query_foreground(&mut self, pid: Option<u32>, origin: crate::event::AudioEventOrigin) {
         let config = self.config.get();
         let state = crate::audio::sessions::query_foreground(&self.enumerator, &config, pid)
             .unwrap_or_else(|e| crate::audio::AppAudioState {
@@ -467,7 +470,20 @@ impl AudioController {
                 sessions: 0,
                 error: Some(e.to_string()),
             });
+        self.remember_application_target(pid, &state);
         self.post(AppEvent::ForegroundAudioChanged { pid, state, origin });
+    }
+
+    fn remember_application_target(
+        &mut self,
+        pid: Option<u32>,
+        state: &crate::audio::AppAudioState,
+    ) {
+        if let Some(pid) = pid {
+            self.application_watch.observe(
+                crate::audio::state::ApplicationAudioInfo::from_process(pid, state.clone()),
+            );
+        }
     }
 
     fn publish_muted_applications(&mut self, force: bool) {
@@ -480,10 +496,22 @@ impl AudioController {
         }
         self.last_application_scan = Some(std::time::Instant::now());
         // A failed scan must not erase known badges as if every app unmuted.
-        let Ok(applications) = crate::audio::applications::muted_applications(&self.enumerator)
+        let Ok(applications) = crate::audio::applications::application_inventory(&self.enumerator)
         else {
             return;
         };
+        let config = self.config.get();
+        self.application_watch
+            .refresh(|entry| query_watched_application(&self.enumerator, &config, entry));
+        self.application_watch.discover(&applications, |entry| {
+            query_watched_application(&self.enumerator, &config, entry)
+        });
+        let applications = self.application_watch.merge_inventory(
+            applications
+                .into_iter()
+                .filter(|app| app.state.aggregate == crate::audio::Aggregate::AllMuted)
+                .collect(),
+        );
         if self.muted_applications.as_ref() != Some(&applications) {
             self.muted_applications = Some(applications.clone());
             self.post(AppEvent::MutedApplicationsChanged { applications });
@@ -884,6 +912,29 @@ fn config_event_origin(origin: crate::event::ConfigCommitOrigin) -> crate::event
         crate::event::ConfigCommitOrigin::DeviceCycle => {
             crate::event::AudioEventOrigin::Config(origin)
         }
+    }
+}
+
+fn query_watched_application(
+    enumerator: &IMMDeviceEnumerator,
+    config: &crate::config::Config,
+    entry: &crate::audio::state::ApplicationAudioInfo,
+) -> super::application_watch::WatchResult {
+    use super::application_watch::WatchResult;
+    if crate::platform::foreground::process_is_running(entry.pid) == Some(false) {
+        return WatchResult::Gone;
+    }
+    if let (Some(_), Some(path)) = (
+        &entry.image_path,
+        crate::platform::foreground::process_image_path(entry.pid),
+    ) {
+        if path.replace('/', "\\").to_lowercase() != entry.identity {
+            return WatchResult::Gone;
+        }
+    }
+    match crate::audio::sessions::query_foreground(enumerator, config, Some(entry.pid)) {
+        Ok(state) if state.aggregate != crate::audio::Aggregate::Error => WatchResult::State(state),
+        _ => WatchResult::Unavailable,
     }
 }
 
