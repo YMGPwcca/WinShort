@@ -88,6 +88,12 @@ Executed on the audio worker when the foreground action fires
 Aggregate semantics (`audio/state.rs::Aggregate`): `NoSession`, `AllMuted`, `AllActive`,
 `Mixed`, `NoExternalApp`, `Error` (operational failure — never masked as NoSession, #17d).
 
+### Persistent muted-executable inventory
+
+`audio/applications.rs` reads live sessions across all active render endpoints on the audio worker. It skips expired sessions and system-sound PID zero, combines sessions from the same normalized full executable path, and publishes only executable groups whose live sessions are all muted. Unavailable image paths retain a PID-private identity; same-name installations at different paths stay independent. The UI uses this inventory for persistent executable badges, separate from the selected-app state used by shortcuts and Show Status.
+
+The worker scans at most once per second during normal operation and immediately after app mute toggles. It publishes changed snapshots only. Operational scan failures leave the previous snapshot intact, while successful scans remove programs that unmuted or no longer have live sessions. This observer does not write session mute/volume, configuration, or persisted rules. Existing foreground mute/volume resolution and operation semantics stay intact.
+
 ### Foreground-app volume adjustment
 
 The Phase-1 volume actions reuse the same foreground session resolution ladder
