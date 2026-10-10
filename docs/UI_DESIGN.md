@@ -141,6 +141,8 @@ Overlay motion uses one shared high-resolution waitable timer worker, with per-c
 
 Microphone mute/unmute changes also tween the measured width and crossfade the labels over 160 ms while the card is expanded. Rapid reversals retain the current width and text weights, with at most one outgoing label; the icon shows the latest state immediately. Expanding a compact badge reveals only the new label. Reduced motion applies the final content immediately, and settled content stops frame wakes.
 
+Once both microphone and selected-app mute cards have completed their individual full-card holds and contracted, matching monitor/position/material surfaces join into one 96×52 DIP cluster. The badge that became compact first stays anchored; the other slides beside it over 220 ms as the common background widens. The handoff reuses the two logical entries and HWNDs, parking the peer surface only after its icon has joined the host. Hidden peer metadata still updates. Unmuting either member restores its own feedback card below the remaining badge; changing the selected app or disabling a category removes only that member. Clusters dissolve and regroup from their current geometry, preserve click-through and hover opacity, and stop frame wakes when settled. Separate monitors and differing surface styles retain separate cards.
+
 ### System
 
 System is intentionally short:
