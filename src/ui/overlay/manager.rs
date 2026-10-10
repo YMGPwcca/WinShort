@@ -197,6 +197,27 @@ impl OverlayEntry {
     fn is_expiring(&self) -> bool {
         self.lifecycle == EntryLifecycle::Expiring
     }
+
+    /// Cycling output updates the visible card in place, including its stack
+    /// slot and original monitor. Only content, expiry and timer identity change.
+    fn refresh_output(
+        &mut self,
+        model: OverlayModel,
+        expires_at: Option<Instant>,
+        now: Instant,
+        generation: u64,
+    ) -> PresentOutcome {
+        self.model = model;
+        self.expires_at = expires_at;
+        self.presented_at = now;
+        self.generation = generation;
+        self.lifecycle = EntryLifecycle::Active;
+        PresentOutcome {
+            id: self.id,
+            inserted: false,
+            restart_appearance: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +278,9 @@ impl OverlayRegistry {
         if let Some(index) = self.replacement_index(&request) {
             let generation = self.next_generation();
             let entry = &mut self.entries[index];
+            if request.key == OverlayKey::OutputDevice && entry.key == request.key {
+                return entry.refresh_output(request.model, expires_at, now, generation);
+            }
             let transition = entry.key != request.key;
             let restart_appearance = !entry.lifetime.is_permanent() && !transition;
             let preserve_placement = entry.lifetime.is_permanent() || transition;
@@ -650,13 +674,11 @@ impl OverlayManager {
         request: &OverlayRequest,
         config: &OverlayCfg,
     ) -> ResolvedPlacement {
-        if request.lifetime.is_permanent() {
-            if let Some(entry) = self
-                .registry
-                .entries()
-                .iter()
-                .find(|entry| entry.key() == request.key && entry.is_permanent())
-            {
+        if request.lifetime.is_permanent() || request.key == OverlayKey::OutputDevice {
+            if let Some(entry) = self.registry.entries().iter().find(|entry| {
+                entry.key() == request.key
+                    && (entry.is_permanent() || request.key == OverlayKey::OutputDevice)
+            }) {
                 return entry.placement.clone();
             }
         }
@@ -999,12 +1021,10 @@ fn make_show_request(
     join: Option<super::group::JoinRequest>,
     behind_badge: Option<windows::Win32::Foundation::HWND>,
 ) -> ShowRequest {
-    let mode = if presentation
-        .is_some_and(|value| value.id == plan.entry.id && value.restart_appearance)
-    {
-        ShowMode::Present
-    } else {
-        ShowMode::Relayout
+    let mode = match presentation.filter(|value| value.id == plan.entry.id) {
+        Some(value) if value.restart_appearance => ShowMode::Present,
+        Some(_) if plan.entry.key == OverlayKey::OutputDevice => ShowMode::Refresh,
+        _ => ShowMode::Relayout,
     };
     ShowRequest {
         cluster: plan.entry.cluster,
@@ -2558,6 +2578,82 @@ mod tests {
                 .key
                 .monitor,
             Some("DISPLAY1".into())
+        );
+    }
+
+    #[test]
+    fn rapid_output_updates_preserve_placement_order_and_entrance() {
+        let now = Instant::now();
+        let mut registry = OverlayRegistry::default();
+        let request = |detail: &str| {
+            OverlayRequest::toast(
+                OverlayKey::OutputDevice,
+                OverlayModel::single(OverlayRow::preview("Next speaker", detail)),
+            )
+        };
+        let original_placement =
+            placement("DISPLAY1", work(0, 0, 1000, 800), OverlayPosition::TopLeft);
+        let first = present_at(
+            &mut registry,
+            request("SAMSUNG"),
+            original_placement.clone(),
+            now,
+        );
+        let original = registry_entry(&registry, first.id).clone();
+        present_at(
+            &mut registry,
+            OverlayRequest::toast(
+                OverlayKey::Status,
+                OverlayModel::single(OverlayRow::preview("Other popup", "detail")),
+            ),
+            original_placement.clone(),
+            now,
+        );
+        for index in 1..=100 {
+            let at = now + Duration::from_millis(index * 20);
+            let outcome = present_at(
+                &mut registry,
+                request(&format!("device-{index}")),
+                placement(
+                    "DISPLAY2",
+                    work(1000, 0, 2000, 800),
+                    OverlayPosition::BottomRight,
+                ),
+                at,
+            );
+            let entry = registry_entry(&registry, outcome.id);
+            assert_eq!(outcome.id, first.id);
+            assert!(!outcome.inserted);
+            assert!(!outcome.restart_appearance);
+            assert_eq!(entry.placement.key, original.placement.key);
+            assert_eq!(entry.sequence, original.sequence);
+            assert_eq!(entry.edge_entrance, original.edge_entrance);
+            assert_eq!(entry.model.rows[0].detail, format!("device-{index}"));
+            assert_eq!(entry.expires_at, Some(at + Duration::from_millis(1300)));
+            assert_ne!(entry.generation, original.generation);
+        }
+        let before = make_layout_entry(
+            &original,
+            crate::config::Config::default().overlay,
+            original_placement,
+        );
+        let after = make_layout_entry(
+            registry_entry(&registry, first.id),
+            crate::config::Config::default().overlay,
+            original.placement.clone(),
+        );
+        let other = make_layout_entry(
+            &registry.entries()[1],
+            crate::config::Config::default().overlay,
+            original.placement,
+        );
+        assert_eq!(
+            planned(&plan_layout(vec![before, other.clone()]), first.id)
+                .card
+                .position,
+            planned(&plan_layout(vec![after, other]), first.id)
+                .card
+                .position,
         );
     }
 

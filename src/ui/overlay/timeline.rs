@@ -139,6 +139,8 @@ pub(super) enum TickPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ShowMode {
     Present,
+    /// Replace content and extend expiry without replaying the entrance.
+    Refresh,
     Relayout,
 }
 
@@ -201,7 +203,8 @@ where
 }
 
 pub(super) fn timing_after_show(phase: Phase, motion: MotionPolicy, mode: ShowMode) -> ShowTiming {
-    if mode == ShowMode::Relayout && phase != Phase::Hidden {
+    let resume_exit = mode == ShowMode::Refresh && phase == Phase::Leaving;
+    if mode != ShowMode::Present && phase != Phase::Hidden && !resume_exit {
         return ShowTiming {
             phase,
             restart_phase: false,

@@ -35,6 +35,104 @@ fn pump_for(duration: Duration) {
 }
 
 #[test]
+#[ignore = "shows test-owned output popups; does not switch real audio devices"]
+fn native_spammed_output_updates_keep_one_window_position_and_opacity() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.monitor = crate::config::model::MonitorChoice::Primary;
+    config.position = OverlayPosition::TopRight;
+    config.hover_opacity = 1.0;
+    config.duration_ms = 400;
+    let output = |name: &str| {
+        OverlayRequest::toast(
+            OverlayKey::OutputDevice,
+            OverlayModel::single(OverlayRow {
+                category: None,
+                icon: OverlayIcon::Output,
+                tone: OverlayTone::Changed,
+                title: "Next speaker".into(),
+                detail: name.into(),
+            }),
+        )
+    };
+    manager.present(output("SAMSUNG"), config.clone()).unwrap();
+    let hwnd = manager.test_hwnds()[0];
+    // SAFETY: the manager owns this test HWND on the current UI thread and
+    // every state borrow ends before presenting or pumping native messages.
+    let cell =
+        unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(hwnd) }.unwrap();
+    let entrance_started = cell.borrow().phase_started;
+    for _ in 0..5 {
+        pump_for(Duration::from_millis(10));
+        manager
+            .present(output("SIMGOT EW300 DSP"), config.clone())
+            .unwrap();
+        assert_eq!(cell.borrow().phase_started, entrance_started);
+    }
+    pump_for(Duration::from_millis(200));
+    let mut status_config = config.clone();
+    status_config.duration_ms = 10000;
+    manager
+        .present(
+            OverlayRequest::toast(
+                OverlayKey::Status,
+                OverlayModel::single(OverlayRow::preview("Other popup", "Keep this stack slot")),
+            ),
+            status_config,
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(200));
+    let mut anchor = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut anchor).unwrap() };
+    for index in 0..100 {
+        let name = if index % 2 == 0 {
+            "SAMSUNG"
+        } else {
+            "SIMGOT EW300 DSP"
+        };
+        manager.present(output(name), config.clone()).unwrap();
+        assert_eq!(manager.test_hwnds()[0], hwnd);
+        let state = cell.borrow();
+        assert_eq!(state.phase, super::timeline::Phase::Holding);
+        assert_eq!(state.frame_values(Instant::now()), (1.0, 0.0));
+        assert_eq!(state.model.rows[0].detail, name);
+        drop(state);
+        pump_for(Duration::from_millis(10));
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut rect).unwrap() };
+        assert_eq!(
+            rect, anchor,
+            "output spam must keep its existing stack slot"
+        );
+    }
+    pump_for(Duration::from_millis(600));
+    assert_eq!(cell.borrow().phase, super::timeline::Phase::Leaving);
+    let before = cell.borrow().frame_values(Instant::now());
+    manager.present(output("SAMSUNG"), config.clone()).unwrap();
+    let after = cell.borrow().frame_values(Instant::now());
+    assert!(
+        (after.0 - before.0).abs() < 0.05,
+        "refreshing an exit must keep current opacity"
+    );
+    assert!(
+        (after.1 - before.1).abs() < 0.5,
+        "refreshing an exit must keep current slide"
+    );
+    pump_for(Duration::from_millis(200));
+    assert_eq!(cell.borrow().phase, super::timeline::Phase::Holding);
+    capture("output-spam-stable", &manager.test_window_rectangles());
+    pump_for(Duration::from_millis(700));
+    assert!(
+        !unsafe { IsWindowVisible(hwnd).as_bool() },
+        "refreshed toast must still expire"
+    );
+    assert_eq!(manager.test_window_rectangles().len(), 1);
+    manager.shutdown();
+}
+
+#[test]
 #[ignore = "shows test-owned multi-application bar with actual executable icons; does not touch audio"]
 fn native_multiple_executable_badges_extend_and_shrink_one_bar() {
     crate::platform::dpi::set_process_awareness();
