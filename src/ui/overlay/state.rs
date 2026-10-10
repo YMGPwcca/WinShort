@@ -56,6 +56,7 @@ pub(super) struct OverlayState {
     pub(super) cluster: super::group::ClusterMotion,
     pub(super) join: Option<super::group::JoinMotion>,
     pub(super) compacted_at: Option<Instant>,
+    pub(super) collapse_origin: Option<POINT>,
     pub(super) parked: bool,
     pub(super) behind_badge: Option<HWND>,
     pub(super) hover: super::hover::HoverMotion,
@@ -98,6 +99,7 @@ impl OverlayState {
             cluster: super::group::ClusterMotion::default(),
             join: None,
             compacted_at: None,
+            collapse_origin: None,
             parked: false,
             behind_badge: None,
             hover: super::hover::HoverMotion::default(),
@@ -162,6 +164,9 @@ impl OverlayState {
             .update(collapsible_mute, presentation_started_at, self.motion, now);
         if !self.badge.reserves_compact() {
             self.compacted_at = None;
+        }
+        if self.badge.collapse_started().is_none() {
+            self.collapse_origin = None;
         }
         self.layout_size = layout_size;
         self.frame_period = frame_period;
@@ -339,7 +344,12 @@ impl OverlayState {
         if self.phase == Phase::Hidden || self.parked {
             return None;
         }
+        let old_collapse = self.badge.collapse_started();
+        let collapse_position = self.presentation_position(now, self.presentation_size(now));
         let mut layout_changed = self.badge.tick(self.motion, now);
+        if old_collapse != self.badge.collapse_started() {
+            self.collapse_origin = Some(collapse_position);
+        }
         if self.badge.reserves_compact() && self.compacted_at.is_none() {
             self.compacted_at = Some(now);
         }
@@ -468,6 +478,11 @@ impl OverlayState {
                 }) {
                     return;
                 }
+                let from = if self.badge.collapse_started() == Some(request.started) {
+                    self.collapse_origin.unwrap_or(from)
+                } else {
+                    from
+                };
                 self.join = Some(super::group::JoinMotion::new(from, request));
             }
         }

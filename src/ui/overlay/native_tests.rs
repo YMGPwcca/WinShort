@@ -94,10 +94,61 @@ fn native_mute_group_keeps_audio_entries_independent() {
         (first.left, first.top),
         "the existing badge must stay anchored"
     );
-    capture("group-second-full", &manager.test_window_rectangles());
-    pump_for(Duration::from_millis(1250));
+    // Keep the timing check free of the screenshot helper's blocking child
+    // process; slow captures can consume the entire contraction interval.
+    let full = manager.test_window_rectangles()[1];
+    assert!(
+        (full.top + (full.bottom - full.top) / 2 - (first.top + (first.bottom - first.top) / 2))
+            .abs()
+            <= 1
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let started = {
+            let cell = unsafe {
+                crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd)
+            }
+            .unwrap();
+            cell.borrow().badge.collapse_started().is_some()
+        };
+        if started {
+            break;
+        }
+        assert!(Instant::now() < deadline, "peer did not begin contracting");
+        pump_for(Duration::from_millis(5));
+    }
     manager.refresh_visuals().unwrap();
-    pump_for(Duration::from_millis(300));
+    pump_for(Duration::from_millis(35));
+    {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        let compact = state.badge.value(Instant::now());
+        let collapse_start = state.badge.collapse_started().unwrap();
+        let join = state.join.expect("joining must start during contraction");
+        assert_eq!(
+            join.request.started, collapse_start,
+            "join must use the contraction clock, not a second animation after it"
+        );
+        if collapse_start.elapsed() < Duration::from_millis(super::group::GROUP_MS) {
+            assert!(compact > 0.0 && compact < 1.0);
+        } else {
+            // Some fallback drivers block Resize/EndDraw for the whole tween.
+            // Catch-up must go straight to the shared final position.
+            assert_eq!(compact, 1.0);
+            assert!(join.finished(Instant::now()));
+        }
+    }
+    let midway = manager.test_window_rectangles()[1];
+    assert!(
+        (midway.top + (midway.bottom - midway.top) / 2
+            - (first.top + (first.bottom - first.top) / 2))
+            .abs()
+            <= 1,
+        "contraction must stay aligned beside the existing badge"
+    );
+    pump_for(Duration::from_millis(250));
     manager.refresh_visuals().unwrap();
     let grouped = manager.test_window_rectangles();
     assert_eq!(

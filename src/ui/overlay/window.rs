@@ -386,6 +386,7 @@ impl OverlayWindow {
         state.cluster = super::group::ClusterMotion::default();
         state.join = None;
         state.compacted_at = None;
+        state.collapse_origin = None;
         state.parked = false;
         state.behind_badge = None;
         state.hover = super::hover::HoverMotion::default();
@@ -420,6 +421,7 @@ impl OverlayWindow {
                 state.cluster = super::group::ClusterMotion::default();
                 state.join = None;
                 state.compacted_at = None;
+                state.collapse_origin = None;
                 state.parked = false;
                 state.behind_badge = None;
                 state.hover = super::hover::HoverMotion::default();
@@ -435,6 +437,11 @@ impl OverlayWindow {
         // SAFETY: manager getters run on the HWND's owning UI thread.
         unsafe { win::state_cell::<OverlayState>(self.hwnd) }
             .and_then(|cell| cell.borrow().compacted_at)
+    }
+    pub(super) fn collapse_started(&self) -> Option<std::time::Instant> {
+        // SAFETY: manager reads the live state on the owning UI thread.
+        unsafe { win::state_cell::<OverlayState>(self.hwnd) }
+            .and_then(|cell| cell.borrow().badge.collapse_started())
     }
 
     /// Hide only the peer's native surface; its independent audio entry and

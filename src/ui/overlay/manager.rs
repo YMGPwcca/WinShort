@@ -789,17 +789,7 @@ impl OverlayManager {
         self.registry.mark_expiring(now);
         refresh_registry_placements(&mut self.registry);
         let mut entries = self.build_layout_entries();
-        self.compact_group = choose_compact_group(&entries, self.compact_group, now);
-        if motion_policy(crate::platform::visual::SystemVisualPreferences::query())
-            == MotionPolicy::Reduced
-        {
-            if let Some(group) = &mut self.compact_group {
-                group.started = now
-                    .checked_sub(Duration::from_millis(super::group::GROUP_MS))
-                    .unwrap_or(now);
-            }
-        }
-        let peer = prepare_group_entries(&mut entries, self.compact_group);
+        let (peer, pending) = self.prepare_visual_group(&mut entries, now);
         let layout = plan_layout_with_evictions(entries);
         for id in layout.evicted_ids {
             self.render_configs.remove(&id);
@@ -818,11 +808,66 @@ impl OverlayManager {
                 .find(|plan| plan.entry.id == group.primary)
                 .map(|plan| peer_position(plan, group.side))
         });
-
+        let pending_position = pending.and_then(|pair| {
+            plans
+                .iter()
+                .find(|plan| plan.entry.id == pair.primary)
+                .and_then(|plan| {
+                    peer.as_ref()
+                        .map(|peer| pending_peer_position(plan, peer, pair.side))
+                })
+        });
         self.render_layout(plans, presentation)?;
-        if let (Some(peer), Some(group), Some(position)) = (peer, self.compact_group, join_position)
+        if let Some(peer) = peer {
+            self.present_visual_peer(peer, join_position, pending_position, presentation)?;
+        }
+        Ok(())
+    }
+
+    fn prepare_visual_group(
+        &mut self,
+        entries: &mut Vec<LayoutEntry>,
+        now: Instant,
+    ) -> (Option<LayoutEntry>, Option<CompactGroup>) {
+        let pending = choose_pending_pair(entries);
+        self.compact_group = choose_compact_group(entries, self.compact_group, now);
+        if motion_policy(crate::platform::visual::SystemVisualPreferences::query())
+            == MotionPolicy::Reduced
         {
+            if let Some(group) = &mut self.compact_group {
+                group.started = now
+                    .checked_sub(Duration::from_millis(super::group::GROUP_MS))
+                    .unwrap_or(now);
+            }
+        }
+        let mut peer = prepare_group_entries(entries, self.compact_group);
+        if self.compact_group.is_none() {
+            if let Some(pair) = pending {
+                peer = extract_peer(entries, pair.peer);
+            }
+        }
+        (peer, pending)
+    }
+
+    fn present_visual_peer(
+        &self,
+        peer: LayoutEntry,
+        join_position: Option<windows::Win32::Foundation::POINT>,
+        pending_position: Option<windows::Win32::Foundation::POINT>,
+        presentation: Option<PresentOutcome>,
+    ) -> Result<()> {
+        if let (Some(group), Some(position)) = (self.compact_group, join_position) {
             self.show_group_peer(peer, group, position, presentation)?;
+        } else if let Some(position) = pending_position {
+            self.show_planned_entry(
+                PlannedEntry {
+                    entry: peer,
+                    card: CardPlacement { position },
+                },
+                presentation,
+                None,
+                None,
+            )?;
         }
         Ok(())
     }
@@ -914,6 +959,11 @@ impl OverlayManager {
                     .iter()
                     .find(|window| window.id == entry.id())
                     .and_then(|window| window.window.compacted_at());
+                plan.collapse_started = self
+                    .windows
+                    .iter()
+                    .find(|window| window.id == entry.id())
+                    .and_then(|window| window.window.collapse_started());
                 if entry.key().is_compact_mute()
                     && entry.is_permanent()
                     && self.windows.iter().any(|managed| {
@@ -1018,33 +1068,92 @@ fn choose_compact_group(
     if !same_group_surface(mic, app) {
         return None;
     }
+    if !mic.compact && !app.compact {
+        return None;
+    }
     let side = super::group::Side::for_position(mic.placement.key.position);
     if let Some(group) =
         previous.filter(|group| group.side == side && group.contains(mic.id, app.id))
     {
         return Some(group);
     }
-    let (primary, peer) = if mic.compacted_at.unwrap_or(mic.presented_at)
-        <= app.compacted_at.unwrap_or(app.presented_at)
+    let (primary, peer) = if mic.compact
+        && (!app.compact
+            || mic.compacted_at.unwrap_or(mic.presented_at)
+                <= app.compacted_at.unwrap_or(app.presented_at))
     {
-        (mic.id, app.id)
+        (mic, app)
     } else {
-        (app.id, mic.id)
+        (app, mic)
     };
     Some(CompactGroup {
-        primary,
-        peer,
+        primary: primary.id,
+        peer: peer.id,
         side,
-        started: now,
+        started: peer.collapse_started.unwrap_or(now),
     })
 }
 
 fn grouping_entry(entry: &LayoutEntry, key: OverlayKey) -> bool {
     entry.key == key
-        && entry.compact
+        && (entry.compact || entry.collapse_started.is_some())
         && entry.lifetime.is_permanent()
         && entry.model.rows.len() == 1
         && entry.model.rows[0].tone == super::model::OverlayTone::Muted
+}
+
+fn choose_pending_pair(entries: &[LayoutEntry]) -> Option<CompactGroup> {
+    let eligible = |key| {
+        entries.iter().find(|entry| {
+            entry.key == key
+                && entry.lifetime.is_permanent()
+                && entry.model.rows.len() == 1
+                && entry.model.rows[0].tone == super::model::OverlayTone::Muted
+        })
+    };
+    let mic = eligible(OverlayKey::MicrophonePermanent)?;
+    let app = eligible(OverlayKey::CurrentAppAudioPermanent)?;
+    if !same_group_surface(mic, app) {
+        return None;
+    }
+    let (primary, peer) = match (mic.compact, app.compact) {
+        (true, false) => (mic, app),
+        (false, true) => (app, mic),
+        _ => return None,
+    };
+    Some(CompactGroup {
+        primary: primary.id,
+        peer: peer.id,
+        side: super::group::Side::for_position(primary.placement.key.position),
+        started: peer.presented_at,
+    })
+}
+
+fn extract_peer(entries: &mut Vec<LayoutEntry>, id: u64) -> Option<LayoutEntry> {
+    let index = entries.iter().position(|entry| entry.id == id)?;
+    Some(entries.remove(index))
+}
+
+fn pending_peer_position(
+    primary: &PlannedEntry,
+    peer: &LayoutEntry,
+    side: super::group::Side,
+) -> windows::Win32::Foundation::POINT {
+    let gap = super::layout::stack_gap_px(
+        primary.entry.render_config.scale,
+        primary.entry.placement.dpi,
+    );
+    let x = if side == super::group::Side::Left {
+        primary.card.position.x - gap - peer.size.cx
+    } else {
+        primary.card.position.x + primary.entry.size.cx + gap
+    };
+    let y = primary.card.position.y + (primary.entry.size.cy - peer.size.cy) / 2;
+    let work = primary.entry.placement.work;
+    windows::Win32::Foundation::POINT {
+        x: x.clamp(work.left, (work.right - peer.size.cx).max(work.left)),
+        y: y.clamp(work.top, (work.bottom - peer.size.cy).max(work.top)),
+    }
 }
 
 fn same_group_surface(first: &LayoutEntry, second: &LayoutEntry) -> bool {
@@ -1183,6 +1292,7 @@ struct LayoutEntry {
     size: windows::Win32::Foundation::SIZE,
     compact: bool,
     compacted_at: Option<Instant>,
+    collapse_started: Option<Instant>,
     cluster: Option<super::group::ClusterRequest>,
 }
 
@@ -1322,6 +1432,7 @@ fn make_layout_entry(
         size,
         compact: false,
         compacted_at: None,
+        collapse_started: None,
         cluster: None,
     }
 }
@@ -1538,6 +1649,7 @@ mod tests {
             size,
             compact: false,
             compacted_at: None,
+            collapse_started: None,
             cluster: None,
         }
     }
@@ -1601,6 +1713,33 @@ mod tests {
         app.compact = true;
         app.lifetime = OverlayLifetime::Toast;
         assert!(choose_compact_group(&[mic, app], None, now).is_none());
+    }
+
+    #[test]
+    fn peer_is_positioned_beside_host_and_joins_at_contraction_start() {
+        let now = Instant::now();
+        let mic = muted_entry(1, OverlayKey::MicrophonePermanent, now);
+        let mut app = muted_entry(2, OverlayKey::CurrentAppAudioPermanent, now);
+        app.compact = false;
+        app.size = windows::Win32::Foundation::SIZE { cx: 200, cy: 68 };
+        let pair = choose_pending_pair(&[mic.clone(), app.clone()]).unwrap();
+        assert_eq!(pair.primary, 1);
+        let host = PlannedEntry {
+            entry: mic.clone(),
+            card: CardPlacement {
+                position: windows::Win32::Foundation::POINT { x: 1126, y: 22 },
+            },
+        };
+        let pending = pending_peer_position(&host, &app, pair.side);
+        assert_eq!(pending, windows::Win32::Foundation::POINT { x: 916, y: 14 });
+        assert!(choose_compact_group(&[mic.clone(), app.clone()], None, now).is_none());
+        app.collapse_started = Some(now);
+        let active =
+            choose_compact_group(&[mic, app], None, now + Duration::from_millis(30)).unwrap();
+        assert_eq!(
+            active.started, now,
+            "join and collapse must share one clock"
+        );
     }
     #[test]
     fn grouped_layout_uses_one_lane_and_keeps_the_primary_icon_anchor_at_all_dpis() {

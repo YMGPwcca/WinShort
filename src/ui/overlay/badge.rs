@@ -33,11 +33,15 @@ pub(super) struct BadgeMotion {
     collapse_at: Option<Instant>,
     settled: f32,
     tween: Option<BadgeTween>,
+    collapse_started: Option<Instant>,
 }
 
 impl BadgeMotion {
     pub(super) fn is_animating(&self) -> bool {
         self.tween.is_some()
+    }
+    pub(super) fn collapse_started(&self) -> Option<Instant> {
+        self.collapse_started
     }
     pub(super) fn value(&self, now: Instant) -> f32 {
         self.tween.map_or(self.settled, |tween| tween.value(now))
@@ -51,6 +55,7 @@ impl BadgeMotion {
         now: Instant,
     ) {
         if self.collapsible != collapsible {
+            self.collapse_started = None;
             self.collapsible = collapsible;
             if collapsible {
                 let appear = if motion == MotionPolicy::Animated {
@@ -89,14 +94,17 @@ impl BadgeMotion {
     /// Return true once the stack can reclaim the expanded card's height.
     pub(super) fn tick(&mut self, motion: MotionPolicy, now: Instant) -> bool {
         let was_compact = self.reserves_compact();
+        let mut started = false;
         if self.collapse_at.is_some_and(|deadline| now >= deadline) {
             self.collapse_at = None;
+            self.collapse_started = Some(now);
+            started = true;
             self.animate_to(1.0, motion, now);
         }
         if self.tween.is_some_and(|tween| tween.finished(now)) {
             self.tween = None;
         }
-        was_compact != self.reserves_compact()
+        started || was_compact != self.reserves_compact()
     }
 
     pub(super) fn reserves_compact(&self) -> bool {
@@ -127,7 +135,7 @@ mod tests {
         badge.update(true, now, MotionPolicy::Animated, now);
         let collapse = now + Duration::from_millis(APPEAR_MS + BADGE_HOLD_MS);
         assert_eq!(badge.value(collapse - Duration::from_millis(1)), 0.0);
-        assert!(!badge.tick(MotionPolicy::Animated, collapse));
+        assert!(badge.tick(MotionPolicy::Animated, collapse));
         assert_eq!(badge.timer_interval(collapse), Some(TIMER_MS));
         let mid = collapse + Duration::from_millis(BADGE_TWEEN_MS / 2);
         assert!(badge.value(mid) > 0.0 && badge.value(mid) < 1.0);
