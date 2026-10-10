@@ -98,9 +98,8 @@ fn native_mute_group_keeps_audio_entries_independent() {
     // process; slow captures can consume the entire contraction interval.
     let full = manager.test_window_rectangles()[1];
     assert!(
-        (full.top + (full.bottom - full.top) / 2 - (first.top + (first.bottom - first.top) / 2))
-            .abs()
-            <= 1
+        full.top > first.bottom,
+        "new mute feedback must use the same vertical lane as unmute"
     );
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -127,6 +126,14 @@ fn native_mute_group_keeps_audio_entries_independent() {
         let compact = state.badge.value(Instant::now());
         let collapse_start = state.badge.collapse_started().unwrap();
         let join = state.join.expect("joining must start during contraction");
+        assert!(
+            join.position(collapse_start).y >= full.top,
+            "joining must begin at the full card below the badge"
+        );
+        assert!(
+            join.request.position.y < join.position(collapse_start).y,
+            "contraction must move toward the adjacent badge slot"
+        );
         assert_eq!(
             join.request.started, collapse_start,
             "join must use the contraction clock, not a second animation after it"
@@ -140,14 +147,6 @@ fn native_mute_group_keeps_audio_entries_independent() {
             assert!(join.finished(Instant::now()));
         }
     }
-    let midway = manager.test_window_rectangles()[1];
-    assert!(
-        (midway.top + (midway.bottom - midway.top) / 2
-            - (first.top + (first.bottom - first.top) / 2))
-            .abs()
-            <= 1,
-        "contraction must stay aligned beside the existing badge"
-    );
     pump_for(Duration::from_millis(250));
     manager.refresh_visuals().unwrap();
     let grouped = manager.test_window_rectangles();
