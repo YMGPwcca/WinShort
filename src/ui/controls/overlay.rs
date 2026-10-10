@@ -12,6 +12,23 @@ pub(crate) fn draw_position_cell(
     interaction: Interaction,
 ) {
     let rect = element.rect.inset(1.0);
+    if element.id == crate::ui::layout::ElementId::OverlayPositionCell(4) {
+        r.fill_rounded(rect.d2d(), 7.0, BrushRole::BackgroundSubtle);
+        r.stroke_rounded(rect.d2d(), 7.0, BrushRole::Border, 1.0);
+        let (cx, cy) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        let radius = (rect.h * 0.24).clamp(6.0, 10.0);
+        r.ellipse(cx, cy, radius, radius, BrushRole::TextDisabled, false, 1.6);
+        let diagonal = radius * 0.7;
+        r.line(
+            cx - diagonal,
+            cy - diagonal,
+            cx + diagonal,
+            cy + diagonal,
+            BrushRole::TextDisabled,
+            1.6,
+        );
+        return;
+    }
     let fill = if selected {
         BrushRole::Accent
     } else if interaction.hovered || interaction.pressed {

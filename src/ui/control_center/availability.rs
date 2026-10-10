@@ -230,6 +230,7 @@ impl SettingsUi {
     fn overlay_disabled(&self, element: OverlayElement) -> bool {
         match element {
             OverlayElement::Enabled | OverlayElement::Appearance => false,
+            OverlayElement::PositionCell(4) => true,
             OverlayElement::Microphone
             | OverlayElement::Speaker
             | OverlayElement::CurrentAppAudio

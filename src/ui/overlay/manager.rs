@@ -142,6 +142,7 @@ pub(crate) struct OverlayEntry {
     expires_at: Option<Instant>,
     presented_at: Instant,
     sequence: u64,
+    edge_entrance: bool,
     placement: ResolvedPlacement,
     lifecycle: EntryLifecycle,
 }
@@ -246,6 +247,12 @@ impl OverlayRegistry {
             OverlayLifetime::Permanent => None,
             OverlayLifetime::Toast => Some(toast_deadline(now, motion, duration)),
         };
+        let edge_entrance = !self.entries.iter().any(|entry| {
+            entry.lifecycle == EntryLifecycle::Active
+                && entry.placement.key.monitor == placement.key.monitor
+                && entry.key != request.key
+                && Some(entry.key) != request.replace_key
+        });
         let sequence = self.next_sequence();
         if let Some(index) = self.replacement_index(&request) {
             let generation = self.next_generation();
@@ -267,6 +274,7 @@ impl OverlayRegistry {
             entry.presented_at = now;
             entry.generation = generation;
             entry.sequence = sequence;
+            entry.edge_entrance = edge_entrance;
             entry.lifecycle = EntryLifecycle::Active;
             if !preserve_placement {
                 entry.placement = placement;
@@ -289,6 +297,7 @@ impl OverlayRegistry {
             expires_at,
             presented_at: now,
             sequence,
+            edge_entrance,
             placement,
             lifecycle: EntryLifecycle::Active,
         });
@@ -1001,6 +1010,7 @@ fn make_show_request(
         cluster: plan.entry.cluster,
         join,
         behind_badge,
+        edge_entrance: plan.entry.edge_entrance,
         generation: plan.entry.generation,
         presentation_started_at: plan.entry.presented_at,
         model: plan.entry.model,
@@ -1108,6 +1118,7 @@ fn prepare_group_entries(
     let peer = entries.remove(peer_index);
     let primary = entries.iter_mut().find(|entry| entry.id == group.primary)?;
     primary.cluster = Some(super::group::ClusterRequest {
+        primary_offset: 0.0,
         peers: vec![super::group::ClusterPeer {
             id: peer.id,
             row: peer.model.rows[0].clone(),
@@ -1217,6 +1228,7 @@ struct LayoutEntry {
     placement: ResolvedPlacement,
     size: windows::Win32::Foundation::SIZE,
     compact: bool,
+    edge_entrance: bool,
     compacted_at: Option<Instant>,
     collapse_started: Option<Instant>,
     cluster: Option<super::group::ClusterRequest>,
@@ -1360,6 +1372,7 @@ fn make_layout_entry(
         compacted_at: None,
         collapse_started: None,
         cluster: None,
+        edge_entrance: entry.edge_entrance,
     }
 }
 
@@ -1581,6 +1594,7 @@ mod tests {
             compacted_at: None,
             collapse_started: None,
             cluster: None,
+            edge_entrance: false,
         }
     }
 
@@ -1607,6 +1621,71 @@ mod tests {
         entry.compacted_at = Some(at);
         entry
     }
+    #[test]
+    fn corner_entrance_is_reserved_for_the_first_visible_card_on_a_monitor() {
+        let now = Instant::now();
+        let mut registry = OverlayRegistry::default();
+        registry.present(
+            OverlayRequest::toast(
+                OverlayKey::Speaker,
+                OverlayModel::single(super::super::model::OverlayRow::preview("Output", "First")),
+            ),
+            Duration::from_secs(1),
+            now,
+        );
+        assert!(registry.entries()[0].edge_entrance);
+        registry.present(
+            OverlayRequest::permanent(
+                OverlayKey::MicrophonePermanent,
+                OverlayModel::single(super::super::model::OverlayRow::preview("Mic", "Second")),
+            ),
+            Duration::from_secs(1),
+            now,
+        );
+        assert!(
+            !registry.entries()[1].edge_entrance,
+            "higher layout priority does not make a later popup first"
+        );
+    }
+
+    #[test]
+    fn microphone_uses_first_visual_slot_when_it_joins_an_existing_program_bar() {
+        let now = Instant::now();
+        let app = muted_entry(1, OverlayKey::ApplicationPermanent(1), now);
+        let second = muted_entry(2, OverlayKey::ApplicationPermanent(2), now);
+        let previous = choose_compact_groups(&[app.clone(), second.clone()], &[], now);
+        let mut mic = muted_entry(3, OverlayKey::MicrophonePermanent, now);
+        mic.compact = false;
+        mic.collapse_started = Some(now);
+        let mut entries = vec![app, second, mic];
+        let groups = choose_compact_groups(&entries, &previous, now);
+        assert!(
+            groups.iter().all(|group| group.primary == 1),
+            "do not switch the native host during the join"
+        );
+        prepare_groups(&mut entries, &groups);
+        let cluster = entries[0].cluster.as_ref().unwrap();
+        assert_eq!(cluster.primary_offset, -44.0);
+        assert_eq!(
+            cluster
+                .peers
+                .iter()
+                .find(|peer| peer.id == 3)
+                .unwrap()
+                .offset,
+            -88.0
+        );
+        assert_eq!(
+            cluster
+                .peers
+                .iter()
+                .find(|peer| peer.id == 2)
+                .unwrap()
+                .offset,
+            0.0
+        );
+    }
+
     #[test]
     fn multiple_programs_extend_bar_without_duplicate_ids_or_cross_app_removal() {
         let now = Instant::now();

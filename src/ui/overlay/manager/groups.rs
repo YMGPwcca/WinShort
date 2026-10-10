@@ -22,7 +22,9 @@ pub(super) fn choose_compact_groups(
         .collect::<Vec<_>>();
     candidates.sort_by_key(|entry| {
         (
+            !previous.iter().any(|group| group.primary == entry.id),
             !entry.compact,
+            entry.key != OverlayKey::MicrophonePermanent,
             entry.compacted_at.unwrap_or(entry.presented_at),
             entry.sequence,
         )
@@ -39,6 +41,7 @@ pub(super) fn choose_compact_groups(
                 .iter()
                 .position(|group| group.primary == primary.id && group.peer == peer.id);
             (
+                peer.key != OverlayKey::MicrophonePermanent,
                 slot.is_none(),
                 slot.unwrap_or(usize::MAX),
                 peer.collapse_started.unwrap_or(peer.presented_at),
@@ -105,30 +108,12 @@ pub(super) fn prepare_groups(
             .iter()
             .filter(|group| group.primary == primary.id)
             .collect::<Vec<_>>();
-        let Some(first) = members.first() else {
+        if members.is_empty() {
             continue;
-        };
-        let cluster_peers = members
-            .iter()
-            .enumerate()
-            .filter_map(|(index, group)| {
-                let peer = peers.iter().find(|peer| peer.id == group.peer)?;
-                Some(ClusterPeer {
-                    id: peer.id,
-                    row: peer.model.rows[0].clone(),
-                    started: group.started,
-                    offset: (index + 1) as f32
-                        * GROUP_EXTRA
-                        * if first.side == Side::Left { -1.0 } else { 1.0 },
-                })
-            })
-            .collect::<Vec<_>>();
-        let count = cluster_peers.len();
-        primary.cluster = Some(ClusterRequest {
-            peers: cluster_peers,
-            side: first.side,
-            started: members.iter().map(|group| group.started).max().unwrap(),
-        });
+        }
+        let cluster = build_cluster_request(primary, &members, &peers);
+        let count = cluster.peers.len();
+        primary.cluster = Some(cluster);
         primary.size.cx = ((52.0 + GROUP_EXTRA * count as f32)
             * primary.render_config.scale.clamp(0.7, 1.6)
             * primary.placement.dpi.max(96) as f32
@@ -136,6 +121,59 @@ pub(super) fn prepare_groups(
             .round() as i32;
     }
     peers
+}
+
+fn build_cluster_request(
+    primary: &LayoutEntry,
+    members: &[&CompactGroup],
+    peers: &[LayoutEntry],
+) -> ClusterRequest {
+    let first = members[0];
+    let mic_peer = members.iter().find(|group| {
+        peers
+            .iter()
+            .any(|peer| peer.id == group.peer && peer.key == OverlayKey::MicrophonePermanent)
+    });
+    let primary_slot =
+        usize::from(primary.key != OverlayKey::MicrophonePermanent && mic_peer.is_some());
+    let peer_count = members.len();
+    let mut next_slot = if primary_slot == 0 { 1 } else { 2 };
+    let cluster_peers = members
+        .iter()
+        .filter_map(|group| {
+            let peer = peers.iter().find(|peer| peer.id == group.peer)?;
+            let slot = if peer.key == OverlayKey::MicrophonePermanent {
+                0
+            } else {
+                let slot = next_slot;
+                next_slot += 1;
+                slot
+            };
+            Some(ClusterPeer {
+                id: peer.id,
+                row: peer.model.rows[0].clone(),
+                started: group.started,
+                offset: slot_offset(slot, peer_count, first.side),
+            })
+        })
+        .collect::<Vec<_>>();
+    ClusterRequest {
+        peers: cluster_peers,
+        primary_offset: slot_offset(primary_slot, peer_count, first.side),
+        side: first.side,
+        started: members.iter().map(|group| group.started).max().unwrap(),
+    }
+}
+
+fn slot_offset(slot: usize, peer_count: usize, side: Side) -> f32 {
+    // Reading order is left to right at every screen anchor. Right-edge bars
+    // still grow left, but that must not reverse microphone/program order.
+    let slot = if side == Side::Left {
+        slot as f32 - peer_count as f32
+    } else {
+        slot as f32
+    };
+    slot * GROUP_EXTRA
 }
 
 pub(super) fn group_peer_position(host: &PlannedEntry, peer: u64) -> POINT {

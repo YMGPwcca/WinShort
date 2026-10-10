@@ -1210,6 +1210,7 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
             content_width: 240.0,
             text_alpha: 1.0,
             cluster_extra: 0.0,
+            cluster_primary_offset: 0.0,
             join_alpha: 1.0,
             behind_badge: None,
             compact: 0.0,

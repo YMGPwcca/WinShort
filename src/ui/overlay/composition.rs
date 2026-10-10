@@ -609,6 +609,7 @@ fn draw_content(
         OverlayDrawOptions {
             app_bitmaps,
             cluster_extra: data.cluster_extra,
+            cluster_primary_offset: data.cluster_primary_offset,
             cluster_side: data.cluster_side,
             cluster_peers: &data.cluster_peers,
             previous_text: data.previous_text.as_ref(),

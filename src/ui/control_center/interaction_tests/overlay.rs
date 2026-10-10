@@ -61,3 +61,15 @@ fn overlay_preview_treatments_are_distinct_and_transparent_has_no_surface() {
         Some((BrushRole::BackgroundSubtle, 0.50))
     );
 }
+
+#[test]
+fn center_position_remains_visible_but_cannot_be_selected_or_invoked() {
+    let mut ui = empty_settings_ui();
+    assert!(ui.is_disabled(ElementId::OverlayPositionCell(4)));
+    assert!(!ui.is_disabled(ElementId::OverlayPositionCell(0)));
+    let before = ui.draft.overlay.position;
+    ui.set_overlay_position(HWND::default(), 4);
+    assert_eq!(ui.draft.overlay.position, before);
+    ui.apply_picker(PickerCommit::OverlayPosition(OverlayPosition::Center));
+    assert_eq!(ui.draft.overlay.position, before);
+}

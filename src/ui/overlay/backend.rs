@@ -47,6 +47,7 @@ pub(super) fn render_prepared_frame(
         data.model.width_dip = Some(plan.content_width);
         data.text_alpha = plan.text_alpha;
         data.cluster_extra = plan.cluster_extra;
+        data.cluster_primary_offset = plan.cluster_primary_offset;
         data.join_alpha = plan.join_alpha;
         (state.surface_spec(plan.size), data)
     };
@@ -80,6 +81,7 @@ pub(super) struct OverlayRenderData {
     pub(super) previous_text: Option<OverlayModel>,
     pub(super) text_alpha: f32,
     pub(super) cluster_extra: f32,
+    pub(super) cluster_primary_offset: f32,
     pub(super) cluster_side: Option<super::group::Side>,
     pub(super) cluster_peers: Vec<super::group::ClusterIcon>,
     pub(super) join_alpha: f32,
@@ -263,6 +265,7 @@ impl HwndOverlaySurface {
                 OverlayDrawOptions {
                     app_bitmaps: &self.app_bitmaps,
                     cluster_extra: data.cluster_extra,
+                    cluster_primary_offset: data.cluster_primary_offset,
                     cluster_side: data.cluster_side,
                     cluster_peers: &data.cluster_peers,
                     previous_text: data.previous_text.as_ref(),

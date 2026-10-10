@@ -52,11 +52,15 @@ fn native_multiple_executable_badges_extend_and_shrink_one_bar() {
             })),
         )
     };
-    manager.present(mic(), config.clone()).unwrap();
-    pump_for(Duration::from_millis(1500));
-    manager.refresh_visuals().unwrap();
-    let host = manager.test_hwnds()[0];
-    let anchor = manager.test_window_rectangles()[0];
+    let mic_last = std::env::var_os("WINSHORT_GROUP_TEST_MIC_LAST").is_some();
+    if mic_last {
+        config.position = if std::env::var("WINSHORT_GROUP_TEST_MIC_LAST").as_deref() == Ok("right")
+        {
+            OverlayPosition::TopRight
+        } else {
+            OverlayPosition::TopLeft
+        };
+    }
     let system = std::env::var("WINDIR").unwrap();
     let paths = [
         format!("{system}\\System32\\notepad.exe"),
@@ -77,7 +81,24 @@ fn native_multiple_executable_badges_extend_and_shrink_one_bar() {
             OverlayModel::single(row)
         })
         .collect::<Vec<_>>();
+    if mic_last {
+        manager
+            .present(
+                OverlayRequest::permanent(OverlayKey::ApplicationPermanent(1), models[0].clone()),
+                config.clone(),
+            )
+            .unwrap();
+    } else {
+        manager.present(mic(), config.clone()).unwrap();
+    }
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    let host = manager.test_hwnds()[0];
+    let anchor = manager.test_window_rectangles()[0];
     for (index, model) in models.iter().enumerate() {
+        if mic_last && index == 0 {
+            continue;
+        }
         manager
             .present(
                 OverlayRequest::permanent(
@@ -93,6 +114,39 @@ fn native_multiple_executable_badges_extend_and_shrink_one_bar() {
     manager.refresh_visuals().unwrap();
     pump_for(Duration::from_millis(250));
     manager.refresh_visuals().unwrap();
+    if mic_last {
+        manager.present(mic(), config.clone()).unwrap();
+        pump_for(Duration::from_millis(1500));
+        manager.refresh_visuals().unwrap();
+        pump_for(Duration::from_millis(250));
+        manager.refresh_visuals().unwrap();
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) }
+                .unwrap();
+        let state = cell.borrow();
+        assert_eq!(
+            state.cluster.primary_offset(Instant::now()),
+            if config.position == OverlayPosition::TopRight {
+                -88.0
+            } else {
+                44.0
+            }
+        );
+        let icons = state.cluster.icons(Instant::now());
+        let microphone = icons
+            .iter()
+            .find(|peer| peer.row.icon == OverlayIcon::Microphone)
+            .unwrap();
+        assert_eq!(
+            microphone.offset,
+            if config.position == OverlayPosition::TopRight {
+                -132.0
+            } else {
+                0.0
+            },
+            "microphone must be the first visual member even when programs muted earlier"
+        );
+    }
     let bars = manager.test_window_rectangles();
     assert_eq!(bars.len(), 1, "mic plus three programs must share one bar");
     let factor = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(host) } as f32 / 96.0;
@@ -100,7 +154,11 @@ fn native_multiple_executable_badges_extend_and_shrink_one_bar() {
         bars[0].right - bars[0].left,
         (184.0 * factor).round() as i32
     );
-    assert_eq!((bars[0].left, bars[0].top), (anchor.left, anchor.top));
+    if config.position == OverlayPosition::TopRight {
+        assert_eq!((bars[0].right, bars[0].top), (anchor.right, anchor.top));
+    } else {
+        assert_eq!((bars[0].left, bars[0].top), (anchor.left, anchor.top));
+    }
     assert_eq!(manager.status().permanent_card_count, 4);
     assert_eq!(manager.test_hwnds().len(), 4);
     capture("multiple-exe-muted", &bars);

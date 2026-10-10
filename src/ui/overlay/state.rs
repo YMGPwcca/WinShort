@@ -34,6 +34,7 @@ pub(super) struct ShowRequest {
     pub(super) cluster: Option<super::group::ClusterRequest>,
     pub(super) join: Option<super::group::JoinRequest>,
     pub(super) behind_badge: Option<HWND>,
+    pub(super) edge_entrance: bool,
 }
 
 pub(super) struct OverlayState {
@@ -59,6 +60,7 @@ pub(super) struct OverlayState {
     pub(super) collapse_origin: Option<POINT>,
     pub(super) parked: bool,
     pub(super) behind_badge: Option<HWND>,
+    pub(super) edge_entrance: bool,
     pub(super) hover: super::hover::HoverMotion,
     pub(super) layout_size: SIZE,
     pub(super) phase: Phase,
@@ -102,6 +104,7 @@ impl OverlayState {
             collapse_origin: None,
             parked: false,
             behind_badge: None,
+            edge_entrance: false,
             hover: super::hover::HoverMotion::default(),
             layout_size: SIZE::default(),
             phase: Phase::Hidden,
@@ -139,6 +142,7 @@ impl OverlayState {
             cluster,
             join,
             behind_badge,
+            edge_entrance,
         } = request;
         if model.rows.is_empty() || !config.enabled {
             return Ok(None);
@@ -189,6 +193,7 @@ impl OverlayState {
         let timing = timing_after_show(self.phase, self.motion, mode);
         self.phase = timing.phase;
         if timing.restart_phase {
+            self.edge_entrance = edge_entrance;
             self.phase_started = presentation_started_at;
             self.position_tween = None;
         } else if mode == ShowMode::Relayout {
@@ -207,6 +212,11 @@ impl OverlayState {
     fn frame_plan_at(&self, now: Instant) -> ShowPlan {
         let (alpha, slide_dip) = self.frame_values(now);
         let slide_px = (slide_dip * self.config.scale * self.dpi as f32 / 96.0).round() as i32;
+        let slide = if self.phase == Phase::Appearing && self.edge_entrance {
+            entrance_offset(self.config.position, slide_px)
+        } else {
+            POINT { x: 0, y: slide_px }
+        };
         let compact = self.badge.value(now);
         let size = self.presentation_size(now);
         let position = self.presentation_position(now, size);
@@ -233,8 +243,8 @@ impl OverlayState {
         .min();
         ShowPlan {
             position: POINT {
-                x: position.x,
-                y: position.y + slide_px,
+                x: position.x + slide.x,
+                y: position.y + slide.y,
             },
             size,
             region: window_region_for(size, self.dpi),
@@ -247,6 +257,7 @@ impl OverlayState {
             content_width: self.content.width(&self.model, now),
             text_alpha: self.content.text_alpha(now),
             cluster_extra: self.cluster.extra(now) * compact,
+            cluster_primary_offset: self.cluster.primary_offset(now) * compact,
             join_alpha: self.join.map_or(1.0, |join| join.alpha(now)),
             behind_badge: self.behind_badge,
             animation_active: self.motion == MotionPolicy::Animated
@@ -451,6 +462,7 @@ impl OverlayState {
             previous_text: self.content.previous.clone(),
             text_alpha: self.content.text_alpha(now),
             cluster_extra: self.cluster.extra(now) * compact,
+            cluster_primary_offset: self.cluster.primary_offset(now) * compact,
             cluster_side: self.cluster.side(),
             cluster_peers: if compact >= 0.999 {
                 self.cluster.icons(now)
@@ -485,6 +497,92 @@ impl OverlayState {
                 };
                 self.join = Some(super::group::JoinMotion::new(from, request));
             }
+        }
+    }
+}
+
+fn entrance_offset(position: OverlayPosition, distance: i32) -> POINT {
+    let (x, y) = match position {
+        OverlayPosition::TopLeft => (-1, -1),
+        OverlayPosition::TopCenter => (0, -1),
+        OverlayPosition::TopRight => (1, -1),
+        OverlayPosition::CenterLeft => (-1, 0),
+        OverlayPosition::CenterRight => (1, 0),
+        OverlayPosition::BottomLeft => (-1, 1),
+        OverlayPosition::BottomCenter => (0, 1),
+        OverlayPosition::BottomRight => (1, 1),
+        OverlayPosition::Center => (0, 0),
+    };
+    POINT {
+        x: x * distance,
+        y: y * distance,
+    }
+}
+
+#[cfg(test)]
+mod entrance_tests {
+    use super::*;
+    #[test]
+    fn frame_plan_applies_direction_only_to_the_first_card_and_honors_dpi_and_reduced_motion() {
+        let _com = crate::platform::com::ComApartment::init_sta();
+        let graphics = super::super::backend::OverlayGraphics::create().unwrap();
+        let mut state = OverlayState::new(graphics, 0);
+        state.model = OverlayModel::single(super::super::model::OverlayRow::preview(
+            "Preview",
+            "Direction",
+        ));
+        state.motion = MotionPolicy::Animated;
+        state.phase = Phase::Appearing;
+        state.edge_entrance = true;
+        state.dpi = 144;
+        state.base_position = POINT { x: 300, y: 300 };
+        let start = state.phase_started;
+        state.layout_size = state.presentation_size(start);
+        for (position, expected) in [
+            (OverlayPosition::TopLeft, (-18, -18)),
+            (OverlayPosition::TopCenter, (0, -18)),
+            (OverlayPosition::TopRight, (18, -18)),
+            (OverlayPosition::CenterLeft, (-18, 0)),
+            (OverlayPosition::CenterRight, (18, 0)),
+            (OverlayPosition::BottomLeft, (-18, 18)),
+            (OverlayPosition::BottomCenter, (0, 18)),
+            (OverlayPosition::BottomRight, (18, 18)),
+        ] {
+            state.config.position = position;
+            let plan = state.frame_plan_at(start);
+            assert_eq!((plan.position.x - 300, plan.position.y - 300), expected);
+            assert_eq!(
+                state
+                    .frame_plan_at(start + Duration::from_millis(APPEAR_MS))
+                    .position,
+                state.base_position
+            );
+        }
+        state.edge_entrance = false;
+        assert_eq!(
+            state.frame_plan_at(start).position,
+            POINT { x: 300, y: 318 }
+        );
+        state.edge_entrance = true;
+        state.motion = MotionPolicy::Reduced;
+        assert_eq!(state.frame_plan_at(start).position, state.base_position);
+    }
+
+    #[test]
+    fn first_card_comes_from_each_named_corner_or_edge_and_settles_at_anchor() {
+        for (position, expected) in [
+            (OverlayPosition::TopLeft, (-12, -12)),
+            (OverlayPosition::TopCenter, (0, -12)),
+            (OverlayPosition::TopRight, (12, -12)),
+            (OverlayPosition::CenterLeft, (-12, 0)),
+            (OverlayPosition::CenterRight, (12, 0)),
+            (OverlayPosition::BottomLeft, (-12, 12)),
+            (OverlayPosition::BottomCenter, (0, 12)),
+            (OverlayPosition::BottomRight, (12, 12)),
+        ] {
+            let offset = entrance_offset(position, 12);
+            assert_eq!((offset.x, offset.y), expected);
+            assert_eq!(entrance_offset(position, 0), POINT::default());
         }
     }
 }

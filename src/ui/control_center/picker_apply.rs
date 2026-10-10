@@ -61,6 +61,9 @@ impl SettingsUi {
                 self.draft.overlay.appearance = value;
             }
             PickerCommit::OverlayPosition(value) => {
+                if value == crate::config::model::OverlayPosition::Center {
+                    return;
+                }
                 self.draft.overlay.position = value;
             }
             PickerCommit::OverlayMonitor(value) => {

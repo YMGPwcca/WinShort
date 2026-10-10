@@ -30,6 +30,7 @@ pub(super) struct OverlayDrawOptions<'a> {
     pub(super) previous_text: Option<&'a OverlayModel>,
     pub(super) text_alpha: f32,
     pub(super) cluster_extra: f32,
+    pub(super) cluster_primary_offset: f32,
     pub(super) cluster_side: Option<super::group::Side>,
     pub(super) cluster_peers: &'a [super::group::ClusterIcon],
 }
@@ -178,7 +179,8 @@ unsafe fn draw_badges(
                             } else {
                                 0.0
                             })
-                            * scale,
+                            * scale
+                        + options.cluster_primary_offset * scale,
                     Y: y + ROW_HEIGHT * scale * 0.5 - 8.0 * scale * compact,
                 },
                 BadgeStyle {

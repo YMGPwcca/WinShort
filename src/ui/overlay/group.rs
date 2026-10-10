@@ -30,6 +30,7 @@ impl Side {
 #[derive(Debug, Clone)]
 pub(super) struct ClusterRequest {
     pub(super) peers: Vec<ClusterPeer>,
+    pub(super) primary_offset: f32,
     pub(super) side: Side,
     pub(super) started: Instant,
 }
@@ -71,6 +72,7 @@ fn same_cluster(old: Option<&ClusterRequest>, new: Option<&ClusterRequest>) -> b
                 .iter()
                 .map(|peer| peer.id)
                 .eq(new.peers.iter().map(|peer| peer.id))
+                && old.primary_offset == new.primary_offset
                 && old.side == new.side
                 && old.started == new.started
         }
@@ -88,6 +90,7 @@ pub(super) struct ClusterMotion {
     started: Option<Instant>,
     revealing: bool,
     from_offsets: Vec<(u64, f32)>,
+    from_primary: f32,
 }
 impl ClusterMotion {
     pub(super) fn extra(&self, now: Instant) -> f32 {
@@ -97,6 +100,16 @@ impl ClusterMotion {
     }
     pub(super) fn side(&self) -> Option<Side> {
         self.side
+    }
+    pub(super) fn primary_offset(&self, now: Instant) -> f32 {
+        let to = self
+            .request
+            .as_ref()
+            .map_or(0.0, |request| request.primary_offset);
+        let t = self
+            .started
+            .map_or(1.0, |start| eased(progress(start, now)));
+        self.from_primary + (to - self.from_primary) * t
     }
     pub(super) fn icons(&self, now: Instant) -> Vec<ClusterIcon> {
         let Some(request) = &self.request else {
@@ -133,6 +146,7 @@ impl ClusterMotion {
         if unchanged {
             self.request = request;
         } else {
+            self.from_primary = self.primary_offset(now);
             self.from_offsets = self
                 .icons(now)
                 .iter()
@@ -317,6 +331,7 @@ mod tests {
     fn background_reverses_from_current_width_and_reduced_motion_is_immediate() {
         let now = Instant::now();
         let request = ClusterRequest {
+            primary_offset: 0.0,
             peers: vec![ClusterPeer {
                 id: 2,
                 row: OverlayRow::preview("peer", ""),
