@@ -549,7 +549,14 @@ fn repeated_device_presentations_replace_one_entry_for_each_device_key() {
             registry.entries()[0].expires_at(),
             Some(now + Duration::from_millis(99 + 1300))
         );
-        assert_eq!(registry.entries()[0].sequence(), 100);
+        assert_eq!(
+            registry.entries()[0].sequence(),
+            if key == OverlayKey::OutputDevice {
+                1
+            } else {
+                100
+            }
+        );
         assert_eq!(last.id, 1, "same key must reuse its card identity");
         assert!(registry.has_unique_keys());
     }

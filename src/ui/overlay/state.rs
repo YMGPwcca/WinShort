@@ -65,6 +65,8 @@ pub(super) struct OverlayState {
     pub(super) layout_size: SIZE,
     pub(super) phase: Phase,
     pub(super) phase_started: Instant,
+    /// Opacity and slide at the start of an entrance or an interrupted exit.
+    appearance_origin: (f32, f32),
     /// Each card owns its own optional toast deadline.
     pub(super) expires_at: Option<Instant>,
     pub(super) dpi: u32,
@@ -109,6 +111,7 @@ impl OverlayState {
             layout_size: SIZE::default(),
             phase: Phase::Hidden,
             phase_started: now,
+            appearance_origin: (0.0, 12.0),
             expires_at: None,
             dpi: 96,
             last_target_monitor: None,
@@ -181,7 +184,7 @@ impl OverlayState {
         self.dpi = dpi.max(96);
         self.last_target_monitor = target_monitor;
         self.last_render_dpi = Some(self.dpi);
-        if mode == ShowMode::Present {
+        if mode != ShowMode::Relayout {
             self.last_shown = Some(SystemTime::now());
         }
         self.refresh_palette();
@@ -190,19 +193,52 @@ impl OverlayState {
             x: previous_position.x - offset.x,
             y: previous_position.y - offset.y,
         };
-        let timing = timing_after_show(self.phase, self.motion, mode);
-        self.phase = timing.phase;
-        if timing.restart_phase {
-            self.edge_entrance = edge_entrance;
-            self.phase_started = presentation_started_at;
-            self.position_tween = None;
-        } else if mode == ShowMode::Relayout {
-            self.position_tween = PositionTween::start(previous_anchor, position, self.motion, now);
-        } else {
-            self.position_tween = None;
-        }
-        self.base_position = position;
+        let hidden = self.phase == Phase::Hidden;
+        self.update_show_timing(mode, presentation_started_at, edge_entrance, now);
+        self.update_show_position(mode, hidden, previous_anchor, position, now);
         Ok(Some(self.frame_plan()))
+    }
+
+    fn update_show_timing(
+        &mut self,
+        mode: ShowMode,
+        presentation_started_at: Instant,
+        edge_entrance: bool,
+        now: Instant,
+    ) {
+        let previous_phase = self.phase;
+        let origin = self.frame_values(now);
+        let timing = timing_after_show(previous_phase, self.motion, mode);
+        self.phase = timing.phase;
+        if !timing.restart_phase {
+            return;
+        }
+        let resume_exit = mode == ShowMode::Refresh && previous_phase == Phase::Leaving;
+        self.appearance_origin = if resume_exit { origin } else { (0.0, 12.0) };
+        self.phase_started = if resume_exit {
+            now
+        } else {
+            presentation_started_at
+        };
+        if mode != ShowMode::Refresh || previous_phase == Phase::Hidden {
+            self.edge_entrance = edge_entrance;
+        }
+    }
+
+    fn update_show_position(
+        &mut self,
+        mode: ShowMode,
+        hidden: bool,
+        from: POINT,
+        to: POINT,
+        now: Instant,
+    ) {
+        if mode == ShowMode::Present || hidden {
+            self.position_tween = None;
+        } else if mode != ShowMode::Refresh || self.base_position != to {
+            self.position_tween = PositionTween::start(from, to, self.motion, now);
+        }
+        self.base_position = to;
     }
 
     pub(super) fn frame_plan(&self) -> ShowPlan {
@@ -422,7 +458,10 @@ impl OverlayState {
             Phase::Appearing => {
                 let t = (elapsed / (APPEAR_MS as f32 / 1000.0)).clamp(0.0, 1.0);
                 let eased = 1.0 - (1.0 - t).powi(3);
-                (eased, 12.0 * (1.0 - eased))
+                (
+                    self.appearance_origin.0 + (1.0 - self.appearance_origin.0) * eased,
+                    self.appearance_origin.1 * (1.0 - eased),
+                )
             }
             Phase::Holding => (1.0, 0.0),
             Phase::Leaving => {
@@ -522,6 +561,79 @@ fn entrance_offset(position: OverlayPosition, distance: i32) -> POINT {
 #[cfg(test)]
 mod entrance_tests {
     use super::*;
+    #[test]
+    fn output_refresh_finishes_entrance_without_restarting_and_reverses_exit_continuously() {
+        let _com = crate::platform::com::ComApartment::init_sta();
+        let mut state =
+            OverlayState::new(super::super::backend::OverlayGraphics::create().unwrap(), 0);
+        state.motion = MotionPolicy::Animated;
+        state.phase = Phase::Appearing;
+        state.edge_entrance = true;
+        let start = state.phase_started;
+        for milliseconds in [20, 40, 80, 120] {
+            let now = start + Duration::from_millis(milliseconds);
+            let before = state.frame_values(now);
+            state.update_show_timing(ShowMode::Refresh, now, false, now);
+            assert_eq!(state.phase_started, start);
+            assert_eq!(state.frame_values(now), before);
+            assert!(state.edge_entrance);
+        }
+        state.advance_phase(start + Duration::from_millis(APPEAR_MS));
+        assert_eq!(state.phase, Phase::Holding);
+        let now = start + Duration::from_millis(200);
+        state.update_show_timing(ShowMode::Refresh, now, false, now);
+        assert_eq!(state.phase, Phase::Holding);
+        assert_eq!(state.frame_values(now), (1.0, 0.0));
+
+        for milliseconds in [1, LEAVE_MS / 2, LEAVE_MS - 1] {
+            state.phase = Phase::Leaving;
+            state.phase_started = start;
+            let now = start + Duration::from_millis(milliseconds);
+            let before = state.frame_values(now);
+            state.update_show_timing(ShowMode::Refresh, now, false, now);
+            assert_eq!(state.phase, Phase::Appearing);
+            assert_eq!(
+                state.frame_values(now),
+                before,
+                "exit refresh must not flash or jump"
+            );
+            let middle = state.frame_values(now + Duration::from_millis(APPEAR_MS / 2));
+            assert!(middle.0 > before.0);
+            assert!(middle.1 < before.1);
+            assert_eq!(
+                state.frame_values(now + Duration::from_millis(APPEAR_MS)),
+                (1.0, 0.0)
+            );
+        }
+        state.motion = MotionPolicy::Reduced;
+        state.phase = Phase::Leaving;
+        state.update_show_timing(ShowMode::Refresh, now, false, now);
+        assert_eq!(state.phase, Phase::Holding);
+    }
+
+    #[test]
+    fn output_refresh_does_not_restart_an_existing_position_tween() {
+        let _com = crate::platform::com::ComApartment::init_sta();
+        let mut state =
+            OverlayState::new(super::super::backend::OverlayGraphics::create().unwrap(), 0);
+        state.motion = MotionPolicy::Animated;
+        let start = state.phase_started;
+        let from = POINT { x: 300, y: 300 };
+        let to = POINT { x: 300, y: 400 };
+        state.base_position = to;
+        state.position_tween = PositionTween::start(from, to, state.motion, start);
+        let reference = state.position_tween.unwrap();
+        for milliseconds in [20, 40, 60, 80, 100, 120] {
+            let now = start + Duration::from_millis(milliseconds);
+            state.update_show_position(ShowMode::Refresh, false, state.position_at(now), to, now);
+            assert_eq!(state.position_at(now), reference.position_at(now));
+        }
+        assert!(state
+            .position_tween
+            .unwrap()
+            .is_finished(start + Duration::from_millis(super::super::timeline::POSITION_TWEEN_MS)));
+    }
+
     #[test]
     fn frame_plan_applies_direction_only_to_the_first_card_and_honors_dpi_and_reduced_motion() {
         let _com = crate::platform::com::ComApartment::init_sta();
