@@ -902,6 +902,10 @@ impl OverlayManager {
                 None,
             ));
         }
+        let source_width = peer.size.cx;
+        let badge_width = model_geometry(peer.render_config.scale, &peer.model, 1.0)
+            .pixel_size(peer.placement.dpi)
+            .cx;
         self.show_planned_entry(
             PlannedEntry {
                 entry: peer,
@@ -911,6 +915,9 @@ impl OverlayManager {
             Some(super::group::JoinRequest {
                 position,
                 started: group.started,
+                side: group.side,
+                source_width,
+                badge_width,
             }),
             None,
         )

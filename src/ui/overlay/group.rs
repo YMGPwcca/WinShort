@@ -38,6 +38,9 @@ pub(super) struct ClusterRequest {
 pub(super) struct JoinRequest {
     pub(super) position: POINT,
     pub(super) started: Instant,
+    pub(super) side: Side,
+    pub(super) source_width: i32,
+    pub(super) badge_width: i32,
 }
 
 fn progress(started: Instant, now: Instant) -> f32 {
@@ -155,14 +158,31 @@ impl JoinMotion {
         }
     }
     pub(super) fn position(&self, now: Instant) -> POINT {
-        let t = eased(progress(self.request.started, now));
+        let t = progress(self.request.started, now);
+        // Reach the side column before rising alongside the host. A straight
+        // diagonal makes the moving card cover the badge that is staying put.
+        let horizontal = 1.0 - (1.0 - t).powi(8);
+        let vertical = eased(t * t * t);
+        let x = match self.request.side {
+            Side::Right => {
+                self.from.x as f32 + (self.request.position.x - self.from.x) as f32 * horizontal
+            }
+            Side::Left => {
+                let from_right = self.from.x + self.request.source_width;
+                let to_right = self.request.position.x + self.request.badge_width;
+                let right = from_right as f32 + (to_right - from_right) as f32 * horizontal;
+                let width = self.request.source_width as f32
+                    + (self.request.badge_width - self.request.source_width) as f32 * eased(t);
+                right - width
+            }
+        };
         POINT {
-            x: (self.from.x as f32 + (self.request.position.x - self.from.x) as f32 * t).round()
-                as i32,
-            y: (self.from.y as f32 + (self.request.position.y - self.from.y) as f32 * t).round()
-                as i32,
+            x: x.round() as i32,
+            y: (self.from.y as f32 + (self.request.position.y - self.from.y) as f32 * vertical)
+                .round() as i32,
         }
     }
+
     pub(super) fn alpha(&self, now: Instant) -> f32 {
         if self.finished(now) {
             return 0.0;
@@ -193,6 +213,9 @@ mod tests {
             JoinRequest {
                 position: POINT { x: 54, y: 10 },
                 started: start,
+                side: Side::Right,
+                source_width: 200,
+                badge_width: 52,
             },
         );
         assert_eq!(join.position(start), POINT { x: 10, y: 80 });
@@ -202,6 +225,36 @@ mod tests {
         assert_eq!(join.alpha(end), 0.0);
         assert!(join.tick(end));
         assert!(!join.tick(end));
+    }
+    #[test]
+    fn joining_card_keeps_clear_of_the_primary_icon_at_each_frame() {
+        let start = Instant::now();
+        for side in [Side::Left, Side::Right] {
+            let (from_x, target_x) = match side {
+                Side::Left => (-148, -44),
+                Side::Right => (-74, 44),
+            };
+            let join = JoinMotion::new(
+                POINT { x: from_x, y: 62 },
+                JoinRequest {
+                    position: POINT { x: target_x, y: 0 },
+                    started: start,
+                    side,
+                    source_width: 200,
+                    badge_width: 52,
+                },
+            );
+            // Host's coloured icon lies inside its 52 DIP badge at (10,10)-(42,42).
+            for ms in 0..=GROUP_MS {
+                let now = start + Duration::from_millis(ms);
+                let pos = join.position(now);
+                let width = 200.0 + (52.0 - 200.0) * eased(progress(start, now));
+                assert!(
+                    pos.y >= 42 || pos.x >= 42 || pos.x as f32 + width <= 10.5,
+                    "moving card occludes host icon: side={side:?}, ms={ms}, pos={pos:?}"
+                );
+            }
+        }
     }
     #[test]
     fn background_reverses_from_current_width_and_reduced_motion_is_immediate() {

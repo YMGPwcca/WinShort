@@ -69,20 +69,18 @@ fn commit_prepared_show(hwnd: HWND, plan: ShowPlan) -> Result<()> {
     unsafe {
         // ShowWindow reports the previous visibility state, not operation failure.
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        if let Some(badge) = plan.behind_badge {
-            // The manager supplies a live overlay it owns on this UI thread.
-            // Keep expanding feedback below the badge that remains muted.
-            SetWindowPos(
-                hwnd,
-                Some(badge),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
-            )
-            .map_err(|error| Error::win("SetFeedbackBelowBadge", &error))?;
-        }
+        // Establish stacking once when presenting a card. Frame updates must
+        // not alternate the host and joining peer at the top of the z-order.
+        SetWindowPos(
+            hwnd,
+            Some(plan.behind_badge.unwrap_or(HWND_TOPMOST)),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        )
+        .map_err(|error| Error::win("SetOverlayStacking", &error))?;
     }
     Ok(())
 }
@@ -146,7 +144,7 @@ pub(super) fn apply_frame_plan(hwnd: HWND, plan: ShowPlan, apply_region: bool) -
             plan.position.y,
             plan.size.cx,
             plan.size.cy,
-            SWP_NOACTIVATE,
+            SWP_NOACTIVATE | SWP_NOZORDER,
         )
         .map_err(|error| Error::win("SetWindowPos(overlay)", &error))?;
     }

@@ -6,8 +6,9 @@ use super::*;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::RECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetWindowRect, IsWindowVisible, MsgWaitForMultipleObjectsEx, PeekMessageW,
-    TranslateMessage, WindowFromPoint, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
+    DispatchMessageW, GetWindow, GetWindowRect, IsWindowVisible, MsgWaitForMultipleObjectsEx,
+    PeekMessageW, TranslateMessage, WindowFromPoint, GW_HWNDPREV, MSG, MWMO_INPUTAVAILABLE,
+    PM_REMOVE, QS_ALLINPUT,
 };
 
 fn pump_for(duration: Duration) {
@@ -101,6 +102,16 @@ fn native_mute_group_keeps_audio_entries_independent() {
         full.top > first.bottom,
         "new mute feedback must use the same vertical lane as unmute"
     );
+    let full_surface = {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        match state.surface.as_ref().unwrap() {
+            super::backend::OverlaySurface::Composition(host) => Some(host.test_surface()),
+            super::backend::OverlaySurface::Hwnd(_) => None,
+        }
+    };
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let started = {
@@ -123,6 +134,14 @@ fn native_mute_group_keeps_audio_entries_independent() {
             unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(peer_hwnd) }
                 .unwrap();
         let state = cell.borrow();
+        if let Some(full_surface) = &full_surface {
+            let super::backend::OverlaySurface::Composition(host) = state.surface.as_ref().unwrap()
+            else {
+                panic!("Composition must not fall back while contracting");
+            };
+            assert_eq!(host.test_surface(), *full_surface,
+                "contraction must retain the populated canvas instead of publishing empty replacements");
+        }
         let compact = state.badge.value(Instant::now());
         let collapse_start = state.badge.collapse_started().unwrap();
         let join = state.join.expect("joining must start during contraction");
@@ -147,6 +166,34 @@ fn native_mute_group_keeps_audio_entries_independent() {
             assert!(join.finished(Instant::now()));
         }
     }
+    // Reproduce a host frame arriving after the peer frame: neither moving
+    // nor resizing the host may jump it above the joining icon.
+    let peer_above_host = || {
+        let mut previous = unsafe { GetWindow(first_hwnd, GW_HWNDPREV) }.unwrap();
+        while !previous.is_invalid() {
+            if previous == peer_hwnd {
+                return true;
+            }
+            previous = unsafe { GetWindow(previous, GW_HWNDPREV) }.unwrap();
+        }
+        false
+    };
+    assert!(peer_above_host());
+    {
+        let cell = unsafe {
+            crate::platform::window::state_cell::<super::state::OverlayState>(first_hwnd)
+        }
+        .unwrap();
+        let state = cell.borrow();
+        let plan = state.frame_plan();
+        let apply_region = state.requires_window_region();
+        drop(state);
+        super::window::apply_frame_plan(first_hwnd, plan, apply_region).unwrap();
+    }
+    assert!(
+        peer_above_host(),
+        "animation frames must preserve the joining peer above the host"
+    );
     pump_for(Duration::from_millis(250));
     manager.refresh_visuals().unwrap();
     let grouped = manager.test_window_rectangles();

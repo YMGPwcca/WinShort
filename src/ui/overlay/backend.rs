@@ -153,8 +153,11 @@ fn run_surface_operation(
                     if let Some(data) = data.as_ref() {
                         let mut fallback_data = data.clone();
                         fallback_data.palette = opaque_palette(fallback_data.palette);
-                        fallback_result = super::window::set_hover_opacity(hwnd, data.hover_alpha)
-                            .and_then(|()| fallback.render(&fallback_data, fallback_spec));
+                        fallback_result = super::window::set_hover_opacity(
+                            hwnd,
+                            data.hover_alpha * data.join_alpha,
+                        )
+                        .and_then(|()| fallback.render(&fallback_data, fallback_spec));
                     }
                 }
                 if fallback_result.is_ok() {
@@ -229,7 +232,8 @@ impl OverlaySurface {
     pub(super) fn sync_geometry(&mut self, spec: SurfaceSpec) -> Result<()> {
         match self {
             Self::Hwnd(surface) => surface.sync_geometry(spec),
-            Self::Composition(host) => host.sync_geometry(spec),
+            // Composition resizes its scene only after the new content is ready.
+            Self::Composition(_) => Ok(()),
         }
     }
     pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
