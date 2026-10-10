@@ -303,6 +303,8 @@ struct AudioController {
     capture_error: Option<String>,
     render_error: Option<String>,
     pending_default_switches: Vec<PendingDefaultSwitch>,
+    muted_applications: Option<Vec<crate::audio::state::ApplicationAudioInfo>>,
+    last_application_scan: Option<std::time::Instant>,
 }
 
 impl AudioController {
@@ -339,6 +341,8 @@ impl AudioController {
             capture_error: None,
             render_error: None,
             pending_default_switches: Vec::new(),
+            muted_applications: None,
+            last_application_scan: None,
         };
         controller.rebuild_all(true, initial.value, crate::event::AudioEventOrigin::Initial);
         Ok(controller)
@@ -387,6 +391,7 @@ impl AudioController {
                     state,
                     origin: crate::event::AudioEventOrigin::WinShortAction(request_id),
                 });
+                self.publish_muted_applications(true);
             }
             AudioCommand::CycleDevice { flow, request_id } => {
                 let result = self.cycle_device(flow);
@@ -463,6 +468,26 @@ impl AudioController {
                 error: Some(e.to_string()),
             });
         self.post(AppEvent::ForegroundAudioChanged { pid, state, origin });
+    }
+
+    fn publish_muted_applications(&mut self, force: bool) {
+        if !force
+            && self
+                .last_application_scan
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+        self.last_application_scan = Some(std::time::Instant::now());
+        // A failed scan must not erase known badges as if every app unmuted.
+        let Ok(applications) = crate::audio::applications::muted_applications(&self.enumerator)
+        else {
+            return;
+        };
+        if self.muted_applications.as_ref() != Some(&applications) {
+            self.muted_applications = Some(applications.clone());
+            self.post(AppEvent::MutedApplicationsChanged { applications });
+        }
     }
 
     fn apply_pending_rebuild(&mut self, pending: PendingRebuild) {
@@ -893,6 +918,7 @@ fn audio_thread(
     // backlog and collapse refresh bursts into a single rebuild. Toggle-style
     // commands still execute individually.
     loop {
+        controller.publish_muted_applications(false);
         let command = match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
             Ok(command) => command,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,

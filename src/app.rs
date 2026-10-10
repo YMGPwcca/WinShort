@@ -1,6 +1,8 @@
 //! Application runtime: hidden main window, tray integration, event routing,
 //! startup/shutdown orchestration (spec §5–§7, §46–§47).
 
+mod muted_apps;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -87,6 +89,7 @@ pub struct App {
     microphone_state: crate::audio::AudioState,
     output_state: crate::audio::OutputState,
     foreground_state: crate::audio::AppAudioState,
+    muted_applications: muted_apps::MutedApplications,
     foreground_pid: Option<u32>,
     foreground_query_id: Option<u64>,
     foreground_request_floor: u64,
@@ -212,6 +215,7 @@ impl App {
                 reason: "Starting audio…".into(),
             },
             foreground_state: crate::audio::AppAudioState::no_external(),
+            muted_applications: Default::default(),
             foreground_pid: None,
             foreground_query_id: None,
             foreground_request_floor: 0,
@@ -1456,38 +1460,6 @@ impl App {
         !matches!(origin, AudioEventOrigin::WinShortAction(id) if id < self.foreground_request_floor)
     }
 
-    fn reconcile_app_audio_overlay(&mut self, show_feedback: bool) {
-        use crate::audio::Aggregate;
-        use crate::ui::overlay::{OverlayKey, OverlayModel, OverlayRequest};
-        let config = crate::app::config();
-        if self.acceptance_overlay_only
-            || !config.overlay.enabled
-            || !config.overlay.notifications.current_app_audio
-        {
-            self.remove_overlay_key(OverlayKey::CurrentAppAudioPermanent, &config.overlay);
-            self.remove_overlay_key(OverlayKey::CurrentAppAudio, &config.overlay);
-            self.remove_overlay_key(OverlayKey::CurrentAppVolume, &config.overlay);
-            return;
-        }
-        let model =
-            OverlayModel::single(crate::ui::overlay::application_row(&self.foreground_state));
-        if self.foreground_state.aggregate == Aggregate::AllMuted {
-            self.show_overlay_with_config(
-                OverlayRequest::permanent(OverlayKey::CurrentAppAudioPermanent, model)
-                    .replacing(OverlayKey::CurrentAppAudio),
-                config.overlay.clone(),
-            );
-        } else if show_feedback {
-            self.show_overlay_with_config(
-                OverlayRequest::toast(OverlayKey::CurrentAppAudio, model)
-                    .replacing(OverlayKey::CurrentAppAudioPermanent),
-                config.overlay.clone(),
-            );
-        } else {
-            self.remove_overlay_key(OverlayKey::CurrentAppAudioPermanent, &config.overlay);
-        }
-    }
-
     fn reconcile_microphone_overlay(&mut self, show_unmute_feedback: bool) {
         let config = crate::app::config();
         if self.acceptance_overlay_only {
@@ -2150,6 +2122,7 @@ mod shutdown_gate_tests {
                 reason: "test".into(),
             },
             foreground_state: crate::audio::AppAudioState::no_external(),
+            muted_applications: Default::default(),
             foreground_pid: None,
             foreground_query_id: None,
             foreground_request_floor: 0,
@@ -2663,6 +2636,31 @@ mod shutdown_gate_tests {
             sessions: 1,
             error: None,
         }
+    }
+
+    #[test]
+    fn muted_programs_survive_foreground_changes_and_update_independently() {
+        let mut app = test_app();
+        let info = |pid| {
+            crate::audio::state::ApplicationAudioInfo::new(
+                pid,
+                None,
+                app_audio_state(crate::audio::Aggregate::AllMuted),
+            )
+        };
+        app.route_event(AppEvent::MutedApplicationsChanged {
+            applications: vec![info(100), info(200)],
+        });
+        let ids = app.muted_applications.muted_ids();
+        assert_eq!(ids.len(), 2);
+        app.select_foreground_audio(Some(300), false);
+        assert_eq!(app.muted_applications.muted_ids(), ids);
+        app.route_event(AppEvent::MutedApplicationsChanged {
+            applications: vec![info(200)],
+        });
+        assert_eq!(app.muted_applications.muted_ids(), vec![ids[1]]);
+        app.select_foreground_audio(None, false);
+        assert_eq!(app.muted_applications.muted_ids(), vec![ids[1]]);
     }
 
     #[test]

@@ -112,6 +112,40 @@ impl AppAudioState {
     }
 }
 
+/// One executable's live render sessions, independent of foreground selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApplicationAudioInfo {
+    pub identity: String,
+    pub image_path: Option<String>,
+    pub pid: u32,
+    pub state: AppAudioState,
+}
+
+impl ApplicationAudioInfo {
+    pub fn from_process(pid: u32, state: AppAudioState) -> Self {
+        let image_path = crate::platform::foreground::process_image_path(pid);
+        Self::new(pid, image_path, state)
+    }
+
+    pub fn new(pid: u32, image_path: Option<String>, state: AppAudioState) -> Self {
+        let identity = image_path
+            .as_ref()
+            .map(|path| path.replace('/', "\\").to_lowercase())
+            .unwrap_or_else(|| {
+                format!(
+                    "pid:{pid}:{}",
+                    state.app_name.as_deref().unwrap_or_default().to_lowercase()
+                )
+            });
+        Self {
+            identity,
+            image_path,
+            pid,
+            state,
+        }
+    }
+}
+
 /// Foreground application volume after a volume adjustment or query.
 ///
 /// `min_volume_pct` and `max_volume_pct` are absent when no matching session

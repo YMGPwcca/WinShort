@@ -248,6 +248,9 @@ pub enum AppEvent {
         state: AppAudioState,
         origin: AudioEventOrigin,
     },
+    MutedApplicationsChanged {
+        applications: Vec<crate::audio::state::ApplicationAudioInfo>,
+    },
     ForegroundVolumeChanged {
         pid: Option<u32>,
         state: AppVolumeState,
@@ -390,6 +393,9 @@ pub(crate) enum AudioRuntimeEvent {
         state: AppAudioState,
         origin: AudioEventOrigin,
     },
+    MutedApplicationsChanged {
+        applications: Vec<crate::audio::state::ApplicationAudioInfo>,
+    },
     ForegroundVolumeChanged {
         pid: Option<u32>,
         state: AppVolumeState,
@@ -517,6 +523,9 @@ impl From<AppEvent> for RoutedAppEvent {
             AppEvent::DevicesChanged => Self::Audio(AudioRuntimeEvent::DevicesChanged),
             AppEvent::ForegroundAudioChanged { pid, state, origin } => {
                 Self::Audio(AudioRuntimeEvent::ForegroundAudioChanged { pid, state, origin })
+            }
+            AppEvent::MutedApplicationsChanged { applications } => {
+                Self::Audio(AudioRuntimeEvent::MutedApplicationsChanged { applications })
             }
             AppEvent::ForegroundVolumeChanged { pid, state, origin } => {
                 Self::Audio(AudioRuntimeEvent::ForegroundVolumeChanged { pid, state, origin })

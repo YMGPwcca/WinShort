@@ -384,7 +384,7 @@ impl App {
                     self.status_request_id = None;
                     self.foreground_query_id = None;
                 }
-                self.reconcile_app_audio_overlay(should_show && !is_status_request);
+                self.reconcile_foreground_app_audio(should_show && !is_status_request);
                 if should_show && is_status_request {
                     self.show_overlay(crate::ui::overlay::OverlayRequest::toast(
                         crate::ui::overlay::OverlayKey::Status,
@@ -392,6 +392,9 @@ impl App {
                     ));
                 }
                 self.refresh_settings_runtime();
+            }
+            AudioRuntimeEvent::MutedApplicationsChanged { applications } => {
+                self.handle_muted_applications(applications);
             }
             AudioRuntimeEvent::ForegroundVolumeChanged { pid, state, origin } => {
                 if !self.accepts_foreground_audio_result(pid, origin) {
