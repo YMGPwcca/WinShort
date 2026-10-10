@@ -139,6 +139,8 @@ Muted microphone and selected-app audio cards stay visible until unmuted. After 
 
 Overlay motion uses one shared high-resolution waitable timer worker, with per-card frame intervals derived from the selected monitor's active refresh rational. Display/visual changes refresh this cadence. The worker posts at most one pending frame per card, skips missed frames, and leaves all drawing on the UI thread. Idle cards stop frame wakes; hold/expiry deadlines remain one-shot. Hiding, recycling or destroying a window removes its clock target, and generation checks discard obsolete wakes. A normal waitable timer is available when Windows cannot create a high-resolution timer.
 
+Microphone mute/unmute changes also tween the measured width and crossfade the labels over 160 ms while the card is expanded. Rapid reversals retain the current width and text weights, with at most one outgoing label; the icon shows the latest state immediately. Expanding a compact badge reveals only the new label. Reduced motion applies the final content immediately, and settled content stops frame wakes.
+
 ### System
 
 System is intentionally short:

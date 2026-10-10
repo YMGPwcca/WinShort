@@ -1199,6 +1199,8 @@ fn state_plan_preparation_releases_borrow_before_reentrant_window_work() {
             timer_id: super::timeline::TIMER_ID,
             timer_interval: Some(TIMER_MS),
             animation_active: true,
+            content_width: 240.0,
+            text_alpha: 1.0,
             compact: 0.0,
             hover_alpha: 1.0,
             layout_changed: false,

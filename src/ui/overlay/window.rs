@@ -368,6 +368,7 @@ impl OverlayWindow {
         state.expires_at = None;
         state.position_tween = None;
         state.badge = super::badge::BadgeMotion::default();
+        state.content = super::content::ContentMotion::default();
         state.hover = super::hover::HoverMotion::default();
         state.layout_size = SIZE::default();
         state.model = super::model::OverlayModel::default();
@@ -396,6 +397,7 @@ impl OverlayWindow {
                 state.expires_at = None;
                 state.position_tween = None;
                 state.badge = super::badge::BadgeMotion::default();
+                state.content = super::content::ContentMotion::default();
                 state.hover = super::hover::HoverMotion::default();
                 state.timer_id
             }

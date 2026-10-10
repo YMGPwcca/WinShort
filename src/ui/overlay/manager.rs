@@ -850,6 +850,10 @@ impl OverlayManager {
             mode,
             collapsible_mute: plan.entry.key.is_compact_mute()
                 && plan.entry.lifetime.is_permanent(),
+            animate_content: matches!(
+                plan.entry.key,
+                OverlayKey::MicrophonePermanent | OverlayKey::MicrophoneToast
+            ),
             layout_size: plan.entry.size,
             frame_period: crate::platform::monitor::refresh_period(
                 plan.entry.placement.key.monitor.as_deref(),

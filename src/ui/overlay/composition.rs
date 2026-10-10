@@ -560,6 +560,8 @@ impl CompositionHost {
             data.palette,
             data.alpha,
             OverlayDrawOptions {
+                previous_text: data.previous_text.as_ref(),
+                text_alpha: data.text_alpha,
                 compact: data.compact,
                 fill_card: data.palette.opaque,
                 draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,

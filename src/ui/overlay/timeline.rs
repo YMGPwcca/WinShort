@@ -114,6 +114,8 @@ pub(super) struct ShowPlan {
     pub(super) timer_id: usize,
     pub(super) timer_interval: Option<u32>,
     pub(super) animation_active: bool,
+    pub(super) content_width: f32,
+    pub(super) text_alpha: f32,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -22,10 +22,12 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 
 #[derive(Clone, Copy)]
-pub(super) struct OverlayDrawOptions {
+pub(super) struct OverlayDrawOptions<'a> {
     pub(super) compact: f32,
     pub(super) fill_card: bool,
     pub(super) draw_card_border: bool,
+    pub(super) previous_text: Option<&'a OverlayModel>,
+    pub(super) text_alpha: f32,
 }
 
 pub(super) fn draw_overlay(
@@ -35,7 +37,7 @@ pub(super) fn draw_overlay(
     scale: f32,
     palette: OverlayPalette,
     content_alpha: f32,
-    options: OverlayDrawOptions,
+    options: OverlayDrawOptions<'_>,
 ) -> Result<()> {
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
@@ -86,12 +88,6 @@ pub(super) fn draw_overlay(
         let title_format = make_format(dwrite, 14.0 * scale, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let detail_format = make_format(dwrite, 12.0 * scale, DWRITE_FONT_WEIGHT_NORMAL)?;
         let text_alpha = content_alpha * (1.0 - compact * 3.0).max(0.0);
-        let text = color(with_alpha(palette.text, text_alpha));
-        let secondary = color(with_alpha(palette.secondary, text_alpha));
-        let text_brush = target.CreateSolidColorBrush(&text, None)?;
-        let secondary_brush = target.CreateSolidColorBrush(&secondary, None)?;
-        let unavailable_text = color(with_alpha(palette.unavailable_text, text_alpha));
-        let unavailable_brush = target.CreateSolidColorBrush(&unavailable_text, None)?;
 
         for (index, row) in model.rows.iter().enumerate() {
             let y = top + PAD * scale + index as f32 * ROW_HEIGHT * scale;
@@ -122,32 +118,67 @@ pub(super) fn draw_overlay(
                 content_alpha,
                 compact,
             )?;
-            if text_alpha <= 0.0 {
-                continue;
-            }
-
-            draw_text(
+        }
+        let formats = [&title_format, &detail_format];
+        if let Some(previous) = options.previous_text {
+            draw_text_layer(
                 target,
-                &row.title,
-                &title_format,
-                D2D_RECT_F {
-                    left: left + TEXT_LEFT * scale,
-                    top: y + 4.0 * scale,
-                    right: body.right - TEXT_RIGHT * scale,
-                    bottom: y + 24.0 * scale,
-                },
-                &text_brush,
-            );
+                previous,
+                formats,
+                scale,
+                palette,
+                text_alpha * (1.0 - options.text_alpha),
+                geometry,
+            )?;
+        }
+        draw_text_layer(
+            target,
+            model,
+            formats,
+            scale,
+            palette,
+            text_alpha * options.text_alpha,
+            geometry,
+        )?;
+        Ok(())
+    }
+}
+
+unsafe fn draw_text_layer(
+    target: &ID2D1RenderTarget,
+    model: &OverlayModel,
+    formats: [&windows::Win32::Graphics::DirectWrite::IDWriteTextFormat; 2],
+    scale: f32,
+    palette: OverlayPalette,
+    alpha: f32,
+    geometry: super::layout::SurfaceGeometry,
+) -> Result<()> {
+    if alpha <= 0.001 {
+        return Ok(());
+    }
+    // SAFETY: all rendering objects and the model are owned by the UI thread;
+    // the synchronous Direct2D calls retain no borrowed text or geometry.
+    unsafe {
+        let text_brush =
+            target.CreateSolidColorBrush(&color(with_alpha(palette.text, alpha)), None)?;
+        let secondary_brush =
+            target.CreateSolidColorBrush(&color(with_alpha(palette.secondary, alpha)), None)?;
+        let unavailable_brush = target
+            .CreateSolidColorBrush(&color(with_alpha(palette.unavailable_text, alpha)), None)?;
+        for (index, row) in model.rows.iter().enumerate() {
+            let y = geometry.body_top + PAD * scale + index as f32 * ROW_HEIGHT * scale;
+            let rect = |offset: f32| D2D_RECT_F {
+                left: geometry.body_left + TEXT_LEFT * scale,
+                top: y + offset * scale,
+                right: geometry.body_right - TEXT_RIGHT * scale,
+                bottom: y + (offset + 20.0) * scale,
+            };
+            draw_text(target, &row.title, formats[0], rect(4.0), &text_brush);
             draw_text(
                 target,
                 &row.detail,
-                &detail_format,
-                D2D_RECT_F {
-                    left: left + TEXT_LEFT * scale,
-                    top: y + 24.0 * scale,
-                    right: body.right - TEXT_RIGHT * scale,
-                    bottom: y + 44.0 * scale,
-                },
+                formats[1],
+                rect(24.0),
                 if row.tone == OverlayTone::Unavailable {
                     &unavailable_brush
                 } else {
@@ -155,8 +186,8 @@ pub(super) fn draw_overlay(
                 },
             );
         }
-        Ok(())
     }
+    Ok(())
 }
 
 unsafe fn draw_badge(
