@@ -212,7 +212,7 @@ impl OverlayState {
     fn frame_plan_at(&self, now: Instant) -> ShowPlan {
         let (alpha, slide_dip) = self.frame_values(now);
         let slide_px = (slide_dip * self.config.scale * self.dpi as f32 / 96.0).round() as i32;
-        let slide = if self.phase == Phase::Appearing && self.edge_entrance {
+        let slide = if self.edge_entrance {
             entrance_offset(self.config.position, slide_px)
         } else {
             POINT { x: 0, y: slide_px }
@@ -566,6 +566,49 @@ mod entrance_tests {
         state.edge_entrance = true;
         state.motion = MotionPolicy::Reduced;
         assert_eq!(state.frame_plan_at(start).position, state.base_position);
+    }
+
+    #[test]
+    fn first_card_exits_back_toward_its_entrance_at_every_corner_and_edge() {
+        let _com = crate::platform::com::ComApartment::init_sta();
+        let graphics = super::super::backend::OverlayGraphics::create().unwrap();
+        let mut state = OverlayState::new(graphics, 0);
+        state.model = OverlayModel::single(super::super::model::OverlayRow::preview(
+            "Preview",
+            "Exit direction",
+        ));
+        state.motion = MotionPolicy::Animated;
+        state.phase = Phase::Leaving;
+        state.edge_entrance = true;
+        state.dpi = 144;
+        state.base_position = POINT { x: 300, y: 300 };
+        let start = state.phase_started;
+        state.layout_size = state.presentation_size(start);
+        let middle = start + Duration::from_millis(LEAVE_MS / 2);
+        for (position, expected) in [
+            (OverlayPosition::TopLeft, (-6, -6)),
+            (OverlayPosition::TopCenter, (0, -6)),
+            (OverlayPosition::TopRight, (6, -6)),
+            (OverlayPosition::CenterLeft, (-6, 0)),
+            (OverlayPosition::CenterRight, (6, 0)),
+            (OverlayPosition::BottomLeft, (-6, 6)),
+            (OverlayPosition::BottomCenter, (0, 6)),
+            (OverlayPosition::BottomRight, (6, 6)),
+        ] {
+            state.config.position = position;
+            assert_eq!(state.frame_plan_at(start).position, state.base_position);
+            let plan = state.frame_plan_at(middle);
+            assert_eq!((plan.position.x - 300, plan.position.y - 300), expected);
+            assert!(plan.alpha > 0.0 && plan.alpha < 1.0);
+        }
+        state.edge_entrance = false;
+        assert_eq!(
+            state.frame_plan_at(middle).position,
+            POINT { x: 300, y: 306 }
+        );
+        state.edge_entrance = true;
+        state.motion = MotionPolicy::Reduced;
+        assert_eq!(state.frame_plan_at(middle).position, state.base_position);
     }
 
     #[test]
