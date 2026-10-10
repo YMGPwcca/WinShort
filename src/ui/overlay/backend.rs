@@ -44,6 +44,8 @@ pub(super) fn render_prepared_frame(
         }
         let mut data = state.render_data(plan.alpha, plan.compact);
         data.hover_alpha = plan.hover_alpha;
+        data.model.width_dip = Some(plan.content_width);
+        data.text_alpha = plan.text_alpha;
         (state.surface_spec(plan.size), data)
     };
     let result = run_surface_operation(cell, hwnd, spec, Some(data));
@@ -73,6 +75,8 @@ pub(super) struct SurfaceSpec {
 pub(super) struct OverlayRenderData {
     pub(super) dwrite: IDWriteFactory,
     pub(super) model: OverlayModel,
+    pub(super) previous_text: Option<OverlayModel>,
+    pub(super) text_alpha: f32,
     pub(super) scale: f32,
     pub(super) palette: OverlayPalette,
     pub(super) theme_mode: ThemeMode,
@@ -246,6 +250,8 @@ impl HwndOverlaySurface {
                 data.palette,
                 data.alpha,
                 OverlayDrawOptions {
+                    previous_text: data.previous_text.as_ref(),
+                    text_alpha: data.text_alpha,
                     compact: data.compact,
                     fill_card: data.palette.opaque,
                     draw_card_border: data.palette.opaque || data.blur != OverlayBlur::Transparent,

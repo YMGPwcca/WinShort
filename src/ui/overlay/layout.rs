@@ -64,7 +64,12 @@ pub(super) fn model_geometry(
     )
 }
 
-fn geometry_with_width(scale: f32, row_count: usize, width: f32, compact: f32) -> SurfaceGeometry {
+pub(super) fn geometry_with_width(
+    scale: f32,
+    row_count: usize,
+    width: f32,
+    compact: f32,
+) -> SurfaceGeometry {
     let scale = scale.clamp(0.7, 1.6);
     let compact = compact.clamp(0.0, 1.0);
     let width = width.clamp(MIN_WIDTH, MAX_WIDTH);

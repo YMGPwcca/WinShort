@@ -2,7 +2,7 @@
 
 use super::backend::{OverlayGraphics, OverlayRenderData, OverlaySurface, SurfaceSpec};
 use super::badge::BadgeMotion;
-use super::layout::{model_geometry, window_region_for};
+use super::layout::{geometry_with_width, window_region_for};
 use super::model::OverlayModel;
 use super::palette::{
     composition_blur_enabled, opaque_palette, palette_for, resolved_theme_mode, OverlayPalette,
@@ -28,6 +28,7 @@ pub(super) struct ShowRequest {
     pub(super) expires_at: Option<Instant>,
     pub(super) mode: ShowMode,
     pub(super) collapsible_mute: bool,
+    pub(super) animate_content: bool,
     pub(super) layout_size: SIZE,
     pub(super) frame_period: Duration,
 }
@@ -48,6 +49,7 @@ pub(super) struct OverlayState {
     pub(super) base_position: POINT,
     pub(super) position_tween: Option<PositionTween>,
     pub(super) badge: BadgeMotion,
+    pub(super) content: super::content::ContentMotion,
     pub(super) hover: super::hover::HoverMotion,
     pub(super) layout_size: SIZE,
     pub(super) phase: Phase,
@@ -84,6 +86,7 @@ impl OverlayState {
             base_position: POINT::default(),
             position_tween: None,
             badge: BadgeMotion::default(),
+            content: super::content::ContentMotion::default(),
             hover: super::hover::HoverMotion::default(),
             layout_size: SIZE::default(),
             phase: Phase::Hidden,
@@ -115,6 +118,7 @@ impl OverlayState {
             expires_at,
             mode,
             collapsible_mute,
+            animate_content,
             layout_size,
             frame_period,
         } = request;
@@ -126,6 +130,14 @@ impl OverlayState {
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
         self.config = config;
+        self.content.update(
+            &self.model,
+            &model,
+            animate_content && self.phase != Phase::Hidden,
+            self.badge.value(now) >= 1.0 / 3.0,
+            self.motion,
+            now,
+        );
         self.badge
             .update(collapsible_mute, presentation_started_at, self.motion, now);
         self.layout_size = layout_size;
@@ -182,6 +194,7 @@ impl OverlayState {
             card_timer,
             self.badge.timer_interval(now),
             self.hover.timer_interval(),
+            self.content.timer_interval(),
         ]
         .into_iter()
         .flatten()
@@ -199,12 +212,15 @@ impl OverlayState {
             layout_changed: false,
             timer_id: self.timer_id,
             timer_interval,
+            content_width: self.content.width(&self.model, now),
+            text_alpha: self.content.text_alpha(now),
             animation_active: self.motion == MotionPolicy::Animated
                 && (matches!(self.phase, Phase::Appearing | Phase::Leaving)
                     || self
                         .position_tween
                         .is_some_and(|tween| !tween.is_finished(now))
                     || self.badge.is_animating()
+                    || self.content.is_animating()
                     || self.hover.is_animating()),
         }
     }
@@ -219,7 +235,13 @@ impl OverlayState {
     }
 
     fn presentation_size(&self, now: Instant) -> SIZE {
-        model_geometry(self.config.scale, &self.model, self.badge.value(now)).pixel_size(self.dpi)
+        geometry_with_width(
+            self.config.scale,
+            self.model.rows.len(),
+            self.content.width(&self.model, now),
+            self.badge.value(now),
+        )
+        .pixel_size(self.dpi)
     }
 
     fn presentation_offset(&self, size: SIZE) -> POINT {
@@ -277,6 +299,7 @@ impl OverlayState {
         }
         let layout_changed = self.badge.tick(self.motion, now);
         self.hover.tick(now);
+        self.content.tick(now);
         let tween_finished = self
             .position_tween
             .is_some_and(|tween| tween.is_finished(now));
@@ -361,9 +384,14 @@ impl OverlayState {
     }
 
     pub(super) fn render_data(&self, alpha: f32, compact: f32) -> OverlayRenderData {
+        let now = Instant::now();
+        let mut model = self.model.clone();
+        model.width_dip = Some(self.content.width(&model, now));
         OverlayRenderData {
             dwrite: self.graphics.dwrite.clone(),
-            model: self.model.clone(),
+            model,
+            previous_text: self.content.previous.clone(),
+            text_alpha: self.content.text_alpha(now),
             scale: self.config.scale,
             palette: self.palette,
             theme_mode: resolved_theme_mode(self.config.appearance, self.preferences),

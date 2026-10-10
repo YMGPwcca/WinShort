@@ -3,6 +3,7 @@
 mod backend;
 mod badge;
 mod composition;
+mod content;
 mod drawing;
 mod effect;
 mod frame_clock;

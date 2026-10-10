@@ -34,6 +34,86 @@ fn pump_for(duration: Duration) {
 }
 
 #[test]
+#[ignore = "shows a test-owned microphone popup and rapidly reverses its text/width motion"]
+fn native_mic_content_motion_reverses_without_replacing_the_window() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.position = OverlayPosition::TopRight;
+    config.duration_ms = 700;
+    config.hover_opacity = 1.0;
+    let show = |manager: &mut OverlayManager, muted: bool| {
+        let state = if muted {
+            crate::audio::AudioState::Muted { volume_pct: 100 }
+        } else {
+            crate::audio::AudioState::Active { volume_pct: 100 }
+        };
+        let model = OverlayModel::single(microphone_row(&state));
+        let request = if muted {
+            OverlayRequest::permanent(OverlayKey::MicrophonePermanent, model)
+                .replacing(OverlayKey::MicrophoneToast)
+        } else {
+            OverlayRequest::toast(OverlayKey::MicrophoneToast, model)
+                .replacing(OverlayKey::MicrophonePermanent)
+        };
+        manager.present(request, config.clone()).unwrap();
+    };
+    show(&mut manager, true);
+    pump_for(Duration::from_millis(300));
+    let hwnd = manager.test_hwnds()[0];
+    let original = manager.test_window_rectangles()[0];
+    show(&mut manager, false);
+    {
+        // SAFETY: this test owns the HWND and inspects its state on the same UI
+        // thread between native dispatches; no borrow spans a presentation.
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        assert!(state.content.is_animating());
+        assert_eq!(
+            state.content.previous.as_ref().unwrap().rows[0].title,
+            "Microphone muted"
+        );
+        assert!(state.content.text_alpha(Instant::now()) < 1.0);
+        assert!(state.frame_plan().animation_active);
+    }
+    for muted in [true, false, true, false, true, false] {
+        pump_for(Duration::from_millis(25));
+        show(&mut manager, muted);
+        assert_eq!(manager.test_hwnds(), vec![hwnd]);
+        assert_eq!(manager.status().active_card_count, 1);
+        let rect = manager.test_window_rectangles()[0];
+        assert_eq!(
+            rect.right, original.right,
+            "width changes must retain the right anchor"
+        );
+        assert_eq!(rect.top, original.top);
+    }
+    pump_for(Duration::from_millis(210));
+    {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(hwnd) }
+                .unwrap();
+        let state = cell.borrow();
+        assert_eq!(state.model.rows[0].title, "Microphone unmuted");
+        assert!(state.content.previous.is_none());
+        assert!(!state.content.is_animating());
+        assert!(
+            !state.frame_plan().animation_active,
+            "content must stop frame wakes when settled"
+        );
+    }
+    pump_for(Duration::from_millis(1150));
+    assert!(
+        !unsafe { IsWindowVisible(hwnd).as_bool() },
+        "the final unmute toast must still expire"
+    );
+    manager.shutdown();
+}
+
+#[test]
 #[ignore = "measures real overlay rendering cadence and briefly blocks its test UI thread"]
 fn native_refresh_animation_coalesces_frames_and_stops_when_idle() {
     crate::platform::dpi::set_process_awareness();
