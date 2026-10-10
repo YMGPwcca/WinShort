@@ -251,7 +251,7 @@ impl OverlayState {
         let slide = if self.edge_entrance {
             entrance_offset(self.config.position, slide_px)
         } else {
-            POINT { x: 0, y: slide_px }
+            stacked_entrance_offset(self.config.position, slide_px)
         };
         let compact = self.badge.value(now);
         let size = self.presentation_size(now);
@@ -558,9 +558,84 @@ fn entrance_offset(position: OverlayPosition, distance: i32) -> POINT {
     }
 }
 
+fn stacked_entrance_offset(position: OverlayPosition, distance: i32) -> POINT {
+    let (x, y) = match position {
+        OverlayPosition::TopLeft | OverlayPosition::TopCenter | OverlayPosition::TopRight => {
+            (0, -1)
+        }
+        OverlayPosition::CenterLeft => (-1, 0),
+        OverlayPosition::CenterRight => (1, 0),
+        OverlayPosition::BottomLeft
+        | OverlayPosition::BottomCenter
+        | OverlayPosition::BottomRight => (0, 1),
+        OverlayPosition::Center => (0, 0),
+    };
+    POINT {
+        x: x * distance,
+        y: y * distance,
+    }
+}
+
 #[cfg(test)]
 mod entrance_tests {
     use super::*;
+    #[test]
+    fn stacked_cards_enter_and_exit_along_their_screen_edge() {
+        let _com = crate::platform::com::ComApartment::init_sta();
+        let mut state =
+            OverlayState::new(super::super::backend::OverlayGraphics::create().unwrap(), 0);
+        state.model = OverlayModel::single(super::super::model::OverlayRow::preview(
+            "Second popup",
+            "Direction",
+        ));
+        state.motion = MotionPolicy::Animated;
+        state.edge_entrance = false;
+        state.dpi = 144;
+        state.base_position = POINT { x: 300, y: 300 };
+        let start = state.phase_started;
+        state.layout_size = state.presentation_size(start);
+        for (position, (x, y)) in [
+            (OverlayPosition::TopLeft, (0, -1)),
+            (OverlayPosition::TopCenter, (0, -1)),
+            (OverlayPosition::TopRight, (0, -1)),
+            (OverlayPosition::CenterLeft, (-1, 0)),
+            (OverlayPosition::CenterRight, (1, 0)),
+            (OverlayPosition::BottomLeft, (0, 1)),
+            (OverlayPosition::BottomCenter, (0, 1)),
+            (OverlayPosition::BottomRight, (0, 1)),
+        ] {
+            state.config.position = position;
+            state.phase = Phase::Appearing;
+            let plan = state.frame_plan_at(start);
+            assert_eq!(
+                plan.position,
+                POINT {
+                    x: 300 + 18 * x,
+                    y: 300 + 18 * y
+                }
+            );
+            assert_eq!(
+                state
+                    .frame_plan_at(start + Duration::from_millis(APPEAR_MS))
+                    .position,
+                state.base_position
+            );
+            state.phase = Phase::Leaving;
+            let plan = state.frame_plan_at(start + Duration::from_millis(LEAVE_MS / 2));
+            assert_eq!(
+                plan.position,
+                POINT {
+                    x: 300 + 6 * x,
+                    y: 300 + 6 * y
+                }
+            );
+            assert!(plan.alpha > 0.0 && plan.alpha < 1.0);
+            state.motion = MotionPolicy::Reduced;
+            assert_eq!(state.frame_plan_at(start).position, state.base_position);
+            state.motion = MotionPolicy::Animated;
+        }
+    }
+
     #[test]
     fn output_refresh_finishes_entrance_without_restarting_and_reverses_exit_continuously() {
         let _com = crate::platform::com::ComApartment::init_sta();
