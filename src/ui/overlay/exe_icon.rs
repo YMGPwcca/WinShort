@@ -57,10 +57,13 @@ fn load(path: &str) -> Result<ExecutableIcon> {
             SHGFI_ICON | SHGFI_LARGEICON,
         )
     };
-    if found == 0 || info.hIcon.is_invalid() {
+    // SHFILEINFOW is packed on i686. Copy the handle by value before any
+    // method borrows it, so no unaligned reference to the packed field forms.
+    let handle = info.hIcon;
+    if found == 0 || handle.is_invalid() {
         return Err(Error::internal("No executable icon"));
     }
-    let icon = OwnedIcon(info.hIcon);
+    let icon = OwnedIcon(handle);
     let factory: IWICImagingFactory =
         unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }?;
     let bitmap = unsafe { factory.CreateBitmapFromHICON(icon.0) }?;
