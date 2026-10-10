@@ -107,6 +107,7 @@ impl ControlCenterWindow {
         if actual_dpi != dpi {
             cell.borrow_mut().dpi = actual_dpi;
         }
+        win::set_application_icon(hwnd)?;
         apply_chrome(hwnd, settings_theme());
         {
             let mut ui = cell.borrow_mut();
