@@ -7,6 +7,7 @@ mod content;
 mod drawing;
 mod effect;
 mod frame_clock;
+mod group;
 mod hover;
 mod icons;
 mod layout;

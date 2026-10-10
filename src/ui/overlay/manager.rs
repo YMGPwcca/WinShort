@@ -416,6 +416,20 @@ struct ManagedWindow {
     window: OverlayWindow,
 }
 
+#[derive(Clone, Copy)]
+struct CompactGroup {
+    primary: u64,
+    peer: u64,
+    side: super::group::Side,
+    started: Instant,
+}
+impl CompactGroup {
+    fn contains(&self, first: u64, second: u64) -> bool {
+        (self.primary == first && self.peer == second)
+            || (self.primary == second && self.peer == first)
+    }
+}
+
 #[derive(Clone)]
 struct PresentationStateSnapshot {
     registry: OverlayRegistry,
@@ -446,6 +460,7 @@ pub(crate) struct OverlayManager {
     render_configs: HashMap<u64, OverlayCfg>,
     spare: Option<OverlayWindow>,
     windows: Vec<ManagedWindow>,
+    compact_group: Option<CompactGroup>,
     // Drop after every window so the shared dispatcher/compositor/device graph
     // outlives all per-card Composition targets.
     composition_runtime: Option<CompositionRuntime>,
@@ -490,6 +505,7 @@ impl OverlayManager {
             render_configs: HashMap::new(),
             spare,
             windows: Vec::new(),
+            compact_group: None,
             composition_runtime,
             last_shown: None,
         })
@@ -627,6 +643,7 @@ impl OverlayManager {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.compact_group = None;
         self.registry.clear();
         self.render_configs.clear();
         while let Some(managed) = self.windows.pop() {
@@ -635,6 +652,7 @@ impl OverlayManager {
     }
 
     pub(crate) fn shutdown(&mut self) {
+        self.compact_group = None;
         self.registry.clear();
         self.render_configs.clear();
         for managed in self.windows.drain(..) {
@@ -770,27 +788,114 @@ impl OverlayManager {
         let now = Instant::now();
         self.registry.mark_expiring(now);
         refresh_registry_placements(&mut self.registry);
-        let layout = plan_layout_with_evictions(self.build_layout_entries());
+        let mut entries = self.build_layout_entries();
+        self.compact_group = choose_compact_group(&entries, self.compact_group, now);
+        if motion_policy(crate::platform::visual::SystemVisualPreferences::query())
+            == MotionPolicy::Reduced
+        {
+            if let Some(group) = &mut self.compact_group {
+                group.started = now
+                    .checked_sub(Duration::from_millis(super::group::GROUP_MS))
+                    .unwrap_or(now);
+            }
+        }
+        let peer = prepare_group_entries(&mut entries, self.compact_group);
+        let layout = plan_layout_with_evictions(entries);
         for id in layout.evicted_ids {
             self.render_configs.remove(&id);
             self.registry.remove_id(id);
             self.release_window(id);
         }
-        let plans = layout.entries;
+        let mut plans = layout.entries;
+        for plan in &mut plans {
+            if plan.entry.cluster.is_some() {
+                anchor_primary_badge(plan);
+            }
+        }
+        let join_position = self.compact_group.and_then(|group| {
+            plans
+                .iter()
+                .find(|plan| plan.entry.id == group.primary)
+                .map(|plan| peer_position(plan, group.side))
+        });
 
+        self.render_layout(plans, presentation)?;
+        if let (Some(peer), Some(group), Some(position)) = (peer, self.compact_group, join_position)
+        {
+            self.show_group_peer(peer, group, position, presentation)?;
+        }
+        Ok(())
+    }
+
+    fn render_layout(
+        &mut self,
+        plans: Vec<PlannedEntry>,
+        presentation: Option<PresentOutcome>,
+    ) -> Result<()> {
         for plan in &plans {
             self.ensure_window(plan.entry.id)?;
         }
+        let badge = plans
+            .iter()
+            .find(|plan| plan.entry.compact && plan.entry.lifetime.is_permanent())
+            .and_then(|plan| {
+                self.windows
+                    .iter()
+                    .find(|window| window.id == plan.entry.id)
+            })
+            .map(|window| window.window.hwnd);
 
         let mut first_error = None;
         for plan in plans {
-            if let Err(error) = self.show_planned_entry(plan, presentation) {
+            let behind_badge = (!plan.entry.lifetime.is_permanent())
+                .then_some(badge)
+                .flatten();
+            if let Err(error) = self.show_planned_entry(plan, presentation, None, behind_badge) {
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn show_group_peer(
+        &self,
+        peer: LayoutEntry,
+        group: CompactGroup,
+        position: windows::Win32::Foundation::POINT,
+        presentation: Option<PresentOutcome>,
+    ) -> Result<()> {
+        let Some(managed) = self.windows.iter().find(|window| window.id == peer.id) else {
+            return Ok(());
+        };
+        let reduced = motion_policy(crate::platform::visual::SystemVisualPreferences::query())
+            == MotionPolicy::Reduced;
+        if reduced
+            || Instant::now() >= group.started + Duration::from_millis(super::group::GROUP_MS)
+        {
+            return managed.window.park(make_show_request(
+                PlannedEntry {
+                    entry: peer,
+                    card: CardPlacement { position },
+                },
+                presentation,
+                None,
+                None,
+            ));
+        }
+        self.show_planned_entry(
+            PlannedEntry {
+                entry: peer,
+                card: CardPlacement { position },
+            },
+            presentation,
+            Some(super::group::JoinRequest {
+                position,
+                started: group.started,
+            }),
+            None,
+        )
     }
 
     fn build_layout_entries(&self) -> Vec<LayoutEntry> {
@@ -804,6 +909,11 @@ impl OverlayManager {
                 let render_config = self.render_configs.get(&entry.id()).cloned()?;
                 let placement = entry.placement.clone();
                 let mut plan = make_layout_entry(entry, render_config, placement);
+                plan.compacted_at = self
+                    .windows
+                    .iter()
+                    .find(|window| window.id == entry.id())
+                    .and_then(|window| window.window.compacted_at());
                 if entry.key().is_compact_mute()
                     && entry.is_permanent()
                     && self.windows.iter().any(|managed| {
@@ -823,6 +933,8 @@ impl OverlayManager {
         &self,
         plan: PlannedEntry,
         presentation: Option<PresentOutcome>,
+        join: Option<super::group::JoinRequest>,
+        behind_badge: Option<windows::Win32::Foundation::HWND>,
     ) -> Result<()> {
         let Some(managed) = self
             .windows
@@ -831,34 +943,47 @@ impl OverlayManager {
         else {
             return Ok(());
         };
-        let mode = if presentation
-            .is_some_and(|value| value.id == plan.entry.id && value.restart_appearance)
-        {
-            ShowMode::Present
-        } else {
-            ShowMode::Relayout
-        };
-        managed.window.show_at(ShowRequest {
-            generation: plan.entry.generation,
-            presentation_started_at: plan.entry.presented_at,
-            model: plan.entry.model,
-            config: plan.entry.render_config,
-            dpi: plan.entry.placement.dpi,
-            target_monitor: plan.entry.placement.key.monitor.clone(),
-            position: plan.card.position,
-            expires_at: plan.entry.expires_at,
-            mode,
-            collapsible_mute: plan.entry.key.is_compact_mute()
-                && plan.entry.lifetime.is_permanent(),
-            animate_content: matches!(
-                plan.entry.key,
-                OverlayKey::MicrophonePermanent | OverlayKey::MicrophoneToast
-            ),
-            layout_size: plan.entry.size,
-            frame_period: crate::platform::monitor::refresh_period(
-                plan.entry.placement.key.monitor.as_deref(),
-            ),
-        })
+        managed
+            .window
+            .show_at(make_show_request(plan, presentation, join, behind_badge))
+    }
+}
+
+fn make_show_request(
+    plan: PlannedEntry,
+    presentation: Option<PresentOutcome>,
+    join: Option<super::group::JoinRequest>,
+    behind_badge: Option<windows::Win32::Foundation::HWND>,
+) -> ShowRequest {
+    let mode = if presentation
+        .is_some_and(|value| value.id == plan.entry.id && value.restart_appearance)
+    {
+        ShowMode::Present
+    } else {
+        ShowMode::Relayout
+    };
+    ShowRequest {
+        cluster: plan.entry.cluster,
+        join,
+        behind_badge,
+        generation: plan.entry.generation,
+        presentation_started_at: plan.entry.presented_at,
+        model: plan.entry.model,
+        config: plan.entry.render_config,
+        dpi: plan.entry.placement.dpi,
+        target_monitor: plan.entry.placement.key.monitor.clone(),
+        position: plan.card.position,
+        expires_at: plan.entry.expires_at,
+        mode,
+        collapsible_mute: plan.entry.key.is_compact_mute() && plan.entry.lifetime.is_permanent(),
+        animate_content: matches!(
+            plan.entry.key,
+            OverlayKey::MicrophonePermanent | OverlayKey::MicrophoneToast
+        ),
+        layout_size: plan.entry.size,
+        frame_period: crate::platform::monitor::refresh_period(
+            plan.entry.placement.key.monitor.as_deref(),
+        ),
     }
 }
 
@@ -879,6 +1004,122 @@ fn consistent_value<T: Copy + Eq>(values: impl Iterator<Item = Option<T>>) -> Op
         None
     } else {
         result
+    }
+}
+
+fn choose_compact_group(
+    entries: &[LayoutEntry],
+    previous: Option<CompactGroup>,
+    now: Instant,
+) -> Option<CompactGroup> {
+    let eligible = |key| entries.iter().find(|entry| grouping_entry(entry, key));
+    let mic = eligible(OverlayKey::MicrophonePermanent)?;
+    let app = eligible(OverlayKey::CurrentAppAudioPermanent)?;
+    if !same_group_surface(mic, app) {
+        return None;
+    }
+    let side = super::group::Side::for_position(mic.placement.key.position);
+    if let Some(group) =
+        previous.filter(|group| group.side == side && group.contains(mic.id, app.id))
+    {
+        return Some(group);
+    }
+    let (primary, peer) = if mic.compacted_at.unwrap_or(mic.presented_at)
+        <= app.compacted_at.unwrap_or(app.presented_at)
+    {
+        (mic.id, app.id)
+    } else {
+        (app.id, mic.id)
+    };
+    Some(CompactGroup {
+        primary,
+        peer,
+        side,
+        started: now,
+    })
+}
+
+fn grouping_entry(entry: &LayoutEntry, key: OverlayKey) -> bool {
+    entry.key == key
+        && entry.compact
+        && entry.lifetime.is_permanent()
+        && entry.model.rows.len() == 1
+        && entry.model.rows[0].tone == super::model::OverlayTone::Muted
+}
+
+fn same_group_surface(first: &LayoutEntry, second: &LayoutEntry) -> bool {
+    let (a, b) = (&first.render_config, &second.render_config);
+    first.placement.key == second.placement.key
+        && a.scale == b.scale
+        && a.appearance == b.appearance
+        && a.blur == b.blur
+        && a.hover_opacity == b.hover_opacity
+}
+
+fn prepare_group_entries(
+    entries: &mut Vec<LayoutEntry>,
+    group: Option<CompactGroup>,
+) -> Option<LayoutEntry> {
+    let group = group?;
+    let peer_index = entries.iter().position(|entry| entry.id == group.peer)?;
+    let peer = entries.remove(peer_index);
+    let primary = entries.iter_mut().find(|entry| entry.id == group.primary)?;
+    primary.cluster = Some(super::group::ClusterRequest {
+        peer_id: peer.id,
+        row: peer.model.rows[0].clone(),
+        side: group.side,
+        started: group.started,
+    });
+    primary.size.cx = cluster_width_px(primary.render_config.scale, primary.placement.dpi);
+    Some(peer)
+}
+
+fn cluster_width_px(scale: f32, dpi: u32) -> i32 {
+    ((super::layout::BADGE_SIZE + super::group::GROUP_EXTRA)
+        * scale.clamp(0.7, 1.6)
+        * dpi.max(96) as f32
+        / 96.0)
+        .round() as i32
+}
+
+fn anchor_primary_badge(plan: &mut PlannedEntry) {
+    let Some(cluster) = &plan.entry.cluster else {
+        return;
+    };
+    let single = model_geometry(plan.entry.render_config.scale, &plan.entry.model, 1.0)
+        .pixel_size(plan.entry.placement.dpi);
+    let anchor = super::layout::position_for(
+        plan.entry.placement.work,
+        single,
+        plan.entry.placement.key.position,
+        plan.entry.placement.dpi,
+    );
+    let left = anchor.x
+        - if cluster.side == super::group::Side::Left {
+            plan.entry.size.cx - single.cx
+        } else {
+            0
+        };
+    plan.card.position.x = left.clamp(
+        plan.entry.placement.work.left,
+        (plan.entry.placement.work.right - plan.entry.size.cx).max(plan.entry.placement.work.left),
+    );
+}
+
+fn peer_position(
+    plan: &PlannedEntry,
+    side: super::group::Side,
+) -> windows::Win32::Foundation::POINT {
+    let single = model_geometry(plan.entry.render_config.scale, &plan.entry.model, 1.0)
+        .pixel_size(plan.entry.placement.dpi);
+    windows::Win32::Foundation::POINT {
+        x: plan.card.position.x
+            + if side == super::group::Side::Right {
+                plan.entry.size.cx - single.cx
+            } else {
+                0
+            },
+        y: plan.card.position.y,
     }
 }
 
@@ -941,6 +1182,8 @@ struct LayoutEntry {
     placement: ResolvedPlacement,
     size: windows::Win32::Foundation::SIZE,
     compact: bool,
+    compacted_at: Option<Instant>,
+    cluster: Option<super::group::ClusterRequest>,
 }
 
 /// Stable identity for one independently laid out monitor/position group.
@@ -1078,6 +1321,8 @@ fn make_layout_entry(
         placement,
         size,
         compact: false,
+        compacted_at: None,
+        cluster: None,
     }
 }
 
@@ -1212,6 +1457,9 @@ fn group_layout_entries(entries: Vec<LayoutEntry>) -> Vec<LayoutGroup> {
                 if entry.compact { 1.0 } else { 0.0 },
             )
             .pixel_size(placement.dpi);
+            if entry.cluster.is_some() {
+                entry.size.cx = cluster_width_px(entry.render_config.scale, placement.dpi);
+            }
         }
         group.entries.push(entry);
     }
@@ -1220,7 +1468,16 @@ fn group_layout_entries(entries: Vec<LayoutEntry>) -> Vec<LayoutGroup> {
 
 fn layout_order(entry: &LayoutEntry) -> (u8, u8, u64, u64) {
     if entry.lifetime.is_permanent() {
-        (0, entry.key.permanent_rank(), 0, entry.id)
+        (
+            0,
+            if entry.compact {
+                0
+            } else {
+                entry.key.permanent_rank() + 1
+            },
+            0,
+            entry.id,
+        )
     } else {
         (1, 0, u64::MAX - entry.sequence, entry.id)
     }
@@ -1280,6 +1537,8 @@ mod tests {
             placement,
             size,
             compact: false,
+            compacted_at: None,
+            cluster: None,
         }
     }
 
@@ -1288,6 +1547,111 @@ mod tests {
             .iter()
             .find(|plan| plan.entry.id == id)
             .unwrap_or_else(|| panic!("missing planned entry {id}"))
+    }
+
+    fn muted_entry(id: u64, key: OverlayKey, at: Instant) -> LayoutEntry {
+        let mut entry = layout_entry(
+            id,
+            key,
+            OverlayLifetime::Permanent,
+            id,
+            1.0,
+            placement("DISPLAY1", work(0, 0, 1200, 900), OverlayPosition::TopRight),
+            windows::Win32::Foundation::SIZE { cx: 52, cy: 52 },
+        );
+        let state = crate::audio::AudioState::Muted { volume_pct: 100 };
+        entry.model = OverlayModel::single(super::super::microphone_row(&state));
+        entry.compact = true;
+        entry.compacted_at = Some(at);
+        entry
+    }
+    #[test]
+    fn group_preserves_first_badge_and_only_combines_matching_surfaces() {
+        let now = Instant::now();
+        let mut mic = muted_entry(
+            1,
+            OverlayKey::MicrophonePermanent,
+            now + Duration::from_millis(10),
+        );
+        let mut app = muted_entry(2, OverlayKey::CurrentAppAudioPermanent, now);
+        let group = choose_compact_group(&[mic.clone(), app.clone()], None, now).unwrap();
+        assert_eq!((group.primary, group.peer), (2, 1));
+        mic.compacted_at = Some(now - Duration::from_secs(1));
+        assert_eq!(
+            choose_compact_group(&[mic.clone(), app.clone()], Some(group), now)
+                .unwrap()
+                .primary,
+            2
+        );
+        app.render_config.duration_ms = 500;
+        assert!(choose_compact_group(&[mic.clone(), app.clone()], None, now).is_some());
+        app.placement.key.monitor = Some("DISPLAY2".into());
+        assert!(choose_compact_group(&[mic.clone(), app.clone()], None, now).is_none());
+        app.placement.key.monitor = mic.placement.key.monitor.clone();
+        app.render_config.scale = 1.6;
+        assert!(choose_compact_group(&[mic, app], None, now).is_none());
+    }
+    #[test]
+    fn full_popup_finishes_its_own_hold_before_becoming_a_group_peer() {
+        let now = Instant::now();
+        let mic = muted_entry(1, OverlayKey::MicrophonePermanent, now);
+        let mut app = muted_entry(2, OverlayKey::CurrentAppAudioPermanent, now);
+        app.compact = false;
+        assert!(choose_compact_group(&[mic.clone(), app.clone()], None, now).is_none());
+        app.compact = true;
+        app.lifetime = OverlayLifetime::Toast;
+        assert!(choose_compact_group(&[mic, app], None, now).is_none());
+    }
+    #[test]
+    fn grouped_layout_uses_one_lane_and_keeps_the_primary_icon_anchor_at_all_dpis() {
+        let now = Instant::now();
+        for position in [
+            OverlayPosition::TopLeft,
+            OverlayPosition::TopRight,
+            OverlayPosition::Center,
+            OverlayPosition::BottomRight,
+        ] {
+            for scale in [0.7, 1.0, 1.6] {
+                for dpi in [96, 120, 144, 192] {
+                    let mut mic = muted_entry(1, OverlayKey::MicrophonePermanent, now);
+                    let mut app = muted_entry(
+                        2,
+                        OverlayKey::CurrentAppAudioPermanent,
+                        now + Duration::from_millis(1),
+                    );
+                    for entry in [&mut mic, &mut app] {
+                        entry.placement.key.position = position;
+                        entry.placement.dpi = dpi;
+                        entry.render_config.scale = scale;
+                        entry.render_config.position = position;
+                        entry.size = model_geometry(scale, &entry.model, 1.0).pixel_size(dpi);
+                    }
+                    let single = mic.size;
+                    let anchor = super::super::layout::position_for(
+                        mic.placement.work,
+                        single,
+                        position,
+                        dpi,
+                    );
+                    let mut entries = vec![mic, app];
+                    let group = choose_compact_group(&entries, None, now).unwrap();
+                    let peer = prepare_group_entries(&mut entries, Some(group)).unwrap();
+                    assert_eq!(peer.id, 2);
+                    let mut plans = plan_layout(entries);
+                    assert_eq!(plans.len(), 1);
+                    anchor_primary_badge(&mut plans[0]);
+                    let plan = &plans[0];
+                    let primary_x = plan.card.position.x
+                        + if group.side == super::super::group::Side::Left {
+                            plan.entry.size.cx - single.cx
+                        } else {
+                            0
+                        };
+                    assert_eq!(primary_x, anchor.x);
+                    assert_eq!(plan.entry.size.cx, cluster_width_px(scale, dpi));
+                }
+            }
+        }
     }
 
     fn preview_registry_entry(registry: &mut OverlayRegistry, now: Instant) -> OverlayEntry {

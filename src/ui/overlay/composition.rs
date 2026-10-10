@@ -483,7 +483,7 @@ impl CompositionHost {
     pub(super) fn render(&mut self, data: &OverlayRenderData, spec: SurfaceSpec) -> Result<()> {
         self.scene
             .root
-            .SetOpacity(data.hover_alpha.clamp(0.1, 1.0))
+            .SetOpacity(data.hover_alpha.clamp(0.1, 1.0) * data.join_alpha.clamp(0.0, 1.0))
             .map_err(|error| Error::win("SetOverlayHoverOpacity", &error))?;
         if let Some(blur_amount) = data.blur.blur_amount() {
             if (self.scene.blur_amount - blur_amount).abs() > f32::EPSILON {
@@ -560,6 +560,10 @@ impl CompositionHost {
             data.palette,
             data.alpha,
             OverlayDrawOptions {
+                cluster_extra: data.cluster_extra,
+                cluster_side: data.cluster_side,
+                cluster_peer: data.cluster_peer.as_ref(),
+                cluster_peer_alpha: data.cluster_peer_alpha,
                 previous_text: data.previous_text.as_ref(),
                 text_alpha: data.text_alpha,
                 compact: data.compact,

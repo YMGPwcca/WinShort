@@ -28,6 +28,10 @@ pub(super) struct OverlayDrawOptions<'a> {
     pub(super) draw_card_border: bool,
     pub(super) previous_text: Option<&'a OverlayModel>,
     pub(super) text_alpha: f32,
+    pub(super) cluster_extra: f32,
+    pub(super) cluster_side: Option<super::group::Side>,
+    pub(super) cluster_peer: Option<&'a super::model::OverlayRow>,
+    pub(super) cluster_peer_alpha: f32,
 }
 
 pub(super) fn draw_overlay(
@@ -42,7 +46,9 @@ pub(super) fn draw_overlay(
     unsafe {
         let scale = scale.clamp(0.7, 1.6);
         let compact = options.compact.clamp(0.0, 1.0);
-        let geometry = model_geometry(scale, model, compact);
+        let mut geometry = model_geometry(scale, model, compact);
+        geometry.width += options.cluster_extra * scale;
+        geometry.body_right = geometry.width;
         let body = D2D_RECT_F {
             left: geometry.body_left,
             top: geometry.body_top,
@@ -110,13 +116,39 @@ pub(super) fn draw_overlay(
                 target,
                 row,
                 windows_numerics::Vector2 {
-                    X: left + 26.0 * scale,
+                    X: left
+                        + (26.0
+                            + if options.cluster_side == Some(super::group::Side::Left) {
+                                options.cluster_extra
+                            } else {
+                                0.0
+                            })
+                            * scale,
                     Y: y + ROW_HEIGHT * scale * 0.5 - 8.0 * scale * compact,
                 },
                 scale,
                 palette,
                 content_alpha,
                 compact,
+            )?;
+        }
+        if let Some(peer) = options.cluster_peer {
+            let x = if options.cluster_side == Some(super::group::Side::Left) {
+                26.0
+            } else {
+                26.0 + super::group::GROUP_EXTRA
+            };
+            draw_badge(
+                target,
+                peer,
+                windows_numerics::Vector2 {
+                    X: left + x * scale,
+                    Y: top + 26.0 * scale,
+                },
+                scale,
+                palette,
+                content_alpha * options.cluster_peer_alpha,
+                1.0,
             )?;
         }
         let formats = [&title_format, &detail_format];

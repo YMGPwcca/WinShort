@@ -39,13 +39,16 @@ pub(super) fn render_prepared_frame(
     }
     let (spec, data) = {
         let state = cell.borrow();
-        if state.phase == Phase::Hidden {
+        if state.phase == Phase::Hidden || state.parked {
             return Ok(());
         }
         let mut data = state.render_data(plan.alpha, plan.compact);
         data.hover_alpha = plan.hover_alpha;
         data.model.width_dip = Some(plan.content_width);
         data.text_alpha = plan.text_alpha;
+        data.cluster_extra = plan.cluster_extra;
+        data.cluster_peer_alpha = plan.cluster_peer_alpha;
+        data.join_alpha = plan.join_alpha;
         (state.surface_spec(plan.size), data)
     };
     let result = run_surface_operation(cell, hwnd, spec, Some(data));
@@ -77,6 +80,11 @@ pub(super) struct OverlayRenderData {
     pub(super) model: OverlayModel,
     pub(super) previous_text: Option<OverlayModel>,
     pub(super) text_alpha: f32,
+    pub(super) cluster_extra: f32,
+    pub(super) cluster_side: Option<super::group::Side>,
+    pub(super) cluster_peer: Option<super::model::OverlayRow>,
+    pub(super) cluster_peer_alpha: f32,
+    pub(super) join_alpha: f32,
     pub(super) scale: f32,
     pub(super) palette: OverlayPalette,
     pub(super) theme_mode: ThemeMode,
@@ -124,7 +132,7 @@ fn run_surface_operation(
             result = if surface.is_composition() {
                 surface.render(data, spec)
             } else {
-                super::window::set_hover_opacity(hwnd, data.hover_alpha)
+                super::window::set_hover_opacity(hwnd, data.hover_alpha * data.join_alpha)
                     .and_then(|()| surface.render(data, spec))
             };
         }
@@ -200,7 +208,7 @@ pub(super) fn render_current_frame(
 ) -> Result<()> {
     let (spec, data) = {
         let state = cell.borrow();
-        if state.phase == Phase::Hidden {
+        if state.phase == Phase::Hidden || state.parked {
             return Ok(());
         }
         let now = Instant::now();
@@ -250,6 +258,10 @@ impl HwndOverlaySurface {
                 data.palette,
                 data.alpha,
                 OverlayDrawOptions {
+                    cluster_extra: data.cluster_extra,
+                    cluster_side: data.cluster_side,
+                    cluster_peer: data.cluster_peer.as_ref(),
+                    cluster_peer_alpha: data.cluster_peer_alpha,
                     previous_text: data.previous_text.as_ref(),
                     text_alpha: data.text_alpha,
                     compact: data.compact,

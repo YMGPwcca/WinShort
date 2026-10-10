@@ -15,7 +15,7 @@ use crate::config::model::{OverlayBlur, OverlayCfg, OverlayPosition};
 use crate::error::Result;
 use crate::platform::visual::SystemVisualPreferences;
 use std::time::{Duration, Instant, SystemTime};
-use windows::Win32::Foundation::{POINT, SIZE};
+use windows::Win32::Foundation::{HWND, POINT, SIZE};
 
 pub(super) struct ShowRequest {
     pub(super) generation: u64,
@@ -31,6 +31,9 @@ pub(super) struct ShowRequest {
     pub(super) animate_content: bool,
     pub(super) layout_size: SIZE,
     pub(super) frame_period: Duration,
+    pub(super) cluster: Option<super::group::ClusterRequest>,
+    pub(super) join: Option<super::group::JoinRequest>,
+    pub(super) behind_badge: Option<HWND>,
 }
 
 pub(super) struct OverlayState {
@@ -50,6 +53,11 @@ pub(super) struct OverlayState {
     pub(super) position_tween: Option<PositionTween>,
     pub(super) badge: BadgeMotion,
     pub(super) content: super::content::ContentMotion,
+    pub(super) cluster: super::group::ClusterMotion,
+    pub(super) join: Option<super::group::JoinMotion>,
+    pub(super) compacted_at: Option<Instant>,
+    pub(super) parked: bool,
+    pub(super) behind_badge: Option<HWND>,
     pub(super) hover: super::hover::HoverMotion,
     pub(super) layout_size: SIZE,
     pub(super) phase: Phase,
@@ -87,6 +95,11 @@ impl OverlayState {
             position_tween: None,
             badge: BadgeMotion::default(),
             content: super::content::ContentMotion::default(),
+            cluster: super::group::ClusterMotion::default(),
+            join: None,
+            compacted_at: None,
+            parked: false,
+            behind_badge: None,
             hover: super::hover::HoverMotion::default(),
             layout_size: SIZE::default(),
             phase: Phase::Hidden,
@@ -121,6 +134,9 @@ impl OverlayState {
             animate_content,
             layout_size,
             frame_period,
+            cluster,
+            join,
+            behind_badge,
         } = request;
         if model.rows.is_empty() || !config.enabled {
             return Ok(None);
@@ -129,6 +145,10 @@ impl OverlayState {
         let previous_position = self.presentation_position(now, self.presentation_size(now));
         self.preferences = preferences;
         self.motion = motion_policy(preferences);
+        self.parked = false;
+        self.behind_badge = behind_badge;
+        self.cluster.update(cluster, self.motion, now);
+        self.update_join(join, previous_position);
         self.config = config;
         self.content.update(
             &self.model,
@@ -140,6 +160,9 @@ impl OverlayState {
         );
         self.badge
             .update(collapsible_mute, presentation_started_at, self.motion, now);
+        if !self.badge.reserves_compact() {
+            self.compacted_at = None;
+        }
         self.layout_size = layout_size;
         self.frame_period = frame_period;
         self.model = model;
@@ -195,6 +218,10 @@ impl OverlayState {
             self.badge.timer_interval(now),
             self.hover.timer_interval(),
             self.content.timer_interval(),
+            self.cluster.timer_interval(),
+            self.join
+                .filter(|join| !join.finished(now))
+                .map(|_| super::timeline::TIMER_MS),
         ]
         .into_iter()
         .flatten()
@@ -214,6 +241,10 @@ impl OverlayState {
             timer_interval,
             content_width: self.content.width(&self.model, now),
             text_alpha: self.content.text_alpha(now),
+            cluster_extra: self.cluster.extra(now) * compact,
+            cluster_peer_alpha: self.cluster.peer_alpha(now),
+            join_alpha: self.join.map_or(1.0, |join| join.alpha(now)),
+            behind_badge: self.behind_badge,
             animation_active: self.motion == MotionPolicy::Animated
                 && (matches!(self.phase, Phase::Appearing | Phase::Leaving)
                     || self
@@ -221,11 +252,16 @@ impl OverlayState {
                         .is_some_and(|tween| !tween.is_finished(now))
                     || self.badge.is_animating()
                     || self.content.is_animating()
+                    || self.cluster.timer_interval().is_some()
+                    || self.join.is_some_and(|join| !join.finished(now))
                     || self.hover.is_animating()),
         }
     }
 
     fn presentation_position(&self, now: Instant, size: SIZE) -> POINT {
+        if let Some(join) = self.join {
+            return join.position(now);
+        }
         let position = self.position_at(now);
         let offset = self.presentation_offset(size);
         POINT {
@@ -235,26 +271,32 @@ impl OverlayState {
     }
 
     fn presentation_size(&self, now: Instant) -> SIZE {
-        geometry_with_width(
+        let mut geometry = geometry_with_width(
             self.config.scale,
             self.model.rows.len(),
             self.content.width(&self.model, now),
             self.badge.value(now),
-        )
-        .pixel_size(self.dpi)
+        );
+        geometry.width += self.cluster.extra(now) * self.badge.value(now) * self.config.scale;
+        geometry.body_right = geometry.width;
+        geometry.pixel_size(self.dpi)
     }
 
     fn presentation_offset(&self, size: SIZE) -> POINT {
         let dx = self.layout_size.cx - size.cx;
         let dy = self.layout_size.cy - size.cy;
-        let x = match self.config.position {
-            OverlayPosition::TopRight
-            | OverlayPosition::CenterRight
-            | OverlayPosition::BottomRight => dx,
-            OverlayPosition::TopCenter
-            | OverlayPosition::Center
-            | OverlayPosition::BottomCenter => dx / 2,
-            _ => 0,
+        let x = match self.cluster.side() {
+            Some(super::group::Side::Left) => dx,
+            Some(super::group::Side::Right) => 0,
+            None => match self.config.position {
+                OverlayPosition::TopRight
+                | OverlayPosition::CenterRight
+                | OverlayPosition::BottomRight => dx,
+                OverlayPosition::TopCenter
+                | OverlayPosition::Center
+                | OverlayPosition::BottomCenter => dx / 2,
+                _ => 0,
+            },
         };
         let y = if matches!(
             self.config.position,
@@ -294,10 +336,17 @@ impl OverlayState {
     }
 
     pub(super) fn prepare_tick_at(&mut self, now: Instant) -> Option<TickPlan> {
-        if self.phase == Phase::Hidden {
+        if self.phase == Phase::Hidden || self.parked {
             return None;
         }
-        let layout_changed = self.badge.tick(self.motion, now);
+        let mut layout_changed = self.badge.tick(self.motion, now);
+        if self.badge.reserves_compact() && self.compacted_at.is_none() {
+            self.compacted_at = Some(now);
+        }
+        layout_changed |= self.cluster.tick(now);
+        if let Some(join) = &mut self.join {
+            layout_changed |= join.tick(now);
+        }
         self.hover.tick(now);
         self.content.tick(now);
         let tween_finished = self
@@ -392,6 +441,13 @@ impl OverlayState {
             model,
             previous_text: self.content.previous.clone(),
             text_alpha: self.content.text_alpha(now),
+            cluster_extra: self.cluster.extra(now) * compact,
+            cluster_side: self.cluster.side(),
+            cluster_peer: (compact >= 0.999)
+                .then(|| self.cluster.peer(now).cloned())
+                .flatten(),
+            cluster_peer_alpha: self.cluster.peer_alpha(now),
+            join_alpha: self.join.map_or(1.0, |join| join.alpha(now)),
             scale: self.config.scale,
             palette: self.palette,
             theme_mode: resolved_theme_mode(self.config.appearance, self.preferences),
@@ -399,6 +455,21 @@ impl OverlayState {
             blur: self.config.blur,
             compact,
             hover_alpha: self.hover.value(Instant::now()),
+        }
+    }
+
+    fn update_join(&mut self, request: Option<super::group::JoinRequest>, from: POINT) {
+        match request {
+            None => self.join = None,
+            Some(request) => {
+                if self.join.is_some_and(|join| {
+                    join.request.started == request.started
+                        && join.request.position == request.position
+                }) {
+                    return;
+                }
+                self.join = Some(super::group::JoinMotion::new(from, request));
+            }
         }
     }
 }
