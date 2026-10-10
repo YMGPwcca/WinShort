@@ -133,9 +133,6 @@ impl FrameClock {
                 targets[index].update(id, mode);
             }
             (None, Some(mode)) => {
-                if targets.len() >= super::manager::OverlayKey::ALL.len() {
-                    return Err(Error::internal("overlay clock target capacity exhausted"));
-                }
                 targets.push(Target {
                     hwnd: handle,
                     id,
@@ -255,6 +252,25 @@ fn run(shared: &Shared, timer: &OwnedHandle) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independent_app_targets_are_not_limited_to_the_fixed_notification_keys() {
+        let clock = FrameClock::create().unwrap();
+        for id in 1..=40 {
+            clock
+                .arm(
+                    HWND(id as *mut _),
+                    id,
+                    Some(WakeMode::Deadline(Duration::from_secs(86400))),
+                )
+                .unwrap();
+        }
+        assert_eq!(clock.active_targets(), 40);
+        for id in 1..=40 {
+            clock.arm(HWND(id as *mut _), id, None).unwrap();
+        }
+        assert_eq!(clock.active_targets(), 0);
+    }
+
     #[test]
     fn repeated_deadline_plan_rearms_after_a_one_shot_wake() {
         let now = Instant::now();

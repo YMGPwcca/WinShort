@@ -29,10 +29,23 @@ impl Side {
 
 #[derive(Debug, Clone)]
 pub(super) struct ClusterRequest {
-    pub(super) peer_id: u64,
-    pub(super) row: OverlayRow,
+    pub(super) peers: Vec<ClusterPeer>,
     pub(super) side: Side,
     pub(super) started: Instant,
+}
+#[derive(Debug, Clone)]
+pub(super) struct ClusterPeer {
+    pub(super) id: u64,
+    pub(super) row: OverlayRow,
+    pub(super) offset: f32,
+    pub(super) started: Instant,
+}
+#[derive(Debug, Clone)]
+pub(super) struct ClusterIcon {
+    pub(super) id: u64,
+    pub(super) row: OverlayRow,
+    pub(super) offset: f32,
+    pub(super) alpha: f32,
 }
 #[derive(Debug, Clone, Copy)]
 pub(super) struct JoinRequest {
@@ -51,6 +64,21 @@ fn eased(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+fn same_cluster(old: Option<&ClusterRequest>, new: Option<&ClusterRequest>) -> bool {
+    match (old, new) {
+        (Some(old), Some(new)) => {
+            old.peers
+                .iter()
+                .map(|peer| peer.id)
+                .eq(new.peers.iter().map(|peer| peer.id))
+                && old.side == new.side
+                && old.started == new.started
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ClusterMotion {
     request: Option<ClusterRequest>,
@@ -59,6 +87,7 @@ pub(super) struct ClusterMotion {
     to: f32,
     started: Option<Instant>,
     revealing: bool,
+    from_offsets: Vec<(u64, f32)>,
 }
 impl ClusterMotion {
     pub(super) fn extra(&self, now: Instant) -> f32 {
@@ -69,16 +98,30 @@ impl ClusterMotion {
     pub(super) fn side(&self) -> Option<Side> {
         self.side
     }
-    pub(super) fn peer(&self, now: Instant) -> Option<&OverlayRow> {
-        self.request
-            .as_ref()
-            .filter(|request| progress(request.started, now) >= 0.8)
-            .map(|request| &request.row)
-    }
-    pub(super) fn peer_alpha(&self, now: Instant) -> f32 {
-        self.request.as_ref().map_or(0.0, |r| {
-            ((progress(r.started, now) - 0.8) / 0.2).clamp(0.0, 1.0)
-        })
+    pub(super) fn icons(&self, now: Instant) -> Vec<ClusterIcon> {
+        let Some(request) = &self.request else {
+            return Vec::new();
+        };
+        let t = self
+            .started
+            .map_or(1.0, |start| eased(progress(start, now)));
+        request
+            .peers
+            .iter()
+            .map(|peer| {
+                let from = self
+                    .from_offsets
+                    .iter()
+                    .find(|(id, _)| *id == peer.id)
+                    .map_or(peer.offset, |(_, offset)| *offset);
+                ClusterIcon {
+                    id: peer.id,
+                    row: peer.row.clone(),
+                    offset: from + (peer.offset - from) * t,
+                    alpha: ((progress(peer.started, now) - 0.8) / 0.2).clamp(0.0, 1.0),
+                }
+            })
+            .collect()
     }
     pub(super) fn update(
         &mut self,
@@ -86,36 +129,49 @@ impl ClusterMotion {
         motion: MotionPolicy,
         now: Instant,
     ) {
-        let unchanged = match (&self.request, &request) {
-            (Some(old), Some(new)) => {
-                old.peer_id == new.peer_id && old.side == new.side && old.started == new.started
-            }
-            (None, None) => true,
-            _ => false,
-        };
+        let unchanged = same_cluster(self.request.as_ref(), request.as_ref());
         if unchanged {
             self.request = request;
         } else {
+            self.from_offsets = self
+                .icons(now)
+                .iter()
+                .map(|icon| (icon.id, icon.offset))
+                .collect();
             self.from = self.extra(now);
-            self.to = if request.is_some() { GROUP_EXTRA } else { 0.0 };
+            self.to = request
+                .as_ref()
+                .map_or(0.0, |request| GROUP_EXTRA * request.peers.len() as f32);
             if let Some(request) = &request {
                 self.side = Some(request.side);
             }
-            self.started = Some(request.as_ref().map_or(now, |request| request.started));
+            self.started = Some(if self.to < self.from {
+                now
+            } else {
+                request.as_ref().map_or(now, |request| request.started)
+            });
             self.revealing = request.is_some();
             self.request = request;
         }
         if motion == MotionPolicy::Reduced {
-            self.started = None;
-            self.revealing = false;
-            if let Some(request) = &mut self.request {
-                request.started = now
-                    .checked_sub(Duration::from_millis(GROUP_MS))
-                    .unwrap_or(now);
+            self.finish_immediately(now);
+        }
+    }
+
+    fn finish_immediately(&mut self, now: Instant) {
+        self.started = None;
+        self.revealing = false;
+        if let Some(request) = &mut self.request {
+            let settled = now
+                .checked_sub(Duration::from_millis(GROUP_MS))
+                .unwrap_or(now);
+            request.started = settled;
+            for peer in &mut request.peers {
+                peer.started = settled;
             }
-            if self.to == 0.0 {
-                self.side = None;
-            }
+        }
+        if self.to == 0.0 {
+            self.side = None;
         }
     }
     pub(super) fn tick(&mut self, now: Instant) -> bool {
@@ -123,10 +179,11 @@ impl ClusterMotion {
             .started
             .is_some_and(|start| progress(start, now) >= 1.0);
         let reveal_done = self.revealing
-            && self
-                .request
-                .as_ref()
-                .is_some_and(|r| progress(r.started, now) >= 1.0);
+            && self.request.as_ref().is_some_and(|r| {
+                r.peers
+                    .iter()
+                    .all(|peer| progress(peer.started, now) >= 1.0)
+            });
         if width_done {
             self.started = None;
         }
@@ -260,8 +317,12 @@ mod tests {
     fn background_reverses_from_current_width_and_reduced_motion_is_immediate() {
         let now = Instant::now();
         let request = ClusterRequest {
-            peer_id: 2,
-            row: OverlayRow::preview("peer", ""),
+            peers: vec![ClusterPeer {
+                id: 2,
+                row: OverlayRow::preview("peer", ""),
+                offset: -44.0,
+                started: now,
+            }],
             side: Side::Left,
             started: now,
         };
@@ -276,7 +337,7 @@ mod tests {
         assert_eq!(group.timer_interval(), None);
         group.update(Some(request), MotionPolicy::Reduced, middle);
         assert_eq!(group.extra(middle), GROUP_EXTRA);
-        assert!(group.peer(middle).is_some());
+        assert!(!group.icons(middle).is_empty());
         assert_eq!(group.timer_interval(), None);
     }
 }

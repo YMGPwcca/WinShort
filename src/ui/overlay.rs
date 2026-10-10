@@ -6,6 +6,8 @@ mod composition;
 mod content;
 mod drawing;
 mod effect;
+mod exe_icon;
+pub(crate) use exe_icon::executable_icon;
 mod frame_clock;
 mod group;
 mod hover;

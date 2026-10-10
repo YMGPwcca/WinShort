@@ -47,7 +47,6 @@ pub(super) fn render_prepared_frame(
         data.model.width_dip = Some(plan.content_width);
         data.text_alpha = plan.text_alpha;
         data.cluster_extra = plan.cluster_extra;
-        data.cluster_peer_alpha = plan.cluster_peer_alpha;
         data.join_alpha = plan.join_alpha;
         (state.surface_spec(plan.size), data)
     };
@@ -82,8 +81,7 @@ pub(super) struct OverlayRenderData {
     pub(super) text_alpha: f32,
     pub(super) cluster_extra: f32,
     pub(super) cluster_side: Option<super::group::Side>,
-    pub(super) cluster_peer: Option<super::model::OverlayRow>,
-    pub(super) cluster_peer_alpha: f32,
+    pub(super) cluster_peers: Vec<super::group::ClusterIcon>,
     pub(super) join_alpha: f32,
     pub(super) scale: f32,
     pub(super) palette: OverlayPalette,
@@ -101,6 +99,7 @@ pub(super) enum OverlaySurface {
 
 pub(super) struct HwndOverlaySurface {
     target: ID2D1HwndRenderTarget,
+    app_bitmaps: super::exe_icon::BitmapCache,
     size: SIZE,
     dpi: u32,
 }
@@ -262,10 +261,10 @@ impl HwndOverlaySurface {
                 data.palette,
                 data.alpha,
                 OverlayDrawOptions {
+                    app_bitmaps: &self.app_bitmaps,
                     cluster_extra: data.cluster_extra,
                     cluster_side: data.cluster_side,
-                    cluster_peer: data.cluster_peer.as_ref(),
-                    cluster_peer_alpha: data.cluster_peer_alpha,
+                    cluster_peers: &data.cluster_peers,
                     previous_text: data.previous_text.as_ref(),
                     text_alpha: data.text_alpha,
                     compact: data.compact,
@@ -354,7 +353,12 @@ impl OverlayGraphics {
                 .map_err(|e| Error::win("CreateHwndRenderTarget(overlay)", &e))?;
             target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             target.SetDpi(dpi as f32, dpi as f32);
-            Ok(HwndOverlaySurface { target, size, dpi })
+            Ok(HwndOverlaySurface {
+                target,
+                size,
+                dpi,
+                app_bitmaps: Default::default(),
+            })
         }
     }
 }

@@ -35,6 +35,166 @@ fn pump_for(duration: Duration) {
 }
 
 #[test]
+#[ignore = "shows test-owned multi-application bar with actual executable icons; does not touch audio"]
+fn native_multiple_executable_badges_extend_and_shrink_one_bar() {
+    crate::platform::dpi::set_process_awareness();
+    let _com = crate::platform::com::ComApartment::init_sta();
+    let mut manager = OverlayManager::create().unwrap();
+    let mut config = crate::config::Config::default().overlay;
+    config.position = OverlayPosition::Center;
+    config.hover_opacity = 1.0;
+    config.duration_ms = 1000;
+    let mic = || {
+        OverlayRequest::permanent(
+            OverlayKey::MicrophonePermanent,
+            OverlayModel::single(microphone_row(&crate::audio::AudioState::Muted {
+                volume_pct: 100,
+            })),
+        )
+    };
+    manager.present(mic(), config.clone()).unwrap();
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    let host = manager.test_hwnds()[0];
+    let anchor = manager.test_window_rectangles()[0];
+    let system = std::env::var("WINDIR").unwrap();
+    let paths = [
+        format!("{system}\\System32\\notepad.exe"),
+        format!("{system}\\System32\\cmd.exe"),
+        format!("{system}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+    ];
+    let models = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let mut row = application_row(&crate::audio::AppAudioState {
+                app_name: Some(format!("Test app {}", index + 1)),
+                aggregate: crate::audio::Aggregate::AllMuted,
+                sessions: 1,
+                error: None,
+            });
+            row.icon = executable_icon(path).expect("real executable icon");
+            OverlayModel::single(row)
+        })
+        .collect::<Vec<_>>();
+    for (index, model) in models.iter().enumerate() {
+        manager
+            .present(
+                OverlayRequest::permanent(
+                    OverlayKey::ApplicationPermanent(index as u64 + 1),
+                    model.clone(),
+                )
+                .replacing(OverlayKey::ApplicationToast(index as u64 + 1)),
+                config.clone(),
+            )
+            .unwrap();
+    }
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    pump_for(Duration::from_millis(250));
+    manager.refresh_visuals().unwrap();
+    let bars = manager.test_window_rectangles();
+    assert_eq!(bars.len(), 1, "mic plus three programs must share one bar");
+    let factor = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(host) } as f32 / 96.0;
+    assert_eq!(
+        bars[0].right - bars[0].left,
+        (184.0 * factor).round() as i32
+    );
+    assert_eq!((bars[0].left, bars[0].top), (anchor.left, anchor.top));
+    assert_eq!(manager.status().permanent_card_count, 4);
+    assert_eq!(manager.test_hwnds().len(), 4);
+    capture("multiple-exe-muted", &bars);
+    let peer_ids = {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) }
+                .unwrap();
+        cell.borrow()
+            .cluster
+            .icons(Instant::now())
+            .iter()
+            .map(|peer| peer.id)
+            .collect::<Vec<_>>()
+    };
+    manager
+        .present(
+            OverlayRequest::permanent(OverlayKey::ApplicationPermanent(1), models[0].clone()),
+            config.clone(),
+        )
+        .unwrap();
+    {
+        let cell =
+            unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) }
+                .unwrap();
+        let state = cell.borrow();
+        assert_eq!(
+            state
+                .cluster
+                .icons(Instant::now())
+                .iter()
+                .map(|peer| peer.id)
+                .collect::<Vec<_>>(),
+            peer_ids,
+            "passive metadata refresh must not shuffle settled executable slots"
+        );
+        assert_eq!(
+            state.graphics.clock.active_targets(),
+            0,
+            "settled bars must not wake every frame"
+        );
+    }
+    let mut active = models[1].clone();
+    active.rows[0].tone = OverlayTone::Active;
+    active.rows[0].title = "App audio unmuted".into();
+    active.rows[0].detail = "Test app 2 · Active".into();
+    manager
+        .present(
+            OverlayRequest::toast(OverlayKey::ApplicationToast(2), active)
+                .replacing(OverlayKey::ApplicationPermanent(2)),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(350));
+    manager.refresh_visuals().unwrap();
+    assert_eq!(manager.status().permanent_card_count, 3);
+    assert_eq!(manager.test_window_rectangles().len(), 2);
+    let remaining = manager.test_window_rectangles()[0];
+    assert_eq!(
+        remaining.right - remaining.left,
+        (140.0 * factor).round() as i32
+    );
+    capture("multiple-exe-unmuted", &manager.test_window_rectangles());
+    manager
+        .remove_key(OverlayKey::ApplicationPermanent(1), &config)
+        .unwrap();
+    pump_for(Duration::from_millis(350));
+    assert_eq!(
+        manager.status().permanent_card_count,
+        2,
+        "closing one app keeps the other app and mic"
+    );
+    manager
+        .present(
+            OverlayRequest::permanent(OverlayKey::ApplicationPermanent(2), models[1].clone())
+                .replacing(OverlayKey::ApplicationToast(2)),
+            config.clone(),
+        )
+        .unwrap();
+    pump_for(Duration::from_millis(1500));
+    manager.refresh_visuals().unwrap();
+    assert_eq!(
+        manager.status().permanent_card_count,
+        3,
+        "remute must keep independent identities"
+    );
+    assert_eq!(manager.test_window_rectangles().len(), 1);
+    manager.clear();
+    let cell = unsafe { crate::platform::window::state_cell::<super::state::OverlayState>(host) };
+    if let Some(cell) = cell {
+        assert_eq!(cell.borrow().graphics.clock.active_targets(), 0);
+    }
+}
+
+#[test]
 #[ignore = "shows test-owned mic/app badges and exercises grouping, peeling, and rapid remute"]
 fn native_mute_group_keeps_audio_entries_independent() {
     crate::platform::dpi::set_process_awareness();

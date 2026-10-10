@@ -2,11 +2,12 @@
 
 use crate::config::model::{OverlayNotificationCategory, OverlayNotifications};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OverlayIcon {
     Microphone,
     Output,
     Application,
+    Executable(std::sync::Arc<super::exe_icon::ExecutableIcon>),
     Workspace,
     Info,
 }

@@ -247,7 +247,6 @@ impl OverlayState {
             content_width: self.content.width(&self.model, now),
             text_alpha: self.content.text_alpha(now),
             cluster_extra: self.cluster.extra(now) * compact,
-            cluster_peer_alpha: self.cluster.peer_alpha(now),
             join_alpha: self.join.map_or(1.0, |join| join.alpha(now)),
             behind_badge: self.behind_badge,
             animation_active: self.motion == MotionPolicy::Animated
@@ -453,10 +452,11 @@ impl OverlayState {
             text_alpha: self.content.text_alpha(now),
             cluster_extra: self.cluster.extra(now) * compact,
             cluster_side: self.cluster.side(),
-            cluster_peer: (compact >= 0.999)
-                .then(|| self.cluster.peer(now).cloned())
-                .flatten(),
-            cluster_peer_alpha: self.cluster.peer_alpha(now),
+            cluster_peers: if compact >= 0.999 {
+                self.cluster.icons(now)
+            } else {
+                Vec::new()
+            },
             join_alpha: self.join.map_or(1.0, |join| join.alpha(now)),
             scale: self.config.scale,
             palette: self.palette,

@@ -3,6 +3,9 @@
 //! The registry identity invariant is one active entry per semantic
 //! OverlayKey; different keys are the only way cards stack.
 
+mod groups;
+use groups::{choose_compact_groups, group_peer_position, prepare_groups};
+
 use super::backend::{OverlayGraphics, RECT_FALLBACK};
 use super::composition::CompositionRuntime;
 #[cfg(test)]
@@ -28,6 +31,8 @@ pub(crate) enum OverlayKey {
     Speaker,
     CurrentAppAudio,
     CurrentAppAudioPermanent,
+    ApplicationPermanent(u64),
+    ApplicationToast(u64),
     CurrentAppVolume,
     Workspace,
     DisplayProfile,
@@ -38,6 +43,7 @@ pub(crate) enum OverlayKey {
 }
 
 impl OverlayKey {
+    #[cfg(test)]
     pub(crate) const ALL: [Self; 12] = [
         Self::MicrophonePermanent,
         Self::MicrophoneToast,
@@ -57,8 +63,8 @@ impl OverlayKey {
         match self {
             Self::MicrophonePermanent => 0,
             Self::Speaker => 1,
-            Self::CurrentAppAudioPermanent => 2,
-            Self::CurrentAppAudio => 10,
+            Self::CurrentAppAudioPermanent | Self::ApplicationPermanent(_) => 2,
+            Self::CurrentAppAudio | Self::ApplicationToast(_) => 10,
             Self::CurrentAppVolume => 11,
             Self::Workspace => 3,
             Self::DisplayProfile => 4,
@@ -73,7 +79,9 @@ impl OverlayKey {
     fn is_compact_mute(self) -> bool {
         matches!(
             self,
-            Self::MicrophonePermanent | Self::CurrentAppAudioPermanent
+            Self::MicrophonePermanent
+                | Self::CurrentAppAudioPermanent
+                | Self::ApplicationPermanent(_)
         )
     }
 }
@@ -423,6 +431,7 @@ struct CompactGroup {
     side: super::group::Side,
     started: Instant,
 }
+#[cfg(test)]
 impl CompactGroup {
     fn contains(&self, first: u64, second: u64) -> bool {
         (self.primary == first && self.peer == second)
@@ -460,7 +469,7 @@ pub(crate) struct OverlayManager {
     render_configs: HashMap<u64, OverlayCfg>,
     spare: Option<OverlayWindow>,
     windows: Vec<ManagedWindow>,
-    compact_group: Option<CompactGroup>,
+    compact_groups: Vec<CompactGroup>,
     // Drop after every window so the shared dispatcher/compositor/device graph
     // outlives all per-card Composition targets.
     composition_runtime: Option<CompositionRuntime>,
@@ -505,7 +514,7 @@ impl OverlayManager {
             render_configs: HashMap::new(),
             spare,
             windows: Vec::new(),
-            compact_group: None,
+            compact_groups: Vec::new(),
             composition_runtime,
             last_shown: None,
         })
@@ -561,6 +570,9 @@ impl OverlayManager {
             return Ok(());
         }
         let ids = self.registry.remove_key(key);
+        if ids.is_empty() {
+            return Ok(());
+        }
         for id in ids {
             self.render_configs.remove(&id);
             self.release_window(id);
@@ -643,7 +655,7 @@ impl OverlayManager {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.compact_group = None;
+        self.compact_groups.clear();
         self.registry.clear();
         self.render_configs.clear();
         while let Some(managed) = self.windows.pop() {
@@ -652,7 +664,7 @@ impl OverlayManager {
     }
 
     pub(crate) fn shutdown(&mut self) {
-        self.compact_group = None;
+        self.compact_groups.clear();
         self.registry.clear();
         self.render_configs.clear();
         for managed in self.windows.drain(..) {
@@ -665,7 +677,6 @@ impl OverlayManager {
 
     pub(crate) fn status(&self) -> OverlayRuntimeStatus {
         debug_assert!(self.registry.has_unique_keys());
-        debug_assert!(self.registry.entries().len() <= OverlayKey::ALL.len());
         let window_statuses = self
             .windows
             .iter()
@@ -789,7 +800,7 @@ impl OverlayManager {
         self.registry.mark_expiring(now);
         refresh_registry_placements(&mut self.registry);
         let mut entries = self.build_layout_entries();
-        let peer = self.prepare_visual_group(&mut entries, now);
+        let peers = self.prepare_visual_groups(&mut entries, now);
         let layout = plan_layout_with_evictions(entries);
         for id in layout.evicted_ids {
             self.render_configs.remove(&id);
@@ -802,47 +813,41 @@ impl OverlayManager {
                 anchor_primary_badge(plan);
             }
         }
-        let join_position = self.compact_group.and_then(|group| {
-            plans
-                .iter()
-                .find(|plan| plan.entry.id == group.primary)
-                .map(|plan| peer_position(plan, group.side))
-        });
+        let joins = peers
+            .into_iter()
+            .filter_map(|peer| {
+                let group = self
+                    .compact_groups
+                    .iter()
+                    .find(|group| group.peer == peer.id)?;
+                let host = plans.iter().find(|plan| plan.entry.id == group.primary)?;
+                let position = group_peer_position(host, group.peer);
+                Some((peer, *group, position))
+            })
+            .collect::<Vec<_>>();
         self.render_layout(plans, presentation)?;
-        if let Some(peer) = peer {
-            self.present_visual_peer(peer, join_position, presentation)?;
+        for (peer, group, position) in joins {
+            self.show_group_peer(peer, group, position, presentation)?;
         }
         Ok(())
     }
 
-    fn prepare_visual_group(
+    fn prepare_visual_groups(
         &mut self,
         entries: &mut Vec<LayoutEntry>,
         now: Instant,
-    ) -> Option<LayoutEntry> {
-        self.compact_group = choose_compact_group(entries, self.compact_group, now);
+    ) -> Vec<LayoutEntry> {
+        self.compact_groups = choose_compact_groups(entries, &self.compact_groups, now);
         if motion_policy(crate::platform::visual::SystemVisualPreferences::query())
             == MotionPolicy::Reduced
         {
-            if let Some(group) = &mut self.compact_group {
+            for group in &mut self.compact_groups {
                 group.started = now
                     .checked_sub(Duration::from_millis(super::group::GROUP_MS))
                     .unwrap_or(now);
             }
         }
-        prepare_group_entries(entries, self.compact_group)
-    }
-
-    fn present_visual_peer(
-        &self,
-        peer: LayoutEntry,
-        join_position: Option<windows::Win32::Foundation::POINT>,
-        presentation: Option<PresentOutcome>,
-    ) -> Result<()> {
-        if let (Some(group), Some(position)) = (self.compact_group, join_position) {
-            self.show_group_peer(peer, group, position, presentation)?;
-        }
-        Ok(())
+        prepare_groups(entries, &self.compact_groups)
     }
 
     fn render_layout(
@@ -1037,6 +1042,7 @@ fn consistent_value<T: Copy + Eq>(values: impl Iterator<Item = Option<T>>) -> Op
     }
 }
 
+#[cfg(test)]
 fn choose_compact_group(
     entries: &[LayoutEntry],
     previous: Option<CompactGroup>,
@@ -1074,6 +1080,7 @@ fn choose_compact_group(
     })
 }
 
+#[cfg(test)]
 fn grouping_entry(entry: &LayoutEntry, key: OverlayKey) -> bool {
     entry.key == key
         && (entry.compact || entry.collapse_started.is_some())
@@ -1091,6 +1098,7 @@ fn same_group_surface(first: &LayoutEntry, second: &LayoutEntry) -> bool {
         && a.hover_opacity == b.hover_opacity
 }
 
+#[cfg(test)]
 fn prepare_group_entries(
     entries: &mut Vec<LayoutEntry>,
     group: Option<CompactGroup>,
@@ -1100,8 +1108,16 @@ fn prepare_group_entries(
     let peer = entries.remove(peer_index);
     let primary = entries.iter_mut().find(|entry| entry.id == group.primary)?;
     primary.cluster = Some(super::group::ClusterRequest {
-        peer_id: peer.id,
-        row: peer.model.rows[0].clone(),
+        peers: vec![super::group::ClusterPeer {
+            id: peer.id,
+            row: peer.model.rows[0].clone(),
+            started: group.started,
+            offset: if group.side == super::group::Side::Left {
+                -44.0
+            } else {
+                44.0
+            },
+        }],
         side: group.side,
         started: group.started,
     });
@@ -1109,6 +1125,7 @@ fn prepare_group_entries(
     Some(peer)
 }
 
+#[cfg(test)]
 fn cluster_width_px(scale: f32, dpi: u32) -> i32 {
     ((super::layout::BADGE_SIZE + super::group::GROUP_EXTRA)
         * scale.clamp(0.7, 1.6)
@@ -1139,23 +1156,6 @@ fn anchor_primary_badge(plan: &mut PlannedEntry) {
         plan.entry.placement.work.left,
         (plan.entry.placement.work.right - plan.entry.size.cx).max(plan.entry.placement.work.left),
     );
-}
-
-fn peer_position(
-    plan: &PlannedEntry,
-    side: super::group::Side,
-) -> windows::Win32::Foundation::POINT {
-    let single = model_geometry(plan.entry.render_config.scale, &plan.entry.model, 1.0)
-        .pixel_size(plan.entry.placement.dpi);
-    windows::Win32::Foundation::POINT {
-        x: plan.card.position.x
-            + if side == super::group::Side::Right {
-                plan.entry.size.cx - single.cx
-            } else {
-                0
-            },
-        y: plan.card.position.y,
-    }
 }
 
 fn consistent_string(values: impl Iterator<Item = Option<String>>) -> Option<String> {
@@ -1494,8 +1494,12 @@ fn group_layout_entries(entries: Vec<LayoutEntry>) -> Vec<LayoutGroup> {
                 if entry.compact { 1.0 } else { 0.0 },
             )
             .pixel_size(placement.dpi);
-            if entry.cluster.is_some() {
-                entry.size.cx = cluster_width_px(entry.render_config.scale, placement.dpi);
+            if let Some(cluster) = &entry.cluster {
+                entry.size.cx = ((52.0 + super::group::GROUP_EXTRA * cluster.peers.len() as f32)
+                    * entry.render_config.scale.clamp(0.7, 1.6)
+                    * placement.dpi.max(96) as f32
+                    / 96.0)
+                    .round() as i32;
             }
         }
         group.entries.push(entry);
@@ -1603,6 +1607,68 @@ mod tests {
         entry.compacted_at = Some(at);
         entry
     }
+    #[test]
+    fn multiple_programs_extend_bar_without_duplicate_ids_or_cross_app_removal() {
+        let now = Instant::now();
+        for dpi in [96, 120, 144, 192] {
+            let mut entries = vec![muted_entry(1, OverlayKey::MicrophonePermanent, now)];
+            for id in 2..=5 {
+                entries.push(muted_entry(
+                    id,
+                    OverlayKey::ApplicationPermanent(id),
+                    now + Duration::from_millis(id),
+                ));
+            }
+            for entry in &mut entries {
+                entry.placement.dpi = dpi;
+            }
+            let groups = choose_compact_groups(&entries, &[], now);
+            assert_eq!(groups.len(), 4);
+            assert!(groups.iter().all(|group| group.primary == 1));
+            let peers = prepare_groups(&mut entries, &groups);
+            assert_eq!(peers.len(), 4);
+            let mut plans = plan_layout(entries);
+            assert_eq!(plans.len(), 1);
+            anchor_primary_badge(&mut plans[0]);
+            assert_eq!(
+                plans[0].entry.size.cx,
+                (228.0 * dpi as f32 / 96.0).round() as i32
+            );
+            let slots = peers
+                .iter()
+                .map(|peer| group_peer_position(&plans[0], peer.id).x)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(slots.len(), 4);
+            let mut surviving = vec![plans[0].entry.clone()];
+            surviving[0].cluster = None;
+            surviving.extend(peers.into_iter().filter(|entry| entry.id != 3));
+            let after = choose_compact_groups(&surviving, &groups, now);
+            assert_eq!(after.len(), 3);
+            assert!(!after.iter().any(|group| group.peer == 3));
+        }
+    }
+
+    #[test]
+    fn oversized_mute_bars_wrap_to_more_lanes_without_losing_programs() {
+        let now = Instant::now();
+        let mut entries = (1..=40)
+            .map(|id| muted_entry(id, OverlayKey::ApplicationPermanent(id), now))
+            .collect::<Vec<_>>();
+        let groups = choose_compact_groups(&entries, &[], now);
+        let peers = prepare_groups(&mut entries, &groups);
+        assert_eq!(entries.len() + peers.len(), 40);
+        assert!(entries.len() > 1);
+        let plans = plan_layout(entries);
+        for plan in plans {
+            assert!(
+                plan.entry.size.cx
+                    < plan.entry.placement.work.right - plan.entry.placement.work.left
+            );
+            assert!(plan.card.position.x >= plan.entry.placement.work.left);
+            assert!(plan.card.position.x + plan.entry.size.cx <= plan.entry.placement.work.right);
+        }
+    }
+
     #[test]
     fn group_preserves_first_badge_and_only_combines_matching_surfaces() {
         let now = Instant::now();

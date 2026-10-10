@@ -117,7 +117,6 @@ pub(super) struct ShowPlan {
     pub(super) content_width: f32,
     pub(super) text_alpha: f32,
     pub(super) cluster_extra: f32,
-    pub(super) cluster_peer_alpha: f32,
     pub(super) join_alpha: f32,
     pub(super) behind_badge: Option<HWND>,
 }

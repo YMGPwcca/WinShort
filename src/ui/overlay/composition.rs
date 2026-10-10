@@ -87,6 +87,7 @@ pub(super) struct CompositionHost {
     surface: CompositionDrawingSurface,
     size: SIZE,
     surface_size: SIZE,
+    app_bitmaps: super::exe_icon::BitmapCache,
     dpi: u32,
     // Keep the shared thread runtime alive until this host's target/scene/surface
     // have been released.
@@ -450,6 +451,7 @@ impl CompositionHost {
             surface,
             size,
             surface_size: size,
+            app_bitmaps: Default::default(),
             dpi,
             runtime,
         })
@@ -498,7 +500,7 @@ impl CompositionHost {
         };
         // Never publish a freshly cleared/empty surface from WM_SIZE. Finish
         // drawing before binding a larger canvas or changing the scene clip.
-        draw_content(&surface, data, spec)?;
+        draw_content(&surface, data, spec, &self.app_bitmaps)?;
         if canvas_size != self.surface_size {
             self.scene
                 .content_brush
@@ -569,6 +571,7 @@ fn draw_content(
     surface: &CompositionDrawingSurface,
     data: &OverlayRenderData,
     spec: SurfaceSpec,
+    app_bitmaps: &super::exe_icon::BitmapCache,
 ) -> Result<()> {
     let surface_interop: ICompositionDrawingSurfaceInterop = surface
         .cast()
@@ -604,10 +607,10 @@ fn draw_content(
         data.palette,
         data.alpha,
         OverlayDrawOptions {
+            app_bitmaps,
             cluster_extra: data.cluster_extra,
             cluster_side: data.cluster_side,
-            cluster_peer: data.cluster_peer.as_ref(),
-            cluster_peer_alpha: data.cluster_peer_alpha,
+            cluster_peers: &data.cluster_peers,
             previous_text: data.previous_text.as_ref(),
             text_alpha: data.text_alpha,
             compact: data.compact,
