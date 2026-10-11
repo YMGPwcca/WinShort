@@ -1,5 +1,5 @@
-//! Undocumented Shell COM backend pinned to Windows 11 24H2/25H2
-//! (builds 26100 and 26200–26299). See docs/VIRTUAL_DESKTOP_COMPAT.md.
+//! Undocumented Shell COM backend pinned to Windows 11 24H2/25H2/26H2
+//! (builds 26100, 26200–26299, and 26300). See docs/VIRTUAL_DESKTOP_COMPAT.md.
 //!
 //! Microsoft reused IID 53F5CA0B across a vtable change; selection is by exact
 //! build family before QueryService. Unknown builds are never probed.

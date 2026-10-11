@@ -6,7 +6,7 @@ cross-process window movement, workspace ordering, and workspace naming use undo
 interfaces whose layouts can change between builds. This file records exactly what WinShort
 supports and why.
 
-## Supported layout — Windows 11 24H2 / 25H2 (builds 26100–262xx)
+## Supported layout — Windows 11 24H2 / 25H2 / 26H2 (26100, 26200–26299, 26300)
 
 | Item | Value |
 |---|---|
@@ -69,8 +69,11 @@ Microsoft **reused** IID `53F5CA0B…` when inserting `SwitchDesktopAndMoveForeg
 > **IID equality does not prove layout equality. Selection is pinned by OS build number,
 > never by a successful QueryService alone.**
 
-Whitelist for the layout above: build ∈ {26100, 26200..=26299}. Anything else → backend
+Whitelist for the layout above: build ∈ {26100, 26200..=26299, 26300}. Anything else → backend
 unavailable, fail closed, keyboard fallback used. No probing unknown layouts "to see".
+
+Build 26300 is explicitly allowed following the isolated read-only compatibility check on
+26300.9457 below. This does not allow 26301–26399 or later build families.
 
 ## Historical layouts (documented, NOT implemented — listed to justify fail-closed design)
 
@@ -81,7 +84,7 @@ unavailable, fail closed, keyboard fallback used. No probing unknown layouts "to
 | 22000–22482 (21H2) | `B2F925B9-5A0F-4D2E-9F4D-2B1507593C10` | every method takes monitor first param |
 | 22621 pre-3085 | `A3175F2D-239C-4BD2-8AA0-EEBA8B0B138E` | direct IVirtualDesktop returns |
 | 22631.3085+ (23H2) | `53F5CA0B…` (old shape, slot 10 = CreateDesktop) | same IID as 24H2, different vtable |
-| 26100+ (24H2/25H2) | `53F5CA0B…` + `SwitchDesktopAndMoveForegroundView` at slot 10 | implemented here |
+| 26100 / 262xx / 26300 (24H2/25H2/26H2) | `53F5CA0B…` + `SwitchDesktopAndMoveForegroundView` at slot 10 | implemented here |
 
 ## Sources & corroboration
 
@@ -180,7 +183,32 @@ and last served. `last_served` (#21/#22) records the backend that actually compl
 recent switch — native success updates it even after a rebuild; a failed fallback walk leaves
 it unchanged.
 
-## Tested results (this machine)
+## 26H2 compatibility check — 26300.9457
+
+An isolated read-only probe on 2026-10-11 used WinShort's existing COM declarations and
+backend methods with the pinned 26200 layout selected explicitly for the investigation.
+The production build gate rejected 26300 before this change; the probe did not change the
+running WinShort, desktop ordering, or active desktop.
+
+| Check | Result |
+|---|---|
+| Existing backend enumeration | PASS — 9 desktops; current desktop resolved to ordinal 1 |
+| Desktop identities and names | PASS — all IDs nonzero and unique; all 9 names readable |
+| Manager `GetCount` (slot 3) | PASS — matched enumerated count |
+| Manager `FindDesktop` (slot 14) | PASS — matched current desktop identity, corroborating layout after slot 10 |
+| Manager `GetDesktopSwitchIncludeExcludeViews` (slot 15) | PASS |
+| Documented foreground window desktop read | PASS |
+| `GetViewForHwnd` and `CanViewMoveDesktops` | PASS — foreground application view reported movable |
+| Desktop order and active desktop | PASS — unchanged after probe |
+| Updated production build gate + backend initialization | PASS — repeated the read-only probe with the actual detected 26300.9457 build |
+| Switching, creation, window movement, naming, reordering, removal | NOT RUN — read-only compatibility check |
+
+Microsoft confirms that 24H2, 25H2, and 26H2 share a servicing branch in the
+[26H2 Release Preview announcement](https://blogs.windows.com/windows-insider/2026/08/27/releasing-windows-11-version-26h2-to-the-release-preview-channel/).
+Shared servicing supports reuse of the existing layout; the live reads above provide
+build-specific corroboration. They do not establish functional validation of mutation slots.
+
+## Historical tested results — 26200.9168
 
 | Check | Result |
 |---|---|

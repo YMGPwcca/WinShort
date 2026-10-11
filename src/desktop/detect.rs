@@ -19,9 +19,9 @@ pub struct OsBuild {
 
 impl OsBuild {
     /// Builds whose undocumented interface layout WinShort has pinned
-    /// (24H2 / 25H2 era). Anything else must fail closed.
+    /// (24H2 / 25H2, plus verified 26H2 build 26300). Anything else must fail closed.
     pub fn native_shell_supported(&self) -> bool {
-        self.build == 26_100 || (26_200..=26_299).contains(&self.build)
+        self.build == 26_100 || (26_200..=26_299).contains(&self.build) || self.build == 26_300
     }
 }
 
@@ -102,23 +102,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn whitelist_matches_this_machine() {
-        // This development machine runs 26200 (25H2).
-        let b = OsBuild {
-            build: 26_200,
-            update_revision: 9168,
-        };
-        assert!(b.native_shell_supported());
-        assert!(!OsBuild {
-            build: 22_631,
-            update_revision: 0
+    fn whitelist_accepts_only_pinned_builds() {
+        for build in [26_100, 26_200, 26_220, 26_299, 26_300] {
+            for update_revision in [0, 9457, u32::MAX] {
+                assert!(
+                    OsBuild {
+                        build,
+                        update_revision
+                    }
+                    .native_shell_supported(),
+                    "pinned build {build}.{update_revision} rejected"
+                );
+            }
         }
-        .native_shell_supported());
-        assert!(!OsBuild {
-            build: 27_000,
-            update_revision: 0
+        for build in [
+            22_631, 26_099, 26_101, 26_199, 26_301, 26_399, 27_000, 28_000,
+        ] {
+            assert!(
+                !OsBuild {
+                    build,
+                    update_revision: 9457
+                }
+                .native_shell_supported(),
+                "unpinned build {build} accepted"
+            );
         }
-        .native_shell_supported());
     }
 
     #[test]
