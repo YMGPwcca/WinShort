@@ -175,6 +175,9 @@ impl App {
             ConfigEvent::Applied { seq, stamp } => {
                 let config = crate::app::config();
                 self.set_suspended(!config.general.start_hotkeys_enabled);
+                if let Some(keyboard) = &mut self.keyboard {
+                    keyboard.update_config();
+                }
                 if let Some(audio) = &self.audio {
                     audio.send(crate::audio::AudioCommand::ConfigChanged { stamp });
                 }

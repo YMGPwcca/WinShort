@@ -258,7 +258,7 @@ impl App {
         &mut self,
         config: std::sync::Arc<crate::config::ConfigHandle>,
     ) -> Result<()> {
-        let service = crate::keyboard::hook::KeyboardService::start(self.hwnd, config)?;
+        let mut service = crate::keyboard::hook::KeyboardService::start(self.hwnd, config)?;
         let suspended = !crate::app::config().general.start_hotkeys_enabled;
         service.set_suspended(suspended);
         self.suspended = suspended;
@@ -979,7 +979,7 @@ impl App {
 
     pub fn toggle_suspended(&mut self) {
         self.suspended = !self.suspended;
-        if let Some(keyboard) = &self.keyboard {
+        if let Some(keyboard) = &mut self.keyboard {
             keyboard.set_suspended(self.suspended);
             keyboard.reset_state();
         }
@@ -1005,7 +1005,7 @@ impl App {
 
     fn set_suspended(&mut self, suspended: bool) {
         self.suspended = suspended;
-        if let Some(keyboard) = &self.keyboard {
+        if let Some(keyboard) = &mut self.keyboard {
             keyboard.set_suspended(suspended);
         }
         if let Some(tray) = &mut self.tray {
@@ -1895,6 +1895,20 @@ unsafe extern "system" fn main_wndproc(
             unsafe {
                 handle_tray(wparam, lparam);
             }
+            LRESULT(0)
+        }
+
+        windows::Win32::UI::WindowsAndMessaging::WM_HOTKEY => {
+            with_app(|app| {
+                if !crate::keyboard::hook::capture_active() {
+                    if let Some(action) = app.keyboard.as_ref().and_then(|keyboard| {
+                        keyboard.system_hotkey_action(wparam.0 as i32, lparam.0)
+                    }) {
+                        crate::info!("Windows hotkey dispatched: {action:?}");
+                        app.dispatch_action(action);
+                    }
+                }
+            });
             LRESULT(0)
         }
 

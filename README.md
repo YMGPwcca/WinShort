@@ -19,7 +19,7 @@ WinShort
 
 - **Native Control Center** — a PMv2-aware owner-drawn Direct2D/DirectWrite window with a text-first navigation rail, local search, light/dark themes, High Contrast support, visible keyboard focus, and localized save feedback.
 - **System tray presence** — single instance, concise context menu, `TaskbarCreated` resilience, and a pause-shortcuts state reflected in the tray icon.
-- **Global shortcuts** — user-definable `WH_KEYBOARD_LL` shortcuts with safe capture mode, canonical conflict validation, AltGr/modifier handling, and immediate atomic persistence without reinstalling the hook.
+- **Global shortcuts** — Win-modified chords use Windows `RegisterHotKey` where available; other chords and reserved desktop-number bindings use `WH_KEYBOARD_LL`. Hotkey capture, conflict validation, and config updates remain supported.
 - **Audio control** — microphone mute, speaker mute, current-app mute, current-app volume ±5%, and actual Windows default-device switching.
 - **Audio cycling allowlists** — independently choose the devices used by Next microphone and Next speaker. Disconnected IDs remain configured and become eligible again after reconnect.
 - **Status overlay** — per-pixel-alpha, monitor-aware HUD with human-readable speaker, microphone, current-app, and workspace feedback. It never steals focus.

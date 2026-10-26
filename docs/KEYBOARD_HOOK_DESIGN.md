@@ -11,6 +11,7 @@ keyboard/
 ├── keystate.rs      physical down-set + normalized modifier mask
 ├── binding.rs       ModifierMask, VirtualKey, BindingTable (HashMap exact match)
 ├── hook.rs          WH_KEYBOARD_LL thread, capture state machine, service handle
+├── system_hotkeys.rs  main-HWND RegisterHotKey/WM_HOTKEY registrations
 ├── dispatcher.rs    main-thread Start-menu countermeasure injection
 ├── engine_tests.rs  spec Win-key matrix unit tests   ([cfg(test)])
 └── engine_props.rs  proptest invariants A–E (#37)    ([cfg(test)])
@@ -21,10 +22,19 @@ them on any host.
 
 ## Hook rules
 
-* Installed once at startup on the keyboard thread. Config changes swap an
+* Installed once on the keyboard thread at startup. Config changes swap an
   `arc_swap::ArcSwap<BindingTable>` read by the engine (`ConfigHandle::bindings()` — wait-free
-  load, no HashMap rebuild in the callback, #10). The hook is reinstalled only if
-  `SetWindowsHookExW` fails.
+  load, no HashMap rebuild in the callback, #10). The hook is not reinstalled
+  for focus changes or configuration edits.
+* On the main HWND, WinShort also registers active Win-modified chords through
+  `RegisterHotKey` (except top-row digits 1–9, whose digit-first desktop behavior
+  needs the hook). Successfully registered chords are removed from the hook's
+  binding snapshot; `WM_HOTKEY` dispatches their actions with `MOD_NOREPEAT`.
+  Registration failure leaves a chord on the hook path and logs the reason.
+  Suspend, config changes, and shutdown unregister/refresh these chords on
+  the main thread. Queued messages from an older config are rejected.
+  Windows can reserve or reject combinations, and a game that blocks input
+  before OS hotkey matching remains outside WinShort's control.
 * Callback path: map `KBDLLHOOKSTRUCT` → `RawKeyEvent { vk, scan_code, up, injected, extended }`,
   feed engine, optionally post one `PostMessageW(WM_APP_ACTION, …)`, return. No Mutex/RwLock,
   no COM, no file/registry/logging. The single heap allocation on this path is a small bounded
@@ -136,6 +146,9 @@ hook thread. The main thread routes:
 * `SwitchDesktop(n)` → desktop thread command channel (backend decides COM vs fallback)
 
 The hook thread never performs actions itself.
+
+OS-owned chords dispatch directly from `WM_HOTKEY` on the main HWND. The hook
+does not see their bindings, so one press cannot dispatch via both routes.
 
 ## Verification
 

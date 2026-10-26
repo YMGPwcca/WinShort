@@ -335,6 +335,11 @@ fuzz campaign is claimed or running.
 - AltGr typing on a real AltGr layout (e.g. German)
 - Hotkey recorder capture of an already-bound hotkey (conflict error)
 - Rapid recorder cancel → re-arm → keypress (#47/#48 race window)
+- Start WinShort, then ZZZ: verify Win+G/P remain OS shortcuts while configured
+  Win+F2 mutes the game's session once; Shift+Win+F2 and Alt+Win+F2 dispatch
+  their configured actions. Confirm pause/resume, shortcut rebinding, and
+  re-entering the game leave no duplicate actions. A system registration
+  conflict must keep that chord available on the keyboard-hook path.
 
 ### Lifecycle
 - Second instance while running (activation)

@@ -23,6 +23,7 @@ use crate::event::{HotkeyAction, WM_APP_ACTION};
 use crate::keyboard::binding::{numbered_desktop_family, BindingTable, ModifierMask, VirtualKey};
 use crate::keyboard::engine::{EngineOutcome, KeyboardEngine, RawKeyEvent};
 use crate::keyboard::keystate::{normalize_vk, KeyState};
+use crate::keyboard::system_hotkeys::SystemHotkeys;
 
 struct HookState {
     main_hwnd_raw: isize,
@@ -280,32 +281,50 @@ pub struct KeyboardService {
     thread_id: u32,
     suspended: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
+    system_hotkeys: SystemHotkeys,
 }
 
 impl KeyboardService {
     pub fn start(hwnd: HWND, config: Arc<ConfigHandle>) -> Result<Self> {
-        let suspended = Arc::new(AtomicBool::new(false));
+        let suspended = Arc::new(AtomicBool::new(!config.get().general.start_hotkeys_enabled));
         let suspended_worker = Arc::clone(&suspended);
+        let worker_config = Arc::clone(&config);
         let hwnd_raw = hwnd.0 as isize;
         let (ready_tx, ready_rx) = mpsc::sync_channel::<std::result::Result<u32, Error>>(1);
 
         let join = std::thread::Builder::new()
             .name("winshort-keyboard".into())
-            .spawn(move || keyboard_thread(hwnd_raw, config, suspended_worker, ready_tx))
+            .spawn(move || keyboard_thread(hwnd_raw, worker_config, suspended_worker, ready_tx))
             .map_err(|e| Error::internal(format!("spawn keyboard thread: {e}")))?;
 
         let thread_id = ready_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| Error::internal("keyboard hook startup timeout"))??;
-        Ok(Self {
+        let mut service = Self {
             thread_id,
             suspended,
             join: Some(join),
-        })
+            system_hotkeys: SystemHotkeys::new(hwnd, config),
+        };
+        service
+            .system_hotkeys
+            .refresh(service.suspended.load(Ordering::Acquire));
+        Ok(service)
     }
 
-    pub fn set_suspended(&self, suspended: bool) {
-        self.suspended.store(suspended, Ordering::Release);
+    pub fn set_suspended(&mut self, suspended: bool) {
+        if self.suspended.swap(suspended, Ordering::AcqRel) != suspended {
+            self.system_hotkeys.refresh(suspended);
+        }
+    }
+
+    pub fn update_config(&mut self) {
+        self.system_hotkeys
+            .refresh(self.suspended.load(Ordering::Acquire));
+    }
+
+    pub fn system_hotkey_action(&self, id: i32, lparam: isize) -> Option<HotkeyAction> {
+        self.system_hotkeys.action_for_message(id, lparam)
     }
 
     /// Ask the keyboard thread to clear engine state (lock/sleep safety
@@ -320,6 +339,8 @@ impl KeyboardService {
     }
 
     pub fn shutdown(&mut self) {
+        self.suspended.store(true, Ordering::Release);
+        self.system_hotkeys.clear();
         if self.thread_id != 0 {
             unsafe {
                 let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));

@@ -345,8 +345,12 @@ impl BindingTable {
         self.map.get(&(mods, key)).copied()
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)] // test helper surface
+    /// Remove a chord owned by the OS so the hook neither dispatches it twice
+    /// nor prevents Windows from posting WM_HOTKEY.
+    pub fn remove(&mut self, hk: Hotkey) {
+        self.map.remove(&(hk.modifiers, hk.key));
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (Hotkey, HotkeyAction)> + '_ {
         self.map.iter().map(|((m, k), a)| {
             (

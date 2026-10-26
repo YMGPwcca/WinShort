@@ -35,7 +35,7 @@ remain invalid when no desktop-image mode is supplied.
 ## Threading model
 
 | Thread | COM apartment | Owns |
-| Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, Control Center renderer objects, tray, WinEvent hook (foreground tracking), DisplayConfig profile capture/apply/rollback timer, timers |
+| Main/UI | STA (`ComApartment::init_sta`, `src/platform/com.rs`) | all HWNDs, OS `RegisterHotKey` registrations and `WM_HOTKEY` dispatch, Control Center renderer objects, tray, WinEvent hook (foreground tracking), DisplayConfig profile capture/apply/rollback timer, timers |
 | Keyboard | none | `SetWindowsHookExW(WH_KEYBOARD_LL)` handle, engine key state, capture state machine |
 | Audio | MTA | all Core Audio interfaces and callbacks (`winshort-audio` worker) |
 | Desktop | STA | build-pinned Shell COM, public VirtualDesktopManager, stable normal-desktop focus history, runtime Special Desktop GUID + return GUID |

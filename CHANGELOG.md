@@ -7,6 +7,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Routed configurable Win-modified shortcuts through Windows `RegisterHotKey`
+  when registration succeeds, with the keyboard hook retained for unavailable
+  chords and numbered-desktop digit-first behavior. Removed the ineffective
+  foreground-triggered hook reinstallation.
 - Restored the sidebar brand to its original 80 DIP row and added a visible
   blinking caret for focused Search editing.
 - Made dark/light theme swaps transactional so a failed brush rebuild cannot

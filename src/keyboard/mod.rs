@@ -8,6 +8,7 @@ pub mod dispatcher;
 pub mod engine;
 pub mod hook;
 pub mod keystate;
+pub mod system_hotkeys;
 
 #[cfg(test)]
 mod engine_props;

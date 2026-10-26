@@ -5,6 +5,7 @@ pub mod model;
 pub mod save;
 pub mod validate;
 
+use crate::keyboard::binding::{BindingTable, Hotkey};
 pub use model::Config;
 pub use validate::validate;
 
@@ -80,6 +81,8 @@ pub struct ConfigSnapshot {
 struct LiveConfigSnapshot {
     value: std::sync::Arc<Config>,
     stamp: ConfigRevisionStamp,
+    /// Chords registered with RegisterHotKey are excluded from the LL hook.
+    os_owned_hotkeys: Vec<Hotkey>,
 }
 
 /// Lock-free-read snapshot of the live configuration (spec §9, §10, §45).
@@ -95,9 +98,17 @@ pub struct ConfigHandle {
     bindings: arc_swap::ArcSwap<crate::keyboard::binding::BindingTable>,
 }
 
+fn build_hook_bindings(config: &Config, os_owned: &[Hotkey]) -> BindingTable {
+    let mut bindings = crate::keyboard::hook::build_bindings(config);
+    for hotkey in os_owned {
+        bindings.remove(*hotkey);
+    }
+    bindings
+}
+
 impl ConfigHandle {
     pub fn new(cfg: Config) -> Self {
-        let bindings = arc_swap::ArcSwap::from_pointee(crate::keyboard::hook::build_bindings(&cfg));
+        let bindings = arc_swap::ArcSwap::from_pointee(build_hook_bindings(&cfg, &[]));
         Self {
             live: std::sync::RwLock::new(LiveConfigSnapshot {
                 value: std::sync::Arc::new(cfg),
@@ -107,6 +118,7 @@ impl ConfigHandle {
                     // inert until the first successful replacement.
                     origin: ConfigCommitOrigin::Settings,
                 },
+                os_owned_hotkeys: Vec::new(),
             }),
             bindings,
         }
@@ -125,11 +137,30 @@ impl ConfigHandle {
         }
     }
 
+    pub fn revision(&self) -> u64 {
+        self.live.read().expect("config lock").stamp.revision
+    }
+
     /// Snapshot of the active hotkey table; lock-free, wait-free read.
     pub fn bindings(
         &self,
     ) -> arc_swap::Guard<std::sync::Arc<crate::keyboard::binding::BindingTable>> {
         self.bindings.load()
+    }
+
+    /// Atomically hand successfully registered chords from the hook to Windows.
+    /// The OS owns WM_HOTKEY delivery until these registrations are withdrawn.
+    pub fn set_os_owned_hotkeys(&self, hotkeys: &[Hotkey]) {
+        let mut live = self.live.write().expect("config lock");
+        if live.os_owned_hotkeys == hotkeys {
+            return;
+        }
+        live.os_owned_hotkeys.clear();
+        live.os_owned_hotkeys.extend_from_slice(hotkeys);
+        self.bindings.store(std::sync::Arc::new(build_hook_bindings(
+            &live.value,
+            &live.os_owned_hotkeys,
+        )));
     }
 
     fn replace_with_origin(
@@ -139,10 +170,10 @@ impl ConfigHandle {
     ) -> (std::sync::Arc<Config>, ConfigRevisionStamp) {
         let mut live = self.live.write().expect("config lock");
         let old = std::mem::replace(&mut live.value, std::sync::Arc::new(cfg));
-        self.bindings
-            .store(std::sync::Arc::new(crate::keyboard::hook::build_bindings(
-                live.value.as_ref(),
-            )));
+        self.bindings.store(std::sync::Arc::new(build_hook_bindings(
+            &live.value,
+            &live.os_owned_hotkeys,
+        )));
         let stamp = ConfigRevisionStamp {
             revision: live.stamp.revision + 1,
             origin,
@@ -271,6 +302,38 @@ mod tests {
             VirtualKey(0x7A),
         );
         assert_eq!(hit, Some(HotkeyAction::ToggleMicrophone));
+    }
+
+    #[test]
+    fn os_hotkey_ownership_survives_config_publication_and_restores_hook_on_release() {
+        let mut config = Config::default();
+        let win_f2 = Hotkey::parse("Win+F2").unwrap();
+        let win_f3 = Hotkey::parse("Win+F3").unwrap();
+        config.hotkeys.toggle_foreground_audio = Some(win_f2);
+        let handle = ConfigHandle::new(config.clone());
+        assert_eq!(
+            handle.bindings().lookup(win_f2.modifiers, win_f2.key),
+            Some(HotkeyAction::ToggleForegroundAppAudio)
+        );
+
+        handle.set_os_owned_hotkeys(&[win_f2]);
+        assert_eq!(handle.bindings().lookup(win_f2.modifiers, win_f2.key), None);
+
+        config.hotkeys.toggle_foreground_audio = Some(win_f3);
+        handle
+            .replace_after_save(config, ConfigCommitOrigin::Settings, |_| Ok(()))
+            .unwrap();
+        assert_eq!(
+            handle.bindings().lookup(win_f3.modifiers, win_f3.key),
+            Some(HotkeyAction::ToggleForegroundAppAudio)
+        );
+        handle.set_os_owned_hotkeys(&[win_f3]);
+        assert_eq!(handle.bindings().lookup(win_f3.modifiers, win_f3.key), None);
+        handle.set_os_owned_hotkeys(&[]);
+        assert_eq!(
+            handle.bindings().lookup(win_f3.modifiers, win_f3.key),
+            Some(HotkeyAction::ToggleForegroundAppAudio)
+        );
     }
 
     #[test]
